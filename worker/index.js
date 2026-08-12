@@ -1,5 +1,20 @@
 const JSON_HEADERS = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" };
 const CORS_HEADERS = { "access-control-allow-origin": "*", "access-control-allow-methods": "GET,POST,OPTIONS", "access-control-allow-headers": "content-type,idempotency-key" };
+const SECURITY_HEADERS = {
+  "content-security-policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+  "cross-origin-opener-policy": "same-origin",
+  "permissions-policy": "camera=(), microphone=(), geolocation=(), payment=()",
+  "referrer-policy": "strict-origin-when-cross-origin",
+  "strict-transport-security": "max-age=31536000; includeSubDomains",
+  "x-content-type-options": "nosniff",
+  "x-frame-options": "DENY",
+};
+
+function secure(response) {
+  const headers = new Headers(response.headers);
+  for (const [key, value] of Object.entries(SECURITY_HEADERS)) headers.set(key, value);
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
 
 function json(data, status = 200, headers = {}) {
   return new Response(JSON.stringify(data), { status, headers: { ...JSON_HEADERS, ...CORS_HEADERS, ...headers } });
@@ -59,12 +74,12 @@ export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const apiRoutes = new Set(["/api/health", "/api/estimate", "/api/leads", "/api/projects"]);
-    if (apiRoutes.has(url.pathname)) return api(request, env, ctx, url);
+    if (apiRoutes.has(url.pathname)) return secure(await api(request, env, ctx, url));
     const response = await env.ASSETS.fetch(request);
     const acceptsHtml = request.headers.get("accept")?.includes("text/html");
-    if (response.status !== 404 || !acceptsHtml || !["GET", "HEAD"].includes(request.method)) return response;
+    if (response.status !== 404 || !acceptsHtml || !["GET", "HEAD"].includes(request.method)) return secure(response);
     const indexUrl = new URL(request.url); indexUrl.pathname = "/index.html"; indexUrl.search = "";
-    return env.ASSETS.fetch(new Request(indexUrl, request));
+    return secure(await env.ASSETS.fetch(new Request(indexUrl, request)));
   },
   async scheduled(controller, env, ctx) {
     if (!env.DB) return;
