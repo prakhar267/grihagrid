@@ -41,6 +41,51 @@ test("falls back to index.html for an unknown app route", async () => {
   assert.deepEqual(calls, ["/flow/step-two?source=share", "/index.html"]);
 });
 
+test("serves the app shell to extensionless health-check requests with Accept */*", async () => {
+  const calls = [];
+  const response = await worker.fetch(
+    new Request("https://example.test/pricing"),
+    {
+      ASSETS: {
+        fetch: async (request) => {
+          const pathname = new URL(request.url).pathname;
+          calls.push(pathname);
+          return new Response(pathname === "/index.html" ? "app" : "missing", {
+            status: pathname === "/index.html" ? 200 : 404,
+          });
+        },
+      },
+    },
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), "app");
+  assert.deepEqual(calls, ["/pricing", "/index.html"]);
+});
+
+test("overrides platform HTML fallbacks for known SPA routes", async () => {
+  const calls = [];
+  const response = await worker.fetch(
+    new Request("https://example.test/register", { headers: { accept: "text/html" } }),
+    {
+      ASSETS: {
+        fetch: async (request) => {
+          const pathname = new URL(request.url).pathname;
+          calls.push(pathname);
+          return new Response(pathname === "/index.html" ? "app" : "platform fallback", {
+            status: 200,
+            headers: { "content-type": "text/html" },
+          });
+        },
+      },
+    },
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), "app");
+  assert.deepEqual(calls, ["/register", "/index.html"]);
+});
+
 test("does not turn missing API or write requests into the app shell", async () => {
   for (const request of [
     new Request("https://example.test/api/missing", { headers: { accept: "application/json" } }),
@@ -65,4 +110,16 @@ test("emits the files required by Sites packaging", async () => {
   await access(new URL("../dist/client/index.html", import.meta.url));
   await access(new URL("../dist/server/index.js", import.meta.url));
   await access(new URL("../dist/.openai/hosting.json", import.meta.url));
+});
+
+test("readiness fails closed when required production bindings are absent", async () => {
+  const response = await worker.fetch(new Request("https://example.test/api/readiness"), {
+    ASSETS: { fetch: async () => new Response("missing", { status: 404 }) },
+  });
+  assert.equal(response.status, 503);
+  const body = await response.json();
+  assert.equal(body.status, "not_ready");
+  assert.equal(body.capabilities.freePlanning, false);
+  assert.equal(body.capabilities.privateUploads, false);
+  assert.deepEqual(body.checks.acceptingPaidPlans, []);
 });

@@ -10,7 +10,9 @@
 
 ## API cases
 
-- `GET /api/health`: 200 with no DB; 200 with D1 healthy; 503 with D1 failure.
+- `GET /api/health`: dependency-independent liveness returns 200.
+- `GET /api/readiness`: 200 only with current D1 schema and KV; otherwise 503,
+  while separately reporting optional upload and checkout capability.
 - `POST /api/estimate`: valid result; defaults; malformed JSON; wrong content type; dimensions below/above bounds.
 - `POST /api/leads`: valid email; invalid email; duplicate email; unavailable database.
 - `POST /api/projects`: valid project, normalized estimate, length-limited name and invalid dimensions.
