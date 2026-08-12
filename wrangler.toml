@@ -1,0 +1,34 @@
+name = "grihagrid"
+main = "dist/server/index.js"
+compatibility_date = "2026-08-01"
+
+[assets]
+directory = "dist/client"
+binding = "ASSETS"
+not_found_handling = "none"
+run_worker_first = ["/api/*"]
+
+[observability]
+enabled = true
+head_sampling_rate = 1
+
+[vars]
+APP_ENV = "production"
+
+[triggers]
+crons = ["17 2 * * *"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "grihagrid-db"
+database_id = "42a75a83-ab24-4e3f-93f1-b80c51284f1e"
+migrations_dir = "migrations"
+
+[[kv_namespaces]]
+binding = "GRIHAGRID_CACHE"
+id = "c5044339222a4172ad7c91724b98d4fb"
+
+# Enable R2 in the Cloudflare dashboard before activating this binding.
+# [[r2_buckets]]
+# binding = "FILES"
+# bucket_name = "grihagrid-files"
