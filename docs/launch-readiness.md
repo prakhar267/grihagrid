@@ -26,7 +26,7 @@ Paid selling remains gated on the following owner-supplied or third-party items:
 
 ### SRE
 
-- [ ] Create external uptime check for `/api/health` and the homepage.
+- [ ] Create external uptime checks for `/api/health`, `/api/readiness`, and the homepage.
 - [ ] Alert on 5xx rate >2% for 5 minutes, payment-webhook failure, queue age and D1 errors.
 - [ ] Confirm structured logs contain request ID, route, latency and outcome but no personal data.
 - [ ] Export D1 backup, restore it into staging and record restore time.
@@ -50,4 +50,4 @@ Paid selling remains gated on the following owner-supplied or third-party items:
 
 ## Rollback
 
-Redeploy the last known-good Git SHA. Do not roll back an irreversible D1 migration; use additive corrective migrations. Pause checkout before rolling back code that changes order semantics. Confirm `/api/health`, a free estimate and one synthetic project after recovery.
+Redeploy the last known-good Git SHA. Do not roll back an irreversible D1 migration; use additive corrective migrations. Pause checkout before rolling back code that changes order semantics. Confirm `/api/health`, `/api/readiness`, a free estimate and one synthetic project after recovery.

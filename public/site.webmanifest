@@ -1,0 +1,9 @@
+{
+  "name": "GrihaGrid",
+  "short_name": "GrihaGrid",
+  "description": "India-first home feasibility and construction-budget planning.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f3efe6",
+  "theme_color": "#f3efe6"
+}

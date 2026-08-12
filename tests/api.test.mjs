@@ -4,12 +4,14 @@ import worker from "../worker/index.js";
 
 const assets = { fetch: async () => new Response("missing", { status: 404 }) };
 
-test("health endpoint is safe without optional bindings", async () => {
+test("liveness endpoint is dependency-independent and safe without bindings", async () => {
   const response = await worker.fetch(new Request("https://example.test/api/health"), { ASSETS: assets });
   assert.equal(response.status, 200);
   const body = await response.json();
   assert.equal(body.status, "ok");
-  assert.equal(body.database, "not-configured");
+  assert.equal(body.service, "grihagrid");
+  assert.equal(typeof body.time, "string");
+  assert.equal("database" in body, false);
 });
 
 test("estimate endpoint validates and computes normalized results", async () => {

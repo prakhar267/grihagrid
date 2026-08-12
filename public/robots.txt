@@ -1,0 +1,7 @@
+User-agent: *
+Allow: /
+Disallow: /dashboard
+Disallow: /report/
+Disallow: /checkout/
+
+Sitemap: https://grihagrid.prakhargupta267.workers.dev/sitemap.xml
