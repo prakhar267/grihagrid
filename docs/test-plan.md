@@ -12,11 +12,18 @@
 
 - `GET /api/health`: dependency-independent liveness returns 200.
 - `GET /api/readiness`: 200 only with current D1 schema and KV; otherwise 503,
-  while separately reporting optional upload and checkout capability.
+  while separately reporting AI schema/admission/config validity and optional
+  upload and checkout capability.
 - `POST /api/estimate`: valid result; defaults; malformed JSON; wrong content type; dimensions below/above bounds.
 - `POST /api/leads`: valid email; invalid email; duplicate email; unavailable database.
 - `POST /api/projects`: valid project, normalized estimate, length-limited name and invalid dimensions.
 - Unknown `/api/*`: JSON 404. Unknown browser route: SPA fallback.
+- Gemini brief: owner isolation; explicit 18+ consent; CSRF/origin enforcement;
+  sanitized allowlisted prompt; structured validation; advisory-policy
+  rejection; cached replay; refresh; atomic user/platform limits; one-project
+  single flight; expired-lease recovery; unchanged-report persistence fence;
+  provider timeout/retry mapping; missing/revoked configuration; no secret in
+  readiness, responses, bundles, or logs.
 
 ## Non-functional checks
 

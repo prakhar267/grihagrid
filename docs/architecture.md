@@ -11,18 +11,20 @@ Browser / PWA
 Cloudflare Worker API
   ├─ auth/session boundary
   ├─ estimate + project services
+  ├─ sanitized Gemini planning-brief service
   ├─ order + webhook service
   ├─ signed file-access service
   └─ health/observability
       │        │        │
       ▼        ▼        ▼
      D1       R2       KV
-  records   uploads   rate limits / idempotency
+ records +  uploads   best-effort auth and
+ AI quotas             checkout abuse limits
       │
       ▼
  Cloudflare Queue → report-generation worker → R2 PDF + D1 state
 
-External boundaries: email provider, Razorpay, AI generation provider, architect operations.
+External boundaries: Google Gemini, email provider, Razorpay, and architect operations.
 ```
 
 ## Design decisions
@@ -31,8 +33,14 @@ External boundaries: email provider, Razorpay, AI generation provider, architect
 - D1 is the source of truth for users, projects, orders and state transitions. KV is never the source of truth for money or entitlements.
 - R2 holds private site photos and report artifacts. Object keys use opaque project IDs; the public bucket URL stays disabled.
 - The frontend can calculate estimates optimistically, but the server recomputes and persists every paid/reportable result.
-- All purchase and generation commands require idempotency keys. Payment webhooks are verified, replay-safe and recorded before fulfillment.
+- Purchase creation uses idempotency keys. AI generation uses an atomic D1
+  admission counter and an expiring per-project lease so concurrent requests
+  cannot duplicate provider work. Payment webhooks are verified, replay-safe,
+  and recorded before fulfillment.
 - Report versions are immutable. A revision creates a new version with its own assumption snapshot.
+- Gemini only explains an allowlisted deterministic report snapshot. Its output is
+  structured, validated, versioned, cached in D1, and never becomes the source of
+  truth for estimates, compliance, payments, or entitlements.
 
 ## Security and privacy controls
 
@@ -42,6 +50,12 @@ External boundaries: email provider, Razorpay, AI generation provider, architect
 - Strict CSP, HSTS, `X-Content-Type-Options`, `Referrer-Policy` and frame protections at the edge.
 - Webhook signatures use constant-time comparison and a bounded replay window.
 - Logs exclude request bodies, tokens, addresses, photos and provider payload secrets.
+- Gemini requests use a Worker secret, `store: false`, provider core-harm protection,
+  adult consent, and sanitized inputs that exclude identity, project names,
+  precise addresses, coordinates, payments, and uploads.
+- Generated text is rejected unless it stays inside the advisory boundary; D1
+  enforces per-user and platform spend ceilings, while KV remains a best-effort
+  brake for authentication and checkout abuse.
 - User deletion is a workflow: revoke sessions, tombstone identity, delete R2 objects, retain only legally required financial records.
 - Quarterly dependency review, secret rotation and restore exercise.
 

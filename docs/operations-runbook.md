@@ -1,7 +1,7 @@
 # GrihaGrid production operations runbook
 
 This is the operating procedure for GrihaGrid on Cloudflare Workers, D1, KV,
-R2, and Razorpay. It covers release, monitoring, recovery, payment operations,
+R2, Google Gemini, and Razorpay. It covers release, monitoring, recovery, payment operations,
 and the decision to open or close paid traffic. Commands assume they are run
 from the repository root by an authenticated operator.
 
@@ -15,20 +15,21 @@ from the repository root by an authenticated operator.
 | KV binding | `GRIHAGRID_CACHE` → `c5044339222a4172ad7c91724b98d4fb` | Best-effort abuse/rate limiting | Bound; never a money or entitlement ledger |
 | R2 binding | `FILES` → intended bucket `grihagrid-files` | Private user uploads | **Not active:** R2 subscription/billing activation is incomplete and the binding is commented out |
 | Razorpay | Payment Links API and signed webhook | Checkout and paid-state confirmation | **Not active:** live account configuration, secrets, webhook registration, and reconciliation evidence are absent |
-| Cron | `17 2 * * *` | Delete expired sessions | Configured daily at 02:17 UTC / 07:47 IST |
+| Google Gemini | Structured Interactions API | Optional sanitized planning brief | Active for sanitized beta; shared free-tier project must be isolated before material customer volume |
+| Cron | `17 2 * * *` | Session/order/AI admission cleanup | Configured daily at 02:17 UTC / 07:47 IST |
 | Observability | Worker observability, `head_sampling_rate = 1` | Invocation logs and traces | Enabled at 100% sampling; alert rules and external synthetics still need proof |
 
 `/api/health` is a dependency-independent liveness probe. `/api/readiness`
 checks D1 reachability, the required schema, the KV binding, and reports
-upload/payment capabilities. Neither endpoint proves Razorpay webhook delivery,
+AI/upload/payment capabilities. Neither endpoint proves Gemini generation quality, Razorpay webhook delivery,
 cron execution, or a complete customer journey; synthetics remain mandatory.
 
 The Worker currently reads these runtime values:
 
 - Bindings: `ASSETS`, `DB`, `GRIHAGRID_CACHE`, and optional `FILES`.
-- Non-secret configuration: `APP_ENV`, `APP_ORIGIN`, `ENABLED_PAYMENT_PLANS`, and optional
+- Non-secret configuration: `APP_ENV`, `APP_ORIGIN`, `GEMINI_MODEL`, `ENABLED_PAYMENT_PLANS`, and optional
   comma-separated `ALLOWED_ORIGINS`.
-- Secrets: `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, and
+- Secrets: `GEMINI_API_KEY`, `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, and
   `RAZORPAY_WEBHOOK_SECRET`.
 
 `SESSION_SECRET` and `RESEND_API_KEY` appear in `.dev.vars.example` but are not
@@ -79,6 +80,7 @@ configuration:
 [vars]
 APP_ENV = "production"
 APP_ORIGIN = "https://grihagrid.prakhargupta267.workers.dev"
+GEMINI_MODEL = "gemini-3.6-flash"
 ENABLED_PAYMENT_PLANS = ""
 
 [[r2_buckets]]
@@ -96,6 +98,7 @@ Enter secrets interactively so values do not appear in shell history:
 npx wrangler secret put RAZORPAY_KEY_ID
 npx wrangler secret put RAZORPAY_KEY_SECRET
 npx wrangler secret put RAZORPAY_WEBHOOK_SECRET
+npx wrangler secret put GEMINI_API_KEY
 npx wrangler secret list
 ```
 
@@ -188,6 +191,9 @@ Migrations currently run in this order:
 3. `0003_payments.sql`: Payment Link fields and immutable webhook-event ledger.
 4. `0004_commercial_fulfillment.sql`: immutable purchased-report snapshots and
    idempotent paid-order fulfillment state.
+5. `0005_gemini_ai.sql`: owner-scoped, versioned Gemini planning briefs.
+6. `0006_ai_abuse_controls.sql`: transactional generation counters and
+   expiring per-project AI leases.
 
 Apply the exact files to staging first and complete its smoke suite. For
 production:
@@ -246,11 +252,13 @@ Then use the dedicated production canary account to verify:
 
 1. Login and session restoration after reload.
 2. Create, read, update, report-generate, and delete one canary project.
-3. Upload, download, checksum/size compare, and delete a small safe PDF once R2
+3. Generate one sanitized AI brief, read the cached copy, and delete the project;
+   confirm the provider is called only once and no synthetic rows remain.
+4. Upload, download, checksum/size compare, and delete a small safe PDF once R2
    is active.
-4. Confirm one user cannot fetch another canary user's project or file; expect
+5. Confirm one user cannot fetch another canary user's project, AI brief, or file; expect
    ownership-safe `404`.
-5. Verify mobile and desktop landing, start, auth, dashboard, and report routes.
+6. Verify mobile and desktop landing, start, auth, dashboard, and report routes.
 
 Do not create a real charge as a routine deploy smoke. Before first paid launch,
 perform one controlled live low-value purchase, webhook confirmation,
@@ -269,6 +277,7 @@ does not count as an independent availability check.
 | 5 minutes | `POST /api/estimate` fixture | `200`, expected schema and fixed numeric fixture |
 | 15 minutes | Canary login + `GET /api/projects` | Session succeeds and only canary-owned data appears |
 | Daily | Full canary project/report CRUD | Create/read/update/report/delete completes without residue |
+| Daily while AI enabled | Sanitized AI generation + cached read | Valid advisory schema, one provider call, cached replay, cleanup leaves no rows |
 | Daily after R2 activation | Private file round trip | Upload/download SHA-256 match/delete; anonymous fetch denied |
 | Daily | Cron evidence | Expired session count does not grow and scheduled invocation succeeded |
 | Daily during sales | Payment reconciliation | Razorpay and D1 ledgers balance exactly |
@@ -289,6 +298,8 @@ weeks of real traffic.
 | Worker server-error ratio | At least 99.9% non-5xx | Cloudflare invocations by route and version |
 | Health/estimate latency | p95 under 500 ms | External and Worker latency |
 | Authenticated CRUD latency | p95 under 750 ms | Worker route-template latency |
+| Gemini brief availability | 99% while enabled | Daily sanitized generation succeeds; cached read remains independent of provider |
+| AI advisory-boundary safety | 100%; zero tolerance | No accepted compliance/approval/structural guarantee or construction-start directive |
 | Checkout creation availability | 99.9% when checkout is open | Valid requests receiving a trusted Razorpay URL; excludes user/provider validation 4xx |
 | Webhook processing | 99.9% accepted within 60 s of provider delivery | Razorpay delivery timestamp versus `payment_webhook_events.processed_at` |
 | Financial correctness | 100%; zero tolerance | No duplicate, amount/currency mismatch, unverified paid state, or unmatched settlement |
@@ -307,6 +318,8 @@ Page the on-call for:
 - any Razorpay webhook delivery exhausted or signature failures sustained for
   five minutes;
 - D1 query errors above 1% for five minutes;
+- a failed daily Gemini synthetic, a sustained provider-error spike, an AI
+  quota crossing 90%, or any accepted advisory-boundary violation;
 - R2 upload/download errors above 2% for 10 minutes;
 - the daily cron missing twice or expired session backlog increasing for two
   days;
@@ -345,9 +358,10 @@ reduce it only after error metrics remain complete at lower sampling.
 3. Bind only an isolated staging Worker; never attach the restored copy to a
    public hostname.
 4. Compare schema and aggregate counts for `users`, `projects`, `reports`,
+   `ai_planning_briefs`, `ai_generation_counters`, `ai_generation_leases`,
    `project_files`, `orders`, and `payment_webhook_events`.
-5. Run login, ownership, report, and payment-ledger read checks without sending
-   emails or calling Razorpay live APIs.
+5. Run login, ownership, report, AI-cache/admission, and payment-ledger read
+   checks without sending emails or calling Google or Razorpay live APIs.
 6. Record elapsed restore time and destroy the drill database only after its
    exact name/UUID and evidence have been independently checked.
 
@@ -472,10 +486,14 @@ claiming account deletion is complete.
 
 ## 10. Cron verification
 
-The scheduled handler currently performs one operation:
+The scheduled handler currently performs four bounded operations:
 
 ```sql
 DELETE FROM sessions WHERE expires_at < datetime('now');
+UPDATE orders SET status='failed', ...
+ WHERE status='created' AND created_at < datetime('now','-25 hours');
+DELETE FROM ai_generation_leases WHERE expires_at <= datetime('now');
+DELETE FROM ai_generation_counters WHERE updated_at < datetime('now','-8 days');
 ```
 
 It is scheduled for 02:17 UTC daily. Verify after every trigger/config change:
@@ -483,15 +501,17 @@ It is scheduled for 02:17 UTC daily. Verify after every trigger/config change:
 1. Cloudflare dashboard shows cron `17 2 * * *` attached to the current Worker
    version.
 2. The scheduled invocation succeeded around 02:17 UTC.
-3. The following count returns zero or trends back to zero after the run:
+3. The following counts return zero or trend back to zero after the run:
 
    ```sh
    npx wrangler d1 execute grihagrid-db --remote --command \
-     "SELECT COUNT(*) AS expired_sessions FROM sessions WHERE expires_at < datetime('now');"
+     "SELECT COUNT(*) AS expired_sessions FROM sessions WHERE expires_at < datetime('now');
+      SELECT COUNT(*) AS expired_ai_leases FROM ai_generation_leases WHERE expires_at <= datetime('now');
+      SELECT COUNT(*) AS old_ai_counters FROM ai_generation_counters WHERE updated_at < datetime('now','-8 days');"
    ```
 
-4. A deliberately expired synthetic session in staging is removed by a tested
-   scheduled invocation.
+4. Deliberately expired synthetic sessions, checkout links, and AI leases in
+   staging are removed by a tested scheduled invocation; recent counters remain.
 
 Alert after one missed run and page after two. The handler uses `ctx.waitUntil`;
 an invocation record without successful D1 completion is not evidence of cleanup.
@@ -507,9 +527,14 @@ at 50%, 75%, and 90% of each approved budget or quota.
 - **D1:** watch database size, rows read/written, query latency, lock/error rate,
   and full scans. Keep list endpoints bounded; archive only under an approved
   retention policy.
-- **KV:** current read-then-write rate limiting is best effort and can race under
-  concurrency. It is an abuse brake, not a strict quota. Add Turnstile or a
-  strongly consistent limiter if abuse or provider spend rises.
+- **KV:** authentication/checkout read-then-write limiting is best effort and
+  can race under concurrency; it is an abuse brake, not a money/spend ledger.
+- **Gemini:** D1 is the strict spend boundary: six admitted generations per
+  user per UTC hour and 200 reserved provider attempts per UTC day. Each call
+  reserves up to two attempts, failures are not refunded, cache hits are free,
+  and an expiring project lease prevents duplicate concurrent calls. Alert at
+  50%, 75%, and 90% of the platform allowance and treat unexpected lease
+  backlog as an incident signal.
 - **R2:** track stored bytes, Class A/B operations, failed operations, and orphan
   count. Alert on a 2× day-over-day upload-byte increase or unexpected file-type
   mix.
@@ -622,7 +647,7 @@ are visibly unavailable and no claim suggests they work.
 
 - [ ] Separate staging/production resources, secrets, hostnames, and provider
   modes exist; GitHub CI and branch protection gate production releases.
-- [ ] All three D1 migrations are verified remotely, a fresh encrypted backup
+- [ ] All checked-in D1 migrations are verified remotely, a fresh encrypted backup
   exists, and a timed restore drill meets RPO/RTO.
 - [ ] R2 subscription is active, `grihagrid-files` exists privately, the `FILES`
   binding is enabled, and upload/download/delete/ownership/orphan checks pass.

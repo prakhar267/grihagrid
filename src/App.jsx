@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  ArrowLeft, ArrowRight, Blueprint, Buildings, Check, CheckCircle, Compass,
+  ArrowClockwise, ArrowLeft, ArrowRight, Blueprint, Buildings, Check, CheckCircle, Compass,
   CurrencyInr, DownloadSimple, FileText, House, List, LockKey, MapPin,
   Plus, Ruler, ShieldCheck, SignOut, Sparkle, Trash, UploadSimple, UserCircle,
   WarningCircle, X,
@@ -242,6 +242,98 @@ function ProjectFiles({ projectId }) {
   return <section className="project-files"><div><span className="kicker">Private site context</span><h2>Plot photographs & documents</h2><p>Keep the evidence behind your brief together. Files remain account-scoped.</p></div><label className="file-upload-action"><UploadSimple/>{busy?'Uploading…':'Add files'}<input disabled={busy} type="file" multiple accept="image/jpeg,image/png,image/webp,application/pdf" onChange={upload}/></label>{error&&<p className="form-error" role="alert">{error}</p>}{files.length>0&&<div className="file-list">{files.map(file=>{const name=file.name||file.fileName||file.file_name||'Project file';return <div key={file.id}><FileText/><a href={`/api/projects/${projectId}/files/${file.id}`}>{name}</a><span>{Math.max(1,Math.round((file.sizeBytes||file.size_bytes||0)/1024))} KB</span><button onClick={()=>remove(file)} aria-label={`Delete ${name}`}><Trash/></button></div>})}</div>}</section>;
 }
 
+function AiPlanningBrief({ projectId }) {
+  const [analysis,setAnalysis]=useState(null);
+  const [cached,setCached]=useState(false);
+  const [consented,setConsented]=useState(false);
+  const [phase,setPhase]=useState('loading');
+  const [error,setError]=useState('');
+
+  const isUnavailable=(err)=>err instanceof ApiError&&(
+    err.status===501||
+    err.status===503||
+    String(err.payload?.code||err.payload?.errorCode||'').toLowerCase().includes('not_configured')
+  );
+  const applyResult=(result)=>{
+    if(result?.aiBrief){setAnalysis(result.aiBrief);setCached(Boolean(result.cached));setPhase('ready');return}
+    setAnalysis(null);setPhase('empty');
+  };
+  async function load(signal){
+    setError('');
+    setPhase('loading');
+    try{const result=await api(`/api/projects/${projectId}/ai-brief`,{signal});if(!signal?.aborted)applyResult(result);}
+    catch(err){
+      if(signal?.aborted)return
+      if(err instanceof ApiError&&err.status===401){route('/login');return}
+      if(err instanceof ApiError&&err.status===404){setPhase('empty');return}
+      if(isUnavailable(err)){setPhase('unavailable');return}
+      setError(err.message||'The AI brief could not be loaded.');setPhase('error');
+    }
+  }
+  useEffect(()=>{const controller=new AbortController();load(controller.signal);return()=>controller.abort()},[projectId]);
+
+  async function generate(){
+    const hadAnalysis=Boolean(analysis);
+    setError('');setPhase(hadAnalysis?'refreshing':'generating');
+    try{applyResult(await api(`/api/projects/${projectId}/ai-brief`,{method:'POST',body:{acceptedAiTerms:consented,refresh:hadAnalysis},timeoutMs:60_000}));}
+    catch(err){
+      if(err instanceof ApiError&&err.status===401){route('/login');return}
+      if(isUnavailable(err)){
+        if(hadAnalysis){setError('Gemini is not connected right now. Your saved brief is still available.');setPhase('ready')}
+        else setPhase('unavailable');
+        return;
+      }
+      setError(err.message||'Gemini could not create the brief. Please try again.');
+      setPhase(hadAnalysis?'ready':'error');
+    }
+  }
+
+  const generatedDate=analysis?.generatedAt&&new Date(analysis.generatedAt);
+  const generatedLabel=generatedDate&&!Number.isNaN(generatedDate.valueOf())
+    ?generatedDate.toLocaleString('en-IN',{day:'numeric',month:'short',year:'numeric',hour:'numeric',minute:'2-digit'})
+    :null;
+  const model=String(analysis?.model||'Gemini').replace(/^models\//,'');
+  const list=(value)=>Array.isArray(value)?value.filter(item=>typeof item==='string'&&item.trim()):[];
+  const content=analysis?.content||{};
+  const priorities=list(content.planningPriorities);const layoutSuggestions=list(content.layoutSuggestions);const costNotes=list(content.costAndDeliveryNotes);const risks=list(content.riskFlags);const questions=list(content.questionsForArchitect);
+  const hasAnalysis=Boolean(analysis);
+
+  return <section className={`ai-brief ${hasAnalysis?'ai-brief--has-analysis':''}`} aria-labelledby="ai-brief-title" aria-busy={phase==='loading'||phase==='generating'||phase==='refreshing'}>
+    <header className="ai-brief-heading">
+      <div><span className="kicker">Gemini · AI-assisted</span><h2 id="ai-brief-title">A second reading of your brief.</h2><p>Gemini turns sanitized planning facts into a concise memorandum—what feels strong, what needs care, and what to ask next. Account details and project files are not sent.</p></div>
+      <div className="ai-brief-folio" aria-hidden="true"><span>AI</span><strong>01</strong></div>
+    </header>
+
+    {phase==='loading'&&<div className="ai-brief-state" role="status" aria-live="polite"><Sparkle/><div><span>Checking this private project</span><h3>Looking for a saved AI brief…</h3><p>Your feasibility report remains available while this loads.</p></div></div>}
+
+    {phase==='empty'&&<div className="ai-brief-state ai-brief-state--action"><Sparkle/><div><span>Optional planning layer</span><h3>Create a Gemini planning memo.</h3><p>Only sanitized planning facts are sent to Google Gemini—never account details, precise addresses or uploaded files. On Google’s Free tier, inputs and outputs may be reviewed or used to improve its products.</p><label className="ai-consent"><input type="checkbox" checked={consented} onChange={event=>setConsented(event.target.checked)}/><span>I confirm I am 18 or older and consent to the sanitized planning facts described above being processed by Google Gemini.</span></label><button className="copper-button" disabled={!consented} onClick={generate}>Generate AI brief <ArrowRight/></button><small>Usually ready in under a minute · output is advisory and saved with this project</small></div></div>}
+
+    {phase==='generating'&&<div className="ai-brief-state ai-brief-state--working" role="status" aria-live="polite"><Sparkle/><div><span>Gemini is reading your project</span><h3>Drafting the planning memorandum…</h3><p>This may take up to a minute. Keep this page open; no payment is involved.</p></div></div>}
+
+    {phase==='unavailable'&&<div className="ai-brief-state ai-brief-state--muted" role="status"><WarningCircle/><div><span>AI studio unavailable</span><h3>Gemini is not connected yet.</h3><p>The feasibility report above is complete and unchanged. Gemini must be connected securely on the server before an AI-assisted brief can be generated.</p></div></div>}
+
+    {phase==='error'&&!hasAnalysis&&<div className="ai-brief-state ai-brief-state--error"><WarningCircle/><div><span>AI brief unavailable</span><h3>We could not open the planning memo.</h3><p role="alert">{error}</p><button className="outline-button" onClick={()=>load()}>Try again <ArrowClockwise/></button></div></div>}
+
+    {hasAnalysis&&<div className="ai-brief-document">
+      <div className="ai-brief-provenance"><span><i/> {cached?'Cached brief · saved privately':'New brief · saved privately'}</span><span>{generatedLabel?`Generated ${generatedLabel}`:'Saved AI brief'} · {model}</span></div>
+      {phase==='refreshing'&&<p className="ai-brief-refresh-status" role="status" aria-live="polite"><Sparkle/> Gemini is refreshing the memo. The saved version remains visible.</p>}
+      {error&&<p className="ai-brief-inline-error" role="alert"><WarningCircle/>{error}</p>}
+      <div className="ai-brief-overview"><span>Planning overview</span>{content.headline&&<h3>{content.headline}</h3>}<p>{content.overview||'Gemini has generated a planning brief for this project.'}</p></div>
+      {(priorities.length>0||layoutSuggestions.length>0)&&<div className="ai-brief-columns">
+        {priorities.length>0&&<section><span className="ai-section-label">Planning priorities</span><ul>{priorities.map((item,index)=><li key={`${item}-${index}`}><CheckCircle aria-hidden="true"/><span>{item}</span></li>)}</ul></section>}
+        {layoutSuggestions.length>0&&<section><span className="ai-section-label">Layout suggestions</span><ul>{layoutSuggestions.map((item,index)=><li key={`${item}-${index}`}><Blueprint aria-hidden="true"/><span>{item}</span></li>)}</ul></section>}
+      </div>}
+      {(costNotes.length>0||risks.length>0)&&<div className="ai-brief-columns ai-brief-columns--caution">
+        {costNotes.length>0&&<section><span className="ai-section-label">Cost & delivery notes</span><ul>{costNotes.map((item,index)=><li key={`${item}-${index}`}><CurrencyInr aria-hidden="true"/><span>{item}</span></li>)}</ul></section>}
+        {risks.length>0&&<section><span className="ai-section-label">Risks to validate</span><ul>{risks.map((item,index)=><li key={`${item}-${index}`}><WarningCircle aria-hidden="true"/><span>{item}</span></li>)}</ul></section>}
+      </div>}
+      {questions.length>0&&<section className="ai-numbered-list"><span className="ai-section-label">Questions for your architect</span><ol>{questions.map((item,index)=><li key={`${item}-${index}`}><span>{String(index+1).padStart(2,'0')}</span><p>{item}</p></li>)}</ol></section>}
+      <footer className="ai-brief-boundary"><ShieldCheck/><p><strong>AI-assisted, not professional advice.</strong> {content.disclaimer||'This planning memo is indicative and may be incomplete. A licensed local architect and structural engineer must validate site conditions, regulations, dimensions, drawings and specifications before construction.'}</p></footer>
+      <div className="ai-brief-actions"><div><p>Refresh after changing the project brief to create a new saved reading.</p><label className="ai-consent ai-consent--compact"><input type="checkbox" checked={consented} onChange={event=>setConsented(event.target.checked)}/><span>I confirm I am 18 or older and consent to this sanitized refresh being processed by Google Gemini.</span></label></div><button className="outline-button" disabled={phase==='refreshing'||!consented} onClick={generate}>{phase==='refreshing'?'Refreshing…':'Refresh analysis'} <ArrowClockwise/></button></div>
+    </div>}
+  </section>;
+}
+
 function CheckoutReturnPage({ orderId }) {
   const [state,setState]=useState({loading:true,order:null,error:""});
   useEffect(()=>{let active=true;let timer;let attempts=0;async function poll(){try{const result=await api(`/api/orders/${encodeURIComponent(orderId)}`);if(!active)return;setState({loading:false,order:result.order,error:""});if(!['paid','failed','refunded'].includes(result.order.status)&&attempts++<20)timer=window.setTimeout(poll,1500);}catch(err){if(!active)return;if(err instanceof ApiError&&err.status===401){route('/login');return}setState({loading:false,order:null,error:err.message});}}if(orderId)poll();else setState({loading:false,order:null,error:'Missing order reference.'});return()=>{active=false;window.clearTimeout(timer)}},[orderId]);
@@ -258,10 +350,10 @@ function ReportPage({ id }) {
   if(error)return <main className="error-page"><WarningCircle/><h1>We could not open this report.</h1><p>{error}</p><button className="copper-button" onClick={()=>route('/dashboard')}>Back to projects</button></main>;
   if(!project)return <main className="error-page"><p>Preparing your decision book…</p></main>;
   const input=project.input||{};const estimate=project.estimate||{};const report=project.generatedReport||{};const firstRisk=report.risks?.[0]||'Local setbacks and site conditions require professional validation.';const costCategories=report.costPlan?.categories||[['Civil and structure',38],['Finishes',26],['Electrical and plumbing',14],['Doors and windows',9],['Approvals and setup',5],['Contingency',8]].map(([name,percent])=>({name,percent,amountInr:Math.round(((estimate.lowInr+estimate.highInr)/2||4000000)*percent/100)}));
-  return <main className="report-page"><header><button onClick={()=>route('/dashboard')}><ArrowLeft/> Projects</button><Brand/><button onClick={()=>window.print()}><DownloadSimple/> Download / print</button></header><div className="report-document">{uploadWarning&&<div className="report-upload-warning" role="alert"><WarningCircle/><span>{uploadWarning}</span><button onClick={()=>{sessionStorage.removeItem(`grihagrid.uploadWarning.${id}`);setUploadWarning("")}}>Dismiss</button></div>}<section className="report-cover"><span className="kicker">GrihaGrid feasibility brief · v{report.version||1}</span><h1>{project.name||'My family home'}</h1><p>{input.width} × {input.length} ft · {input.facing||'East'}-facing · {input.city}</p><div><span>Concept stage</span><span>{new Date(report.generatedAt||project.createdAt||Date.now()).toLocaleDateString('en-IN',{day:'numeric',month:'long',year:'numeric'})}</span></div></section><section className="report-hero"><img loading="lazy" width="1536" height="1024" src="/assets/grihagrid-hero.jpg" alt="Warm modern home direction"/><div><span>Exterior direction</span><strong>{input.style||'Warm modern'}</strong></div></section><section className="report-facts"><div><span>Plot fit</span><strong>Feasible*</strong><small>Subject to local verification</small></div><div><span>Likely built-up</span><strong>{(estimate.builtUpSqft||report.summary?.targetBuiltUpSqft||0).toLocaleString('en-IN')} sq ft</strong><small>{input.floors} concept</small></div><div><span>Planning range</span><strong>{formatLakh(estimate.lowInr||report.costPlan?.lowInr)}–{formatLakh(estimate.highInr||report.costPlan?.highInr)}</strong><small>{input.quality} finish</small></div></section><section className="report-copy"><div><span className="kicker">Executive readout</span><h2>{report.summary?.verdict||'Conceptually feasible, subject to verification.'}</h2></div><div><p>{firstRisk}</p><p>{report.nextActions?.slice(0,2).join(' ')||'Commission a measured survey and validate the brief with every decision-maker before detailed design.'}</p></div></section><section className="report-budget"><h2>Indicative cost allocation</h2>{costCategories.map(category=><div key={category.name}><span>{category.name}</span><i><b style={{width:`${category.percent}%`}}/></i><strong>{formatLakh(category.amountInr)}</strong></div>)}</section><section className="report-boundary"><ShieldCheck/><p><strong>Use this report to decide—not to construct.</strong> A licensed local architect and structural engineer must validate site conditions, bylaws, drawings and specifications.</p></section><PurchasePanel projectId={id}/><ProjectFiles projectId={id}/></div></main>;
+  return <main className="report-page"><header><button onClick={()=>route('/dashboard')}><ArrowLeft/> Projects</button><Brand/><button onClick={()=>window.print()}><DownloadSimple/> Download / print</button></header><div className="report-document">{uploadWarning&&<div className="report-upload-warning" role="alert"><WarningCircle/><span>{uploadWarning}</span><button onClick={()=>{sessionStorage.removeItem(`grihagrid.uploadWarning.${id}`);setUploadWarning("")}}>Dismiss</button></div>}<section className="report-cover"><span className="kicker">GrihaGrid feasibility brief · v{report.version||1}</span><h1>{project.name||'My family home'}</h1><p>{input.width} × {input.length} ft · {input.facing||'East'}-facing · {input.city}</p><div><span>Concept stage</span><span>{new Date(report.generatedAt||project.createdAt||Date.now()).toLocaleDateString('en-IN',{day:'numeric',month:'long',year:'numeric'})}</span></div></section><section className="report-hero"><img loading="lazy" width="1536" height="1024" src="/assets/grihagrid-hero.jpg" alt="Warm modern home direction"/><div><span>Exterior direction</span><strong>{input.style||'Warm modern'}</strong></div></section><section className="report-facts"><div><span>Plot fit</span><strong>Feasible*</strong><small>Subject to local verification</small></div><div><span>Likely built-up</span><strong>{(estimate.builtUpSqft||report.summary?.targetBuiltUpSqft||0).toLocaleString('en-IN')} sq ft</strong><small>{input.floors} concept</small></div><div><span>Planning range</span><strong>{formatLakh(estimate.lowInr||report.costPlan?.lowInr)}–{formatLakh(estimate.highInr||report.costPlan?.highInr)}</strong><small>{input.quality} finish</small></div></section><section className="report-copy"><div><span className="kicker">Executive readout</span><h2>{report.summary?.verdict||'Conceptually feasible, subject to verification.'}</h2></div><div><p>{firstRisk}</p><p>{report.nextActions?.slice(0,2).join(' ')||'Commission a measured survey and validate the brief with every decision-maker before detailed design.'}</p></div></section><section className="report-budget"><h2>Indicative cost allocation</h2>{costCategories.map(category=><div key={category.name}><span>{category.name}</span><i><b style={{width:`${category.percent}%`}}/></i><strong>{formatLakh(category.amountInr)}</strong></div>)}</section><section className="report-boundary"><ShieldCheck/><p><strong>Use this report to decide—not to construct.</strong> A licensed local architect and structural engineer must validate site conditions, bylaws, drawings and specifications.</p></section><AiPlanningBrief projectId={id}/><PurchasePanel projectId={id}/><ProjectFiles projectId={id}/></div></main>;
 }
 
-function LegalPage({ type }) { const title={privacy:'Privacy policy',terms:'Terms of use',refund:'Refund & cancellation'}[type]; return <main className="legal-page"><span className="kicker">Legal · Plain language</span><h1>{title}</h1><p className="legal-date">Effective 13 August 2026</p><section><h2>The short version</h2><p>GrihaGrid is a concept-stage planning service. We collect the minimum information needed to operate your account, save projects, generate reports and support purchases. Project information is private by default.</p><h2>Your files and account</h2><p>Account sessions use secure, HTTP-only cookies. Site photographs are stored privately and accessed only through authenticated requests. You can delete project files and request account deletion.</p><h2>Professional boundary</h2><p>Generated concepts, estimates and compliance cues are indicative. They do not replace licensed architectural, structural, geotechnical, legal, tax or municipal advice.</p><h2>Payments and refunds</h2><p>Free feasibility work requires no payment. Digital reports may be cancelled before generation begins. Expert reviews may be cancelled before a professional accepts the assignment. Final policy is subject to applicable Indian consumer law.</p><h2>Contact</h2><p>Email <a href="mailto:hello@grihagrid.in">hello@grihagrid.in</a>. These policies must receive final counsel review before live payment activation.</p></section></main>; }
+function LegalPage({ type }) { const title={privacy:'Privacy policy',terms:'Terms of use',refund:'Refund & cancellation'}[type]; return <main className="legal-page"><span className="kicker">Legal · Plain language</span><h1>{title}</h1><p className="legal-date">Effective 13 August 2026</p><section><h2>The short version</h2><p>GrihaGrid is a concept-stage planning service. We collect the minimum information needed to operate your account, save projects, generate reports and support purchases. Project information is private by default.</p><h2>Your files and account</h2><p>Account sessions use secure, HTTP-only cookies. Site photographs are stored privately and accessed only through authenticated requests. You can delete project files and request account deletion.</p>{type==='privacy'&&<><h2>Gemini-assisted briefs</h2><p>AI briefs are for users aged 18 or older and require consent before generation. We send sanitized planning facts—not account details, precise addresses or uploaded files—to Google Gemini. On Google’s Free tier, inputs and outputs may be reviewed or used by Google to improve its products. Gemini output is advisory and is saved with your project.</p></>}<h2>Professional boundary</h2><p>Generated concepts, estimates and compliance cues are indicative. They do not replace licensed architectural, structural, geotechnical, legal, tax or municipal advice.</p><h2>Payments and refunds</h2><p>Free feasibility work requires no payment. Digital reports may be cancelled before generation begins. Expert reviews may be cancelled before a professional accepts the assignment. Final policy is subject to applicable Indian consumer law.</p><h2>Contact</h2><p>Email <a href="mailto:hello@grihagrid.in">hello@grihagrid.in</a>. These policies must receive final counsel review before live payment activation.</p></section></main>; }
 
 function NotFoundPage() { return <main className="error-page"><Compass/><span className="kicker">404 · Outside the plot</span><h1>This page is not in the plan.</h1><p>The address may have changed, or the page may never have existed.</p><button className="copper-button" onClick={()=>route('/')}>Return home <ArrowRight/></button></main>; }
 
