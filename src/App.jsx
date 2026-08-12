@@ -99,6 +99,7 @@ function EstimateInstrument({ condensed = false, initial }) {
 }
 
 function HomePage() {
+  const availability=useCommerceCatalog();
   return <main>
     <section className="monograph-hero">
       <div className="monograph-copy">
@@ -139,7 +140,7 @@ function HomePage() {
     </section>
 
     <section className="pricing-editorial"><div><span className="kicker">Simple, one-project pricing</span><h2>Start with clarity.<br/><i>Buy detail when it matters.</i></h2><p>No subscription. Your free feasibility remains yours.</p></div><div className="pricing-lines">
-      {[['Feasibility','Free','Plot fit, room programme and indicative cost range.',null],['Planning report','₹499','Full concept brief, phase budget, material direction and PDF.','plan'],['Architect reviewed','₹3,499','Professional review, five questions and one revision round.','expert']].map(([name,price,copy,sku],i)=><article key={name}><span>0{i+1}</span><div><h3>{name}</h3><p>{copy}</p></div><strong>{price}</strong><button onClick={() => {if(sku)sessionStorage.setItem('grihagrid.plan',sku);route('/start')}} aria-label={`Choose ${name}`}><ArrowRight/></button></article>)}
+      {[['Feasibility','Free','Plot fit, room programme and indicative cost range.',null],['Planning report','₹499','Full concept brief, phase budget, material direction and PDF.','plan'],['Architect reviewed','₹3,499','Professional review, five questions and one revision round.','expert']].map(([name,price,copy,sku],i)=>{const accepting=!sku||availability[sku];return <article key={name}><span>0{i+1}</span><div><h3>{name}</h3><p>{copy}</p></div><strong>{price}{sku&&!accepting&&<small>Opening soon</small>}</strong><button disabled={!accepting} onClick={() => {if(sku)sessionStorage.setItem('grihagrid.plan',sku);route('/start')}} aria-label={accepting?`Choose ${name}`:`${name} is not accepting orders`}><ArrowRight/></button></article>})}
       <button className="underlined-action" onClick={() => route('/pricing')}>Compare every inclusion</button>
     </div></section>
 

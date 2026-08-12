@@ -932,6 +932,17 @@ blockquote {
   font-weight: 500;
 }
 
+.pricing-lines strong small {
+  display: block;
+  margin-top: 0.28rem;
+  color: var(--muted);
+  font-family: var(--sans);
+  font-size: 0.6rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
 .pricing-lines article > button {
   width: 38px;
   height: 38px;
@@ -946,6 +957,13 @@ blockquote {
   border-color: var(--copper);
   background: var(--copper);
   color: #fff;
+}
+
+.pricing-lines article > button:disabled {
+  border-style: dotted;
+  color: var(--muted);
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .pricing-lines .underlined-action {
