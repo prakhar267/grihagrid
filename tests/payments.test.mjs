@@ -23,9 +23,14 @@ class PaymentD1 {
     this.reports = [];
     this.snapshots = [];
     this.fulfillments = [];
+    this.maintenanceStatements = [];
   }
 
-  prepare(sql) { return new PaymentStatement(this, sql.replace(/\s+/gu, " ").trim()); }
+  prepare(sql) {
+    const normalized = sql.replace(/\s+/gu, " ").trim();
+    if (normalized.startsWith("DELETE FROM ai_generation_")) this.maintenanceStatements.push(normalized);
+    return new PaymentStatement(this, normalized);
+  }
 
   async batch(statements) {
     const snapshot = structuredClone({
@@ -183,6 +188,8 @@ class PaymentStatement {
       return { success: true };
     }
     if (this.sql.startsWith("DELETE FROM sessions WHERE expires_at")) return { success: true };
+    if (this.sql.startsWith("DELETE FROM ai_generation_leases WHERE expires_at")) return { success: true };
+    if (this.sql.startsWith("DELETE FROM ai_generation_counters WHERE updated_at")) return { success: true };
     if (this.sql.startsWith("INSERT INTO payment_webhook_events")) {
       const [provider_event_id, event_type, payload_sha256, order_id, provider_payment_id, processing_result, received_at, processed_at] = this.values;
       if (this.db.events.some((event) => event.provider_event_id === provider_event_id)) throw new Error("UNIQUE constraint failed");
@@ -387,6 +394,8 @@ test("daily maintenance expires stale created checkout links so retries can proc
   assert.equal(DB.orders[0].provider_status, "expired");
   assert.equal(DB.orders[0].provider_error_code, "checkout_expired");
   assert.equal(DB.orders[0].checkout_url, null);
+  assert.equal(DB.maintenanceStatements.some((sql) => sql.startsWith("DELETE FROM ai_generation_leases")), true);
+  assert.equal(DB.maintenanceStatements.some((sql) => sql.startsWith("DELETE FROM ai_generation_counters")), true);
 });
 
 test("a late capture from an expired link cannot collide with a replacement checkout", async () => {

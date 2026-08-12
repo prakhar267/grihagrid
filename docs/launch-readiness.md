@@ -10,7 +10,10 @@ Paid selling remains gated on the following owner-supplied or third-party items:
 - Legal review of privacy, terms, refund policy, disclaimers and architect contracting.
 - Razorpay live key, webhook secret, GST/invoice configuration and a real end-to-end ₹1 test/refund.
 - Transactional email domain, sender verification and delivery provider key.
-- AI/report provider keys, documented prompts, evaluation set and human escalation policy.
+- A dedicated Gemini project/current Authorization key, representative prompt
+  evaluation set, provider-usage monitoring, and human escalation policy. The
+  linked key is sufficient for a sanitized beta but must not remain a shared
+  legacy credential for material customer traffic.
 - Verified architect supply, SLA, licensing checks and professional-indemnity decision.
 
 ## Pre-launch gates

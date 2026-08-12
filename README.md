@@ -1,6 +1,6 @@
 # GrihaGrid
 
-India-first concept-stage home-planning SaaS. GrihaGrid turns a plot brief into a city-adjusted construction range, a private saved project, a deterministic feasibility report, private site evidence, and an optional paid planning or architect-review workflow.
+India-first concept-stage home-planning SaaS. GrihaGrid turns a plot brief into a city-adjusted construction range, a private saved project, a deterministic feasibility report, an optional Gemini-assisted planning brief, private site evidence, and an optional paid planning or architect-review workflow.
 
 ## Local development
 
@@ -38,7 +38,7 @@ read-only and contains no production credentials or deployment step. Protect
 
 The deployment target is a Cloudflare Worker with static assets, D1 for application records, R2 for private project files, KV for rate-limit/idempotency state, and a daily cleanup cron. Apply all D1 migrations, configure the bindings and secrets documented in `docs/backend-api.md` and `docs/payments.md`, run `npm run check`, then deploy with `npm run deploy`.
 
-The public calculator, authentication, private projects, deterministic report, and dashboard work without third-party provider secrets. R2 uploads remain unavailable until the Cloudflare account's R2 subscription and bucket are activated. Live checkout remains fail-closed until Razorpay keys and a signed webhook are configured. Email recovery and paid architect operations remain pre-launch work.
+The public calculator, authentication, private projects, deterministic report, and dashboard work without third-party provider secrets. The optional AI brief uses a server-only `GEMINI_API_KEY`, sends only an allowlisted sanitized planning record, and fails closed behind atomic D1 spend limits and a per-project generation lease; see `docs/gemini-ai.md`. R2 uploads remain unavailable until the Cloudflare account's R2 subscription and bucket are activated. Live checkout remains fail-closed until Razorpay keys and a signed webhook are configured. Email recovery and paid architect operations remain pre-launch work.
 
 See `docs/product-blueprint.md` for the product specification and `docs/operations-runbook.md` for the launch/rollback checklist.
 

@@ -16,6 +16,7 @@ head_sampling_rate = 1
 [vars]
 APP_ENV = "production"
 APP_ORIGIN = "https://grihagrid.prakhargupta267.workers.dev"
+GEMINI_MODEL = "gemini-3.6-flash"
 # Paid checkout is intentionally closed until an operator enables proven plans.
 ENABLED_PAYMENT_PLANS = ""
 

@@ -98,9 +98,9 @@ ready.
 ### `GET /api/readiness`
 
 Free-product readiness probe. Returns `200 status=ready` only when D1 is
-reachable, the required schema through commercial fulfillment is present, and
-the KV abuse-control binding exists. The response separately reports private
-upload and paid-checkout capabilities; unavailable optional capabilities do not
+reachable, the required schema is present, and the KV abuse-control binding
+exists. The response separately reports Gemini planning, private upload, and
+paid-checkout capabilities; unavailable optional capabilities do not
 make the free product unready. Returns `503 status=not_ready` if a required
 free-product dependency is absent or unhealthy.
 
@@ -251,6 +251,34 @@ delivery phases, project-sensitive risks, next actions, an input hash, and the
 concept-stage disclaimer. It is intentionally deterministic product logic, not
 a statutory drawing, engineering design, contractor quote, or permit approval.
 
+## Gemini planning-brief endpoints
+
+These owner-scoped endpoints provide an optional advisory reading of the
+current deterministic report. Gemini never replaces the estimate or report,
+and a provider failure does not affect either one. The complete privacy and
+operations boundary is documented in `docs/gemini-ai.md`.
+
+### `GET /api/projects/:projectId/ai-brief`
+
+Returns `{ aiBrief, cached: true }` for the current report, model, schema, and
+prompt versions. A missing or stale brief returns `404 ai_brief_not_found`
+rather than silently calling Google from a read request.
+
+### `POST /api/projects/:projectId/ai-brief`
+
+Requires same-origin, authentication, project ownership, CSRF, atomic D1
+admission control, and `Content-Type: application/json`. The exact request body is
+`{ "acceptedAiTerms": true, "refresh": false }`; `refresh` is optional. Missing
+adult/Google-processing acknowledgement returns `400 ai_terms_required`.
+
+A new generation returns `201 { aiBrief, cached: false }`. A current cache hit
+or successful refresh returns `200`. Expected provider-side failures are
+fail-closed as `503 ai_unavailable`, `503 ai_capacity_unavailable`, or
+`502 ai_provider_error`; no provider body or credential is returned.
+Concurrent work for the same project returns `409 ai_generation_in_progress`;
+an exhausted per-user or platform allowance returns `429 ai_rate_limited`.
+Cache hits consume no strict generation allowance; refreshes do.
+
 ## Private file endpoints
 
 Files are limited to 10 MiB. Allowed MIME types are PDF, JPEG, PNG, WebP, ZIP,
@@ -285,7 +313,8 @@ Requires CSRF. Removes the private R2 object and its D1 metadata. Returns `204`.
 
 ## Operations and known external dependencies
 
-The configured daily cron deletes expired D1 sessions. The Worker applies CSP,
+The configured daily cron deletes expired D1 sessions, expires stale checkout
+links, removes expired AI generation leases, and prunes old AI counters. The Worker applies CSP,
 HSTS, frame denial, MIME sniffing protection, referrer policy, permissions
 policy, and no-store JSON defaults to every API response.
 
