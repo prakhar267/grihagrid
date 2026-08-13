@@ -91,8 +91,8 @@ BEGIN
   UPDATE family_alignment_rooms
      SET response_count=response_count+1
    WHERE id=NEW.room_id;
-  SELECT CASE WHEN changes()!=1
-    THEN RAISE(ABORT, 'family alignment response count was not recorded') END;
+  SELECT RAISE(ABORT, 'family alignment response count was not recorded')
+   WHERE changes()!=1;
 END;
 
 CREATE TRIGGER family_alignment_response_active_after_insert
@@ -115,17 +115,19 @@ BEGIN
   SELECT RAISE(ABORT, 'family alignment response is not editable');
 END;
 
+-- A direct response deletion must reconcile its surviving room. During a
+-- parent-room/project cascade SQLite may already have removed the room, in
+-- which case there is intentionally no counter left to update. Keep this
+-- explanation outside the trigger body for compatibility with D1's remote
+-- migration statement parser.
 CREATE TRIGGER family_alignment_response_count_delete
 AFTER DELETE ON family_alignment_responses
 BEGIN
   UPDATE family_alignment_rooms
      SET response_count=response_count-1
    WHERE id=OLD.room_id AND response_count>0;
-  -- A direct response deletion must reconcile its surviving room. During a
-  -- parent-room/project cascade SQLite may already have removed the room, in
-  -- which case there is intentionally no counter left to update.
-  SELECT CASE WHEN changes()!=1 AND EXISTS (
-    SELECT 1 FROM family_alignment_rooms WHERE id=OLD.room_id
-  )
-    THEN RAISE(ABORT, 'family alignment response count was not removed') END;
+  SELECT RAISE(ABORT, 'family alignment response count was not removed')
+   WHERE changes()!=1 AND EXISTS (
+     SELECT 1 FROM family_alignment_rooms WHERE id=OLD.room_id
+   );
 END;
