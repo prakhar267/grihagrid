@@ -1,23 +1,28 @@
 # GrihaGrid production operations runbook
 
 This is the operating procedure for GrihaGrid on Cloudflare Workers, D1, KV,
-R2, Google Gemini, and Razorpay. It covers release, monitoring, recovery, payment operations,
+optional R2, Google Gemini, and Razorpay. It covers release, monitoring, recovery, payment operations,
 and the decision to open or close paid traffic. Commands assume they are run
 from the repository root by an authenticated operator.
+
+The first paid wedge is the structured-input, no-upload ₹999 Decision Compare
+defined in `docs/decision-compare.md`. R2 is not a dependency for that wedge.
+Uploads and any product that promises them stay closed while R2 is absent.
 
 ## 1. Service record and current state
 
 | Component | Production value | Role | Current operational state |
 |---|---|---|---|
 | Worker | `grihagrid` | React assets and `/api/*` | Configured in `wrangler.toml` |
+| Staging Worker | `grihagrid-staging` | Synthetic pre-production journeys | Deployed at `https://grihagrid-staging.prakhargupta267.workers.dev`; dedicated D1/KV; smoke and secrets remain release-specific |
 | Canonical launch origin | `https://grihagrid.prakhargupta267.workers.dev` until a custom domain is attached | Same-origin UI, API, cookies, and Razorpay callback | Must also be set as `APP_ORIGIN` before checkout works |
 | D1 binding | `DB` → `grihagrid-db` (`42a75a83-ab24-4e3f-93f1-b80c51284f1e`) | Users, sessions, projects, reports, file metadata, orders, webhook ledger | Bound; remote application of all migrations must be verified |
 | KV binding | `GRIHAGRID_CACHE` → `c5044339222a4172ad7c91724b98d4fb` | Best-effort abuse/rate limiting | Bound; never a money or entitlement ledger |
-| R2 binding | `FILES` → intended bucket `grihagrid-files` | Private user uploads | **Not active:** R2 subscription/billing activation is incomplete and the binding is commented out |
+| R2 binding | `FILES` → intended bucket `grihagrid-files` | Future private user uploads | **Deferred:** not required for no-upload Decision Compare; all upload promises remain disabled |
 | Razorpay | Payment Links API and signed webhook | Checkout and paid-state confirmation | **Not active:** live account configuration, secrets, webhook registration, and reconciliation evidence are absent |
 | Google Gemini | Structured Interactions API | Optional sanitized planning brief | Active for sanitized beta; shared free-tier project must be isolated before material customer volume |
 | Cron | `17 2 * * *` | Session/order/AI admission cleanup | Configured daily at 02:17 UTC / 07:47 IST |
-| Observability | Worker observability, `head_sampling_rate = 1` | Invocation logs and traces | Enabled at 100% sampling; alert rules and external synthetics still need proof |
+| Observability | Worker observability, `head_sampling_rate = 1`; automatic invocation logs disabled | Templated custom request logs and traces | Enabled at 100% sampling; raw-URL invocation logs stay off because share URLs contain bearer secrets; alert rules and external synthetics still need proof |
 
 `/api/health` is a dependency-independent liveness probe. `/api/readiness`
 checks D1 reachability, the required schema, the KV binding, and reports
@@ -27,14 +32,12 @@ cron execution, or a complete customer journey; synthetics remain mandatory.
 The Worker currently reads these runtime values:
 
 - Bindings: `ASSETS`, `DB`, `GRIHAGRID_CACHE`, and optional `FILES`.
-- Non-secret configuration: `APP_ENV`, `APP_ORIGIN`, `GEMINI_MODEL`, `ENABLED_PAYMENT_PLANS`, and optional
-  comma-separated `ALLOWED_ORIGINS`.
+- Non-secret configuration: `APP_ENV`, `APP_ORIGIN`, `GEMINI_MODEL`,
+  `PAID_CHECKOUT_ENABLED`, `DECISION_COMPARE_FULFILLMENT_ENABLED`,
+  `ENABLED_PAYMENT_PLANS`, and optional comma-separated `ALLOWED_ORIGINS`.
 - Secrets: `GEMINI_API_KEY`, `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, and
-  `RAZORPAY_WEBHOOK_SECRET`.
-
-`SESSION_SECRET` and `RESEND_API_KEY` appear in `.dev.vars.example` but are not
-consumed by the current Worker. Sessions use random bearer values whose hashes
-are stored in D1. Do not mistake either unused variable for an active control.
+  `RAZORPAY_WEBHOOK_SECRET`; `METRICS_READ_TOKEN` protects private aggregate
+  product metrics.
 
 ## 2. Ownership and incident authority
 
@@ -56,20 +59,20 @@ contained.
 
 ## 3. Environment model
 
-Production is the only environment currently represented in `wrangler.toml`.
-That is adequate for a demo, not for a paid service. Create physically separate
-Cloudflare resources before paid launch:
+Production and staging are represented in `wrangler.toml`; staging has its own
+Worker hostname, D1 UUID, and KV namespace. Provider secrets and modes must also
+remain physically separate before paid launch:
 
 | Environment | Data | Razorpay | Required isolation |
 |---|---|---|---|
-| Local | Synthetic only; local D1/R2/KV emulation | Test doubles or Razorpay test mode | `.dev.vars` is ignored by Git; no production secrets |
-| Preview | Ephemeral synthetic data | Disabled | Per-branch Worker; never bind production D1/KV/R2 |
-| Staging | Persistent synthetic test accounts | Razorpay test mode | Separate Worker, D1, KV, R2, secrets, and hostname |
-| Production | Real customer and financial records | Razorpay live mode | Dedicated resources and least-privilege deploy identity |
+| Local | Synthetic only; local D1/KV emulation | Test doubles or Razorpay test mode | `.dev.vars` is ignored by Git; no production secrets |
+| Preview | Ephemeral synthetic data | Disabled | Per-branch Worker; never bind production D1/KV |
+| Staging | Persistent synthetic test accounts | Razorpay test mode | `grihagrid-staging`, D1 `ac7ff387-c8c6-40d2-b9db-83078378c054`, KV `f48c3f765bc84088a88376e887daf7b1`, separate secrets |
+| Production | Real customer and financial records | Razorpay live mode | `grihagrid`, production D1/KV and least-privilege deploy identity |
 
-Add explicit Wrangler environments or separate config files. Never use
-production bindings merely because a staging deployment is short-lived. Use a
-different canary email and payment account in each environment.
+Maintain explicit Wrangler environments. Never use production bindings merely
+because a staging deployment is short-lived. Use a different canary email and
+payment account in each environment.
 
 ### Required production configuration
 
@@ -81,12 +84,19 @@ configuration:
 APP_ENV = "production"
 APP_ORIGIN = "https://grihagrid.prakhargupta267.workers.dev"
 GEMINI_MODEL = "gemini-3.6-flash"
+PAID_CHECKOUT_ENABLED = "false"
+DECISION_COMPARE_FULFILLMENT_ENABLED = "false"
 ENABLED_PAYMENT_PLANS = ""
-
-[[r2_buckets]]
-binding = "FILES"
-bucket_name = "grihagrid-files"
 ```
+
+Version-controlled defaults remain closed. After every paid gate is signed, a
+reviewed production-only release first sets
+`DECISION_COMPARE_FULFILLMENT_ENABLED="true"`, verifies artifact/share access,
+then sets `PAID_CHECKOUT_ENABLED="true"` and
+`ENABLED_PAYMENT_PLANS="decision_compare"`. Closing checkout and closing
+fulfillment remain separate containment actions even though both must be open
+before a new payable link is created. Missing, malformed, or contradictory
+controls must behave as false.
 
 When a custom domain becomes canonical, update `APP_ORIGIN` in the same release
 and add the old origin to `ALLOWED_ORIGINS` only for a short, documented
@@ -95,11 +105,20 @@ transition. Do not permit `*` for authenticated writes.
 Enter secrets interactively so values do not appear in shell history:
 
 ```sh
-npx wrangler secret put RAZORPAY_KEY_ID
-npx wrangler secret put RAZORPAY_KEY_SECRET
-npx wrangler secret put RAZORPAY_WEBHOOK_SECRET
-npx wrangler secret put GEMINI_API_KEY
-npx wrangler secret list
+npx wrangler secret put RAZORPAY_KEY_ID --env=""
+npx wrangler secret put RAZORPAY_KEY_SECRET --env=""
+npx wrangler secret put RAZORPAY_WEBHOOK_SECRET --env=""
+npx wrangler secret put GEMINI_API_KEY --env=""
+npx wrangler secret put METRICS_READ_TOKEN --env=""
+npx wrangler secret list --env=""
+
+# Use distinct test-mode values in staging; never copy production secrets.
+npx wrangler secret put RAZORPAY_KEY_ID --env staging
+npx wrangler secret put RAZORPAY_KEY_SECRET --env staging
+npx wrangler secret put RAZORPAY_WEBHOOK_SECRET --env staging
+npx wrangler secret put GEMINI_API_KEY --env staging
+npx wrangler secret put METRICS_READ_TOKEN --env staging
+npx wrangler secret list --env staging
 ```
 
 Register this exact live webhook URL in Razorpay:
@@ -108,11 +127,14 @@ Register this exact live webhook URL in Razorpay:
 https://grihagrid.prakhargupta267.workers.dev/api/payments/razorpay/webhook
 ```
 
-Subscribe to at least `payment_link.paid` and `payment.captured`. The Worker
+Subscribe to the exact state-changing events covered by automated tests:
+`payment_link.paid`, `payment.captured`, `refund.processed`,
+`payment.dispute.created`, and `payment.dispute.lost`. The Worker
 verifies `x-razorpay-signature`, deduplicates by event ID/body hash, validates
 amount and currency, and only then marks an order paid. Preserve the same
-webhook secret on both sides during deployment; an uncoordinated change causes
-valid payments to remain unfulfilled.
+webhook secret on both sides of each environment during deployment; an
+uncoordinated change causes valid payments to remain unfulfilled. Production
+and staging secrets must remain different.
 
 ## 4. Standard release procedure
 
@@ -133,14 +155,18 @@ npm ci
 npm run check:migrations
 npm run check
 npm run check:worker
+npm run check:worker:staging
 npm audit --audit-level=high
 ```
 
-`npm run check` builds the Vite client and Worker bundle, then runs all Node
-tests, including backend and payment tests. `check:migrations` applies the full
-schema history to a fresh temporary local D1 database, while `check:worker`
-validates the built asset manifest and Worker configuration without contacting
-production. Do not deploy from a dirty working tree, with skipped tests, or
+`npm run check` builds the Vite client and Worker bundle, runs all Node tests,
+and validates fail-closed operational config. `check:migrations` applies the
+full schema history to a fresh temporary local D1 database. Both Worker commands
+validate bundles and environment bindings without deploying. The test runner
+executes test files serially because the two real-D1 suites each own a local
+Wrangler/workerd lifecycle; their adversarial concurrency is driven inside the
+fixtures rather than by competing test processes. Do not deploy from
+a dirty working tree, with skipped tests, or
 after an audit finding has merely been ignored. Document any accepted
 non-critical dependency risk with an owner and expiry.
 
@@ -150,36 +176,42 @@ non-critical dependency risk with an owner and expiry.
 npx wrangler whoami
 npx wrangler d1 info grihagrid-db
 npx wrangler d1 migrations list grihagrid-db --remote
-npx wrangler r2 bucket info grihagrid-files
-npx wrangler secret list
-npx wrangler deployments status
+npx wrangler secret list --env=""
+npx wrangler deployments status --env=""
+npx wrangler d1 info grihagrid-staging-db
+npx wrangler d1 migrations list DB --remote --env staging
+npx wrangler secret list --env staging
+npx wrangler deployments status --env staging
 ```
 
-Match the Cloudflare account, Worker name, D1 UUID, KV namespace, R2 bucket,
+Match the Cloudflare account, Worker name, D1 UUID, KV namespace,
 hostname, and secret names to the release ticket. `secret list` shows names,
 not values. Stop if the account or any resource differs.
 
-The R2 command is expected to fail until the account's R2 subscription is
-activated and `grihagrid-files` is created. That failure is a paid-launch
-blocker, not a warning to bypass.
+If a future release enables uploads, separately validate its private R2 bucket,
+binding, malware/quarantine and retention controls. R2 absence is expected for
+Decision Compare and must not be worked around with public object storage.
 
 ### 4.4 Back up D1
 
-Create an encrypted, access-controlled export outside the repository before a
-production migration. The export contains identity, password hashes, project
-data, and financial metadata and must never be committed or attached to a
-public ticket.
+Create a temporary mode-0600 export outside the repository before a production
+migration, then move it immediately into approved encrypted backup storage. The
+export contains identity, password hashes, project data, and financial metadata
+and must never be committed, left in a shared folder, or attached to a ticket.
 
 ```sh
+umask 077
 mkdir -p ../grihagrid-ops-backups
 GG_BACKUP_FILE="../grihagrid-ops-backups/grihagrid-db-$(date -u +%Y%m%dT%H%M%SZ).sql"
 npx wrangler d1 export grihagrid-db --remote --output "$GG_BACKUP_FILE"
+chmod 600 "$GG_BACKUP_FILE"
 shasum -a 256 "$GG_BACKUP_FILE" > "$GG_BACKUP_FILE.sha256"
 ```
 
 Record the checksum, protected storage location, Cloudflare Time Travel
 bookmark/horizon, and restore owner in the release ticket. Move the files into
-approved encrypted backup storage immediately; the local copy is temporary.
+approved encrypted backup storage immediately; this local mode-0600 copy is a
+temporary staging file, not encrypted backup evidence.
 
 ### 4.5 Apply migrations safely
 
@@ -194,14 +226,28 @@ Migrations currently run in this order:
 5. `0005_gemini_ai.sql`: owner-scoped, versioned Gemini planning briefs.
 6. `0006_ai_abuse_controls.sql`: transactional generation counters and
    expiring per-project AI leases.
+7. `0007_decision_compare.sql`: versioned two-scenario comparisons, purchase
+   snapshots, versioned checkout consent, revocable shares, aggregate-only
+   product events, progress timestamps and compatible Decision Compare product
+   codes for existing order storage.
+8. `0008_payment_state_hardening.sql`: canonical checkout request hashes,
+   immutable refund/dispute terminal facts and durable duplicate-capture
+   reconciliation cases.
+9. `0009_decision_selection_lock.sql`: monotonic project-input revisions,
+   comparison source-revision pins, an editable pre-checkout choice and the D1
+   trigger fence that atomically locks the exact current choice at checkout.
 
 Apply the exact files to staging first and complete its smoke suite. For
 production:
 
 ```sh
-npx wrangler d1 migrations list grihagrid-db --remote
-npx wrangler d1 migrations apply grihagrid-db --remote
-npx wrangler d1 migrations list grihagrid-db --remote
+npx wrangler d1 migrations apply DB --remote --env staging
+npm run deploy -- --env staging
+npm run smoke -- https://grihagrid-staging.prakhargupta267.workers.dev
+
+npx wrangler d1 migrations list DB --remote --env=""
+npx wrangler d1 migrations apply DB --remote --env=""
+npx wrangler d1 migrations list DB --remote --env=""
 ```
 
 The final list must show no unapplied migrations. Wrangler captures a backup
@@ -221,9 +267,9 @@ column/table in the same release, or assume application rollback reverses D1.
 ### 4.6 Deploy and record the version
 
 ```sh
-npm run deploy
-npx wrangler deployments status
-npx wrangler deployments list
+npm run deploy -- --env=""
+npx wrangler deployments status --env=""
+npx wrangler deployments list --env=""
 ```
 
 Record the new version ID, commit SHA, migration set, operator, start/end time,
@@ -240,12 +286,7 @@ status, latency, and Worker version.
 
 ```sh
 GG_ORIGIN="https://grihagrid.prakhargupta267.workers.dev"
-curl --fail-with-body --silent --show-error "$GG_ORIGIN/" >/dev/null
-curl --fail-with-body --silent --show-error "$GG_ORIGIN/api/health"
-curl --fail-with-body --silent --show-error \
-  -H 'content-type: application/json' \
-  --data '{"width":30,"length":50,"floors":"G+1","quality":"Signature","city":"Pune"}' \
-  "$GG_ORIGIN/api/estimate"
+npm run smoke -- "$GG_ORIGIN"
 ```
 
 Then use the dedicated production canary account to verify:
@@ -254,20 +295,31 @@ Then use the dedicated production canary account to verify:
 2. Create, read, update, report-generate, and delete one canary project.
 3. Generate one sanitized AI brief, read the cached copy, and delete the project;
    confirm the provider is called only once and no synthetic rows remain.
-4. Upload, download, checksum/size compare, and delete a small safe PDF once R2
-   is active.
-5. Confirm one user cannot fetch another canary user's project, AI brief, or file; expect
+4. Create exactly two canary scenarios, issue/read a comparison under a test
+   entitlement in staging, record a choice and confirm the frozen versions.
+5. Confirm one user cannot fetch another canary user's project, AI brief,
+   comparison, artifact, choice, order or share; expect
    ownership-safe `404`.
-6. Verify mobile and desktop landing, start, auth, dashboard, and report routes.
+6. Confirm production catalog accepts no plan before the launch record is
+   signed; staging test mode may accept only `decision_compare`.
+7. Verify mobile and desktop landing, start, auth, dashboard, comparison, print
+   and return routes.
 
 Do not create a real charge as a routine deploy smoke. Before first paid launch,
-perform one controlled live low-value purchase, webhook confirmation,
+perform one controlled live ₹999 purchase, webhook confirmation,
 settlement check, and full refund with the payment owner present.
 
 ## 5. Continuous health and synthetic monitoring
 
 Configure checks from at least two external regions. Cloudflare's own dashboard
 does not count as an independent availability check.
+
+`.github/workflows/production-smoke.yml` runs the read-only public suite against
+production and staging hourly and on demand. It is a regression backstop, not a
+one-minute/two-region availability monitor. Keep its paid expectation false
+until the signed launch release; if checkout is intentionally opened, update it
+in the same reviewed change so it asserts that only `decision_compare` accepts
+orders.
 
 | Frequency | Check | Success condition |
 |---|---|---|
@@ -277,14 +329,56 @@ does not count as an independent availability check.
 | 5 minutes | `POST /api/estimate` fixture | `200`, expected schema and fixed numeric fixture |
 | 15 minutes | Canary login + `GET /api/projects` | Session succeeds and only canary-owned data appears |
 | Daily | Full canary project/report CRUD | Create/read/update/report/delete completes without residue |
+| Daily during pilot | Authenticated two-scenario comparison | Frozen A/B inputs and numeric deltas match fixture; choice is idempotent; cleanup leaves no rows |
+| Daily during pilot | Paid fulfillment age | Every verified payment is issued or explicitly paused inside the published promise |
 | Daily while AI enabled | Sanitized AI generation + cached read | Valid advisory schema, one provider call, cached replay, cleanup leaves no rows |
-| Daily after R2 activation | Private file round trip | Upload/download SHA-256 match/delete; anonymous fetch denied |
+| Daily only after a future R2 launch | Private file round trip | Upload/download SHA-256 match/delete; anonymous fetch denied |
 | Daily | Cron evidence | Expired session count does not grow and scheduled invocation succeeded |
 | Daily during sales | Payment reconciliation | Razorpay and D1 ledgers balance exactly |
 
 The monitor account password belongs in the monitoring provider's encrypted
 secret store. Never log cookies, CSRF values, project inputs, email addresses,
 file bytes, Razorpay payloads, or provider authorization headers.
+
+The Worker currently emits one bounded JSON completion log after each handled
+request and returns the same opaque request ID in `x-request-id`. Its
+implemented schema is:
+
+```json
+{
+  "type": "request_complete",
+  "environment": "production",
+  "route": "/api/projects/:projectId/decision-compare",
+  "method": "GET",
+  "status": 200,
+  "outcome": "success",
+  "requestId": "opaque-uuid",
+  "releaseId": "cloudflare-version-id-or-unknown",
+  "durationMs": 42
+}
+```
+
+Use a route template, never the raw URL: share tokens, project/comparison/order
+IDs and queries must not enter `route`. Implemented `outcome` values are the
+bounded classes `success`, `redirect`, `client_error`, and `server_error`; they
+never contain an exception or response body. `releaseId` comes from Cloudflare
+version metadata and may be `unknown` in local tests. Paid launch still needs a
+deployed-version correlation check and a secret/PII canary test against
+captured logs so support can correlate failures without asking for cookies or
+payloads.
+
+Browser-event telemetry is a different, aggregate-only surface. `POST /api/events`
+accepts only the seven documented `decision_compare_*` names plus allowlisted
+`surface` and `outcome`; D1 stores day/name/surface/outcome/count/update time.
+It stores no event IDs, users, projects, orders, comparison versions, IPs, free
+text or client timestamps. `GET /api/events/aggregate` is rate-limited and
+hidden behind a constant-time checked `METRICS_READ_TOKEN` bearer value. D1 also
+stores four paid-cohort first timestamps—opened, printed, shared and explicit
+professional handoff—against already-retained opaque order/snapshot keys. The
+metrics response exposes only cohort counts/rate, never those keys or individual
+timestamps. Treat these linked records as personal data for access, retention,
+backup and deletion policy. Artifact/share delivery is authoritative; its
+best-effort milestone write must never turn delivery into a false failure.
 
 ## 6. SLIs, SLOs, and alerts
 
@@ -298,12 +392,14 @@ weeks of real traffic.
 | Worker server-error ratio | At least 99.9% non-5xx | Cloudflare invocations by route and version |
 | Health/estimate latency | p95 under 500 ms | External and Worker latency |
 | Authenticated CRUD latency | p95 under 750 ms | Worker route-template latency |
+| Decision Compare fulfillment | At least 90% inside published pilot promise | `payment_webhook_events.processed_at`/`orders.paid_at` to an available matching purchased snapshot; v1 has no correction/reissue workflow |
+| Decision action | At least 60% within seven days during pilot | Protected `paidDecisionCohort`: paid denominator and first print/share/professional-handoff within seven days; reconcile against orders before using it for a decision |
 | Gemini brief availability | 99% while enabled | Daily sanitized generation succeeds; cached read remains independent of provider |
 | AI advisory-boundary safety | 100%; zero tolerance | No accepted compliance/approval/structural guarantee or construction-start directive |
 | Checkout creation availability | 99.9% when checkout is open | Valid requests receiving a trusted Razorpay URL; excludes user/provider validation 4xx |
 | Webhook processing | 99.9% accepted within 60 s of provider delivery | Razorpay delivery timestamp versus `payment_webhook_events.processed_at` |
 | Financial correctness | 100%; zero tolerance | No duplicate, amount/currency mismatch, unverified paid state, or unmatched settlement |
-| Cross-account/private-file isolation | 100%; zero tolerance | Negative synthetics, tests, and incident reports |
+| Cross-account resource isolation | 100%; zero tolerance | Negative project/comparison/artifact/choice/share/order synthetics and incident reports |
 | Session cleanup | 99% within 24 h after expiry | D1 expiry query and cron invocation logs |
 | Backup recovery | RPO 24 h; RTO 4 h | Last verified backup and quarterly restore drill |
 
@@ -328,15 +424,26 @@ Page the on-call for:
 Create a ticket, not a page, for p95 latency degradation, storage/cost forecast
 breach, non-critical dependency findings, and isolated user-visible failures.
 
-The current Worker emits only limited `console.error` events and lacks a
-structured request ID/route/latency/outcome log for every API invocation. Paid
-launch is blocked until safe structured telemetry and the alerts above are
-implemented and tested. Keep 100% head sampling during a small invited launch;
-reduce it only after error metrics remain complete at lower sampling.
+The current Worker emits a privacy-bounded completion log with environment,
+method, templated route, status, bounded outcome, opaque request ID, Cloudflare
+release ID, and duration; it also returns `x-request-id`. Paid launch remains
+blocked until deployed-version correlation, safe log-canary evidence,
+dashboards, and the alerts above are implemented and tested. Keep 100% head
+sampling during a small invited launch; reduce it only after error metrics
+remain complete at lower sampling.
 
 ## 7. D1 backup and restore
 
 ### Backup policy
+
+Baseline evidence before Decision Compare: the 2026-08-13 production export was
+stored outside the repository with mode 0600 and SHA-256
+`5e36b156b46a789915a054cd7ca10e7acd94b48f1dcff24e28532cf2c0aeb595`.
+An isolated local restore recovered users=1, projects=1, reports=1, AI briefs=1
+and orders=0. `PRAGMA integrity_check` was unavailable through the authenticated
+D1 path, so schema and aggregate checks were used. This proves the export is
+readable, not the remote RPO/RTO gate; move it to approved encrypted storage and
+perform a timed remote staging restore before paid launch.
 
 - Export production D1 daily and before every migration or payment-state
   release.
@@ -359,7 +466,10 @@ reduce it only after error metrics remain complete at lower sampling.
    public hostname.
 4. Compare schema and aggregate counts for `users`, `projects`, `reports`,
    `ai_planning_briefs`, `ai_generation_counters`, `ai_generation_leases`,
-   `project_files`, `orders`, and `payment_webhook_events`.
+   `project_files`, `orders`, `payment_webhook_events`,
+   `payment_terminal_records`, `payment_reconciliation_cases`,
+   `decision_comparisons`, `purchased_decision_snapshots`, `decision_shares`,
+   and `decision_progress`.
 5. Run login, ownership, report, AI-cache/admission, and payment-ledger read
    checks without sending emails or calling Google or Razorpay live APIs.
 6. Record elapsed restore time and destroy the drill database only after its
@@ -369,7 +479,10 @@ reduce it only after error metrics remain complete at lower sampling.
 
 Production D1 restore or Time Travel is a destructive incident action:
 
-1. Declare the incident and close all writes, especially checkout and webhooks.
+1. Declare the incident and close customer writes, checkout, and fulfillment.
+   Keep Razorpay delivery/retries and the webhook secret active; if D1 writes
+   must pause, verify the provider retains/retries events and preserve delivery
+   IDs for authenticated replay.
 2. Export the damaged database for evidence.
 3. Identify the recovery timestamp/backup before the damaging event and quantify
    orders/events that would be lost.
@@ -379,8 +492,8 @@ Production D1 restore or Time Travel is a destructive incident action:
    reopening fulfillment.
 6. Validate row counts, ownership, paid-order parity, health, and synthetics.
 
-Never restore D1 alone and assume R2/payment consistency. Reconcile all three
-systems at the chosen recovery boundary.
+Never restore D1 alone and assume provider/storage consistency. Reconcile
+Razorpay and every bound storage system at the chosen recovery boundary.
 
 ## 8. Payment operations and reconciliation
 
@@ -394,14 +507,20 @@ unique constraint.
 Export or query these D1 sets without exposing customer emails:
 
 ```sh
-npx wrangler d1 execute grihagrid-db --remote --command \
+npx wrangler d1 execute DB --remote --env="" --command \
   "SELECT status,COUNT(*) AS count,SUM(amount_paise) AS paise FROM orders GROUP BY status ORDER BY status;"
 
-npx wrangler d1 execute grihagrid-db --remote --command \
+npx wrangler d1 execute DB --remote --env="" --command \
   "SELECT id,provider_order_id,status,provider_status,created_at FROM orders WHERE status='created' AND created_at < datetime('now','-30 minutes') ORDER BY created_at;"
 
-npx wrangler d1 execute grihagrid-db --remote --command \
+npx wrangler d1 execute DB --remote --env="" --command \
   "SELECT provider_event_id,event_type,order_id,provider_payment_id,processing_result,received_at FROM payment_webhook_events WHERE processing_result NOT IN ('paid','already_paid','ignored_event') ORDER BY received_at DESC LIMIT 100;"
+
+npx wrangler d1 execute DB --remote --env="" --command \
+  "SELECT record_type,provider_object_id,terminal_action,provider_payment_id,order_id,amount_paise,currency,provider_state,observed_at FROM payment_terminal_records ORDER BY observed_at DESC LIMIT 100;"
+
+npx wrangler d1 execute DB --remote --env="" --command \
+  "SELECT id,order_id,conflicting_order_id,provider_payment_id,reason,status,created_at,resolved_at FROM payment_reconciliation_cases WHERE status='open' ORDER BY created_at;"
 ```
 
 Compare by provider Payment Link ID/payment ID, INR amount in paise, state, and
@@ -421,29 +540,35 @@ difference:
 - Refund/chargeback: verify provider status, customer communication, invoice,
   entitlement consequence, and D1 state as one controlled case.
 
-The code currently handles paid/captured events but has no refund/chargeback
-webhook workflow, invoice/GST integration, admin reconciliation UI, or automated
-fulfillment ledger. Those are explicit paid-launch blockers. Until implemented,
-any live test/refund requires two-person manual evidence and checkout must remain
-closed to the public.
+Decision Compare code is required to handle signed paid/captured, refund, and
+dispute events idempotently. Invoice/GST/receipt integration, provider
+settlement comparison and an operator reconciliation surface remain launch
+gates. Until the complete live journey has two-person evidence, any live test or
+refund is controlled manually and checkout remains closed to the public.
 
-### Emergency checkout stop
+### Emergency checkout and fulfillment stop
 
-There is no application feature flag yet. The current reversible containment is
-to remove only the production `RAZORPAY_KEY_SECRET`, after verifying the active
-Cloudflare account and Worker name:
+The primary containment controls are `PAID_CHECKOUT_ENABLED` and
+`DECISION_COMPARE_FULFILLMENT_ENABLED`. Deploy both as `"false"` to stop new
+checkout and new artifact/share access. Closing checkout alone stops new
+payable links; closing fulfillment also stops artifact reads, share creation,
+and public share reads. The catalog and access endpoints must fail closed, but
+Razorpay webhook verification remains active so an already-created checkout
+cannot become an unrecorded payment.
+
+If a code/config regression prevents the checkout switch from containing new
+links, delete only the production `RAZORPAY_KEY_SECRET` after verifying the
+active account/Worker. Do **not** delete `RAZORPAY_WEBHOOK_SECRET`.
 
 ```sh
-npx wrangler deployments status
-npx wrangler secret delete RAZORPAY_KEY_SECRET
+npx wrangler deployments status --env=""
+npx wrangler secret delete RAZORPAY_KEY_SECRET --env=""
 ```
 
-This makes new checkout creation return `503 payments_unavailable`. Do **not**
-delete `RAZORPAY_WEBHOOK_SECRET`; already-paid checkouts must continue to post
-verified events. Also hide/disable purchase CTAs in a maintenance release. To
-reopen, investigate and reconcile first, restore the key interactively with
-`wrangler secret put RAZORPAY_KEY_SECRET`, then run a controlled checkout test.
-A dedicated `CHECKOUT_ENABLED` kill switch is required before public sales.
+Also hide purchase CTAs in an emergency release. Reopen only after reconciling
+every order since the incident start, testing both flags in staging, restoring
+the provider key interactively if it was deleted, and receiving incident-
+commander plus payment-owner approval.
 
 ## 9. R2 operations and cleanup
 
@@ -459,9 +584,10 @@ Before enabling `FILES`:
 3. Confirm all public access is disabled.
 4. Uncomment the `FILES` binding, deploy staging, and run ownership/round-trip
    tests.
-5. Add malware scanning/quarantine or restrict production uploads to formats
-   that can be safely validated. The current signature checks are not a malware
-   scanner, and ZIP/DOCX/XLSX/DWG/DXF need stronger handling.
+5. Add malware scanning/quarantine before broadening production uploads. The
+   current PDF/JPEG/PNG/WebP signature checks are not a malware scanner;
+   ZIP/DOCX/XLSX/DWG/DXF are not accepted and need an explicit security design
+   before any future enablement.
 6. Define approved retention/deletion rules. Do not apply a blanket lifecycle
    rule that could delete active customer evidence.
 
@@ -486,7 +612,7 @@ claiming account deletion is complete.
 
 ## 10. Cron verification
 
-The scheduled handler currently performs four bounded operations:
+The scheduled handler currently performs six bounded operations:
 
 ```sql
 DELETE FROM sessions WHERE expires_at < datetime('now');
@@ -494,9 +620,19 @@ UPDATE orders SET status='failed', ...
  WHERE status='created' AND created_at < datetime('now','-25 hours');
 DELETE FROM ai_generation_leases WHERE expires_at <= datetime('now');
 DELETE FROM ai_generation_counters WHERE updated_at < datetime('now','-8 days');
+DELETE FROM decision_shares
+ WHERE expires_at < datetime('now','-90 days')
+    OR (revoked_at IS NOT NULL AND revoked_at < datetime('now','-90 days'));
+DELETE FROM product_event_aggregates WHERE event_day < date('now','-400 days');
 ```
 
 It is scheduled for 02:17 UTC daily. Verify after every trigger/config change:
+
+Production owns this trigger. Staging explicitly sets `crons=[]` because the
+Cloudflare account was at its five-trigger free-plan limit (API 10072) during
+the 2026-08-13 staging deployment. Until quota is available, run the scheduled
+handler against synthetic local/staging fixtures during release testing; do not
+remove the production trigger or attach staging to production D1 as a shortcut.
 
 1. Cloudflare dashboard shows cron `17 2 * * *` attached to the current Worker
    version.
@@ -558,9 +694,10 @@ until headroom is restored.
   review, secret scanning, review, and signed/auditable releases.
 - Rotate Razorpay and deploy credentials on personnel change, suspected leak,
   and the documented periodic schedule. Test rotation in staging first.
-- Tail/search logs using opaque order/project IDs. Do not paste bearer cookies,
-  CSRF tokens, emails, addresses, briefs, files, backup contents, or payment
-  payloads into chat or tickets.
+- Correlate logs using the response's opaque `x-request-id` and Cloudflare
+  release ID; look up order/project IDs separately in owner-scoped operational
+  data. Do not paste bearer cookies, CSRF tokens, emails, addresses, briefs,
+  files, backup contents, or payment payloads into chat or tickets.
 - Review dependencies at least monthly and urgently for exploited advisories.
 - Test origin/CSRF, session expiry, ownership-safe `404`, file signature/size,
   webhook signature/replay, CSP, HSTS, frame denial, and MIME protection on every
@@ -612,9 +749,9 @@ Application rollback does not roll back D1, R2, secrets, cron state, or Razorpay
 events.
 
 ```sh
-npx wrangler deployments list
-npx wrangler rollback <known-good-version-id> --message "Incident <id>: <reason>"
-npx wrangler deployments status
+npx wrangler deployments list --env=""
+npx wrangler rollback <known-good-version-id> --env="" --message "Incident <id>: <reason>"
+npx wrangler deployments status --env=""
 ```
 
 Before rollback, confirm the chosen version predates the regression and remains
@@ -643,43 +780,53 @@ schema/state, deploy a small compatibility fix instead of forcing rollback.
 A free demo may launch without R2 or Razorpay only if upload and purchase paths
 are visibly unavailable and no claim suggests they work.
 
-### Paid launch — all are mandatory
+### Paid Decision Compare pilot — all are mandatory
 
-- [ ] Separate staging/production resources, secrets, hostnames, and provider
-  modes exist; GitHub CI and branch protection gate production releases.
-- [ ] All checked-in D1 migrations are verified remotely, a fresh encrypted backup
-  exists, and a timed restore drill meets RPO/RTO.
-- [ ] R2 subscription is active, `grihagrid-files` exists privately, the `FILES`
-  binding is enabled, and upload/download/delete/ownership/orphan checks pass.
-- [ ] Upload malware/quarantine strategy and retention/deletion policy are
-  approved and tested.
+- [x] Dedicated staging and production Worker/D1/KV resources exist; GitHub
+  production/staging environments, protected strict `main`, vulnerability
+  alerts, secret scanning/push protection, Dependabot security fixes and
+  private vulnerability reporting are configured. CodeQL default-setup run
+  `31729695152` finished successfully. Required PR review and admin enforcement
+  remain a launch gate.
+- [ ] Provider modes/secrets remain separate, every migration is verified in
+  staging and production, and a timed remote restore meets RPO/RTO.
 - [ ] `APP_ORIGIN` matches the canonical HTTPS origin exactly.
-- [ ] Razorpay live onboarding, keys, webhook secret/events, callback, GST/invoice,
-  refund, chargeback, and settlement configuration are complete.
-- [ ] One controlled live payment → signed webhook → D1 paid state → fulfillment
-  → settlement → refund journey reconciles exactly.
-- [ ] Automated or two-person daily payment reconciliation is operational, and
-  refund/chargeback state cannot diverge from entitlements.
-- [ ] Checkout and fulfillment kill switches are implemented and tested; removing
-  the provider key is only an emergency fallback.
-- [ ] Structured safe logs, request/version correlation, all paging alerts, and
-  external synthetics have been tested by deliberate failure injection.
+- [ ] Razorpay live onboarding, restricted keys, webhook events/callback,
+  GST/invoice/receipt, refund, chargeback and settlement configuration pass.
+- [ ] One controlled live ₹999 payment → signed webhook → D1 paid state →
+  immutable comparison → settlement → refund journey reconciles exactly.
+- [ ] Automated or two-person daily reconciliation is operational; signed
+  refunds/disputes revoke fulfillment/shares as policy requires without
+  deleting immutable money evidence.
+- [x] Checkout and fulfillment controls are implemented and tested independently;
+  already-created checkout webhooks remain accepted during containment.
+- [ ] Implemented structured logs and request/version correlation pass a
+  deployed-log secret/PII canary; paging alerts and external synthetics pass
+  deliberate failure injection.
 - [ ] Email verification/recovery/receipts, account deletion, support/refund
-  procedures, and security incident contacts work end to end.
-- [ ] Pricing, taxes, terms, privacy, refund policy, architectural/engineering
-  disclaimers, professional licensing/supply, and trademark/domain are approved.
-- [ ] Representative reports and estimates have passed the licensed-practitioner
-  quality threshold; unsafe or misleading output has a tested stop mechanism.
-- [ ] Capacity test passes at 2× launch peak and cost alerts fire at 50/75/90%.
-- [ ] On-call and finance coverage are staffed for the first invited cohort.
+  procedures and security incident contacts work end to end.
+- [ ] Pricing, taxes, terms, privacy, refund and explicit no-correction/reissue
+  policy, professional disclaimers and trademark/domain are approved.
+- [ ] Representative comparison fixtures and first-ten-artifact practitioner
+  review pass; unsafe/misleading output has a tested fulfillment stop.
+- [ ] Capacity at 2× invited-pilot peak and cost alerts at 50/75/90% pass;
+  incident, engineering, finance and quality coverage is staffed.
+
+R2 is not required for this structured-input pilot. No upload or hosted-file
+promise may be sold. Site Plus, Expert, or any future upload product additionally
+requires private R2, upload ownership/round-trip/orphan tests, malware or
+quarantine controls, and an approved retention/deletion policy.
 
 ### Current decision
 
-**NO-GO for public paid sales.** R2 external billing activation/bucket/binding,
-Razorpay live credentials and account setup, canonical `APP_ORIGIN`, production
-webhook registration, refund/reconciliation/fulfillment controls, environment
-isolation, CI release gates, structured alerting, restore evidence, and several
-security/customer-lifecycle controls are not yet proven.
+**NO-GO for public paid sales.** Isolation and core GitHub release protections
+now exist, and independent checkout/fulfillment containment has local real-D1
+proof. Razorpay live/account/tax configuration, live refund/settlement
+reconciliation, deployed log-canary/alerts, remote restore RTO,
+email/receipt/recovery,
+legal/brand approval, practitioner quality evidence and staffed ownership are
+not yet proven. R2 is not a blocker for Decision Compare and remains a blocker
+for any upload-bearing offer.
 
 **Potential GO for a clearly labelled free prototype** after the free-demo
 checklist passes. Re-evaluate paid launch only when every mandatory item has an

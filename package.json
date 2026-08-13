@@ -7,10 +7,13 @@
     "dev": "vite",
     "build": "vite build && node scripts/prepare-sites-build.mjs",
     "preview": "vite preview",
-    "test:sites": "node --test tests/*.test.mjs",
+    "test:sites": "node --test --test-concurrency=1 tests/*.test.mjs",
     "check:migrations": "node scripts/check-migrations.mjs",
-    "check:worker": "wrangler deploy --dry-run --outdir .wrangler/ci-dry-run",
-    "check": "npm run build && npm run test:sites",
+    "check:ops": "node scripts/check-ops-config.mjs",
+    "check:worker": "wrangler deploy --dry-run --env=\"\" --outdir .wrangler/ci-dry-run",
+    "check:worker:staging": "wrangler deploy --dry-run --env staging --outdir .wrangler/ci-dry-run-staging",
+    "check": "npm run build && npm run test:sites && npm run check:ops",
+    "smoke": "node scripts/smoke.mjs",
     "deploy": "wrangler deploy"
   },
   "dependencies": {

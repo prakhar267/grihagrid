@@ -1,0 +1,42 @@
+name: Public read-only smoke
+
+on:
+  schedule:
+    - cron: "23 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: public-read-only-smoke
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: ${{ matrix.environment }} liveness and fail-closed commerce
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - environment: production
+            origin: https://grihagrid.prakhargupta267.workers.dev
+          - environment: staging
+            origin: https://grihagrid-staging.prakhargupta267.workers.dev
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Check homepage, readiness, estimate, and catalog
+        env:
+          GRIHAGRID_SMOKE_ORIGIN: ${{ matrix.origin }}
+          EXPECT_PAID_CHECKOUT: "false"
+        run: node scripts/smoke.mjs

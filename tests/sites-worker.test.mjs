@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import { access } from "node:fs/promises";
 import test from "node:test";
-import worker from "../worker/index.js";
+import worker, { __test } from "../worker/index.js";
+
+test("operational routes never log Decision share bearer tokens", () => {
+  const token = "this-is-a-private-share-token-that-must-not-be-logged";
+  assert.equal(__test.operationalRoute(`/share/decision/${token}`), "/share/decision/:token");
+  assert.equal(__test.operationalRoute(`/api/shared/decision-compare/${token}`), "/api/shared/decision-compare/:token");
+  assert.equal(__test.operationalRoute(`/share/decision/${token}`).includes(token), false);
+});
 
 test("serves existing static assets without a fallback", async () => {
   const calls = [];

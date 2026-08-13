@@ -705,11 +705,22 @@ test("AI provider configuration fails closed while model fallback is stable", as
 });
 
 test("readiness reports AI capability without exposing the configured secret", async () => {
-  const readinessDb = (counts = { count: 9, ai_brief_count: 1, ai_abuse_count: 2 }, withBatch = true) => ({
+  const readinessDb = (counts = {
+    count: 17,
+    ai_brief_count: 1,
+    ai_abuse_count: 2,
+    decision_table_count: 6,
+    payment_hardening_count: 2,
+  }, withBatch = true, staleDecisionColumns = false, stalePaymentColumns = false) => ({
     ...(withBatch ? { batch: async () => [] } : {}),
     prepare(sql) {
       return {
-        first: async () => sql.includes("FROM sqlite_master") ? counts : null,
+        first: async () => {
+          if (sql.includes("FROM sqlite_master")) return counts;
+          if (staleDecisionColumns && sql.includes("request_hash")) throw new Error("no such column: request_hash");
+          if (stalePaymentColumns && sql.includes("FROM payment_terminal_records")) throw new Error("no such table: payment_terminal_records");
+          return null;
+        },
       };
     },
   });
@@ -724,12 +735,35 @@ test("readiness reports AI capability without exposing the configured secret", a
   assert.equal(body.checks.ai, "configured");
   assert.equal(body.checks.aiSchema, "current");
   assert.equal(body.checks.aiAbuseControl, "configured");
+  assert.equal(body.checks.paymentSchema, "current");
   assert.equal(body.capabilities.aiPlanningBrief, true);
   assert.equal(JSON.stringify(body).includes(API_KEY), false);
 
+  const staleDecision = await worker.fetch(request("/api/readiness"), {
+    ASSETS: assets,
+    DB: readinessDb(undefined, true, true),
+    GRIHAGRID_CACHE: new MemoryKv(),
+    GEMINI_API_KEY: API_KEY,
+  });
+  assert.equal(staleDecision.status, 503);
+  const staleDecisionBody = await staleDecision.json();
+  assert.equal(staleDecisionBody.checks.decisionSchema, "outdated");
+  assert.equal(staleDecisionBody.capabilities.decisionCompare, false);
+
+  const stalePayment = await worker.fetch(request("/api/readiness"), {
+    ASSETS: assets,
+    DB: readinessDb(undefined, true, false, true),
+    GRIHAGRID_CACHE: new MemoryKv(),
+    GEMINI_API_KEY: API_KEY,
+  });
+  assert.equal(stalePayment.status, 503);
+  const stalePaymentBody = await stalePayment.json();
+  assert.equal(stalePaymentBody.checks.paymentSchema, "outdated");
+  assert.equal(stalePaymentBody.capabilities.paidCheckout, false);
+
   for (const [label, overrides] of [
     ["invalid model", { DB: readinessDb(), GEMINI_API_KEY: API_KEY, GEMINI_MODEL: "bad/model" }],
-    ["missing AI table", { DB: readinessDb({ count: 8, ai_brief_count: 1, ai_abuse_count: 1 }), GEMINI_API_KEY: API_KEY }],
+    ["missing AI table", { DB: readinessDb({ count: 15, ai_brief_count: 0, ai_abuse_count: 2, decision_table_count: 5, payment_hardening_count: 2 }), GEMINI_API_KEY: API_KEY }],
     ["missing atomic batch", { DB: readinessDb(undefined, false), GEMINI_API_KEY: API_KEY }],
     ["invalid key", { DB: readinessDb(), GEMINI_API_KEY: "short" }],
   ]) {
