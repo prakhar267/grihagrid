@@ -39,7 +39,11 @@ test("read-only smoke verifies health, readiness, estimate and fail-closed catal
       return Response.json({ status: "ok", service: "grihagrid", time: "2026-08-13T00:00:00.000Z" }, { headers: { ...securityHeaders, "cache-control": "no-store" } });
     }
     if (url.pathname === "/api/readiness") {
-      return Response.json({ status: "ready", capabilities: { freePlanning: true, paidCheckout: false } }, { headers: { ...securityHeaders, "cache-control": "no-store" } });
+      return Response.json({
+        status: "ready",
+        checks: { familyAlignmentSchema: "current" },
+        capabilities: { freePlanning: true, familyAlignment: true, paidCheckout: false },
+      }, { headers: { ...securityHeaders, "cache-control": "no-store" } });
     }
     if (url.pathname === "/api/estimate") {
       return Response.json({ estimate: { plotSqft: 1500, builtUpSqft: 1830, lowInr: 3_700_000, highInr: 4_500_000 } }, { headers: { ...securityHeaders, "cache-control": "no-store" } });

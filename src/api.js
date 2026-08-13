@@ -84,6 +84,23 @@ export function formatDate(value, options = {}) {
   });
 }
 
+export function formatDateTime(value) {
+  if (!value) return "—";
+  const normalized = typeof value === "string" && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/u.test(value)
+    ? `${value.replace(" ", "T")}Z`
+    : value;
+  const date = new Date(normalized);
+  if (Number.isNaN(date.valueOf())) return "—";
+  return new Intl.DateTimeFormat("en-IN", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  }).format(date);
+}
+
 export function idempotencyKey(storageKey) {
   const existing = sessionStorage.getItem(storageKey);
   if (existing) return existing;

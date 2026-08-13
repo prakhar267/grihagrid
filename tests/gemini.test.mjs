@@ -706,18 +706,25 @@ test("AI provider configuration fails closed while model fallback is stable", as
 
 test("readiness reports AI capability without exposing the configured secret", async () => {
   const readinessDb = (counts = {
-    count: 17,
+    count: 19,
     ai_brief_count: 1,
     ai_abuse_count: 2,
     decision_table_count: 6,
     payment_hardening_count: 2,
-  }, withBatch = true, staleDecisionColumns = false, stalePaymentColumns = false) => ({
+    family_alignment_count: 2,
+  }, withBatch = true, staleDecisionColumns = false, stalePaymentColumns = false, staleFamilyColumns = false, staleFamilyObjects = false) => ({
     ...(withBatch ? { batch: async () => [] } : {}),
     prepare(sql) {
       return {
         first: async () => {
+          if (sql.includes("family_alignment_trigger_count")) {
+            return staleFamilyObjects
+              ? { family_alignment_trigger_count: 6, family_alignment_index_count: 3 }
+              : { family_alignment_trigger_count: 7, family_alignment_index_count: 3 };
+          }
           if (sql.includes("FROM sqlite_master")) return counts;
-          if (staleDecisionColumns && sql.includes("request_hash")) throw new Error("no such column: request_hash");
+          if (staleFamilyColumns && sql.includes("FROM family_alignment_rooms")) throw new Error("no such column: request_hash");
+          if (staleDecisionColumns && sql.includes("FROM decision_shares")) throw new Error("no such column: request_hash");
           if (stalePaymentColumns && sql.includes("FROM payment_terminal_records")) throw new Error("no such table: payment_terminal_records");
           return null;
         },
@@ -736,7 +743,9 @@ test("readiness reports AI capability without exposing the configured secret", a
   assert.equal(body.checks.aiSchema, "current");
   assert.equal(body.checks.aiAbuseControl, "configured");
   assert.equal(body.checks.paymentSchema, "current");
+  assert.equal(body.checks.familyAlignmentSchema, "current");
   assert.equal(body.capabilities.aiPlanningBrief, true);
+  assert.equal(body.capabilities.familyAlignment, true);
   assert.equal(JSON.stringify(body).includes(API_KEY), false);
 
   const staleDecision = await worker.fetch(request("/api/readiness"), {
@@ -761,9 +770,31 @@ test("readiness reports AI capability without exposing the configured secret", a
   assert.equal(stalePaymentBody.checks.paymentSchema, "outdated");
   assert.equal(stalePaymentBody.capabilities.paidCheckout, false);
 
+  const staleFamily = await worker.fetch(request("/api/readiness"), {
+    ASSETS: assets,
+    DB: readinessDb(undefined, true, false, false, true),
+    GRIHAGRID_CACHE: new MemoryKv(),
+    GEMINI_API_KEY: API_KEY,
+  });
+  assert.equal(staleFamily.status, 503);
+  const staleFamilyBody = await staleFamily.json();
+  assert.equal(staleFamilyBody.checks.familyAlignmentSchema, "outdated");
+  assert.equal(staleFamilyBody.capabilities.familyAlignment, false);
+
+  const staleFamilyObjects = await worker.fetch(request("/api/readiness"), {
+    ASSETS: assets,
+    DB: readinessDb(undefined, true, false, false, false, true),
+    GRIHAGRID_CACHE: new MemoryKv(),
+    GEMINI_API_KEY: API_KEY,
+  });
+  assert.equal(staleFamilyObjects.status, 503);
+  const staleFamilyObjectsBody = await staleFamilyObjects.json();
+  assert.equal(staleFamilyObjectsBody.checks.familyAlignmentSchema, "outdated");
+  assert.equal(staleFamilyObjectsBody.capabilities.familyAlignment, false);
+
   for (const [label, overrides] of [
     ["invalid model", { DB: readinessDb(), GEMINI_API_KEY: API_KEY, GEMINI_MODEL: "bad/model" }],
-    ["missing AI table", { DB: readinessDb({ count: 15, ai_brief_count: 0, ai_abuse_count: 2, decision_table_count: 5, payment_hardening_count: 2 }), GEMINI_API_KEY: API_KEY }],
+    ["missing AI table", { DB: readinessDb({ count: 18, ai_brief_count: 0, ai_abuse_count: 2, decision_table_count: 6, payment_hardening_count: 2, family_alignment_count: 2 }), GEMINI_API_KEY: API_KEY }],
     ["missing atomic batch", { DB: readinessDb(undefined, false), GEMINI_API_KEY: API_KEY }],
     ["invalid key", { DB: readinessDb(), GEMINI_API_KEY: "short" }],
   ]) {

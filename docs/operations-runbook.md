@@ -330,6 +330,7 @@ orders.
 | 15 minutes | Canary login + `GET /api/projects` | Session succeeds and only canary-owned data appears |
 | Daily | Full canary project/report CRUD | Create/read/update/report/delete completes without residue |
 | Daily during pilot | Authenticated two-scenario comparison | Frozen A/B inputs and numeric deltas match fixture; choice is idempotent; cleanup leaves no rows |
+| Daily while Family Alignment is enabled | Synthetic room → public read → response update → owner summary → revoke | One room/receipt, redacted A/B projection, aggregate summary reconciles, revoked URL is `410`, cleanup leaves no rows or token in monitor output |
 | Daily during pilot | Paid fulfillment age | Every verified payment is issued or explicitly paused inside the published promise |
 | Daily while AI enabled | Sanitized AI generation + cached read | Valid advisory schema, one provider call, cached replay, cleanup leaves no rows |
 | Daily only after a future R2 launch | Private file round trip | Upload/download SHA-256 match/delete; anonymous fetch denied |
@@ -380,6 +381,17 @@ timestamps. Treat these linked records as personal data for access, retention,
 backup and deletion policy. Artifact/share delivery is authoritative; its
 best-effort milestone write must never turn delivery into a false failure.
 
+Family Alignment events are server-only. After a valid auth/bearer boundary and
+successful core action, the Worker may increment only
+`family_alignment_room_created`, `family_alignment_review_opened`,
+`family_alignment_response_submitted`, or
+`family_alignment_room_revoked` on `owner_compare` or `family_review`. The
+browser must not post a duplicate. These are the same aggregate rows, never a
+room/response stream: do not add room, project, comparison, receipt, role,
+preference, reason, token, IP, user-agent, or client-time fields. Failure to
+write an aggregate must be logged with the fixed payload-free marker and must
+not change a room/read/response/revoke result.
+
 ## 6. SLIs, SLOs, and alerts
 
 Initial targets are intentionally conservative and must be reviewed after four
@@ -400,6 +412,9 @@ weeks of real traffic.
 | Webhook processing | 99.9% accepted within 60 s of provider delivery | Razorpay delivery timestamp versus `payment_webhook_events.processed_at` |
 | Financial correctness | 100%; zero tolerance | No duplicate, amount/currency mismatch, unverified paid state, or unmatched settlement |
 | Cross-account resource isolation | 100%; zero tolerance | Negative project/comparison/artifact/choice/share/order synthetics and incident reports |
+| Family Alignment active-room availability | 99.9% | Valid owner create/summary and bearer public-read/response synthetics, excluding deliberate validation/rate-limit `4xx` |
+| Family Alignment privacy and capacity | 100%; zero tolerance | Redaction/log canaries, cross-owner/token negative tests, at most one room per comparison and five receipts per room |
+| Family Alignment retention | 99% within 24 h after the 90-day closed-room boundary | D1 expiry/revocation query and successful scheduled cleanup |
 | Session cleanup | 99% within 24 h after expiry | D1 expiry query and cron invocation logs |
 | Backup recovery | RPO 24 h; RTO 4 h | Last verified backup and quarterly restore drill |
 
@@ -408,6 +423,10 @@ Page the on-call for:
 - two consecutive health failures or any five-minute outage;
 - Worker 5xx above 2% for five minutes with at least 20 requests;
 - any cross-account result, private R2 exposure, CSP/TLS failure, or secret leak;
+- any Family Alignment bearer value in logs/analytics/referrers, public private-
+  field exposure, response takeover/cross-room update, sixth receipt, response
+  committed after closure, or Family Alignment action changing an order or
+  entitlement;
 - any `amount_mismatch`, `reference_mismatch`, `payment_mismatch`, duplicate
   fulfillment, or paid-provider/D1 disagreement;
 - checkout failures above 5% for 15 minutes with at least 10 valid attempts;
@@ -417,8 +436,9 @@ Page the on-call for:
 - a failed daily Gemini synthetic, a sustained provider-error spike, an AI
   quota crossing 90%, or any accepted advisory-boundary violation;
 - R2 upload/download errors above 2% for 10 minutes;
-- the daily cron missing twice or expired session backlog increasing for two
-  days;
+- the daily cron missing twice, expired session backlog increasing for two
+  days, or retention-eligible Family Alignment rooms growing across two
+  successful invocations;
 - no valid backup within 26 hours or a failed restore drill.
 
 Create a ticket, not a page, for p95 latency degradation, storage/cost forecast
@@ -612,7 +632,7 @@ claiming account deletion is complete.
 
 ## 10. Cron verification
 
-The scheduled handler currently performs six bounded operations:
+The scheduled handler currently performs seven bounded operations:
 
 ```sql
 DELETE FROM sessions WHERE expires_at < datetime('now');
@@ -621,6 +641,9 @@ UPDATE orders SET status='failed', ...
 DELETE FROM ai_generation_leases WHERE expires_at <= datetime('now');
 DELETE FROM ai_generation_counters WHERE updated_at < datetime('now','-8 days');
 DELETE FROM decision_shares
+ WHERE expires_at < datetime('now','-90 days')
+    OR (revoked_at IS NOT NULL AND revoked_at < datetime('now','-90 days'));
+DELETE FROM family_alignment_rooms
  WHERE expires_at < datetime('now','-90 days')
     OR (revoked_at IS NOT NULL AND revoked_at < datetime('now','-90 days'));
 DELETE FROM product_event_aggregates WHERE event_day < date('now','-400 days');
@@ -643,11 +666,19 @@ remove the production trigger or attach staging to production D1 as a shortcut.
    npx wrangler d1 execute grihagrid-db --remote --command \
      "SELECT COUNT(*) AS expired_sessions FROM sessions WHERE expires_at < datetime('now');
       SELECT COUNT(*) AS expired_ai_leases FROM ai_generation_leases WHERE expires_at <= datetime('now');
-      SELECT COUNT(*) AS old_ai_counters FROM ai_generation_counters WHERE updated_at < datetime('now','-8 days');"
+      SELECT COUNT(*) AS old_ai_counters FROM ai_generation_counters WHERE updated_at < datetime('now','-8 days');
+      SELECT COUNT(*) AS old_family_rooms FROM family_alignment_rooms
+       WHERE expires_at < datetime('now','-90 days')
+          OR (revoked_at IS NOT NULL AND revoked_at < datetime('now','-90 days'));"
    ```
 
-4. Deliberately expired synthetic sessions, checkout links, and AI leases in
-   staging are removed by a tested scheduled invocation; recent counters remain.
+4. Deliberately expired synthetic sessions, checkout links, AI leases and
+   retention-eligible Family Alignment rooms in staging are removed by a tested
+   scheduled invocation; recent counters and active/recent rooms remain.
+5. Before/after fixture counts prove each removed Family Alignment room's
+   responses cascade while its project, comparison, owner selection, purchased
+   snapshot, order and payment ledger rows remain unchanged. Never put raw room
+   or response tokens in cron output.
 
 Alert after one missed run and page after two. The handler uses `ctx.waitUntil`;
 an invocation record without successful D1 completion is not evidence of cleanup.

@@ -64,7 +64,9 @@ export async function runSmoke(rawOrigin, options = {}) {
 
   checks.push(await jsonCheck(origin, "/api/readiness", {}, (body) => {
     assert.equal(body.status, "ready");
+    assert.equal(body.checks?.familyAlignmentSchema, "current");
     assert.equal(body.capabilities?.freePlanning, true);
+    assert.equal(body.capabilities?.familyAlignment, true);
     assert.equal(body.capabilities?.paidCheckout, expectCheckout);
     assert.ok(!JSON.stringify(body).match(/(?:secret|api[_-]?key|authorization|cookie)/iu), "readiness may not expose secret-shaped fields");
   }));

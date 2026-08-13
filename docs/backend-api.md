@@ -260,11 +260,126 @@ deleted. A project without payment evidence cascades its report/file metadata;
 associated private R2 objects are removed first.
 Returns `204` only after that preflight succeeds.
 
-## Decision Compare endpoints
+## Decision and Family Alignment endpoints
 
 All owner endpoints below require a session and use ownership-safe `404`s.
 Writes additionally require same-origin and CSRF validation. Decision Compare
 accepts structured JSON only; there is no upload or arbitrary HTML/URL field.
+
+## Family Alignment endpoints
+
+Family Alignment is a free, structured review of one immutable Decision
+Compare version. It requires D1 schema `0010_family_alignment.sql` and the KV
+abuse-control binding, but no payment, email, AI, or R2 credential. It never
+changes the owner's selected scenario or grants a paid entitlement.
+
+### `GET|POST /api/projects/:projectId/family-alignment`
+
+`GET` requires the owner session and returns the newest room plus bounded
+history so an older still-active room remains discoverable and revocable:
+
+```json
+{
+  "room": { "id": "uuid", "comparisonId": "uuid", "comparisonVersion": 2, "createdAt": "...", "expiresAt": "...", "revokedAt": null, "responseCount": 2, "maxResponses": 5, "active": true, "summary": {} },
+  "summary": {},
+  "rooms": []
+}
+```
+
+`rooms` contains at most the 20 newest owner-scoped rooms. Every summary is
+aggregate-only: `status`, `totalResponses`, A/B/not-ready preference counts,
+high/medium/low confidence counts, and counts for the six allowlisted reasons.
+It never returns a response row, response ID/digest, participant timestamp, or
+room bearer token.
+
+`POST` requires trusted origin, session, CSRF, KV and an `Idempotency-Key`
+header. The exact body is `{ "comparisonId": "uuid" }`. The comparison must be
+the project's explicit latest saved version and must still match the current
+project input revision. Exactly one room may exist per comparison. First
+creation returns `201` and the bearer URL exactly once:
+
+```json
+{
+  "room": {
+    "id": "uuid",
+    "comparisonId": "uuid",
+    "comparisonVersion": 2,
+    "createdAt": "...",
+    "expiresAt": "...",
+    "revokedAt": null,
+    "responseCount": 0,
+    "maxResponses": 5,
+    "active": true,
+    "url": "https://app.example/align/secret"
+  }
+}
+```
+
+The expiry is exactly seven days after the server creation time. A same-key,
+same-request replay returns `200` metadata without `url`; a changed request is
+`409 idempotency_conflict`. A second key for the same comparison is `409
+family_alignment_room_exists`. Stale or concurrently superseded input is `409
+family_alignment_comparison_stale` and leaves no room behind.
+
+### `DELETE /api/projects/:projectId/family-alignment/:roomId`
+
+Requires trusted origin, owner session and CSRF. Revocation is idempotent and
+returns `204`. Missing or foreign rooms use ownership-safe `404
+family_alignment_not_found`. Revocation closes public reads and writes but
+does not delete or alter the immutable comparison.
+
+### `GET /api/family-alignment/:token`
+
+Requires KV and a valid high-entropy room bearer. It returns only an opaque
+room ID, comparison version, creation/expiry, response count/cap, generic
+assumptions/disclaimer, and two neutral `Option A`/`Option B` projections. Each
+projection is an allowlist of floors, bedrooms, parking, quality, derived
+estimate/programme, constraints and trade-offs. It omits the project/account
+identity, plot/location, comparison/scenario IDs and labels, raw inputs/notes,
+scenario assumptions, hashes, recommendation, owner choice, questions,
+responses, aggregates, orders and entitlement state. Review-open counters and
+aggregate telemetry are best effort and cannot fail an otherwise valid read.
+
+Malformed or unknown tokens are `404 family_alignment_not_found`; known
+revoked rooms are `410 family_alignment_unavailable`; expired rooms are `410
+family_alignment_expired`.
+
+### `PUT /api/family-alignment/:token/response`
+
+Requires KV, same-origin request, and a 40–128 character high-entropy
+`x-family-response-token` header generated and retained by the browser. The
+exact JSON body is:
+
+```json
+{
+  "role": "spouse",
+  "preference": "A",
+  "confidence": "high",
+  "reasons": ["space", "future_expansion"]
+}
+```
+
+Roles are `spouse`, `parent`, `sibling`, `advisor`, `other`; preferences are
+literal `A`, `B`, `not_ready`; confidence is `high`, `medium`, `low`; reasons
+contain one to three distinct values from `budget`, `space`, `parking`,
+`accessibility`, `future_expansion`, `construction_complexity`. No free text or
+unknown property is accepted.
+
+The first receipt returns `201 { response, saved: true, updated: false }`. The
+same browser token updates that room-scoped receipt and returns `200 {
+response, saved: true, updated: true }`, including under a concurrent retry.
+Five distinct receipts is an atomic hard cap; a sixth is `409
+family_alignment_full`, while an existing receipt may still update. SQL-time
+expiry/revocation prevents a racing create or update and returns `410`. The
+response contains only the caller's normalized response, never the group
+summary. Submission telemetry is best effort.
+
+Closed-room data is removed by the scheduled job after the expiry or
+revocation boundary has been older than 90 days; response rows cascade with
+the room while comparisons, projects, orders and payment ledgers remain
+untouched.
+
+## Decision Compare endpoints
 
 ### `GET|PUT /api/projects/:projectId/decision-compare`
 
