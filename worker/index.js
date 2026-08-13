@@ -5,7 +5,7 @@ const JSON_HEADERS = {
 const CORS_HEADERS = {
   "access-control-allow-origin": "*",
   "access-control-allow-methods": "GET,HEAD,POST,PUT,PATCH,DELETE,OPTIONS",
-  "access-control-allow-headers": "content-type,idempotency-key,x-csrf-token,x-file-name,x-file-kind",
+  "access-control-allow-headers": "content-type,idempotency-key,x-csrf-token,x-file-name,x-file-kind,x-family-response-token",
   "access-control-max-age": "86400",
 };
 const SECURITY_HEADERS = {
@@ -123,8 +123,20 @@ const PRODUCT_EVENT_NAMES = new Set([
   "decision_compare_share_created",
   "decision_compare_share_revoked",
 ]);
-const PRODUCT_EVENT_SURFACES = new Set(["owner_compare", "checkout", "orders", "artifact", "public_share", "unknown"]);
+const FAMILY_ALIGNMENT_EVENT_NAMES = new Set([
+  "family_alignment_room_created",
+  "family_alignment_room_revoked",
+  "family_alignment_review_opened",
+  "family_alignment_response_submitted",
+]);
+const PRODUCT_EVENT_SURFACES = new Set(["owner_compare", "family_review", "checkout", "orders", "artifact", "public_share", "unknown"]);
 const PRODUCT_EVENT_OUTCOMES = new Set(["success", "failure", "saved", "preview", "cancelled", "unknown"]);
+const FAMILY_ALIGNMENT_ROLES = new Set(["spouse", "parent", "sibling", "advisor", "other"]);
+const FAMILY_ALIGNMENT_PREFERENCES = new Set(["A", "B", "not_ready"]);
+const FAMILY_ALIGNMENT_CONFIDENCE = new Set(["high", "medium", "low"]);
+const FAMILY_ALIGNMENT_REASONS = new Set(["budget", "space", "parking", "accessibility", "future_expansion", "construction_complexity"]);
+const FAMILY_ALIGNMENT_RESPONSE_LIMIT = 5;
+const FAMILY_ALIGNMENT_HISTORY_LIMIT = 20;
 const RAZORPAY_PAYMENT_LINKS_URL = "https://api.razorpay.com/v1/payment_links/";
 
 const FILE_TYPES = new Set([
@@ -408,6 +420,23 @@ async function rateLimit(request, env, scope, limit, windowSeconds) {
   const attempts = Number(await env.GRIHAGRID_CACHE.get(key) || 0) + 1;
   await env.GRIHAGRID_CACHE.put(key, String(attempts), { expirationTtl: windowSeconds * 2 });
   if (attempts > limit) throw new HttpError(429, "too many attempts; please try again later", "rate_limited");
+}
+
+async function familyAlignmentEvent(db, eventName, surface, outcome = "success") {
+  if (!FAMILY_ALIGNMENT_EVENT_NAMES.has(eventName)) return;
+  try {
+    const day = new Date().toISOString().slice(0, 10);
+    await db.prepare(
+      `INSERT INTO product_event_aggregates
+         (event_day,event_name,surface,outcome,event_count,updated_at)
+       VALUES (?,?,?,?,1,?)
+       ON CONFLICT(event_day,event_name,surface,outcome)
+       DO UPDATE SET event_count=event_count+1,updated_at=excluded.updated_at`,
+    ).bind(day, eventName, surface, outcome, sqliteTimestamp()).run();
+  } catch {
+    // Product measurement must never deny a valid room, review, response, or revoke.
+    console.error("Family Alignment aggregate recording failed");
+  }
 }
 
 function requireAbuseControl(env) {
@@ -2030,6 +2059,12 @@ async function deleteProject(request, env, projectId) {
   if (objectKeys.length) await requireFileStore(env).delete(objectKeys);
   const abandoned = abandonedOrderPredicate("o");
   await db.batch([
+    // Remove ephemeral Family Alignment rooms explicitly before the project
+    // cascade reaches their immutable comparison. This also makes response
+    // counter cleanup deterministic across SQLite cascade ordering.
+    db.prepare(
+      "DELETE FROM family_alignment_rooms WHERE project_id=? AND user_id=?",
+    ).bind(projectId, session.user_id),
     db.prepare(
       `DELETE FROM purchased_decision_snapshots
         WHERE order_id IN (SELECT o.id FROM orders o WHERE o.project_id=? AND ${abandoned})`,
@@ -2390,6 +2425,352 @@ async function putDecisionCompare(request, env, projectId) {
     project_input_revision: Number(project.input_revision || 1),
   };
   return json({ comparison: decisionComparisonFromRow(row), selection: null, entitlement: null }, 201);
+}
+
+function familyAlignmentSummary(rows) {
+  const preferences = { A: 0, B: 0, notReady: 0 };
+  const confidence = { high: 0, medium: 0, low: 0 };
+  const reasons = { budget: 0, space: 0, parking: 0, accessibility: 0, futureExpansion: 0, constructionComplexity: 0 };
+  const reasonKey = { future_expansion: "futureExpansion", construction_complexity: "constructionComplexity" };
+  for (const row of rows) {
+    preferences[row.preference === "not_ready" ? "notReady" : row.preference] += 1;
+    confidence[row.confidence] += 1;
+    for (const reason of parseStoredJson(row.reasons_json, [])) reasons[reasonKey[reason] || reason] += 1;
+  }
+  let status = "no_responses";
+  if (rows.length) {
+    if (!preferences.A && !preferences.B) status = "not_ready";
+    else if (preferences.A === preferences.B) status = "split";
+    else {
+      const side = preferences.A > preferences.B ? "a" : "b";
+      const winner = side === "a" ? preferences.A : preferences.B;
+      const loser = side === "a" ? preferences.B : preferences.A;
+      status = winner >= 2 && loser === 0 && preferences.notReady === 0 ? `aligned_${side}` : `leaning_${side}`;
+    }
+  }
+  return { status, totalResponses: rows.length, preferences, confidence, reasons };
+}
+
+function familyAlignmentRoomMetadata(row, summary = null) {
+  const now = Date.now();
+  const expiresAt = new Date(`${String(row.expires_at).replace(" ", "T")}Z`).getTime();
+  const room = {
+    id: row.id,
+    comparisonId: row.comparison_id,
+    comparisonVersion: Number(row.comparison_version),
+    createdAt: row.created_at,
+    expiresAt: row.expires_at,
+    revokedAt: row.revoked_at || null,
+    responseCount: Number(row.response_count || 0),
+    maxResponses: FAMILY_ALIGNMENT_RESPONSE_LIMIT,
+    active: !row.revoked_at && expiresAt > now,
+  };
+  return summary ? { ...room, summary } : room;
+}
+
+async function familyAlignmentRoomSummary(db, room) {
+  const result = await db.prepare(
+    "SELECT preference,confidence,reasons_json FROM family_alignment_responses WHERE room_id=? ORDER BY created_at,id",
+  ).bind(room.id).all();
+  return familyAlignmentSummary(result.results || []);
+}
+
+async function familyAlignmentOwnerRoom(db, row) {
+  return familyAlignmentRoomMetadata(row, await familyAlignmentRoomSummary(db, row));
+}
+
+async function getFamilyAlignment(request, env, projectId) {
+  const db = requireDatabase(env);
+  const session = await getSession(request, env);
+  await ownedProject(db, projectId, session.user_id);
+  const result = await db.prepare(
+    `SELECT * FROM family_alignment_rooms
+      WHERE project_id=? AND user_id=?
+      ORDER BY comparison_version DESC,created_at DESC,id DESC LIMIT ?`,
+  ).bind(projectId, session.user_id, FAMILY_ALIGNMENT_HISTORY_LIMIT).all();
+  const rooms = await Promise.all((result.results || []).map((row) => familyAlignmentOwnerRoom(db, row)));
+  return json({ room: rooms[0] || null, summary: rooms[0]?.summary || null, rooms });
+}
+
+async function createFamilyAlignment(request, env, projectId) {
+  requireTrustedOrigin(request, env);
+  requireAbuseControl(env);
+  const db = requireDatabase(env);
+  const session = await getSession(request, env);
+  await requireCsrf(request, session);
+  await rateLimit(request, env, `family-alignment-create:${session.user_id}`, 20, 60 * 60);
+  const key = normalizeIdempotencyKey(request);
+  const idempotencyKey = await digestBase64(`family-alignment:${session.user_id}:${key}`);
+  const body = await readJson(request);
+  if (Object.keys(body).length !== 1 || typeof body.comparisonId !== "string" || !body.comparisonId.trim()) {
+    throw new HttpError(400, "comparisonId is required and no other fields are accepted", "invalid_family_alignment");
+  }
+  const comparisonId = body.comparisonId.trim();
+  const appOrigin = canonicalAppOrigin(env);
+  const requestHash = await digestHex(stableStringify({ version: 1, projectId, comparisonId }));
+  const replay = await db.prepare(
+    "SELECT * FROM family_alignment_rooms WHERE idempotency_key=? AND user_id=?",
+  ).bind(idempotencyKey, session.user_id).first();
+  if (replay) {
+    if (replay.request_hash !== requestHash) throw new HttpError(409, "idempotency key was already used for another room", "idempotency_conflict");
+    return json({ room: familyAlignmentRoomMetadata(replay) });
+  }
+  const project = await ownedProject(db, projectId, session.user_id);
+  if (project.status === "archived") throw new HttpError(409, "restore the project before inviting reviewers", "project_archived");
+  const comparison = await db.prepare(
+    "SELECT * FROM decision_comparisons WHERE project_id=? AND user_id=? ORDER BY version DESC LIMIT 1",
+  ).bind(projectId, session.user_id).first();
+  if (!comparison || comparison.id !== comparisonId) {
+    throw new HttpError(409, "invite reviewers only from the latest saved comparison", "family_alignment_comparison_stale");
+  }
+  const content = parseStoredJson(comparison.content_json, {});
+  const currentInputHash = await digestHex(stableStringify({
+    input: parseStoredJson(project.input_json, {}),
+    estimate: parseStoredJson(project.estimate_json, null),
+  }));
+  if (content.sourceInputHash !== currentInputHash
+    || Number(comparison.project_input_revision || 1) !== Number(project.input_revision || 1)) {
+    throw new HttpError(409, "save a current comparison before inviting reviewers", "family_alignment_comparison_stale");
+  }
+  const existing = await db.prepare(
+    "SELECT * FROM family_alignment_rooms WHERE comparison_id=? AND project_id=? AND user_id=?",
+  ).bind(comparison.id, projectId, session.user_id).first();
+  if (existing) throw new HttpError(409, "this comparison already has a review room", "family_alignment_room_exists");
+  const token = randomToken(32);
+  const id = crypto.randomUUID();
+  const createdDate = new Date();
+  const createdAt = sqliteTimestamp(createdDate);
+  const expiresAt = sqliteTimestamp(new Date(createdDate.getTime() + 7 * 24 * 60 * 60 * 1000));
+  try {
+    const inserted = await db.prepare(
+      `INSERT INTO family_alignment_rooms
+         (id,project_id,user_id,comparison_id,comparison_version,token_hash,idempotency_key,
+          request_hash,response_count,access_count,expires_at,created_at)
+       SELECT ?,?,?,?,?,?,?,?,0,0,?,?
+        WHERE EXISTS (
+          SELECT 1 FROM projects p
+          JOIN decision_comparisons c ON c.id=? AND c.project_id=p.id AND c.user_id=p.user_id
+         WHERE p.id=? AND p.user_id=? AND p.status!='archived'
+           AND c.project_input_revision=p.input_revision
+           AND c.version=(SELECT MAX(latest.version) FROM decision_comparisons latest
+                           WHERE latest.project_id=p.id AND latest.user_id=p.user_id)
+        )
+       RETURNING id`,
+    ).bind(id, projectId, session.user_id, comparison.id, Number(comparison.version), await digestHex(token), idempotencyKey, requestHash, expiresAt, createdAt, comparison.id, projectId, session.user_id).first();
+    if (!inserted) throw new HttpError(409, "the project or comparison changed; reload before inviting reviewers", "family_alignment_comparison_stale");
+  } catch (error) {
+    if (error instanceof HttpError) throw error;
+    const racedReplay = await db.prepare(
+      "SELECT * FROM family_alignment_rooms WHERE idempotency_key=? AND user_id=?",
+    ).bind(idempotencyKey, session.user_id).first();
+    if (racedReplay?.request_hash === requestHash) return json({ room: familyAlignmentRoomMetadata(racedReplay) });
+    if (String(error?.message || error).toLowerCase().includes("unique")) {
+      throw new HttpError(409, "this comparison already has a review room", "family_alignment_room_exists");
+    }
+    throw error;
+  }
+  const row = { id, project_id: projectId, user_id: session.user_id, comparison_id: comparison.id, comparison_version: comparison.version, response_count: 0, access_count: 0, expires_at: expiresAt, created_at: createdAt, revoked_at: null };
+  await familyAlignmentEvent(db, "family_alignment_room_created", "owner_compare");
+  return json({ room: { ...familyAlignmentRoomMetadata(row), url: `${appOrigin}/align/${token}` } }, 201);
+}
+
+async function revokeFamilyAlignment(request, env, projectId, roomId) {
+  requireTrustedOrigin(request, env);
+  const db = requireDatabase(env);
+  const session = await getSession(request, env);
+  await requireCsrf(request, session);
+  const room = await db.prepare(
+    "SELECT id,revoked_at FROM family_alignment_rooms WHERE id=? AND project_id=? AND user_id=?",
+  ).bind(roomId, projectId, session.user_id).first();
+  if (!room) throw new HttpError(404, "review room not found", "family_alignment_not_found");
+  if (!room.revoked_at) {
+    const revoked = await db.prepare(
+      `UPDATE family_alignment_rooms SET revoked_at=?
+        WHERE id=? AND project_id=? AND user_id=? AND revoked_at IS NULL
+      RETURNING id`,
+    ).bind(sqliteTimestamp(), roomId, projectId, session.user_id).first();
+    if (revoked) await familyAlignmentEvent(db, "family_alignment_room_revoked", "owner_compare");
+  }
+  return empty();
+}
+
+function familyAlignmentPublicProjection(row) {
+  const content = parseStoredJson(row.content_json, {});
+  const scenarios = Array.isArray(content.scenarios) ? content.scenarios.slice(0, 2) : [];
+  if (scenarios.length !== 2) throw new HttpError(500, "review comparison is unavailable", "family_alignment_unavailable");
+  return {
+    id: row.id,
+    comparisonVersion: Number(row.comparison_version),
+    createdAt: row.created_at,
+    expiresAt: row.expires_at,
+    responseCount: Number(row.response_count || 0),
+    maxResponses: FAMILY_ALIGNMENT_RESPONSE_LIMIT,
+    scenarios: scenarios.map((scenario, index) => ({
+      key: index ? "B" : "A",
+      label: index ? "Option B" : "Option A",
+      floors: scenario.input?.floors,
+      bedrooms: scenario.input?.bedrooms,
+      parking: scenario.input?.parking,
+      quality: scenario.input?.quality,
+      estimate: {
+        builtUpSqft: Number(scenario.estimate?.builtUpSqft || 0),
+        lowInr: Number(scenario.estimate?.lowInr || 0),
+        highInr: Number(scenario.estimate?.highInr || 0),
+      },
+      programme: {
+        summary: `${scenario.input?.floors} · ${Number(scenario.input?.bedrooms)} bedroom${Number(scenario.input?.bedrooms) === 1 ? "" : "s"}`,
+        detail: `${scenario.input?.parking ? "Parking required" : "No parking"} · ${scenario.input?.quality} finish`,
+      },
+      constraints: publicDecisionList(scenario.constraints),
+      tradeoffs: publicDecisionList(scenario.tradeoffs),
+    })),
+    assumptions: publicDecisionList(content.assumptions),
+    disclaimer: publicDecisionText(content.disclaimer),
+  };
+}
+
+async function publicFamilyAlignmentRoom(request, env, token) {
+  requireAbuseControl(env);
+  const db = requireDatabase(env);
+  if (!/^[A-Za-z0-9_-]{40,64}$/u.test(token)) throw new HttpError(404, "review room not found", "family_alignment_not_found");
+  await rateLimit(request, env, "family-alignment-public", 180, 60 * 60);
+  const room = await db.prepare(
+    `SELECT r.*,c.content_json FROM family_alignment_rooms r
+       JOIN decision_comparisons c ON c.id=r.comparison_id
+      WHERE r.token_hash=?`,
+  ).bind(await digestHex(token)).first();
+  if (!room) throw new HttpError(404, "review room not found", "family_alignment_not_found");
+  if (room.revoked_at) throw new HttpError(410, "this review room is no longer available", "family_alignment_unavailable");
+  if (new Date(`${room.expires_at.replace(" ", "T")}Z`) <= new Date()) {
+    throw new HttpError(410, "this review room has expired", "family_alignment_expired");
+  }
+  return { db, room };
+}
+
+async function getPublicFamilyAlignment(request, env, token) {
+  const { db, room } = await publicFamilyAlignmentRoom(request, env, token);
+  const projection = familyAlignmentPublicProjection(room);
+  try {
+    await db.prepare(
+      `UPDATE family_alignment_rooms
+          SET access_count=access_count+1,last_accessed_at=?
+        WHERE id=? AND revoked_at IS NULL AND expires_at>datetime('now')
+      RETURNING id`,
+    ).bind(sqliteTimestamp(), room.id).first();
+  } catch {
+    console.error("Family Alignment access recording failed");
+  }
+  await familyAlignmentEvent(db, "family_alignment_review_opened", "family_review");
+  return json({ room: projection });
+}
+
+function normalizeFamilyAlignmentResponse(body) {
+  const allowed = new Set(["role", "preference", "confidence", "reasons"]);
+  if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).some((key) => !allowed.has(key)) || Object.keys(body).length !== 4) {
+    throw new HttpError(400, "response must contain only role, preference, confidence, and reasons", "invalid_family_alignment_response");
+  }
+  if (!FAMILY_ALIGNMENT_ROLES.has(body.role) || !FAMILY_ALIGNMENT_PREFERENCES.has(body.preference)
+    || !FAMILY_ALIGNMENT_CONFIDENCE.has(body.confidence)) {
+    throw new HttpError(400, "response contains an invalid structured choice", "invalid_family_alignment_response");
+  }
+  if (!Array.isArray(body.reasons) || body.reasons.length < 1 || body.reasons.length > 3
+    || new Set(body.reasons).size !== body.reasons.length
+    || body.reasons.some((reason) => !FAMILY_ALIGNMENT_REASONS.has(reason))) {
+    throw new HttpError(400, "choose between one and three different supported reasons", "invalid_family_alignment_response");
+  }
+  return { role: body.role, preference: body.preference, confidence: body.confidence, reasons: body.reasons };
+}
+
+function familyResponseToken(request) {
+  const token = String(request.headers.get("x-family-response-token") || "").trim();
+  if (!/^[A-Za-z0-9_-]{40,128}$/u.test(token)) {
+    throw new HttpError(400, "a high-entropy family response token is required", "invalid_family_response_token");
+  }
+  return token;
+}
+
+async function updateFamilyAlignmentReceipt(db, roomId, receiptHash, responseId, normalized, now) {
+  try {
+    const updated = await db.prepare(
+      `UPDATE family_alignment_responses
+          SET role=?,preference=?,confidence=?,reasons_json=?,updated_at=?
+        WHERE id=? AND room_id=? AND receipt_hash=?
+          AND EXISTS (SELECT 1 FROM family_alignment_rooms r
+                       WHERE r.id=? AND r.revoked_at IS NULL AND r.expires_at>datetime('now'))
+      RETURNING id`,
+    ).bind(normalized.role, normalized.preference, normalized.confidence, JSON.stringify(normalized.reasons), now, responseId, roomId, receiptHash, roomId).first();
+    if (!updated) throw new HttpError(410, "this review room is no longer available", "family_alignment_unavailable");
+    return updated;
+  } catch (error) {
+    if (error instanceof HttpError) throw error;
+    if (/family alignment response is not editable/iu.test(String(error?.message || error))) {
+      throw new HttpError(410, "this review room is no longer available", "family_alignment_unavailable");
+    }
+    throw error;
+  }
+}
+
+async function putPublicFamilyAlignmentResponse(request, env, token) {
+  requireTrustedOrigin(request, env);
+  const { db, room } = await publicFamilyAlignmentRoom(request, env, token);
+  await rateLimit(request, env, "family-alignment-response", 60, 60 * 60);
+  const normalized = normalizeFamilyAlignmentResponse(await readJson(request));
+  const receiptHash = await digestHex(`family-alignment:${room.id}:${familyResponseToken(request)}`);
+  const existing = await db.prepare(
+    "SELECT id FROM family_alignment_responses WHERE room_id=? AND receipt_hash=?",
+  ).bind(room.id, receiptHash).first();
+  const now = sqliteTimestamp();
+  if (existing) {
+    await updateFamilyAlignmentReceipt(db, room.id, receiptHash, existing.id, normalized, now);
+    await familyAlignmentEvent(db, "family_alignment_response_submitted", "family_review");
+    return json({ response: normalized, saved: true, updated: true });
+  }
+  let inserted;
+  try {
+    inserted = await db.prepare(
+      `INSERT INTO family_alignment_responses
+         (id,room_id,receipt_hash,role,preference,confidence,reasons_json,created_at,updated_at)
+       SELECT ?,?,?,?,?,?,?,?,?
+        WHERE (SELECT response_count FROM family_alignment_rooms WHERE id=? AND revoked_at IS NULL AND expires_at>datetime('now'))<5
+       RETURNING id`,
+    ).bind(crypto.randomUUID(), room.id, receiptHash, normalized.role, normalized.preference, normalized.confidence, JSON.stringify(normalized.reasons), now, now, room.id).first();
+  } catch (error) {
+    if (/family alignment room cannot accept another response/iu.test(String(error?.message || error))) {
+      const raced = await db.prepare(
+        "SELECT id FROM family_alignment_responses WHERE room_id=? AND receipt_hash=?",
+      ).bind(room.id, receiptHash).first();
+      if (raced) {
+        await updateFamilyAlignmentReceipt(db, room.id, receiptHash, raced.id, normalized, now);
+        await familyAlignmentEvent(db, "family_alignment_response_submitted", "family_review");
+        return json({ response: normalized, saved: true, updated: true });
+      }
+      const state = await db.prepare("SELECT response_count,revoked_at,expires_at FROM family_alignment_rooms WHERE id=?").bind(room.id).first();
+      if (state?.revoked_at || new Date(`${String(state?.expires_at).replace(" ", "T")}Z`) <= new Date()) {
+        throw new HttpError(410, "this review room is no longer available", "family_alignment_unavailable");
+      }
+      throw new HttpError(409, "this review room already has five responses", "family_alignment_full");
+    }
+    if (/unique constraint failed/iu.test(String(error?.message || error))) {
+      const raced = await db.prepare(
+        "SELECT id FROM family_alignment_responses WHERE room_id=? AND receipt_hash=?",
+      ).bind(room.id, receiptHash).first();
+      if (raced) {
+        await updateFamilyAlignmentReceipt(db, room.id, receiptHash, raced.id, normalized, now);
+        await familyAlignmentEvent(db, "family_alignment_response_submitted", "family_review");
+        return json({ response: normalized, saved: true, updated: true });
+      }
+    }
+    throw error;
+  }
+  if (!inserted) {
+    const state = await db.prepare("SELECT response_count,revoked_at,expires_at FROM family_alignment_rooms WHERE id=?").bind(room.id).first();
+    if (state?.revoked_at || !state || new Date(`${String(state.expires_at).replace(" ", "T")}Z`) <= new Date()) {
+      throw new HttpError(410, "this review room is no longer available", "family_alignment_unavailable");
+    }
+    throw new HttpError(409, "this review room already has five responses", "family_alignment_full");
+  }
+  await familyAlignmentEvent(db, "family_alignment_response_submitted", "family_review");
+  return json({ response: normalized, saved: true, updated: false }, 201);
 }
 
 async function chooseDecisionScenario(request, env, projectId) {
@@ -3827,6 +4208,7 @@ async function api(request, env, ctx, url) {
       let aiAbuseControl = "unknown";
       let decisionSchema = "unknown";
       let paymentSchema = "unknown";
+      let familyAlignmentSchema = "unknown";
       if (env.DB) {
         try {
           const result = await env.DB.prepare(
@@ -3834,6 +4216,7 @@ async function api(request, env, ctx, url) {
                     SUM(CASE WHEN name='ai_planning_briefs' THEN 1 ELSE 0 END) AS ai_brief_count,
                     SUM(CASE WHEN name IN ('ai_generation_counters','ai_generation_leases') THEN 1 ELSE 0 END) AS ai_abuse_count,
                     SUM(CASE WHEN name IN ('payment_terminal_records','payment_reconciliation_cases') THEN 1 ELSE 0 END) AS payment_hardening_count,
+                    SUM(CASE WHEN name IN ('family_alignment_rooms','family_alignment_responses') THEN 1 ELSE 0 END) AS family_alignment_count,
                     SUM(CASE WHEN name IN
                       ('decision_comparisons','decision_selections','purchased_decision_snapshots',
                        'decision_shares','product_event_aggregates','decision_progress') THEN 1 ELSE 0 END) AS decision_table_count
@@ -3842,10 +4225,53 @@ async function api(request, env, ctx, url) {
                 ('users','sessions','projects','reports','purchased_report_snapshots','order_fulfillments',
                  'ai_planning_briefs','ai_generation_counters','ai_generation_leases','decision_comparisons',
                  'decision_selections','purchased_decision_snapshots','decision_shares','product_event_aggregates',
-                 'decision_progress','payment_terminal_records','payment_reconciliation_cases')`,
+                 'decision_progress','payment_terminal_records','payment_reconciliation_cases',
+                 'family_alignment_rooms','family_alignment_responses')`,
           ).first();
           database = "ok";
-          const requiredTablesPresent = Number(result?.count) === 17;
+          const requiredTablesPresent = Number(result?.count) === 19;
+          if (Number(result?.family_alignment_count) === 2) {
+            try {
+              await env.DB.prepare(
+                `SELECT id,project_id,user_id,comparison_id,comparison_version,token_hash,idempotency_key,
+                        request_hash,response_count,access_count,last_accessed_at,expires_at,revoked_at,created_at
+                   FROM family_alignment_rooms LIMIT 0`,
+              ).first();
+              await env.DB.prepare(
+                `SELECT id,room_id,receipt_hash,role,preference,confidence,reasons_json,created_at,updated_at
+                   FROM family_alignment_responses LIMIT 0`,
+              ).first();
+              const familyObjects = await env.DB.prepare(
+                `SELECT
+                   SUM(CASE WHEN type='trigger' AND name IN (
+                     'family_alignment_response_insert_guard',
+                     'family_alignment_response_update_guard',
+                     'family_alignment_room_identity_immutable',
+                     'family_alignment_response_count_insert',
+                     'family_alignment_response_active_after_insert',
+                     'family_alignment_response_active_after_update',
+                     'family_alignment_response_count_delete'
+                   ) THEN 1 ELSE 0 END) AS family_alignment_trigger_count,
+                   SUM(CASE WHEN type='index' AND name IN (
+                     'idx_family_alignment_owner_created',
+                     'idx_family_alignment_expiry',
+                     'idx_family_alignment_responses_room_updated'
+                   ) THEN 1 ELSE 0 END) AS family_alignment_index_count
+                 FROM sqlite_master
+                WHERE (type='trigger' AND name LIKE 'family_alignment_%')
+                   OR (type='index' AND name LIKE 'idx_family_alignment_%')`,
+              ).first();
+              if (Number(familyObjects?.family_alignment_trigger_count) !== 7
+                || Number(familyObjects?.family_alignment_index_count) !== 3) {
+                throw new Error("family alignment database objects are incomplete");
+              }
+              familyAlignmentSchema = "current";
+            } catch {
+              familyAlignmentSchema = "outdated";
+            }
+          } else {
+            familyAlignmentSchema = "outdated";
+          }
           if (Number(result?.decision_table_count) === 6) {
             try {
               await env.DB.prepare(
@@ -3935,7 +4361,7 @@ async function api(request, env, ctx, url) {
             aiAbuseControl = "unavailable";
           }
           schema = requiredTablesPresent && aiSchema === "current" && aiAbuseControl === "configured"
-            && decisionSchema === "current" && paymentSchema === "current"
+            && decisionSchema === "current" && paymentSchema === "current" && familyAlignmentSchema === "current"
             ? "current"
             : "outdated";
         } catch {
@@ -3945,6 +4371,7 @@ async function api(request, env, ctx, url) {
           aiAbuseControl = "unknown";
           decisionSchema = "unknown";
           paymentSchema = "unknown";
+          familyAlignmentSchema = "unknown";
         }
       }
       const rateLimit = env.GRIHAGRID_CACHE ? "configured" : "missing";
@@ -3971,6 +4398,7 @@ async function api(request, env, ctx, url) {
           aiAbuseControl,
           decisionSchema,
           paymentSchema,
+          familyAlignmentSchema,
           ai: geminiConfigured ? "configured" : "unavailable",
           privateStorage: env.FILES ? "configured" : "unavailable",
           acceptingPaidPlans: acceptingPlans,
@@ -3981,6 +4409,7 @@ async function api(request, env, ctx, url) {
           paidCheckout: freeReady && acceptingPlans.length > 0,
           aiPlanningBrief: geminiConfigured,
           decisionCompare: freeReady && decisionSchema === "current",
+          familyAlignment: freeReady && decisionSchema === "current" && familyAlignmentSchema === "current" && rateLimit === "configured",
         },
         time: new Date().toISOString(),
       }, freeReady ? 200 : 503);
@@ -4012,6 +4441,19 @@ async function api(request, env, ctx, url) {
     }
     if (url.pathname === "/api/events/aggregate") {
       return request.method === "GET" ? await getProductEventAggregates(request, env, url) : methodNotAllowed(["GET"]);
+    }
+    const publicFamilyResponseMatch = url.pathname.match(/^\/api\/family-alignment\/([^/]+)\/response$/u);
+    if (publicFamilyResponseMatch) {
+      // Family bearer tokens are strict base64url. Keep the raw path segment so
+      // malformed percent escapes fail token validation instead of becoming a
+      // scanner-induced 500 during URL decoding.
+      const token = publicFamilyResponseMatch[1];
+      return request.method === "PUT" ? await putPublicFamilyAlignmentResponse(request, env, token) : methodNotAllowed(["PUT"]);
+    }
+    const publicFamilyMatch = url.pathname.match(/^\/api\/family-alignment\/([^/]+)$/u);
+    if (publicFamilyMatch) {
+      const token = publicFamilyMatch[1];
+      return request.method === "GET" ? await getPublicFamilyAlignment(request, env, token) : methodNotAllowed(["GET"]);
     }
     const publicDecisionMatch = url.pathname.match(/^\/api\/shared\/decision-compare\/([^/]+)$/u);
     if (publicDecisionMatch) {
@@ -4099,6 +4541,21 @@ async function api(request, env, ctx, url) {
       const projectId = decodeURIComponent(decisionChoiceMatch[1]);
       return request.method === "POST" ? await chooseDecisionScenario(request, env, projectId) : methodNotAllowed(["POST"]);
     }
+    const familyAlignmentRoomMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/family-alignment\/([^/]+)$/u);
+    if (familyAlignmentRoomMatch) {
+      const projectId = decodeURIComponent(familyAlignmentRoomMatch[1]);
+      const roomId = decodeURIComponent(familyAlignmentRoomMatch[2]);
+      return request.method === "DELETE"
+        ? await revokeFamilyAlignment(request, env, projectId, roomId)
+        : methodNotAllowed(["DELETE"]);
+    }
+    const familyAlignmentMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/family-alignment$/u);
+    if (familyAlignmentMatch) {
+      const projectId = decodeURIComponent(familyAlignmentMatch[1]);
+      if (request.method === "GET") return await getFamilyAlignment(request, env, projectId);
+      if (request.method === "POST") return await createFamilyAlignment(request, env, projectId);
+      return methodNotAllowed(["GET", "POST"]);
+    }
     const decisionCompareMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/decision-compare$/u);
     if (decisionCompareMatch) {
       const projectId = decodeURIComponent(decisionCompareMatch[1]);
@@ -4157,7 +4614,8 @@ function isApiRoute(pathname) {
   ]).has(pathname)
     || /^\/api\/orders\/[^/]+(?:\/(?:fulfillment|artifact|progress))?$/u.test(pathname)
     || /^\/api\/shared\/decision-compare\/[^/]+$/u.test(pathname)
-    || /^\/api\/projects\/[^/]+(?:\/report|\/ai-brief|\/orders|\/decision-compare(?:\/choice|\/shares(?:\/[^/]+)?)?|\/files(?:\/[^/]+)?)?$/u.test(pathname);
+    || /^\/api\/family-alignment\/[^/]+(?:\/response)?$/u.test(pathname)
+    || /^\/api\/projects\/[^/]+(?:\/report|\/ai-brief|\/orders|\/family-alignment(?:\/[^/]+)?|\/decision-compare(?:\/choice|\/shares(?:\/[^/]+)?)?|\/files(?:\/[^/]+)?)?$/u.test(pathname);
 }
 
 function isAppNavigation(request, url) {
@@ -4172,10 +4630,14 @@ function isAppNavigation(request, url) {
 
 function operationalRoute(pathname) {
   if (/^\/api\/shared\/decision-compare\/[^/]+$/u.test(pathname)) return "/api/shared/decision-compare/:token";
+  if (/^\/api\/family-alignment\/[^/]+\/response$/u.test(pathname)) return "/api/family-alignment/:token/response";
+  if (/^\/api\/family-alignment\/[^/]+$/u.test(pathname)) return "/api/family-alignment/:token";
   if (/^\/share\/decision\/[^/]+$/u.test(pathname)) return "/share/decision/:token";
+  if (/^\/align\/[^/]+$/u.test(pathname)) return "/align/:token";
   const templated = pathname
     .replace(/^\/api\/projects\/[^/]+/u, "/api/projects/:projectId")
     .replace(/^\/api\/orders\/[^/]+/u, "/api/orders/:orderId")
+    .replace(/\/family-alignment\/[^/]+$/u, "/family-alignment/:roomId")
     .replace(/\/files\/[^/]+$/u, "/files/:fileId")
     .replace(/\/shares\/[^/]+$/u, "/shares/:shareId");
   if (templated !== pathname || isApiRoute(pathname)) return templated;
@@ -4256,6 +4718,7 @@ export default {
       env.DB.prepare("DELETE FROM ai_generation_leases WHERE expires_at<=datetime('now')"),
       env.DB.prepare("DELETE FROM ai_generation_counters WHERE updated_at<datetime('now','-8 days')"),
       env.DB.prepare("DELETE FROM decision_shares WHERE expires_at<datetime('now','-90 days') OR (revoked_at IS NOT NULL AND revoked_at<datetime('now','-90 days'))"),
+      env.DB.prepare("DELETE FROM family_alignment_rooms WHERE expires_at<datetime('now','-90 days') OR (revoked_at IS NOT NULL AND revoked_at<datetime('now','-90 days'))"),
       env.DB.prepare("DELETE FROM product_event_aggregates WHERE event_day<date('now','-400 days')"),
     ]));
   },
@@ -4289,6 +4752,9 @@ export const __test = {
   parseCookies,
   requireCsrf,
   ensureProjectDeletable,
+  familyAlignmentPublicProjection,
+  familyAlignmentSummary,
+  normalizeFamilyAlignmentResponse,
   scopedIdempotencyKey,
   stableStringify,
   publicDecisionArtifact,

@@ -216,6 +216,70 @@ legal, monitoring and operational gates below have dated evidence.
 - [ ] DNS/canonical origin, TLS, HSTS, CSP, robots/sitemap, support/contact and
   privacy/terms/refund pages are correct at the sellable hostname.
 
+## Family Alignment release gate
+
+Family Alignment is a free feature, but it exposes a bearer-authorized public
+write surface and retained household preference data. It is therefore
+**NO-GO** until every item below has dated evidence; passing the older free-demo
+smoke is not sufficient.
+
+- [ ] The full `0001` through `0010_family_alignment.sql` chain applies to an
+  empty local/staging D1, migration `0010` applies once to a production-like
+  `0001`–`0009` copy, and `/api/readiness` fails closed when either Family
+  Alignment table/column/index contract is missing.
+- [ ] Real-D1 automation covers registration → project → immutable comparison
+  → first room create/replay → redacted public read → five distinct receipts →
+  own update at cap → sixth rejection → owner summary → separate owner choice
+  → revoke/public `410`, plus expiry, retention, cross-owner and paid-isolation
+  cases.
+- [ ] Concurrent create and receipt writers prove one room per comparison,
+  five receipts maximum, replay/update idempotency, and a SQL-time closure
+  fence for response-versus-revoke/expiry races.
+- [ ] Public response, DOM, network, source/share metadata, logs, analytics and
+  error canaries prove absence of recommendation, owner selection,
+  project/account identity, raw input/location/dimensions, notes/questions,
+  internal IDs, individual receipts and all raw/digested bearer values.
+- [ ] Room and response secrets have reviewed entropy, digest-only D1 storage,
+  room scoping and one-time delivery. Invocation logs remain disabled; custom
+  logs template `/align/<token>` and corresponding API paths; CSP and referrer
+  policy prevent third-party disclosure.
+- [ ] Owner create/read/revoke passes session, canonical-origin, CSRF and IDOR
+  tests. Public read/write passes malformed token, abuse limit, cross-room
+  token, response takeover, unknown-field, duplicate-reason, HTML/free-text,
+  oversized body, expired and revoked tests.
+- [ ] Only server-side daily aggregate events
+  `family_alignment_room_created`, `family_alignment_review_opened`,
+  `family_alignment_response_submitted` and
+  `family_alignment_room_revoked` are retained on `owner_compare` or
+  `family_review`; failures are best-effort and do not produce false core
+  errors or browser-emitted duplicates.
+- [ ] Cron deletes only Family Alignment rooms whose expiry/revocation boundary
+  is over 90 days old and cascades their receipts. Active/recent rooms and all
+  projects, comparisons, selections, orders, purchased snapshots and finance
+  evidence reconcile unchanged in a restoreable backup.
+- [ ] External and authenticated synthetics cover valid public read, a
+  synthetic owner create/summary/revoke journey with cleanup, `410` closure
+  and a cap fixture without putting bearer URLs/tokens in monitor labels,
+  dashboards, alerts, tickets or chat.
+- [ ] Keyboard-only, VoiceOver/NVDA, semantic group/name/error inspection,
+  status announcements, 48 px targets, contrast, 390 px/200% reflow, text
+  spacing, reduced motion and print/share metadata pass on owner and reviewer
+  surfaces.
+- [ ] Privacy/terms copy names seven-day access, the 90-day post-closure
+  support/audit window, anonymous structured fields, local response-secret
+  behavior, owner aggregate visibility, irrevocable revoke, and the lack of
+  professional approval or paid entitlement.
+- [ ] Alert failure injection pages on any token/privacy/cross-owner breach,
+  cap overrun, response-after-closure, Family Alignment action changing paid
+  state, persistent `5xx`, D1 write error spike, cron miss, or retention
+  backlog. Named engineering and privacy responders complete the drill.
+
+Release evidence must include an immutable SHA/version, migration output,
+automated suite result, redaction/log canaries, D1 concurrency proof,
+accessibility record, scheduled-retention before/after counts, rollback
+compatibility check, and founder/product + engineering + privacy/quality
+sign-off. No customer room is an acceptable production smoke fixture.
+
 ## Pilot go/no-go gate
 
 When every gate above has dated evidence, invite at most 20 qualified Pune plot

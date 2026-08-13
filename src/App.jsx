@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowClockwise, ArrowLeft, ArrowRight, ArrowSquareOut, ArrowsLeftRight, Blueprint, Buildings,
   Check, CheckCircle, Compass, Copy, CurrencyInr, DownloadSimple, Eye, FileText, FloppyDisk,
@@ -6,12 +6,37 @@ import {
   ShareNetwork, ShieldCheck, SignOut, Sparkle, Stack, Trash, UploadSimple, UserCircle,
   WarningCircle, X, XCircle,
 } from "@phosphor-icons/react";
-import { api, ApiError, copyText, formatDate, formatLakh, idempotencyKey, trackEvent } from "./api.js";
+import { api, ApiError, copyText, formatDate, formatDateTime, formatLakh, idempotencyKey, trackEvent } from "./api.js";
 
 const cityFactors = { Pune: 1, Bengaluru: 1.08, Mumbai: 1.18, Delhi: 1.1, Hyderabad: .98, Chennai: 1.02, Jaipur: .88, Other: .95 };
 const qualityRates = { Essential: 1750, Signature: 2200, Premium: 2850, Luxury: 3900 };
 const floorFactors = { G: .72, "G+1": 1.22, "G+2": 1.65 };
 const decisionPlanIds = ["decision_compare"];
+const familyRoles = [
+  ["spouse", "Spouse / partner"],
+  ["parent", "Parent"],
+  ["sibling", "Sibling"],
+  ["advisor", "Trusted advisor"],
+  ["other", "Other family member"],
+];
+const familyConfidence = [["high", "High"], ["medium", "Medium"], ["low", "Low"]];
+const familyReasons = [
+  ["budget", "Budget"],
+  ["space", "Usable space"],
+  ["parking", "Parking"],
+  ["accessibility", "Accessibility"],
+  ["future_expansion", "Future expansion"],
+  ["construction_complexity", "Construction complexity"],
+];
+const familyStatusCopy = {
+  no_responses: ["Waiting for the first response", "Share the private review link with up to five family members."],
+  split: ["The family is split", "Both directions have meaningful support. Use the reasons below to frame the next conversation."],
+  leaning_a: ["The family is leaning toward Option A", "There is a preference, but not yet a strong shared direction."],
+  leaning_b: ["The family is leaning toward Option B", "There is a preference, but not yet a strong shared direction."],
+  aligned_a: ["The family is aligned on Option A", "Every recorded preference points to the same direction."],
+  aligned_b: ["The family is aligned on Option B", "Every recorded preference points to the same direction."],
+  not_ready: ["The family is not ready to choose", "The responses suggest more information or another conversation is needed."],
+};
 
 function useCommerceCatalog() {
   const [availability,setAvailability]=useState({});
@@ -107,7 +132,7 @@ function HomePage() {
       <div className="monograph-copy">
         <span className="kicker">AI home planning for Indian plots</span>
         <h1>Know what fits.<br/>Know what it costs.</h1>
-        <p>Upload your plot details. Instantly see what fits, get an estimated construction cost, and walk into your first architect meeting prepared.</p>
+        <p>Enter your plot details. Instantly see what fits, get an estimated construction cost, and walk into your first architect meeting prepared.</p>
         <div className="hero-actions"><button className="copper-button copper-button--large" onClick={() => route("/start")}>Plan my home <ArrowRight/></button><button className="underlined-action" onClick={() => route("/plans")}>See a sample plan</button></div>
         <EstimateInstrument condensed/>
         <div className="hero-steps" aria-label="How GrihaGrid works">
@@ -115,7 +140,7 @@ function HomePage() {
           <div><span>02</span><Blueprint/><p>See what fits<br/>& likely cost</p></div>
           <div><span>03</span><UserCircle/><p>Consult an architect<br/><em>optional</em></p></div>
         </div>
-        <div className="hero-trust"><span><ShieldCheck/> Your project is private and secure</span><span>Concept first. Professionals before construction.</span></div>
+        <div className="hero-trust"><span><ShieldCheck/> Your saved project is account-scoped by default</span><span>Concept first. Professionals before construction.</span></div>
       </div>
       <div className="monograph-visual">
         <img width="1536" height="1024" src="/assets/v2/monograph-house-v2.jpg" onError={e => { e.currentTarget.src = "/assets/grihagrid-hero.jpg"; }} alt="Contemporary Indian home with an overlaid 30 by 50 foot plot plan"/>
@@ -157,13 +182,13 @@ function FaqSection() {
     ["Is this an architectural or sanction drawing?", "No. It is a concept-stage decision brief. A licensed local architect and structural engineer must validate every drawing, site assumption and construction decision."],
     ["How is the cost range calculated?", "We combine the likely built-up area with finish-level benchmarks and a city factor, then show a planning band. It is transparent guidance—not a contractor quotation."],
     ["Can I keep my project private?", "Yes. Projects are account-scoped, sessions use secure cookies, and private files are served through authenticated access rather than public links."],
-    ["Can I share the decision?", "Yes. A purchased Decision Compare can create an expiring, revocable read-only link for family members or your architect."],
+    ["Can I involve my family?", "Yes. Every saved comparison can open one free seven-day Family Alignment room for up to five structured responses. A purchased Decision Compare separately supports an expiring, revocable artifact link for family or your architect."],
   ];
   return <section className="faq-editorial"><SectionHeading kicker="Questions worth asking" title="Clear boundaries build trust."/><div>{faqs.map(([q,a],i)=><details key={q} open={i===0}><summary><span>0{i+1}</span>{q}<Plus/></summary><p>{a}</p></details>)}</div></section>;
 }
 
 const plans = [
-  {name:"Feasibility",price:"Free",lead:"Answer the first questions.",items:["Plot-fit assessment","Room programme","City-adjusted cost range","Private saved project"],eta:"Immediate",sku:null},
+  {name:"Feasibility",price:"Free",lead:"Answer the first questions.",items:["Plot-fit assessment","Room programme","City-adjusted cost range","Private saved project","7-day Family Alignment room · up to five structured responses"],eta:"Immediate",sku:null},
   {name:"Decision Compare",price:"₹999",lead:"Choose between two real alternatives.",items:["Exactly two versioned options","Area and cost differences","Trade-offs and recommendation","Five architect questions","Immutable artifact and expiring share"],eta:"Immediate",featured:true,sku:"decision_compare"},
 ];
 
@@ -277,6 +302,72 @@ function normalizeDecisionResponse(payload, project) {
     questions: listOf(source.questions || source.questionsForArchitect),
     assumptions: listOf(source.assumptions),
   };
+}
+
+function familyResponseToken() {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  let binary = "";
+  bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "");
+}
+
+function familyReceiptKey(roomId) {
+  return `grihagrid.familyResponse.${String(roomId || "").replace(/[^A-Za-z0-9_-]/gu, "").slice(0, 96)}`;
+}
+
+function readFamilyReceipt(roomId) {
+  if (!roomId) return null;
+  try {
+    const value = JSON.parse(localStorage.getItem(familyReceiptKey(roomId)) || "null");
+    return typeof value?.token === "string" && value.token.length >= 40 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeFamilyReceipt(roomId, receipt) {
+  if (!roomId) return false;
+  try {
+    localStorage.setItem(familyReceiptKey(roomId), JSON.stringify(receipt));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function clearFamilyReceipt(roomId) {
+  if (!roomId) return;
+  try { localStorage.removeItem(familyReceiptKey(roomId)); } catch { /* storage is optional */ }
+}
+
+function familyCount(record, keys) {
+  if (!record || typeof record !== "object") return 0;
+  for (const key of keys) {
+    const number = Number(record[key]);
+    if (Number.isFinite(number)) return number;
+  }
+  return 0;
+}
+
+function normalizeFamilyRoom(value) {
+  const room = value && typeof value === "object" ? value : {};
+  return {
+    ...room,
+    id: room.id || room.roomId || null,
+    comparisonId: room.comparisonId || room.comparison_id || null,
+    comparisonVersion: Number(room.comparisonVersion || room.comparison_version || room.version || 0) || null,
+    expiresAt: room.expiresAt || room.expires_at || null,
+    revokedAt: room.revokedAt || room.revoked_at || null,
+    responseCount: Number(room.responseCount || room.response_count || 0),
+    accessCount: Number(room.accessCount || room.access_count || 0),
+    active: room.active !== false && !room.revokedAt && !room.revoked_at,
+  };
+}
+
+function familyRoomState(room) {
+  if (room.revokedAt) return "Revoked";
+  if (!room.active) return "Expired";
+  return "Active";
 }
 
 function scenarioMath(project, scenario) {
@@ -461,6 +552,148 @@ function DecisionSharePanel({ projectId, comparison, orderId, canShare }) {
   </section>;
 }
 
+function FamilyAlignmentPanel({ projectId, comparison }) {
+  const [room,setRoom]=useState(null);
+  const [rooms,setRooms]=useState([]);
+  const [summary,setSummary]=useState(null);
+  const [phase,setPhase]=useState("loading");
+  const [busy,setBusy]=useState(false);
+  const [secretUrl,setSecretUrl]=useState("");
+  const [message,setMessage]=useState("");
+  const [error,setError]=useState("");
+  const createInFlight=useRef(false);
+
+  function applyOwnerResult(result) {
+    const rawRooms = Array.isArray(result?.rooms)
+      ? result.rooms
+      : Array.isArray(result?.history)
+        ? result.history
+        : Array.isArray(result?.roomHistory)
+          ? result.roomHistory
+          : [];
+    const normalizedRooms = rawRooms.map(normalizeFamilyRoom).filter(item=>item.id);
+    const returnedRoom = result?.room ? normalizeFamilyRoom(result.room) : null;
+    const current = returnedRoom?.comparisonId===comparison.id
+      ? returnedRoom
+      : normalizedRooms.find(item=>item.comparisonId===comparison.id) || null;
+    const merged = returnedRoom?.id && !normalizedRooms.some(item=>item.id===returnedRoom.id)
+      ? [returnedRoom,...normalizedRooms]
+      : normalizedRooms;
+    setRoom(current);
+    setRooms(merged);
+    setSummary(current ? (returnedRoom?.id===current.id ? (result?.summary || current.summary || null) : (current.summary || null)) : null);
+    setPhase("ready");
+  }
+
+  async function load(signal) {
+    setError("");
+    try {
+      const result=await api(`/api/projects/${encodeURIComponent(projectId)}/family-alignment`,{signal});
+      if(!signal?.aborted)applyOwnerResult(result);
+    } catch(err) {
+      if(signal?.aborted)return;
+      if(err instanceof ApiError&&err.status===401){route('/login');return}
+      if(err instanceof ApiError&&err.status===404){setRoom(null);setRooms([]);setSummary(null);setPhase('ready');return}
+      if(err instanceof ApiError&&(err.status===501||err.status===503)){setPhase('unavailable');return}
+      setError(err.message||'Family Alignment could not be loaded.');setPhase('error');
+    }
+  }
+
+  useEffect(()=>{const controller=new AbortController();setSecretUrl("");setMessage("");setPhase('loading');load(controller.signal);return()=>controller.abort()},[projectId,comparison.id]);
+
+  async function createRoom() {
+    if(createInFlight.current)return;
+    createInFlight.current=true;
+    setBusy(true);setError("");setMessage("");
+    const storageKey=`grihagrid.familyAlignment.${projectId}.${comparison.id}`;
+    try {
+      const result=await api(`/api/projects/${encodeURIComponent(projectId)}/family-alignment`,{
+        method:'POST',
+        headers:{'idempotency-key':idempotencyKey(storageKey)},
+        body:{comparisonId:comparison.id},
+      });
+      applyOwnerResult(result);
+      sessionStorage.removeItem(storageKey);
+      const created=result.room||{};
+      const privateUrl=typeof result.url==='string'&&result.url
+        ? result.url
+        : typeof created.url==='string'&&created.url
+          ? created.url
+          : typeof result.token==='string'&&result.token
+            ? `${window.location.origin}/align/${encodeURIComponent(result.token)}`
+            : typeof created.token==='string'&&created.token
+              ? `${window.location.origin}/align/${encodeURIComponent(created.token)}`
+          : '';
+      if(privateUrl){
+        setSecretUrl(privateUrl);
+        try{await copyText(privateUrl);setMessage('Private review link copied. It is shown only during this creation session.');}
+        catch{setMessage('Review room created. Use “Copy link” to place its private link on your clipboard.');}
+      }else{
+        setMessage('The review room is active, but its one-time secret link cannot be reissued. Save a new comparison version when you need a new review room.');
+      }
+    } catch(err) {
+      setError(err.status===503?'Family review is temporarily closed. Your saved comparison and owner choice are unchanged.':err.message);
+    } finally {createInFlight.current=false;setBusy(false)}
+  }
+
+  async function copyRoomLink() {
+    setError("");setMessage("");
+    try{if(!secretUrl)throw new Error('For security, this link is shown only when the room is created.');await copyText(secretUrl);setMessage('Private review link copied.');}
+    catch(err){setError(err.message)}
+  }
+
+  async function revokeRoom(target) {
+    if(!target?.id)return;
+    if(!window.confirm(`Revoke the private family review for comparison v${target.comparisonVersion||'—'}? Anyone using the link will lose access immediately. This cannot be undone.`))return;
+    setBusy(true);setError("");setMessage("");
+    try{
+      await api(`/api/projects/${encodeURIComponent(projectId)}/family-alignment/${encodeURIComponent(target.id)}`,{method:'DELETE',body:{}});
+      setSecretUrl("");setMessage(`Review room for comparison v${target.comparisonVersion||'—'} revoked. Future visits are blocked.`);
+      await load();
+    } catch(err){setError(err.message)}finally{setBusy(false)}
+  }
+
+  const scenarios=comparison.scenarios||[];
+  const ownerChoice=scenarios.find(item=>item.id===comparison.selectedScenarioId);
+  const status=summary?.status||summary?.alignmentStatus||'no_responses';
+  const statusText=familyStatusCopy[status]||familyStatusCopy.no_responses;
+  const preferenceCounts=summary?.preferences||{};
+  const confidenceCounts=summary?.confidence||{};
+  const reasonCounts=summary?.reasons||{};
+  const earlierRooms=rooms.filter(item=>item.id!==room?.id).sort((a,b)=>(b.comparisonVersion||0)-(a.comparisonVersion||0));
+  const optionACount=familyCount(preferenceCounts,['A']);
+  const optionBCount=familyCount(preferenceCounts,['B']);
+  const notReadyCount=familyCount(preferenceCounts,['notReady']);
+  const reasonCountKeys={future_expansion:'futureExpansion',construction_complexity:'constructionComplexity'};
+  const rankedReasons=familyReasons.map(([key,label])=>({key,label,count:familyCount(reasonCounts,[reasonCountKeys[key]||key])})).filter(item=>item.count>0).sort((a,b)=>b.count-a.count);
+
+  return <section className="family-alignment" aria-labelledby="family-alignment-title">
+    <header className="family-alignment__intro"><div><span className="kicker">Family Alignment · free</span><h2 id="family-alignment-title">One comparison.<br/><i>Every voice.</i></h2><p>Invite up to five family members to review this exact saved version. They respond privately without seeing your choice or GrihaGrid’s recommendation.</p></div><div className="family-alignment__promise"><UserCircle/><strong>Seven days</strong><span>One private room · no account needed</span></div></header>
+    {phase==='loading'&&<p className="family-alignment__loading" role="status"><ArrowClockwise/> Checking this version’s review room…</p>}
+    {phase==='unavailable'&&<div className="family-alignment__notice"><LockKey/><div><strong>Family review is not open yet.</strong><p>Your working comparison and owner choice remain private and available.</p></div></div>}
+    {phase==='error'&&<div className="family-alignment__notice family-alignment__notice--error"><WarningCircle/><div><strong>We could not open the review room.</strong><p role="alert">{error}</p><button className="underlined-action" onClick={()=>{setPhase('loading');load()}}>Try again <ArrowClockwise/></button></div></div>}
+    {phase==='ready'&&<>
+      <div className="family-alignment__workspace">
+        <div className="family-alignment__room">
+          <span className="family-alignment__eyebrow">Current comparison · v{comparison.version||1}</span>
+          {!room?<><h3>Open the family conversation.</h3><p>Create one private seven-day room tied to these two saved options. No names, emails, phone numbers, files, or free-text comments are collected.</p><button className="copper-button" disabled={busy} onClick={createRoom}><ShareNetwork/>{busy?'Creating private room…':'Create & copy review link'}</button></>:<><div className="family-alignment__room-state"><span className={`family-room-state family-room-state--${familyRoomState(room).toLowerCase()}`}><i/>{familyRoomState(room)}</span><span>{room.responseCount} of {room.maxResponses||5} responses</span></div><h3>{room.active?'This saved version is with the family.':'This review room is closed.'}</h3><p>{room.active?`Seven-day room · private until ${formatDateTime(room.expiresAt)}. The secret URL cannot be recovered after creation.`:`The responses remain visible in this owner summary, but the old link accepts no visits or changes.`}</p><div className="family-alignment__room-actions">{room.active&&secretUrl&&<button className="copper-button" disabled={busy} onClick={copyRoomLink}><Copy/> Copy link</button>}<button className="outline-button" disabled={busy} onClick={()=>{setPhase('loading');load()}}><ArrowClockwise/> Refresh</button>{room.active&&<button className="family-alignment__revoke" disabled={busy} onClick={()=>revokeRoom(room)}><XCircle/> Revoke</button>}</div></>}
+        </div>
+        <div className="family-alignment__summary" aria-live="polite">
+          <span className="family-alignment__eyebrow">Owner-only summary</span>
+          <h3>{statusText[0]}</h3><p>{statusText[1]}</p>
+          <div className="family-alignment__tally" aria-label="Family preference counts"><div><span>Option A</span><strong>{optionACount}</strong></div><div><span>Option B</span><strong>{optionBCount}</strong></div><div><span>Not ready</span><strong>{notReadyCount}</strong></div></div>
+          {(familyCount(confidenceCounts,['high'])+familyCount(confidenceCounts,['medium'])+familyCount(confidenceCounts,['low']))>0&&<p className="family-alignment__confidence"><strong>{familyCount(confidenceCounts,['high'])}</strong> high-confidence · {familyCount(confidenceCounts,['medium'])} medium · {familyCount(confidenceCounts,['low'])} low</p>}
+          {rankedReasons.length>0&&<div className="family-alignment__reasons"><span>What is shaping the responses</span>{rankedReasons.slice(0,4).map(item=><div key={item.key}><strong>{item.label}</strong><span>{item.count}</span></div>)}</div>}
+        </div>
+      </div>
+      <div className="family-alignment__authority"><SealCheck/><div><span>The family response</span><strong>{summary?.totalResponses??room?.responseCount??0} structured response{Number(summary?.totalResponses??room?.responseCount??0)===1?'':'s'} · advisory</strong></div><ArrowRight aria-hidden="true"/><div><span>Your authoritative choice</span><strong>{ownerChoice?`${ownerChoice.key||''} · ${ownerChoice.label}`:'No direction chosen yet'}</strong></div></div>
+      {earlierRooms.length>0&&<div className="family-alignment__history"><div><span className="kicker">Earlier review rooms</span><p>Each room stays tied to the version those reviewers actually saw.</p></div><div>{earlierRooms.map(item=><article key={item.id}><div><strong>Comparison v{item.comparisonVersion||'—'}</strong><span>{familyRoomState(item)} · {item.responseCount} response{item.responseCount===1?'':'s'} · expires {formatDateTime(item.expiresAt)}</span></div>{item.active&&<button disabled={busy} onClick={()=>revokeRoom(item)}><XCircle/> Revoke</button>}</article>)}</div></div>}
+    </>}
+    {message&&<p className="success-message family-alignment__message" role="status"><CheckCircle/>{message}</p>}{error&&phase!=='error'&&<p className="form-error family-alignment__message" role="alert">{error}</p>}
+    <footer><ShieldCheck/><p><strong>Responses are not votes of approval.</strong> Family preferences do not change your chosen direction, modify the comparison, or replace professional validation.</p></footer>
+  </section>;
+}
+
 function DecisionComparePage({ projectId }) {
   const [project,setProject]=useState(null);
   const [comparison,setComparison]=useState(null);
@@ -527,6 +760,7 @@ function DecisionComparePage({ projectId }) {
       <div className="decision-editor__actions"><p><ShieldCheck/> Concept-stage calculations only. Local rules and site conditions remain unresolved.</p><button className="copper-button" type="submit" disabled={saving||drafts.length!==2}>{saving?'Recalculating both options…':phase==='empty'?'Create comparison':'Save & recalculate'} <ArrowsLeftRight/></button></div>
     </form>
     <section id="decision-results" className="decision-results" tabIndex="-1">{phase==='empty'&&<div className="decision-preview-note" role="status"><PencilSimple/><p><strong>Unsaved preview.</strong> These two starting options are visible only in this browser. Save them to create a versioned comparison and choose a direction.</p></div>}<DecisionDocument comparison={comparison} project={project} onChoose={choose} choosing={choosing}/></section>
+    {phase==='ready'&&comparison?.id&&<FamilyAlignmentPanel projectId={projectId} comparison={comparison}/>}
     <DecisionPurchasePanel projectId={projectId} comparison={comparison} orders={orders} onOrdersChange={setOrders}/>
     <DecisionSharePanel projectId={projectId} comparison={comparison} orderId={comparison.entitlement?.orderId||null} canShare={Boolean(comparison.entitlement?.active)}/>
   </main>;
@@ -545,11 +779,11 @@ function PurchasePanel({ projectId }) {
 }
 
 function ProjectFiles({ projectId }) {
-  const [files,setFiles]=useState([]);const [busy,setBusy]=useState(false);const [error,setError]=useState("");
-  useEffect(()=>{api(`/api/projects/${projectId}/files`).then(x=>setFiles(x.files||[])).catch(e=>{if(e.status!==503)setError(e.message)});},[projectId]);
-  async function upload(event){const selected=[...(event.target.files||[])];if(!selected.length)return;setBusy(true);setError("");try{for(const file of selected){const form=new FormData();form.append('file',file);form.append('kind','reference');const result=await api(`/api/projects/${projectId}/files`,{method:'POST',body:form});setFiles(current=>[result.file,...current]);}}catch(err){setError(err.status===503?'Private photo storage is being activated. Your report is already saved; try the upload again shortly.':err.message);}finally{setBusy(false);event.target.value='';}}
+  const [files,setFiles]=useState([]);const [busy,setBusy]=useState(false);const [error,setError]=useState("");const [storageState,setStorageState]=useState('loading');
+  useEffect(()=>{api(`/api/projects/${projectId}/files`).then(x=>{setFiles(x.files||[]);setStorageState('ready')}).catch(e=>{if(e.status===503){setStorageState('unavailable');return}setStorageState('error');setError(e.message)});},[projectId]);
+  async function upload(event){const selected=[...(event.target.files||[])];if(!selected.length)return;setBusy(true);setError("");try{for(const file of selected){const form=new FormData();form.append('file',file);form.append('kind','reference');const result=await api(`/api/projects/${projectId}/files`,{method:'POST',body:form});setFiles(current=>[result.file,...current]);}}catch(err){if(err.status===503){setStorageState('unavailable');setError('');return}setError(err.message);}finally{setBusy(false);event.target.value='';}}
   async function remove(file){const name=file.name||file.fileName||file.file_name||'this file';if(!window.confirm(`Delete “${name}”?`))return;try{await api(`/api/projects/${projectId}/files/${file.id}`,{method:'DELETE',body:{}});setFiles(current=>current.filter(item=>item.id!==file.id));}catch(err){setError(err.message)}}
-  return <section className="project-files"><div><span className="kicker">Private site context</span><h2>Plot photographs & documents</h2><p>Keep the evidence behind your brief together. Files remain account-scoped.</p></div><label className="file-upload-action"><UploadSimple/>{busy?'Uploading…':'Add files'}<input disabled={busy} type="file" multiple accept="image/jpeg,image/png,image/webp,application/pdf" onChange={upload}/></label>{error&&<p className="form-error" role="alert">{error}</p>}{files.length>0&&<div className="file-list">{files.map(file=>{const name=file.name||file.fileName||file.file_name||'Project file';return <div key={file.id}><FileText/><a href={`/api/projects/${projectId}/files/${file.id}`}>{name}</a><span>{Math.max(1,Math.round((file.sizeBytes||file.size_bytes||0)/1024))} KB</span><button onClick={()=>remove(file)} aria-label={`Delete ${name}`}><Trash/></button></div>})}</div>}</section>;
+  return <section className={`project-files project-files--${storageState}`}><div><span className="kicker">Private site context</span><h2>Plot photographs & documents</h2><p>{storageState==='unavailable'?'Private file storage is not active in this release. Your feasibility and saved project are complete without uploads.':'Keep the evidence behind your brief together. Files remain account-scoped.'}</p></div>{storageState==='loading'?<span className="file-storage-state" role="status"><ArrowClockwise/> Checking storage…</span>:storageState==='unavailable'?<span className="file-storage-state"><LockKey/> Uploads unavailable</span>:<label className="file-upload-action"><UploadSimple/>{busy?'Uploading…':'Add files'}<input disabled={busy||storageState!=='ready'} type="file" multiple accept="image/jpeg,image/png,image/webp,application/pdf" onChange={upload}/></label>}{error&&<p className="form-error" role="alert">{error}</p>}{files.length>0&&<div className="file-list">{files.map(file=>{const name=file.name||file.fileName||file.file_name||'Project file';return <div key={file.id}><FileText/><a href={`/api/projects/${projectId}/files/${file.id}`}>{name}</a><span>{Math.max(1,Math.round((file.sizeBytes||file.size_bytes||0)/1024))} KB</span><button onClick={()=>remove(file)} aria-label={`Delete ${name}`}><Trash/></button></div>})}</div>}</section>;
 }
 
 function AiPlanningBrief({ projectId }) {
@@ -703,6 +937,116 @@ function SharedDecisionPage({ token }) {
   return <main className="shared-decision"><header><Brand/><span><LockKey/> Read-only · expires {formatDate(state.share.expiresAt)}</span><button onClick={()=>window.print()}><DownloadSimple/> Print</button></header><DecisionDocument comparison={comparison} project={project} readonly artifact/><footer><p>Shared privately through GrihaGrid. This link does not reveal the owner’s account or project files.</p><button className="underlined-action" onClick={()=>route('/')}>Create my own feasibility <ArrowRight/></button></footer></main>;
 }
 
+function FamilyReviewComparison({ scenarios, assumptions, disclaimer }) {
+  if(!Array.isArray(scenarios)||scenarios.length!==2)return <div className="family-review__invalid"><WarningCircle/><p>Two complete options are required for a family review.</p></div>;
+  return <section className="family-review__comparison" aria-labelledby="family-options-title">
+    <div className="family-review__comparison-title"><span className="kicker">The same brief · two directions</span><h2 id="family-options-title">Review the facts before choosing.</h2><p>The project owner’s choice and GrihaGrid’s recommendation are deliberately hidden. Your response should be independent.</p></div>
+    <div className="family-review__options">
+      {scenarios.map((scenario,index)=>{const estimate=scenario.estimate||{};return <article key={scenario.key||index} className="family-review__option">
+        <header><span>Independent direction</span><h3>Option {scenario.key||String.fromCharCode(65+index)}</h3></header>
+        <dl><div><dt>Likely built-up</dt><dd>{Number(estimate.builtUpSqft||0).toLocaleString('en-IN')} sq ft</dd></div><div><dt>Planning range</dt><dd>{formatLakh(estimate.lowInr)}–{formatLakh(estimate.highInr)}</dd></div><div><dt>Programme</dt><dd>{scenario.programme?.summary||`${scenario.floors||'—'} · ${scenario.bedrooms||'—'} bedrooms`}</dd><small>{scenario.programme?.detail||`${scenario.parking?'Parking required':'No parking'} · ${scenario.quality||'Finish to confirm'}`}</small></div></dl>
+        <div className="family-review__lists"><section><h4>What to resolve</h4><ComparisonList items={scenario.constraints} fallback="Local setbacks, circulation, and site conditions still need professional verification."/></section><section><h4>Trade-off</h4><ComparisonList items={scenario.tradeoffs} fallback="Compare space, budget, and delivery complexity before committing."/></section></div>
+      </article>})}
+    </div>
+    {(listOf(assumptions).length>0||disclaimer)&&<aside className="family-review__assumptions" aria-label="Concept-stage assumptions">
+      {listOf(assumptions).length>0&&<div><h3>Shared assumptions</h3><ComparisonList items={assumptions} fallback=""/></div>}
+      {disclaimer&&<p><ShieldCheck aria-hidden="true"/><span><strong>Concept-stage boundary.</strong> {disclaimer}</span></p>}
+    </aside>}
+  </section>;
+}
+
+function FamilyAlignmentReviewPage({ token }) {
+  const [phase,setPhase]=useState('loading');
+  const [room,setRoom]=useState(null);
+  const [receipt,setReceipt]=useState(null);
+  const [form,setForm]=useState({role:'',preference:'',confidence:'',reasons:[]});
+  const [busy,setBusy]=useState(false);
+  const [error,setError]=useState('');
+  const [savedMessage,setSavedMessage]=useState('');
+
+  useEffect(()=>{
+    const controller=new AbortController();
+    setPhase('loading');setError('');
+    api(`/api/family-alignment/${encodeURIComponent(token)}`,{signal:controller.signal}).then(result=>{
+      if(controller.signal.aborted)return;
+      const publicRoom=result.room||result;
+      setRoom(publicRoom);
+      const stored=readFamilyReceipt(publicRoom.id);
+      setReceipt(stored);
+      const savedForm=stored?.response||stored?.pending;
+      if(savedForm)setForm({role:savedForm.role||'',preference:savedForm.preference||'',confidence:savedForm.confidence||'',reasons:Array.isArray(savedForm.reasons)?savedForm.reasons.slice(0,3):[]});
+      setPhase('ready');
+    }).catch(err=>{
+      if(controller.signal.aborted)return;
+      if(err.status===410)setPhase('closed');
+      else if(err.status===404)setPhase('unavailable');
+      else{setError('The private review could not be opened. Please ask the project owner for a fresh link.');setPhase('error')}
+    });
+    return()=>controller.abort();
+  },[token]);
+
+  function toggleReason(reason) {
+    setForm(current=>{
+      const exists=current.reasons.includes(reason);
+      if(exists)return {...current,reasons:current.reasons.filter(item=>item!==reason)};
+      if(current.reasons.length>=3)return current;
+      return {...current,reasons:[...current.reasons,reason]};
+    });
+  }
+
+  async function submit(event) {
+    event.preventDefault();
+    if(!room?.id||!form.role||!form.preference||!form.confidence||form.reasons.length<1){setError('Choose your role, one preference, confidence, and at least one reason.');return}
+    setBusy(true);setError('');setSavedMessage('');
+    const responseToken=receipt?.token||familyResponseToken();
+    const pendingReceipt={token:responseToken,response:receipt?.response||null,pending:form};
+    // Persist the idempotent reviewer identity before the write. If the server
+    // commits but the response is lost, a retry must update the same row rather
+    // than consume another one of the five slots.
+    writeFamilyReceipt(room.id,pendingReceipt);setReceipt(pendingReceipt);
+    try{
+      const result=await api(`/api/family-alignment/${encodeURIComponent(token)}/response`,{method:'PUT',headers:{'x-family-response-token':responseToken},body:form});
+      const saved=result.response||form;
+      const nextReceipt={token:responseToken,response:saved,pending:null};
+      const retained=writeFamilyReceipt(room.id,nextReceipt);setReceipt(nextReceipt);setForm(saved);
+      setSavedMessage(retained
+        ? (result.updated?'Your response was updated. Only this browser can amend it while the room remains open.':'Your private response was recorded. You may update it from this browser while the room remains open.')
+        : 'Your private response was recorded, but this browser blocked the local receipt. Keep this page open if you may need to update it.');
+    }catch(err){
+      if(err.status===410){setPhase('closed');return}
+      if(err.status===409&&(err.payload?.code==='family_alignment_full'||err.payload?.code==='room_full')){clearFamilyReceipt(room.id);setReceipt(null);setPhase('full');return}
+      setError('Your response could not be saved. Please check the choices and try again.');
+    }finally{setBusy(false)}
+  }
+
+  if(phase==='loading')return <main className="shared-state family-review-state"><Brand/><div role="status"><UserCircle/><span className="kicker">Private family review</span><h1>Opening the two options…</h1><p>No account is needed. The room is checked before any project facts are shown.</p></div></main>;
+  if(phase!=='ready'&&phase!=='full'){
+    const closed=phase==='closed';
+    return <main className="shared-state family-review-state"><Brand/><div><XCircle/><span className="kicker">{closed?'Review closed':'Review unavailable'}</span><h1>{closed?'This family review has ended.':'This private link cannot be opened.'}</h1><p>{closed?'The room expired after seven days or was revoked by the project owner. Ask them for a current review link.':error||'The link may be incomplete. Ask the project owner for a fresh link.'}</p><button className="copper-button" onClick={()=>route('/start')}>Plan my own home <ArrowRight/></button></div></main>;
+  }
+  const scenarios=Array.isArray(room.scenarios)?room.scenarios:[];
+  const maxResponses=Number(room.maxResponses||5);
+  const roomFull=phase==='full'||(Number(room.responseCount||0)>=maxResponses&&!receipt);
+  const expiry=formatDateTime(room.expiresAt);
+  return <main className="family-review-page">
+    <header className="family-review__topbar"><Brand inverted/><span><LockKey/> Private review · closes {expiry}</span></header>
+    <section className="family-review__hero"><div><span className="kicker">Family Alignment · independent review</span><h1>Your view matters.<br/><i>Choose honestly.</i></h1><p>Compare two concept-stage directions for someone in your family. You will not see anyone else’s answer, the owner’s choice, or an automated recommendation.</p></div><div aria-hidden="true"><strong>{Number(room.responseCount||0)}</strong><span>of {maxResponses}<br/>responses</span></div></section>
+    <FamilyReviewComparison scenarios={scenarios} assumptions={room.assumptions} disclaimer={room.disclaimer}/>
+    <section className="family-review__response" aria-labelledby="family-response-title">
+      <header><span className="kicker">Your private response</span><h2 id="family-response-title">What would you support?</h2><p>This is structured decision input—not professional approval. No name, contact detail, or free-text comment is collected.</p></header>
+      {roomFull?<div className="family-review__full" role="status"><UserCircle/><div><h3>This room has five responses.</h3><p>The project owner limited this review to five family members. Nothing was collected from you.</p></div></div>:<form onSubmit={submit} aria-busy={busy}>
+        <fieldset><legend>How are you involved?</legend><div className="family-review__choice-grid family-review__choice-grid--roles">{familyRoles.map(([value,label])=><label key={value}><input type="radio" name="family-role" value={value} checked={form.role===value} onChange={()=>setForm({...form,role:value})}/><span>{label}</span></label>)}</div></fieldset>
+        <fieldset><legend>Which direction would you support?</legend><div className="family-review__choice-grid family-review__choice-grid--preference">{[["A","Option A"],["B","Option B"],["not_ready","Not ready to choose"]].map(([value,label])=><label key={value}><input type="radio" name="family-preference" value={value} checked={form.preference===value} onChange={()=>setForm({...form,preference:value})}/><span>{label}</span></label>)}</div></fieldset>
+        <fieldset><legend>How confident are you?</legend><div className="family-review__choice-grid">{familyConfidence.map(([value,label])=><label key={value}><input type="radio" name="family-confidence" value={value} checked={form.confidence===value} onChange={()=>setForm({...form,confidence:value})}/><span>{label}</span></label>)}</div></fieldset>
+        <fieldset><legend>What is shaping your answer? <small>Choose one to three</small></legend><div className="family-review__choice-grid family-review__choice-grid--reasons">{familyReasons.map(([value,label])=>{const selected=form.reasons.includes(value);return <label key={value}><input type="checkbox" value={value} checked={selected} disabled={!selected&&form.reasons.length>=3} onChange={()=>toggleReason(value)}/><span>{label}</span></label>})}</div><p className="family-review__reason-count" aria-live="polite">{form.reasons.length} of 3 selected{form.reasons.length===3?' · remove one before choosing another':''}</p></fieldset>
+        {savedMessage&&<p className="success-message" role="status"><CheckCircle/>{savedMessage}</p>}{error&&<p className="form-error" role="alert">{error}</p>}
+        <div className="family-review__submit"><p><ShieldCheck/> The project owner sees only aggregate counts and reasons—not your identity.</p><button className="copper-button copper-button--large" disabled={busy} type="submit">{busy?'Saving privately…':receipt?'Update my response':'Save my response'} <ArrowRight/></button></div>
+      </form>}
+    </section>
+    <footer className="family-review__footer"><div><span className="kicker">Have a plot of your own?</span><h2>Start with what fits—and what it may cost.</h2></div><button className="outline-button" onClick={()=>route('/start')}>Create my free feasibility <ArrowRight/></button><p><ShieldCheck/> GrihaGrid is a concept-stage decision aid, not architectural, municipal, structural, or construction approval.</p></footer>
+  </main>;
+}
+
 function CheckoutReturnPage({ orderId }) {
   const [state,setState]=useState({loading:true,order:null,error:""});
   useEffect(()=>{let active=true;let timer;let attempts=0;async function poll(){try{const result=await api(`/api/orders/${encodeURIComponent(orderId)}`);if(!active)return;setState({loading:false,order:result.order,error:""});if(!['paid','failed','refunded'].includes(result.order.status)&&attempts++<20)timer=window.setTimeout(poll,1500);}catch(err){if(!active)return;if(err instanceof ApiError&&err.status===401){route('/login');return}setState({loading:false,order:null,error:err.message});}}if(orderId)poll();else setState({loading:false,order:null,error:'Missing order reference.'});return()=>{active=false;window.clearTimeout(timer)}},[orderId]);
@@ -723,7 +1067,10 @@ function ReportPage({ id }) {
   return <main className="report-page"><header><button onClick={()=>route('/dashboard')}><ArrowLeft/> Projects</button><Brand/><button onClick={()=>window.print()}><DownloadSimple/> Download / print</button></header><div className="report-document">{uploadWarning&&<div className="report-upload-warning" role="alert"><WarningCircle/><span>{uploadWarning}</span><button onClick={()=>{sessionStorage.removeItem(`grihagrid.uploadWarning.${id}`);setUploadWarning("")}}>Dismiss</button></div>}<section className="report-cover"><span className="kicker">GrihaGrid feasibility brief · v{report.version||1}</span><h1>{project.name||'My family home'}</h1><p>{input.width} × {input.length} ft · {input.facing||'East'}-facing · {input.city}</p><div><span>Concept stage</span><span>{new Date(report.generatedAt||project.createdAt||Date.now()).toLocaleDateString('en-IN',{day:'numeric',month:'long',year:'numeric'})}</span></div></section><section className="report-hero"><img loading="lazy" width="1536" height="1024" src="/assets/grihagrid-hero.jpg" alt="Warm modern home direction"/><div><span>Exterior direction</span><strong>{input.style||'Warm modern'}</strong></div></section><section className="report-facts"><div><span>Plot fit</span><strong>Feasible*</strong><small>Subject to local verification</small></div><div><span>Likely built-up</span><strong>{(estimate.builtUpSqft||report.summary?.targetBuiltUpSqft||0).toLocaleString('en-IN')} sq ft</strong><small>{input.floors} concept</small></div><div><span>Planning range</span><strong>{formatLakh(estimate.lowInr||report.costPlan?.lowInr)}–{formatLakh(estimate.highInr||report.costPlan?.highInr)}</strong><small>{input.quality} finish</small></div></section><section className="report-copy"><div><span className="kicker">Executive readout</span><h2>{report.summary?.verdict||'Conceptually feasible, subject to verification.'}</h2></div><div><p>{firstRisk}</p><p>{report.nextActions?.slice(0,2).join(' ')||'Commission a measured survey and validate the brief with every decision-maker before detailed design.'}</p></div></section><section className="report-budget"><h2>Indicative cost allocation</h2>{costCategories.map(category=><div key={category.name}><span>{category.name}</span><i><b style={{width:`${category.percent}%`}}/></i><strong>{formatLakh(category.amountInr)}</strong></div>)}</section><section className="report-boundary"><ShieldCheck/><p><strong>Use this report to decide—not to construct.</strong> A licensed local architect and structural engineer must validate site conditions, bylaws, drawings and specifications.</p></section><section className="report-compare-bridge"><div><span className="kicker">Decision Compare · two alternatives</span><h2>What changes if the brief changes?</h2><p>Hold the plot constant. Compare exactly two ways to trade area, programme and planning cost—then record one direction for the family and architect.</p></div><div><ArrowsLeftRight/><button className="copper-button" onClick={()=>route(`/projects/${id}/compare`)}>Compare two options <ArrowRight/></button><button className="underlined-action" onClick={()=>route('/compare/sample')}>See a sample first</button></div></section><AiPlanningBrief projectId={id}/><PurchasePanel projectId={id}/><ProjectFiles projectId={id}/></div></main>;
 }
 
-function LegalPage({ type }) { const title={privacy:'Privacy policy',terms:'Terms of use',refund:'Refund & cancellation'}[type]; return <main className="legal-page"><span className="kicker">Legal · Plain language</span><h1>{title}</h1><p className="legal-date">Effective 13 August 2026</p><section><h2>The short version</h2><p>GrihaGrid is a concept-stage planning service. We collect the minimum information needed to operate your account, save projects, generate reports and support purchases. Project information is private by default.</p><h2>Your files and account</h2><p>Account sessions use secure, HTTP-only cookies. Site photographs are stored privately and accessed only through authenticated requests. You can delete project files and request account deletion.</p>{type==='privacy'&&<><h2>Gemini-assisted briefs</h2><p>AI briefs are for users aged 18 or older and require consent before generation. We send sanitized planning facts—not account details, precise addresses or uploaded files—to Google Gemini. On Google’s Free tier, inputs and outputs may be reviewed or used by Google to improve its products. Gemini output is advisory and is saved with your project.</p></>}<h2>Professional boundary</h2><p>Generated concepts, estimates and compliance cues are indicative. They do not replace licensed architectural, structural, geotechnical, legal, tax or municipal advice.</p><h2>Payments and refunds</h2><p>Free feasibility work requires no payment. Digital reports may be cancelled before generation begins. Expert reviews may be cancelled before a professional accepts the assignment. Final policy is subject to applicable Indian consumer law.</p><h2>Contact</h2><p>Email <a href="mailto:hello@grihagrid.in">hello@grihagrid.in</a>. These policies must receive final counsel review before live payment activation.</p></section></main>; }
+function LegalPage({ type }) {
+  const title={privacy:'Privacy policy',terms:'Terms of use',refund:'Refund & cancellation'}[type];
+  return <main className="legal-page"><span className="kicker">Legal · Plain language</span><h1>{title}</h1><p className="legal-date">Effective 14 August 2026</p><section><h2>The short version</h2><p>GrihaGrid is a concept-stage planning service. We collect the minimum information needed to operate your account, save projects, generate reports and support purchases. Project information is private by default.</p><h2>Your files and account</h2><p>Account sessions use secure, HTTP-only cookies. Site photographs are stored privately and accessed only through authenticated requests. You can delete project files and request account deletion.</p>{type==='privacy'&&<><h2>Gemini-assisted briefs</h2><p>AI briefs are for users aged 18 or older and require consent before generation. We send sanitized planning facts—not account details, precise addresses or uploaded files—to Google Gemini. On Google’s Free tier, inputs and outputs may be reviewed or used by Google to improve its products. Gemini output is advisory and is saved with your project.</p></>}{type!=='refund'&&<><h2>Family Alignment</h2><p>A project owner may create a seven-day bearer link showing two redacted options. Anyone holding that link can access the review until it expires or is revoked, so owners should share it carefully. Reviewers provide only a role category, preference, confidence and one to three structured reasons; GrihaGrid does not collect their name, contact details or free-text comments.</p><p>The owner sees aggregate response counts and reasons, not reviewer profiles or contact identity. A random response receipt and the reviewer’s own structured choices are cached locally in that browser so the response can be amended while the room remains open. GrihaGrid sends neither value to analytics. Clearing this site’s browser data removes the local copy and update capability. Family responses are advisory and never constitute professional approval.</p><p>Expired or revoked rooms and their structured responses may be retained for up to 90 days for bounded support, abuse review and audit, then the room and its responses are deleted together. An unpaid project deletion removes its Family Alignment rooms and responses through the same project deletion workflow.</p></>}<h2>Professional boundary</h2><p>Generated concepts, estimates and compliance cues are indicative. They do not replace licensed architectural, structural, geotechnical, legal, tax or municipal advice.</p><h2>Payments and refunds</h2><p>Free feasibility work requires no payment. Digital reports may be cancelled before generation begins. Expert reviews may be cancelled before a professional accepts the assignment. Final policy is subject to applicable Indian consumer law.</p><h2>Contact</h2><p>Email <a href="mailto:hello@grihagrid.in">hello@grihagrid.in</a>. These policies must receive final counsel review before live payment activation.</p></section></main>;
+}
 
 function NotFoundPage() { return <main className="error-page"><Compass/><span className="kicker">404 · Outside the plot</span><h1>This page is not in the plan.</h1><p>The address may have changed, or the page may never have existed.</p><button className="copper-button" onClick={()=>route('/')}>Return home <ArrowRight/></button></main>; }
 
@@ -733,11 +1080,12 @@ export function App() {
   const [path,setPath]=useState(window.location.pathname);const [user,setUser]=useState(undefined);
   useEffect(()=>{const onPop=()=>setPath(window.location.pathname);window.addEventListener('popstate',onPop);return()=>window.removeEventListener('popstate',onPop)},[]);
   useEffect(()=>{api('/api/auth/me').then(x=>setUser(x.user||null)).catch(()=>setUser(null));},[]);
-  useEffect(()=>{const titles={'/':'GrihaGrid — Know what fits. Know what it costs.','/pricing':'Pricing — GrihaGrid','/about':'About — GrihaGrid','/plans':'Sample plan — GrihaGrid','/compare/sample':'Sample Decision Compare — GrihaGrid','/start':'Plan my home — GrihaGrid','/login':'Log in — GrihaGrid','/register':'Create account — GrihaGrid','/dashboard':'My projects — GrihaGrid','/orders':'Orders — GrihaGrid','/privacy':'Privacy — GrihaGrid','/terms':'Terms — GrihaGrid','/refund':'Refunds — GrihaGrid'};document.title=path.startsWith('/report/')?'Decision book — GrihaGrid':path.startsWith('/projects/')&&path.endsWith('/compare')?'Decision Compare — GrihaGrid':path.startsWith('/orders/')?'Purchased artifact — GrihaGrid':path.startsWith('/share/decision/')?'Shared decision — GrihaGrid':(titles[path]||'Page not found — GrihaGrid')},[path]);
+  useEffect(()=>{const titles={'/':'GrihaGrid — Know what fits. Know what it costs.','/pricing':'Pricing — GrihaGrid','/about':'About — GrihaGrid','/plans':'Sample plan — GrihaGrid','/compare/sample':'Sample Decision Compare — GrihaGrid','/start':'Plan my home — GrihaGrid','/login':'Log in — GrihaGrid','/register':'Create account — GrihaGrid','/dashboard':'My projects — GrihaGrid','/orders':'Orders — GrihaGrid','/privacy':'Privacy — GrihaGrid','/terms':'Terms — GrihaGrid','/refund':'Refunds — GrihaGrid'};document.title=path.startsWith('/report/')?'Decision book — GrihaGrid':path.startsWith('/projects/')&&path.endsWith('/compare')?'Decision Compare — GrihaGrid':path.startsWith('/orders/')?'Purchased artifact — GrihaGrid':path.startsWith('/share/decision/')?'Shared decision — GrihaGrid':path.startsWith('/align/')?'Family review — GrihaGrid':(titles[path]||'Page not found — GrihaGrid')},[path]);
   const reportMatch=path.match(/^\/report\/([^/]+)$/);
   const decisionMatch=path.match(/^\/projects\/([^/]+)\/compare$/);
   const artifactMatch=path.match(/^\/orders\/([^/]+)\/artifact$/);
   const shareMatch=path.match(/^\/share\/decision\/([^/]+)$/);
+  const alignmentMatch=path.match(/^\/align\/([^/]+)$/);
   const checkoutOrder=path==='/checkout/return'?new URLSearchParams(window.location.search).get('order'):null;
   if(path==='/start')return <StartPage user={user}/>;
   if(path==='/login'||path==='/register')return <AuthPage key={path} mode={path.slice(1)} onAuthenticated={setUser}/>;
@@ -747,6 +1095,7 @@ export function App() {
   if(reportMatch)return <ReportPage id={reportMatch[1]}/>;
   if(artifactMatch)return <PurchasedArtifactPage orderId={decodeURIComponent(artifactMatch[1])}/>;
   if(shareMatch)return <SharedDecisionPage token={decodeURIComponent(shareMatch[1])}/>;
+  if(alignmentMatch)return <FamilyAlignmentReviewPage token={alignmentMatch[1]}/>;
   if(path==='/checkout/return')return <CheckoutReturnPage orderId={checkoutOrder}/>;
   let page=path==='/'?<HomePage/>:<NotFoundPage/>;
   if(path==='/pricing')page=<PricingPage/>;else if(path==='/about')page=<AboutPage/>;else if(path==='/plans')page=<SamplePlanPage/>;else if(path==='/compare/sample')page=<SampleDecisionComparePage/>;else if(path==='/privacy'||path==='/terms'||path==='/refund')page=<LegalPage type={path.slice(1)}/>;
