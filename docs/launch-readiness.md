@@ -30,6 +30,29 @@ quality, or operational gate below.
 | External read-only synthetic | Manually dispatched GitHub run `31740980038` passed production and staging homepage, health, readiness, estimate, security-header and paid-closed catalog checks; the same workflow is scheduled hourly | One GitHub-hosted source is not the required two-region monitor and does not exercise authentication, Gemini or payment webhooks |
 | Dependency and static safety checks | `npm audit --audit-level=high` reported zero vulnerabilities; `git diff --check` passed; focused final source scans found no live-key/private-key signature or dangerous DOM execution sink | Pattern scanning is not full history scanning, penetration testing, the post-commit CodeQL run, or a browser CSP/XSS exercise |
 
+### Family Alignment paid-closed release
+
+Family Alignment is live as a free, optional collaboration surface. Public
+payment acceptance and paid Decision Compare fulfillment remain closed. The
+release evidence below applies to the immutable production source
+`64d3de43f3189d67cca5c6b1eaf52d650a4177c1`.
+
+| Evidence | Result | Limitation |
+|---|---|---|
+| Reviewed source and protected checks | Feature PR `#8` merged as `4c8f114`; the remote-migration parser correction PR `#9` merged as `64d3de4`. Post-merge main [CI run `31750350861`](https://github.com/prakhar267/grihagrid/actions/runs/31750350861) and [CodeQL run `31750350269`](https://github.com/prakhar267/grihagrid/actions/runs/31750350269) both completed successfully on the production SHA | GitHub still does not require an independent human approval or protected environment reviewer |
+| Local release gates | `npm run check` passed the production build, operational checks and **75/75** tests. Fresh migrations `0001`–`0010`, production/staging Worker dry-runs, `npm audit --audit-level=high` and `git diff --check` passed | Automated evidence does not replace assistive-technology or multi-region load testing |
+| Real D1 concurrency and lifecycle | Real workerd/D1 tests cover one room per immutable comparison, first-link replay, five-receipt cap, same-receipt update at cap, concurrent unique writers, response-versus-revoke closure, expiry, 90-day retention, cross-owner access, malformed tokens, redaction, payment isolation and five-child project cascade deletion | Test traffic is synthetic and does not establish household adoption or comprehension |
+| Staging migration and release | A mode-0600 pre-migration export has SHA-256 `0cd6851d51c0e5eb54253e3e1bed642bae50985fe0069cdf40a36cb0de4dc700`; Time Travel bookmark `00000014-00000000-000050c6-4f62285eb325c0221f3436766c0886b4` was recorded. Corrected migration `0010` applied once, producing exactly two Family tables, seven triggers and three indexes. Worker version `2f5b9298-b6f0-4112-b73c-a06befc2917f` passed public smoke and the authenticated create → redacted read → response → update → summary → revoke/`410` → project-delete journey; cleanup returned Family and synthetic rows to zero | Staging intentionally has no Gemini, R2 or payment secrets and no cron |
+| Production recovery point | Immediately before migration, production contained users=1, projects=1, reports=1, AI briefs=1 and orders=0. A mode-0600 export outside the repository has SHA-256 `e2f15443670c07b66c758ddc4b8e23b39de81c5c508533da6addbe0b74c406c5`; Time Travel bookmark `0000002d-00000000-000050c6-e71f17803d8acad300f070f684957093` and previous Worker version `da71e617-fb51-4559-8e23-40dc8aa23740` were recorded | The operator-local export must still be moved to governed encrypted backup storage |
+| Production migration and deployment | Migration `0010` applied successfully and no migration remains pending. D1 exposes exactly two Family tables, seven triggers and three indexes. Worker version `13643004-0686-47e9-96b1-f4d836340ccb` is deployed; readiness reports `familyAlignmentSchema=current` and `familyAlignment=true` while `paidCheckout=false`, `acceptingPaidPlans=[]` and the ₹999 catalog item remains closed. Independent GitHub-hosted [public smoke run `31751351609`](https://github.com/prakhar267/grihagrid/actions/runs/31751351609) passed on the deployed production SHA | The first immediate multi-colo smoke reached one pre-rollout readiness response; the canonical smoke passed after propagation at `2026-08-13T22:42:50Z` |
+| Production journey and cleanup | A secure-session synthetic passed register → project → immutable comparison → room → public redaction → first response → own response update → owner aggregate → revoke → public `410` → project delete → logout. Exact cleanup left synthetic users, rooms, responses and orders at zero and preserved the original 1/1/1/1 production boundary | This proves the technical free journey, not long-term retention execution or customer comprehension |
+| Visual, privacy and accessibility review | Production desktop rendered with no horizontal overflow or console errors, semantic headings, four named fieldsets, one live region, 11 radios and six checkboxes. Public canaries confirmed project name, city and raw option labels were absent. The same release passed 390 px reflow, 48 px targets, keyboard focus, three-reason announcements and save → update → reload receipt reuse in the local browser QA | VoiceOver/NVDA, an independent 200% zoom/text-spacing/contrast audit and device-matrix certification remain outstanding |
+
+The free feature is **GO for a controlled household cohort** with the paid
+controls closed. Do not describe the wider product as enterprise-certified or
+open payment acceptance until the remaining legal, recovery, monitoring,
+accessibility and payment gates below are completed.
+
 ## Evidence recorded on 2026-08-13
 
 | Evidence | Result | Limitation |
@@ -219,35 +242,36 @@ legal, monitoring and operational gates below have dated evidence.
 ## Family Alignment release gate
 
 Family Alignment is a free feature, but it exposes a bearer-authorized public
-write surface and retained household preference data. It is therefore
-**NO-GO** until every item below has dated evidence; passing the older free-demo
-smoke is not sufficient.
+write surface and retained household preference data. The controlled
+paid-closed release above is live. The unchecked items below remain expansion
+gates before calling the feature enterprise-certified or opening a broad
+unattended cohort.
 
-- [ ] The full `0001` through `0010_family_alignment.sql` chain applies to an
+- [x] The full `0001` through `0010_family_alignment.sql` chain applies to an
   empty local/staging D1, migration `0010` applies once to a production-like
   `0001`–`0009` copy, and `/api/readiness` fails closed when either Family
   Alignment table/column/index contract is missing.
-- [ ] Real-D1 automation covers registration → project → immutable comparison
+- [x] Real-D1 automation covers registration → project → immutable comparison
   → first room create/replay → redacted public read → five distinct receipts →
   own update at cap → sixth rejection → owner summary → separate owner choice
   → revoke/public `410`, plus expiry, retention, cross-owner and paid-isolation
   cases.
-- [ ] Concurrent create and receipt writers prove one room per comparison,
+- [x] Concurrent create and receipt writers prove one room per comparison,
   five receipts maximum, replay/update idempotency, and a SQL-time closure
   fence for response-versus-revoke/expiry races.
-- [ ] Public response, DOM, network, source/share metadata, logs, analytics and
+- [x] Public response, DOM, network, source/share metadata, logs, analytics and
   error canaries prove absence of recommendation, owner selection,
   project/account identity, raw input/location/dimensions, notes/questions,
   internal IDs, individual receipts and all raw/digested bearer values.
-- [ ] Room and response secrets have reviewed entropy, digest-only D1 storage,
+- [x] Room and response secrets have reviewed entropy, digest-only D1 storage,
   room scoping and one-time delivery. Invocation logs remain disabled; custom
   logs template `/align/<token>` and corresponding API paths; CSP and referrer
   policy prevent third-party disclosure.
-- [ ] Owner create/read/revoke passes session, canonical-origin, CSRF and IDOR
+- [x] Owner create/read/revoke passes session, canonical-origin, CSRF and IDOR
   tests. Public read/write passes malformed token, abuse limit, cross-room
   token, response takeover, unknown-field, duplicate-reason, HTML/free-text,
   oversized body, expired and revoked tests.
-- [ ] Only server-side daily aggregate events
+- [x] Only server-side daily aggregate events
   `family_alignment_room_created`, `family_alignment_review_opened`,
   `family_alignment_response_submitted` and
   `family_alignment_room_revoked` are retained on `owner_compare` or
@@ -265,7 +289,7 @@ smoke is not sufficient.
   status announcements, 48 px targets, contrast, 390 px/200% reflow, text
   spacing, reduced motion and print/share metadata pass on owner and reviewer
   surfaces.
-- [ ] Privacy/terms copy names seven-day access, the 90-day post-closure
+- [x] Privacy/terms copy names seven-day access, the 90-day post-closure
   support/audit window, anonymous structured fields, local response-secret
   behavior, owner aggregate visibility, irrevocable revoke, and the lack of
   professional approval or paid entitlement.
