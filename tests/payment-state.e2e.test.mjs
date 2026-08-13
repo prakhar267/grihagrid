@@ -9,7 +9,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const npx = process.platform === "win32" ? "npx.cmd" : "npx";
+const wranglerCli = path.join(root, "node_modules", "wrangler", "bin", "wrangler.js");
 const webhookSecret = "payment-state-e2e-webhook-secret";
 
 function reservePort() {
@@ -28,14 +28,14 @@ function wait(milliseconds) {
 }
 
 function d1(stateDirectory, action, sql = null) {
-  const args = ["--no-install", "wrangler", "d1"];
+  const args = ["d1"];
   if (action === "migrate") {
     args.push("migrations", "apply", "grihagrid-db", "--local", "--persist-to", stateDirectory);
   } else {
     args.push("execute", "grihagrid-db", "--local", "--persist-to", stateDirectory, "--command", sql);
     if (action === "query") args.push("--json");
   }
-  return spawnSync(npx, args, {
+  return spawnSync(process.execPath, [wranglerCli, ...args], {
     cwd: root,
     env: { ...process.env, CI: "true" },
     encoding: "utf8",
@@ -56,7 +56,7 @@ function query(stateDirectory, sql) {
 
 async function startWorker(stateDirectory, assetsDirectory, port) {
   const args = [
-    "--no-install", "wrangler", "dev", "worker/index.js",
+    "dev", "worker/index.js",
     "--config", "wrangler.toml",
     "--local",
     "--persist-to", stateDirectory,
@@ -73,7 +73,7 @@ async function startWorker(stateDirectory, assetsDirectory, port) {
     "--var", `RAZORPAY_WEBHOOK_SECRET:${webhookSecret}`,
     "--var", "GEMINI_API_KEY:",
   ];
-  const child = spawn(npx, args, {
+  const child = spawn(process.execPath, [wranglerCli, ...args], {
     cwd: root,
     env: { ...process.env, CI: "true" },
     stdio: ["ignore", "pipe", "pipe"],
@@ -87,7 +87,10 @@ async function startWorker(stateDirectory, assetsDirectory, port) {
   const deadline = Date.now() + 45_000;
   while (Date.now() < deadline) {
     const earlyExit = await Promise.race([exited, wait(100).then(() => null)]);
-    if (earlyExit) throw new Error(`wrangler dev exited before readiness (${JSON.stringify(earlyExit)}):\n${logs}`);
+    if (earlyExit) {
+      await stopWorker({ child, exited });
+      throw new Error(`wrangler dev exited before readiness (${JSON.stringify(earlyExit)}):\n${logs}`);
+    }
     try {
       const response = await fetch(`${origin}/api/health`);
       if (response.status === 200) {
@@ -104,13 +107,17 @@ async function startWorker(stateDirectory, assetsDirectory, port) {
 }
 
 async function stopWorker(server) {
-  if (!server?.child || server.child.exitCode !== null) return;
-  server.child.kill("SIGTERM");
-  const graceful = await Promise.race([server.exited.then(() => true), wait(5_000).then(() => false)]);
-  if (!graceful && server.child.exitCode === null) {
-    server.child.kill("SIGKILL");
-    await Promise.race([server.exited, wait(2_000)]);
+  if (!server?.child) return;
+  if (server.child.exitCode === null) {
+    server.child.kill("SIGTERM");
+    const graceful = await Promise.race([server.exited.then(() => true), wait(5_000).then(() => false)]);
+    if (!graceful && server.child.exitCode === null) {
+      server.child.kill("SIGKILL");
+      await Promise.race([server.exited, wait(2_000)]);
+    }
   }
+  server.child.stdout?.destroy();
+  server.child.stderr?.destroy();
 }
 
 async function webhook(origin, eventId, payload) {
