@@ -83,7 +83,7 @@ async function startWorker({ stateDirectory, assetsDirectory, port, checkout, fu
   child.stderr.on("data", (chunk) => { logs = appendLog(logs, chunk); });
   const exited = new Promise((resolve) => child.once("exit", (code, signal) => resolve({ code, signal })));
   const origin = `http://127.0.0.1:${port}`;
-  const deadline = Date.now() + 25_000;
+  const deadline = Date.now() + 45_000;
   while (Date.now() < deadline) {
     const earlyExit = await Promise.race([exited, wait(100).then(() => null)]);
     if (earlyExit) throw new Error(`wrangler dev exited before readiness (${JSON.stringify(earlyExit)}):\n${logs}`);
@@ -98,6 +98,7 @@ async function startWorker({ stateDirectory, assetsDirectory, port, checkout, fu
       // The local socket is expected to refuse connections while workerd boots.
     }
   }
+  await stopWorker({ child, exited });
   throw new Error(`wrangler dev did not become ready:\n${logs}`);
 }
 
