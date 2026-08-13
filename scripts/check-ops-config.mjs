@@ -106,6 +106,18 @@ export async function checkOpsConfig() {
   assert.match(ci, /npm run check:worker:staging/u, "CI must dry-run the isolated staging bundle");
   assert.match(ci, /npm run check:migrations/u, "CI must validate fresh D1 migrations");
   assert.match(ci, /npm audit --audit-level=high/u, "CI must fail on high-severity dependency findings");
+  for (const [name, workflow] of [["CI", ci], ["public smoke", smokeWorkflow]]) {
+    assert.match(
+      workflow,
+      /actions\/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1/u,
+      `${name} must pin the reviewed checkout v7.0.1 commit`,
+    );
+    assert.match(
+      workflow,
+      /actions\/setup-node@820762786026740c76f36085b0efc47a31fe5020/u,
+      `${name} must pin the reviewed setup-node v7.0.0 commit`,
+    );
+  }
   assert.match(smokeWorkflow, /cron:\s*"23 \* \* \* \*"/u, "public smoke must run hourly");
   assert.match(smokeWorkflow, /EXPECT_PAID_CHECKOUT:\s*"false"/u, "public smoke must expect checkout to remain closed");
   assert.doesNotMatch(smokeWorkflow, /permissions:\s*[\s\S]*?contents:\s*write/u, "read-only smoke may not request content writes");
