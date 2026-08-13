@@ -2,6 +2,12 @@ User-agent: *
 Allow: /
 Disallow: /dashboard
 Disallow: /report/
+Disallow: /projects/
+Disallow: /orders
 Disallow: /checkout/
+Disallow: /share/decision/
+Disallow: /login
+Disallow: /register
+Disallow: /start
 
 Sitemap: https://grihagrid.prakhargupta267.workers.dev/sitemap.xml

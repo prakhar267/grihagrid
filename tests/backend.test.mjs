@@ -259,3 +259,25 @@ test("unknown nested project routes do not enter authenticated handlers", async 
   assert.equal(response.status, 404);
   assert.equal(assetCalls, 1);
 });
+
+test("balanced Decision Compare recommendation stays consistent with its rationale", async () => {
+  const project = {
+    name: "Pune family home",
+    updated_at: "2026-08-14 00:00:00",
+    input_json: JSON.stringify({
+      width: 30,
+      length: 50,
+      city: "Pune",
+      floors: "G+1",
+      bedrooms: 3,
+      parking: true,
+      quality: "Signature",
+    }),
+  };
+  const content = __test.buildDecisionContent(project, "balanced", [
+    { label: "Balanced brief", floors: "G+1", bedrooms: 3, parking: true, quality: "Signature", notes: "" },
+    { label: "Space-forward brief", floors: "G+2", bedrooms: 4, parking: true, quality: "Signature", notes: "" },
+  ], "comparison-id", "a".repeat(64));
+  assert.equal(content.recommendation.scenarioId, "comparison-id_a");
+  assert.match(content.recommendation.rationale, /closer to the current feasibility brief/u);
+});

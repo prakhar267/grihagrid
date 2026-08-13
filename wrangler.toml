@@ -13,11 +13,23 @@ html_handling = "none"
 enabled = true
 head_sampling_rate = 1
 
+# Cloudflare invocation logs include the raw request URL. Decision share links
+# carry a bearer secret in that URL, so keep automatic invocation logs off and
+# rely on the Worker's templated `request_complete` custom log instead.
+[observability.logs]
+invocation_logs = false
+
+[version_metadata]
+binding = "CF_VERSION_METADATA"
+
 [vars]
 APP_ENV = "production"
 APP_ORIGIN = "https://grihagrid.prakhargupta267.workers.dev"
 GEMINI_MODEL = "gemini-3.6-flash"
-# Paid checkout is intentionally closed until an operator enables proven plans.
+# Paid checkout and fulfillment are independent, fail-closed controls. Keep all
+# three values closed until docs/launch-readiness.md has dated evidence.
+PAID_CHECKOUT_ENABLED = "false"
+DECISION_COMPARE_FULFILLMENT_ENABLED = "false"
 ENABLED_PAYMENT_PLANS = ""
 
 [triggers]
@@ -37,3 +49,44 @@ id = "c5044339222a4172ad7c91724b98d4fb"
 # [[r2_buckets]]
 # binding = "FILES"
 # bucket_name = "grihagrid-files"
+
+# Staging uses physically separate data and a different Worker hostname. It has
+# no R2 binding because Decision Compare is a structured-input, no-upload wedge.
+# Provider secrets must be test-mode and entered with `wrangler secret put
+# --env staging`; never reuse production secrets.
+[env.staging]
+name = "grihagrid-staging"
+
+[env.staging.observability]
+enabled = true
+head_sampling_rate = 1
+
+[env.staging.observability.logs]
+invocation_logs = false
+
+[env.staging.version_metadata]
+binding = "CF_VERSION_METADATA"
+
+[env.staging.vars]
+APP_ENV = "staging"
+APP_ORIGIN = "https://grihagrid-staging.prakhargupta267.workers.dev"
+GEMINI_MODEL = "gemini-3.6-flash"
+PAID_CHECKOUT_ENABLED = "false"
+DECISION_COMPARE_FULFILLMENT_ENABLED = "false"
+ENABLED_PAYMENT_PLANS = ""
+
+# Staging has no scheduled maintenance trigger because this free Cloudflare
+# account is already at its cron-trigger limit. Exercise `scheduled()` with the
+# automated/local staging harness until capacity is available.
+[env.staging.triggers]
+crons = []
+
+[[env.staging.d1_databases]]
+binding = "DB"
+database_name = "grihagrid-staging-db"
+database_id = "ac7ff387-c8c6-40d2-b9db-83078378c054"
+migrations_dir = "migrations"
+
+[[env.staging.kv_namespaces]]
+binding = "GRIHAGRID_CACHE"
+id = "f48c3f765bc84088a88376e887daf7b1"

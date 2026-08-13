@@ -42,5 +42,8 @@ jobs:
       - name: Validate the Cloudflare Worker bundle
         run: npm run check:worker
 
+      - name: Validate the isolated staging Worker bundle
+        run: npm run check:worker:staging
+
       - name: Audit production and development dependencies
         run: npm audit --audit-level=high
