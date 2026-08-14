@@ -242,6 +242,50 @@ Migrations currently run in this order:
 11. `0011_archived_project_write_fence.sql`: database-level race fences that
     prevent planning/content inserts or updates after a project archive while
     preserving explicit privacy deletes, revocations and paid-state updates.
+12. `0012_brief_check_revision_history.sql`: derived Brief Check fields on the
+    current project projection; one honest immutable baseline per existing
+    project; immutable revision, idempotency and report-snapshot ledgers; source
+    change/Family closure, archive, CAS and report-generation race fences; and
+    nullable compatibility fields for a short rollback to the previous Worker.
+
+Migration `0012` and the new Worker are one ordered change: back up, migrate D1,
+verify the schema, then deploy the Worker. Never deploy the new Worker before
+the migration. Before staging or production migration, record these counts and
+retain them with the release ticket:
+
+```sql
+SELECT COUNT(*) AS projects, COALESCE(MAX(input_revision),0) AS max_revision FROM projects;
+SELECT COUNT(*) AS reports,
+       SUM(CASE WHEN version=1 THEN 1 ELSE 0 END) AS version_one_reports
+  FROM reports;
+SELECT COUNT(*) AS open_family_rooms
+  FROM family_alignment_rooms WHERE revoked_at IS NULL;
+```
+
+After migration, require one baseline per existing project—not one row for every
+number below `input_revision`—and reconcile the report backfill:
+
+```sql
+SELECT COUNT(*) AS missing_baselines
+  FROM projects p LEFT JOIN project_revisions r
+    ON r.project_id=p.id AND r.revision=p.input_revision
+ WHERE r.project_id IS NULL;
+SELECT COUNT(*) AS fabricated_or_duplicate_baselines
+  FROM (SELECT project_id,COUNT(*) AS count FROM project_revisions GROUP BY project_id)
+ WHERE count!=1;
+SELECT COUNT(*) AS migrated_report_mismatch
+  FROM reports r LEFT JOIN project_revision_reports rr
+    ON rr.project_id=r.project_id
+   AND rr.project_revision=r.project_input_revision
+   AND rr.report_schema_version=r.version
+ WHERE r.project_input_revision IS NOT NULL AND rr.project_id IS NULL;
+```
+
+All three results must be zero immediately after the migration. Also verify
+readiness reports `revisionSchema=current` and `briefCheck=true`, while
+`paidCheckout=false`, `privateUploads=false`, and the paid-plan allowlist stays
+empty. Do not repair a mismatch by synthesizing earlier revisions; stop and
+restore into an isolated database to diagnose it.
 
 Apply the exact files to staging first and complete its smoke suite. For
 production:
@@ -299,16 +343,24 @@ Then use the dedicated production canary account to verify:
 
 1. Login and session restoration after reload.
 2. Create, read, update, report-generate, and delete one canary project.
-3. Generate one sanitized AI brief, read the cached copy, and delete the project;
+3. When `0012` is in the release, open Brief Check, preview one synthetic
+   change, prove the preview does not change any row, accept and save it, retry
+   with the same idempotency key, read both revision details, explicitly
+   generate current report v2 and read the prior report through revision
+   history. Confirm readiness says `revisionSchema=current` and
+   `briefCheck=true` and delete every canary row.
+4. Generate one sanitized AI brief, read the cached copy, and delete the project;
    confirm the provider is called only once and no synthetic rows remain.
-4. Create exactly two canary scenarios, issue/read a comparison under a test
+5. Create exactly two canary scenarios, issue/read a comparison under a test
    entitlement in staging, record a choice and confirm the frozen versions.
-5. Confirm one user cannot fetch another canary user's project, AI brief,
+6. Confirm one user cannot fetch another canary user's project, revision/history,
+   AI brief,
    comparison, artifact, choice, order or share; expect
    ownership-safe `404`.
-6. Confirm production catalog accepts no plan before the launch record is
+7. Confirm production catalog accepts no plan before the launch record is
    signed; staging test mode may accept only `decision_compare`.
-7. Verify mobile and desktop landing, start, auth, dashboard, comparison, print
+8. Verify mobile and desktop landing, start, auth, dashboard, Brief Check,
+   revision history, comparison, print
    and return routes.
 
 Do not create a real charge as a routine deploy smoke. Before first paid launch,
@@ -335,6 +387,7 @@ orders.
 | 5 minutes | `POST /api/estimate` fixture | `200`, expected schema and fixed numeric fixture |
 | 15 minutes | Canary login + `GET /api/projects` | Session succeeds and only canary-owned data appears |
 | Daily | Full canary project/report CRUD | Create/read/update/report/delete completes without residue |
+| Daily while Brief Check is enabled | Authenticated preview → save → replay → history → explicit report v2 → delete | Preview is write-free; one revision/map/report snapshot exists; history/currentness is truthful; cleanup leaves no source, request or report rows |
 | Daily during pilot | Authenticated two-scenario comparison | Frozen A/B inputs and numeric deltas match fixture; choice is idempotent; cleanup leaves no rows |
 | Daily while Family Alignment is enabled | Synthetic room → public read → response update → owner summary → revoke | One room/receipt, redacted A/B projection, aggregate summary reconciles, revoked URL is `410`, cleanup leaves no rows or token in monitor output |
 | Daily during pilot | Paid fulfillment age | Every verified payment is issued or explicitly paused inside the published promise |
@@ -410,6 +463,7 @@ weeks of real traffic.
 | Worker server-error ratio | At least 99.9% non-5xx | Cloudflare invocations by route and version |
 | Health/estimate latency | p95 under 500 ms | External and Worker latency |
 | Authenticated CRUD latency | p95 under 750 ms | Worker route-template latency |
+| Brief revision correctness | 100%; zero tolerance | One CAS winner/idempotent result per accepted edit; no fabricated history, stale-current report, reopened Family room or mutation of sold evidence |
 | Decision Compare fulfillment | At least 90% inside published pilot promise | `payment_webhook_events.processed_at`/`orders.paid_at` to an available matching purchased snapshot; v1 has no correction/reissue workflow |
 | Decision action | At least 60% within seven days during pilot | Protected `paidDecisionCohort`: paid denominator and first print/share/professional-handoff within seven days; reconcile against orders before using it for a decision |
 | Gemini brief availability | 99% while enabled | Daily sanitized generation succeeds; cached read remains independent of provider |
@@ -433,6 +487,10 @@ Page the on-call for:
   field exposure, response takeover/cross-room update, sixth receipt, response
   committed after closure, or Family Alignment action changing an order or
   entitlement;
+- any fabricated/missing revision, two winners for one source revision, report
+  served for the wrong source/schema, migrated v1 treated as current v2,
+  revision that rewrites purchased/financial evidence, or Family response
+  committed after a source change;
 - any `amount_mismatch`, `reference_mismatch`, `payment_mismatch`, duplicate
   fulfillment, or paid-provider/D1 disagreement;
 - checkout failures above 5% for 15 minutes with at least 10 valid attempts;
@@ -747,6 +805,14 @@ account-deletion workflow, immutable audit-event table, or malware scanning.
 Documented manual support is not an enterprise substitute; implement and test
 these controls before broad public sales.
 
+In particular, direct `DELETE FROM users` is not an account-erasure operation:
+the original finance-retention schema sets `projects.user_id` to null, so raw
+deletion can orphan private project and revision bytes. Operators must not run
+it to fulfill a privacy request. A future governed workflow must revoke sessions,
+classify legally retained orders/artifacts, delete every eligible project through
+the project-deletion boundary, redact retained private input where policy allows,
+verify D1/R2 cascades, and only then tombstone/delete identity with an audit trail.
+
 ## 13. Incident response
 
 ### Severity
@@ -796,6 +862,36 @@ compatible with the **current** D1 schema and bindings. For payment-semantic
 changes, close checkout first while keeping webhook verification alive. After
 rollback, run health, estimate, auth/project, report, and relevant R2 synthetics;
 reconcile all orders created during the incident window.
+
+After migration `0012`, a previous Worker may run briefly because new project
+columns are additive and triggers capture legacy project creates/real source
+updates. That compatibility is containment, not a normal operating mode:
+
+- keep checkout, fulfillment and uploads closed and stop new Brief Check edits;
+- do not claim an old schema-v1 report is a current Brief Check report;
+- expect legacy source updates to create a truthful revision with nullable
+  content hash/Brief Check, invalidate the mutable report cache and close active
+  Family rooms; after roll-forward the new Worker recomputes the derived view;
+- verify the old Worker can perform health, auth, project read and one synthetic
+  legacy source update in isolated staging before selecting it for rollback;
+- after roll-forward, require `revisionSchema=current`, regenerate v2 explicitly,
+  and reconcile `projects.input_revision` to the maximum stored revision for
+  every project before reopening edits.
+
+```sql
+SELECT p.id,p.input_revision,MAX(r.revision) AS stored_revision
+  FROM projects p LEFT JOIN project_revisions r ON r.project_id=p.id
+ GROUP BY p.id HAVING stored_revision IS NULL OR stored_revision!=p.input_revision;
+SELECT project_id,project_input_revision,version
+  FROM reports
+ WHERE project_input_revision IS NULL OR version!=2;
+```
+
+The first query must return no rows. Rows from the second query are legacy cache
+state, not data loss: the new Worker must ignore them as current, preserve any
+already-captured historical v1 snapshot, and create v2 only on an explicit
+owner generation. Do not mutate or delete immutable history to make the query
+look clean.
 
 Never reverse an applied migration by editing history. Use an additive corrective
 migration and roll forward. If an older Worker cannot understand the expanded

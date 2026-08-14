@@ -29,6 +29,11 @@ interleaved within their own real-D1 fixtures.
    current feasibility → save a comparison → choose a direction → collect
    optional Family input → recover the exact paid state. Repeat after a project
    input change, refund, archive, new login, and browser back/forward navigation.
+10. Register → create a complete brief → open Brief Check → preview one change
+    and read Change Study → explicitly accept its impact → save exactly one new
+    revision → generate its report → inspect both immutable revisions. Repeat
+    with a stale tab, idempotent replay, archived project, and a migrated project
+    whose honest history begins above revision one.
 
 ## API cases
 
@@ -49,6 +54,50 @@ interleaved within their own real-D1 fixtures.
   `405`, unknown nested routes, recursive forbidden keys, and templated logs.
   Snapshot every source table around repeated GETs and require byte-equivalent
   rows with no progress, analytics, timestamp, counter, or status mutation.
+- Brief Check assessment: fixed input fixtures cover `insufficient_information`,
+  `programme_tension`, and `directionally_plausible`; customer copy maps only to
+  “Needs key facts”, “Programme under tension”, and “Enough to explore”. Golden
+  estimate/change deltas reconcile independently, width/length swaps preserve
+  area and cost, and adding a missing fact cannot invent an unrelated tension.
+  No score, approval, compliance, construction-readiness, or unconditional
+  feasibility claim may appear in API data, report bytes, UI, print, or logs.
+- Brief Check preview: authenticated owner, trusted origin, CSRF, active project,
+  exact `{ expectedInputRevision, input }` body and the 15-field allowlist are
+  required. Snapshot every D1 application table and provider stub around the
+  request; a successful preview performs zero writes and zero Gemini calls.
+  Foreign/missing projects are ownership-safe `404`; archived, stale, malformed,
+  oversized, unknown-field and abuse-control cases return the documented bounded
+  error without leaking stored inputs or internal hashes.
+- Brief revision commit: require exact input, `acceptedImpact: true`, a bounded
+  `Idempotency-Key`, and source-revision CAS. First commit is `201`; byte-equivalent
+  replay is `200` with the canonical result; same key/different request is
+  `idempotency_conflict`; a no-op is `no_revision_changes`. Race two distinct keys
+  from one base and require exactly one winner, one new source revision, one
+  request mapping, no partial effects and a bounded loser—not a `500`.
+- Brief revision history: list newest-first with default/1/50 limits and exclusive
+  positive `beforeRevision`; validate the exact summary/detail/report shapes,
+  ownership, `404`s, and `History begins at revision N`. A migrated
+  `input_revision > 1` creates one `migration_baseline`, never fabricated earlier
+  rows; unsupported legacy input remains stored but is absent from list summaries.
+  Snapshot, idempotency map, and historical report rows reject direct update or
+  child delete while whole-project deletion cascades them atomically.
+- Report/revision binding: current `GET /report` is read-only and returns
+  `report_not_found` until explicit `POST`; generation binds immutable schema-v2
+  bytes to the exact current revision. A source edit preserves the earlier
+  historical report while invalidating only the current cache. Race two report
+  POSTs and require one immutable v2 snapshot, a safe `201` plus cached `200`
+  (or documented bounded conflict), no `500`, and no cache corruption. Migrated
+  v1 bytes remain available only through explicit revision history and never
+  satisfy the truthful current-v2 read.
+- Revision side effects: saving a revision permanently closes active Family
+  rooms, while old comparisons, choices, orders and purchased snapshots remain
+  byte-for-byte unchanged and are not presented as current. Paid, upload,
+  checkout and fulfillment controls remain closed throughout the suite.
+- Rollback compatibility: after migration `0012`, emulate the previous Worker by
+  inserting a project and changing its source through the legacy projection.
+  Triggers must capture an honest revision with nullable derived facts, close
+  stale Family/report cache state, and let the new Worker recompute/read history.
+  A legacy schema-v1 report is preserved as history but cannot become current v2.
 - Gemini brief: owner isolation; explicit 18+ consent; CSRF/origin enforcement;
   sanitized allowlisted prompt; structured validation; advisory-policy
   rejection; cached replay; refresh; atomic user/platform limits; one-project
@@ -237,6 +286,21 @@ interleaved within their own real-D1 fixtures.
 | Accessibility | Run keyboard, screen reader, 200% zoom, text spacing, reduced motion and 390 px | Ordered stage semantics, visible non-colour status, one named primary action, no overlap/overflow, and stable focus |
 | Paid containment | Capture and refund the exact selected comparison with checkout closed | Home exposes only active exact-comparison entitlement, removes it after refund/revocation, and never changes financial evidence |
 
+## Brief Check and Change Study manual acceptance matrix
+
+| Area | Test | Required result |
+|---|---|---|
+| Truthful assessment | Exercise missing, tense and complete fixtures, then inspect page, API and print | Only the three approved labels and professional-boundary copy appear; no score or feasibility/approval guarantee |
+| Preview purity | Preview several edits while capturing D1 and provider traffic | Exact deltas and consequences render; every table is byte-equivalent and Gemini is never called |
+| Save and replay | Accept impact, double-submit, retry after a network timeout, then reuse the key for different input | One canonical revision; replay returns it; conflicting reuse is rejected without mutation |
+| Two-tab conflict | Preview the same base in two tabs and save both | Exactly one save wins; the loser is told to reload and no side effect from it persists |
+| History | Paginate, open detail/report, and use a migrated revision-four fixture | Newest-first bounded pages; immutable prior facts; visible “History begins at revision 4”; no fabricated revisions or restore control |
+| Report binding | Generate v2 twice concurrently, edit, then read current and prior report routes | One immutable v2 snapshot per revision; current GET never auto-generates or serves v1/stale bytes; prior explicit history remains readable |
+| Side effects | Save with an active Family room, old comparison/choice and purchased snapshot | Family link closes; old decision/payment evidence is unchanged and clearly historical, never current |
+| Archive and ownership | Read archived history, attempt every write, and repeat as another account | Archived owner can read history only; all writes fail closed; foreign/missing resources share safe `404` behavior |
+| Accessibility | Keyboard, screen reader, 200% zoom, text spacing, reduced motion, high contrast and 390 px | Logical edit/review/history order, announced errors/status, non-colour change cues, stable focus and no overflow |
+| Operations | Inspect readiness, templated logs, fresh/legacy migration, backup and old-Worker rollback rehearsal | `revisionSchema=current`, `briefCheck=true`; no ID/input/key in logs; additive rollback stays serviceable |
+
 ## Required release evidence
 
 Attach to the release record, without secrets or customer data:
@@ -256,6 +320,10 @@ Attach to the release record, without secrets or customer data:
 - Project Decision Home lifecycle fixtures, pre/post read-only D1 snapshots,
   forbidden-key/log canaries, stale/exact-purchase evidence, and
   keyboard/history/reflow results;
+- Brief Check golden/metamorphic fixtures, zero-write preview snapshot, stale
+  save and report-generation race evidence, immutable-history/legacy-baseline
+  reconciliation, rollback-trigger rehearsal, log canary, and
+  keyboard/screen-reader/reflow results;
 - encrypted D1 backup checksum, isolated restore counts and measured RTO; and
 - go/no-go sign-off from founder/product, engineering on-call, payment owner,
   and quality/professional owner.

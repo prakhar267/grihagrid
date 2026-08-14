@@ -134,8 +134,11 @@ test("report generation preserves 5+ bedrooms and treats None as no parking", ()
 
   assert.equal(report.summary.bedrooms, 5);
   assert.equal(report.areaProgram.suggestedSpaces.includes("5 bedrooms"), true);
-  assert.equal(report.areaProgram.suggestedSpaces.includes("Arrival court"), true);
+  assert.equal(report.areaProgram.suggestedSpaces.some((space) => space.startsWith("Arrival court")), true);
   assert.equal(report.areaProgram.suggestedSpaces.some((space) => space.includes("parking bay")), false);
+  assert.equal(report.version, 2);
+  assert.equal(report.summary.verdict.includes("feasible"), false);
+  assert.equal(report.areaProgram.suggestedSpaces.some((space) => /code-compliant|at least one on-plot/iu.test(space)), false);
 });
 
 test("file validation strips path components and enforces declared signatures", () => {
@@ -282,5 +285,5 @@ test("balanced Decision Compare recommendation stays consistent with its rationa
     { label: "Space-forward brief", floors: "G+2", bedrooms: 4, parking: true, quality: "Signature", notes: "" },
   ], "comparison-id", "a".repeat(64));
   assert.equal(content.recommendation.scenarioId, "comparison-id_a");
-  assert.match(content.recommendation.rationale, /closer to the current feasibility brief/u);
+  assert.match(content.recommendation.rationale, /closer to the current brief/u);
 });

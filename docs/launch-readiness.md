@@ -15,6 +15,11 @@ structured inputs and can use a versioned print artifact. This exception does
 not make uploads available and does not waive any money, identity, recovery,
 quality, or operational gate below.
 
+Brief Check, Change Study and immutable project-revision history are a pending
+paid-closed product release. Local implementation or a green unit suite is not
+deployment evidence: until the dedicated gate below is complete, production
+must not advertise the feature or apply migration `0012`.
+
 ## Evidence recorded on 2026-08-14
 
 | Evidence | Result | Limitation |
@@ -273,6 +278,68 @@ legal, monitoring and operational gates below have dated evidence.
   financial ledgers before opening checkout.
 - [ ] DNS/canonical origin, TLS, HSTS, CSP, robots/sitemap, support/contact and
   privacy/terms/refund pages are correct at the sellable hostname.
+
+## Brief Check and revision-history release gate
+
+Brief Check is a structured-input, deterministic planning aid. It does not
+approve feasibility, design, compliance, cost, structure, or construction.
+Change Study may save a new source revision only after explicit impact
+acceptance. This release does not open paid checkout, fulfillment or uploads.
+Every box needs dated evidence from the exact release SHA and Cloudflare version;
+unchecked means no-go for this feature.
+
+- [ ] Product and API use only “Needs key facts”, “Programme under tension” and
+  “Enough to explore” for customer status, with no numeric score, unconditional
+  feasibility, approval, fit or construction-readiness claim. The report embeds
+  the same Brief Check and professional validation boundary.
+- [ ] Fresh migrations `0001`–`0012` pass, and a pre-`0012` project already at
+  revision four creates exactly one truthful `migration_baseline` at four. No
+  missing revisions are invented and unknown legacy input remains preserved.
+- [ ] D1 contains the three immutable owner-cascading ledgers
+  `project_revisions`, `project_revision_requests` and
+  `project_revision_reports`; direct update/child delete is fenced while explicit
+  whole-project privacy deletion removes all three without orphans.
+- [ ] Project deletion is proven to remove its revision/request/report children
+  while another owner's project survives. Whole-account erasure is not claimed:
+  the current finance-retention schema sets project ownership to null on a raw
+  user delete, so a governed account-erasure service remains a separate launch
+  blocker and operators must never use direct `DELETE FROM users` as fulfillment.
+- [ ] `POST /revisions/preview` proves exact-body/allowlist validation, owner,
+  origin, CSRF, archive, rate-limit and stale-source boundaries. A full-table
+  before/after snapshot and provider stub prove zero writes and zero Gemini calls.
+- [ ] Commit golden, no-op, replay and same-key/different-request cases pass.
+  Two same-base saves with distinct keys yield exactly one revision winner and
+  one bounded conflict, with no partial Family/report/decision side effect.
+- [ ] List, detail and historical-report routes pass exact-object drift checks,
+  newest-first bounded pagination, ownership-safe `404`s, history-start truth,
+  unsupported legacy-summary redaction and recursive internal-field checks.
+- [ ] Current report GET is read-only; explicit POST creates schema-v2 bytes for
+  exactly the current revision. Concurrent POSTs leave one immutable v2 snapshot
+  with no `500` or cache corruption; editing preserves the prior report and
+  invalidates currentness. Migrated v1 is historical only, never current v2.
+- [ ] A revision closes active Family rooms permanently. Old comparisons,
+  selection, order and purchased snapshot remain byte-for-byte immutable and
+  Project Decision Home does not present any of them as current.
+- [ ] Archived owners can read their history but cannot preview, save or generate;
+  foreign owners receive the same safe `404` as missing. CSRF/origin, malformed
+  ID/body, pagination, unknown route and oversized-body cases produce bounded
+  documented errors without `500` or mutation.
+- [ ] Readiness reports `checks.revisionSchema=current` and
+  `capabilities.briefCheck=true` only when every required column, table, index
+  and trigger exists. Logs template project/revision IDs and exclude input,
+  idempotency keys, content hashes, cookies, CSRF values and legacy canaries.
+- [ ] The expanded real-D1 suite, full build/tests, fresh migration check,
+  production/staging Worker dry-runs, high-severity dependency audit and diff
+  hygiene pass on the exact reviewed commit. Browser QA covers 390 px, 200%
+  zoom/text spacing, keyboard, screen reader, reduced motion and history focus.
+- [ ] Staging receives a recorded pre-migration export/checksum and Time Travel
+  bookmark, migration `0012`, then the new Worker. Paid/upload controls remain
+  closed. Authenticated fresh and legacy canaries, log canary, cleanup, rollback
+  to the previous Worker, roll-forward and 30-minute version-scoped observation
+  all pass before any production migration.
+- [ ] Production uses the same ordered backup → migration → Worker procedure,
+  records immutable SHA/version/operator/counts, passes public and authenticated
+  paid-closed smoke, cleans synthetic data, and preserves a tested rollback owner.
 
 ## Project Decision Home release gate
 

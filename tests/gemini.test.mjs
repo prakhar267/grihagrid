@@ -16,6 +16,25 @@ function cookieHeader(response) {
   return response.headers.getSetCookie().map((value) => value.split(";", 1)[0]).join("; ");
 }
 
+function migrationSqlStatements(source) {
+  const statements = [];
+  let lines = [];
+  let trigger = false;
+  for (const rawLine of source.split(/\r?\n/u)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("--") || /^PRAGMA\s+/iu.test(line)) continue;
+    if (!lines.length) trigger = /^CREATE\s+TRIGGER\b/iu.test(line);
+    lines.push(rawLine);
+    const complete = trigger ? /\bEND;\s*$/iu.test(line) : /;\s*$/u.test(line);
+    if (!complete) continue;
+    statements.push(lines.join("\n").trim());
+    lines = [];
+    trigger = false;
+  }
+  if (lines.length) throw new Error("migration contains an incomplete SQL statement");
+  return statements;
+}
+
 class MemoryKv {
   constructor() {
     this.values = new Map();
@@ -36,6 +55,8 @@ class MemoryD1 {
     this.sessions = [];
     this.projects = [];
     this.reports = [];
+    this.revisions = [];
+    this.revisionReports = [];
     this.briefs = [];
     this.counters = [];
     this.leases = [];
@@ -56,6 +77,8 @@ class MemoryD1 {
       sessions: this.sessions,
       projects: this.projects,
       reports: this.reports,
+      revisions: this.revisions,
+      revisionReports: this.revisionReports,
       briefs: this.briefs,
       counters: this.counters,
       leases: this.leases,
@@ -103,9 +126,21 @@ class MemoryStatement {
         user_created_at: user.created_at,
       } : null;
     }
-    if (this.sql.includes("FROM projects p WHERE p.id=? AND p.user_id=?")) {
+    if (this.sql.startsWith("SELECT p.*,EXISTS(") && this.sql.includes("FROM projects p WHERE p.id=? AND p.user_id=?")) {
       const project = this.db.projects.find((candidate) => candidate.id === this.values[0] && candidate.user_id === this.values[1]);
-      return project ? { ...project, report_available: Number(this.db.reports.some((report) => report.project_id === project.id)) } : null;
+      return project ? { ...project, report_available: Number(this.db.revisionReports.some((report) => report.project_id === project.id
+        && report.project_revision === project.input_revision && report.report_schema_version === 2)) } : null;
+    }
+    if (this.sql.startsWith("SELECT source_report_id,content_json FROM project_revision_reports")) {
+      return this.db.revisionReports.find((candidate) => candidate.project_id === this.values[0]
+        && candidate.project_revision === this.values[1] && candidate.report_schema_version === this.values[2]) || null;
+    }
+    if (this.sql.startsWith("SELECT content_hash FROM project_revisions")) {
+      return this.db.revisions.find((candidate) => candidate.project_id === this.values[0] && candidate.revision === this.values[1]) || null;
+    }
+    if (this.sql.startsWith("SELECT content_json FROM project_revision_reports")) {
+      return this.db.revisionReports.find((candidate) => candidate.project_id === this.values[0]
+        && candidate.project_revision === this.values[1] && candidate.report_schema_version === this.values[2]) || null;
     }
     if (this.sql.startsWith("SELECT * FROM reports WHERE project_id=? AND user_id=?")) {
       return this.db.reports.find((candidate) => candidate.project_id === this.values[0] && candidate.user_id === this.values[1]) || null;
@@ -119,18 +154,27 @@ class MemoryStatement {
         source_report_id, source_report_version, source_input_hash, content_json, usage_json,
         provider_interaction_id, generated_at, updated_at,
         lease_project_id, lease_user_id, lease_token, lease_source_input_hash, lease_now,
-        current_report_id, current_project_id, current_user_id, current_input_hash,
+        fence_project_id, fence_user_id, fence_revision, fence_input_json, fence_estimate_json,
+        current_report_id, current_project_id, current_revision, current_report_version, current_input_hash, current_content_json,
       ] = this.values;
       const lease = this.db.leases.find((candidate) => candidate.project_id === lease_project_id
         && candidate.user_id === lease_user_id
         && candidate.lease_token === lease_token
         && candidate.source_input_hash === lease_source_input_hash
         && candidate.expires_at > lease_now);
-      const report = this.db.reports.find((candidate) => candidate.id === current_report_id
+      const currentProject = this.db.projects.find((candidate) => candidate.id === fence_project_id
+        && candidate.user_id === fence_user_id
+        && candidate.status !== "archived"
+        && candidate.input_revision === fence_revision
+        && candidate.input_json === fence_input_json
+        && candidate.estimate_json === fence_estimate_json);
+      const report = this.db.revisionReports.find((candidate) => candidate.source_report_id === current_report_id
         && candidate.project_id === current_project_id
-        && candidate.user_id === current_user_id
-        && candidate.input_hash === current_input_hash);
-      if (!lease || !report) return null;
+        && candidate.project_revision === current_revision
+        && candidate.report_schema_version === current_report_version
+        && candidate.input_hash === current_input_hash
+        && candidate.content_json === current_content_json);
+      if (!lease || !currentProject || !report) return null;
       const row = {
         id, project_id, user_id, schema_version, prompt_version, prompt_sha256, model,
         source_report_id, source_report_version, source_input_hash, content_json, usage_json,
@@ -156,21 +200,68 @@ class MemoryStatement {
       return { success: true };
     }
     if (this.sql.startsWith("INSERT INTO projects")) {
-      const [id, user_id, name, status, input_json, estimate_json, created_at, updated_at] = this.values;
-      this.db.projects.push({ id, user_id, name, status, input_json, estimate_json, created_at, updated_at });
+      const [id, user_id, name, status, input_json, estimate_json, input_hash, input_schema_version,
+        estimate_rule_version, brief_check_version, brief_check_json, created_at, updated_at] = this.values;
+      this.db.projects.push({
+        id, user_id, name, status, input_json, estimate_json, input_hash, input_schema_version,
+        estimate_rule_version, brief_check_version, brief_check_json, input_revision: 1, created_at, updated_at,
+      });
+      this.db.revisions.push({ project_id: id, revision: 1, content_hash: input_hash });
       return { success: true };
     }
     if (this.sql.startsWith("INSERT INTO reports")) {
-      const [id, project_id, user_id, version, input_hash, content_json, generated_at, updated_at] = this.values;
-      const row = { id, project_id, user_id, version, input_hash, content_json, generated_at, updated_at };
+      const [id, project_id, user_id, version, input_hash, content_json, generated_at, updated_at, project_input_revision,
+        fence_project_id, fence_user_id, fence_revision] = this.values;
+      const project = this.db.projects.find((candidate) => candidate.id === fence_project_id
+        && candidate.user_id === fence_user_id && candidate.status !== "archived" && candidate.input_revision === fence_revision);
+      if (!project) return { success: true, results: [] };
+      const row = { id, project_id, user_id, version, input_hash, content_json, generated_at, updated_at, project_input_revision };
       const index = this.db.reports.findIndex((candidate) => candidate.project_id === project_id);
       if (index < 0) this.db.reports.push(row);
       else this.db.reports[index] = row;
       return { success: true };
     }
+    if (this.sql.startsWith("INSERT INTO project_revision_reports")) {
+      const [project_id, project_revision, report_schema_version, source_report_id,
+        source_content_hash, input_hash, content_json, generated_at] = this.values;
+      this.db.revisionReports.push({
+        project_id, project_revision, report_schema_version, source_report_id,
+        source_content_hash, input_hash, content_json, generated_at,
+      });
+      return { success: true };
+    }
+    if (this.sql.startsWith("UPDATE projects SET name=?,status=?,input_json=?,estimate_json=?,input_hash=?")) {
+      const [name, status, input_json, estimate_json, input_hash, input_schema_version,
+        estimate_rule_version, brief_check_version, brief_check_json, revisionIncrement,
+        updated_at, projectId, userId, expectedRevision] = this.values;
+      const project = this.db.projects.find((candidate) => candidate.id === projectId
+        && candidate.user_id === userId
+        && candidate.status !== "archived"
+        && (expectedRevision == null || candidate.input_revision === expectedRevision));
+      if (!project) return { success: true, results: [] };
+      Object.assign(project, {
+        name,
+        status,
+        input_json,
+        estimate_json,
+        input_hash,
+        input_schema_version,
+        estimate_rule_version,
+        brief_check_version,
+        brief_check_json,
+        input_revision: project.input_revision + revisionIncrement,
+        updated_at,
+      });
+      if (revisionIncrement) {
+        this.db.revisions.push({ project_id: projectId, revision: project.input_revision, content_hash: input_hash });
+        this.db.reports = this.db.reports.filter((candidate) => candidate.project_id !== projectId);
+      }
+      return { success: true, results: [{ id: projectId }] };
+    }
     if (this.sql.startsWith("UPDATE projects SET status='report_ready'")) {
-      const [updatedAt, projectId, userId] = this.values;
-      const project = this.db.projects.find((candidate) => candidate.id === projectId && candidate.user_id === userId);
+      const [updatedAt, projectId, userId, revision] = this.values;
+      const project = this.db.projects.find((candidate) => candidate.id === projectId && candidate.user_id === userId
+        && candidate.status !== "archived" && candidate.input_revision === revision);
       if (project) Object.assign(project, { status: "report_ready", updated_at: updatedAt });
       return { success: true };
     }
@@ -289,12 +380,28 @@ async function registerAndCreateProject(env, email = "owner@example.test") {
     }),
   }), env);
   assert.equal(created.status, 201);
-  return { cookies, csrfToken: registration.csrfToken, project: (await created.json()).project };
+  const owner = { cookies, csrfToken: registration.csrfToken, project: (await created.json()).project };
+  const report = await worker.fetch(authenticatedPost(`/api/projects/${owner.project.id}/report`, owner, {}), env);
+  assert.equal(report.status, 201);
+  return owner;
 }
 
 function authenticatedPost(path, owner, body) {
   return request(path, {
     method: "POST",
+    headers: {
+      origin: ORIGIN,
+      cookie: owner.cookies,
+      "x-csrf-token": owner.csrfToken,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+}
+
+function authenticatedPatch(path, owner, body) {
+  return request(path, {
+    method: "PATCH",
     headers: {
       origin: ORIGIN,
       cookie: owner.cookies,
@@ -531,13 +638,94 @@ test("provider failures release the lease and stale generations cannot overwrite
   const stalePath = `/api/projects/${staleOwner.project.id}/ai-brief`;
   const stalePromise = worker.fetch(authenticatedPost(stalePath, staleOwner, { acceptedAiTerms: true }), staleEnv);
   await providerStarted;
-  staleDb.reports[0].input_hash = "c".repeat(64);
+  const revised = await worker.fetch(authenticatedPatch(`/api/projects/${staleOwner.project.id}`, staleOwner, {
+    expectedInputRevision: 1,
+    input: { bathrooms: 4 },
+  }), staleEnv);
+  assert.equal(revised.status, 200, JSON.stringify(await revised.clone().json()));
+  assert.equal((await revised.json()).project.inputRevision, 2);
   releaseProvider();
   const stale = await stalePromise;
   assert.equal(stale.status, 409);
   assert.equal((await stale.json()).code, "ai_generation_superseded");
   assert.equal(staleDb.briefs.length, 0);
   assert.equal(staleDb.leases.length, 0);
+});
+
+test("real D1 rejects a Gemini result when a legitimate brief revision wins during provider work", async (context) => {
+  const mf = new Miniflare({
+    workers: [{
+      config: {
+        name: "gemini-currentness-race-test",
+        type: "worker",
+        compatibilityDate: "2026-08-01",
+        manifest: {
+          mainModule: "index.mjs",
+          modulesRoot: process.cwd(),
+          modules: { "index.mjs": { type: "esm", contents: "export default {}" } },
+        },
+        env: { DB: { type: "d1", name: "gemini-currentness-race" } },
+      },
+    }],
+  });
+  context.after(() => mf.dispose());
+  const db = await mf.getD1Database("DB");
+  const migrations = [
+    "0001_initial.sql",
+    "0002_backend.sql",
+    "0003_payments.sql",
+    "0004_commercial_fulfillment.sql",
+    "0005_gemini_ai.sql",
+    "0006_ai_abuse_controls.sql",
+    "0007_decision_compare.sql",
+    "0008_payment_state_hardening.sql",
+    "0009_decision_selection_lock.sql",
+    "0010_family_alignment.sql",
+    "0011_archived_project_write_fence.sql",
+    "0012_brief_check_revision_history.sql",
+  ];
+  for (const migration of migrations) {
+    const source = await readFile(new URL(`../migrations/${migration}`, import.meta.url), "utf8");
+    for (const statement of migrationSqlStatements(source)) await db.prepare(statement).run();
+  }
+
+  let providerStartedResolve;
+  let releaseProvider;
+  const providerStarted = new Promise((resolve) => { providerStartedResolve = resolve; });
+  const providerGate = new Promise((resolve) => { releaseProvider = resolve; });
+  const env = {
+    ASSETS: assets,
+    DB: db,
+    GRIHAGRID_CACHE: new MemoryKv(),
+    GEMINI_API_KEY: API_KEY,
+    GEMINI_FETCH: async () => {
+      providerStartedResolve();
+      await providerGate;
+      return geminiResponse();
+    },
+  };
+  const owner = await registerAndCreateProject(env, "gemini-race@example.test");
+  const aiPromise = worker.fetch(authenticatedPost(
+    `/api/projects/${owner.project.id}/ai-brief`,
+    owner,
+    { acceptedAiTerms: true },
+  ), env);
+  await providerStarted;
+
+  const revised = await worker.fetch(authenticatedPatch(`/api/projects/${owner.project.id}`, owner, {
+    expectedInputRevision: 1,
+    input: { bathrooms: 4 },
+  }), env);
+  assert.equal(revised.status, 200, JSON.stringify(await revised.clone().json()));
+  assert.equal((await revised.json()).project.inputRevision, 2);
+  releaseProvider();
+
+  const stale = await aiPromise;
+  assert.equal(stale.status, 409, JSON.stringify(await stale.clone().json()));
+  assert.equal((await stale.json()).code, "ai_generation_superseded");
+  assert.equal((await db.prepare("SELECT COUNT(*) AS count FROM ai_planning_briefs").first()).count, 0);
+  assert.equal((await db.prepare("SELECT input_revision FROM projects WHERE id=?").bind(owner.project.id).first()).input_revision, 2);
+  assert.equal((await db.prepare("SELECT COUNT(*) AS count FROM ai_generation_leases").first()).count, 0);
 });
 
 test("atomic admission enforces exact user and platform ceilings without partial charges", async () => {
@@ -706,13 +894,14 @@ test("AI provider configuration fails closed while model fallback is stable", as
 
 test("readiness reports AI capability without exposing the configured secret", async () => {
   const readinessDb = (counts = {
-    count: 19,
+    count: 22,
     ai_brief_count: 1,
     ai_abuse_count: 2,
     decision_table_count: 6,
     payment_hardening_count: 2,
     family_alignment_count: 2,
-  }, withBatch = true, staleDecisionColumns = false, stalePaymentColumns = false, staleFamilyColumns = false, staleFamilyObjects = false, staleArchiveSafety = false) => ({
+    revision_table_count: 3,
+  }, withBatch = true, staleDecisionColumns = false, stalePaymentColumns = false, staleFamilyColumns = false, staleFamilyObjects = false, staleArchiveSafety = false, staleRevisionObjects = false) => ({
     ...(withBatch ? { batch: async () => [] } : {}),
     prepare(sql) {
       return {
@@ -724,6 +913,9 @@ test("readiness reports AI capability without exposing the configured secret", a
           }
           if (sql.includes("archived_decision_comparison_insert_guard")) {
             return { count: staleArchiveSafety ? 12 : 13 };
+          }
+          if (sql.includes("AS trigger_count") && sql.includes("project_revision_capture_insert")) {
+            return staleRevisionObjects ? { trigger_count: 13, index_count: 2 } : { trigger_count: 14, index_count: 3 };
           }
           if (sql.includes("FROM sqlite_master")) return counts;
           if (staleFamilyColumns && sql.includes("FROM family_alignment_rooms")) throw new Error("no such column: request_hash");
@@ -748,8 +940,10 @@ test("readiness reports AI capability without exposing the configured secret", a
   assert.equal(body.checks.paymentSchema, "current");
   assert.equal(body.checks.familyAlignmentSchema, "current");
   assert.equal(body.checks.archiveSafetySchema, "current");
+  assert.equal(body.checks.revisionSchema, "current");
   assert.equal(body.capabilities.aiPlanningBrief, true);
   assert.equal(body.capabilities.familyAlignment, true);
+  assert.equal(body.capabilities.briefCheck, true);
   assert.equal(JSON.stringify(body).includes(API_KEY), false);
 
   const staleDecision = await worker.fetch(request("/api/readiness"), {
@@ -806,6 +1000,18 @@ test("readiness reports AI capability without exposing the configured secret", a
   const staleArchiveSafetyBody = await staleArchiveSafety.json();
   assert.equal(staleArchiveSafetyBody.checks.archiveSafetySchema, "outdated");
   assert.equal(staleArchiveSafetyBody.capabilities.freePlanning, false);
+
+  const staleRevisionObjectsResponse = await worker.fetch(request("/api/readiness"), {
+    ASSETS: assets,
+    DB: readinessDb(undefined, true, false, false, false, false, false, true),
+    GRIHAGRID_CACHE: new MemoryKv(),
+    GEMINI_API_KEY: API_KEY,
+  });
+  assert.equal(staleRevisionObjectsResponse.status, 503);
+  const staleRevisionObjectsBody = await staleRevisionObjectsResponse.json();
+  assert.equal(staleRevisionObjectsBody.status, "not_ready");
+  assert.equal(staleRevisionObjectsBody.checks.revisionSchema, "outdated");
+  assert.equal(staleRevisionObjectsBody.capabilities.briefCheck, false);
 
   for (const [label, overrides] of [
     ["invalid model", { DB: readinessDb(), GEMINI_API_KEY: API_KEY, GEMINI_MODEL: "bad/model" }],

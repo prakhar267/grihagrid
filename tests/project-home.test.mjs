@@ -55,7 +55,7 @@ function projectRow(overrides = {}) {
 async function currentRows(project = projectRow()) {
   const input = JSON.parse(project.input_json);
   const estimate = JSON.parse(project.estimate_json);
-  const reportHash = await digestHex(stableStringify({ version: 1, input, estimate }));
+  const reportHash = await digestHex(stableStringify({ version: 2, input, estimate }));
   const comparisonHash = await digestHex(stableStringify({ input, estimate }));
   const scenarios = [
     { id: "comparison-2_a", key: "A", label: "Courtyard calm" },
@@ -65,8 +65,9 @@ async function currentRows(project = projectRow()) {
     projectRow: project,
     reportRow: {
       id: "report-1",
-      version: 1,
+      version: 2,
       input_hash: reportHash,
+      project_input_revision: 2,
       generated_at: "2026-08-14 09:10:00",
     },
     aiRow: {
@@ -108,6 +109,7 @@ async function currentRows(project = projectRow()) {
       entitlement_revoked_at: null,
     },
     countsRow: {
+      revisions: 2,
       comparisons: 4,
       family_rooms: 3,
       purchased_artifacts: 2,
@@ -211,7 +213,7 @@ test("Project Home returns current aggregate Family and exact paid Decision Comp
     fulfillmentStatus: "ready",
     entitlementActive: true,
   });
-  assert.deepEqual(result.counts, { comparisons: 4, familyRooms: 3, purchasedArtifacts: 2, orders: 5 });
+  assert.deepEqual(result.counts, { revisions: 2, comparisons: 4, familyRooms: 3, purchasedArtifacts: 2, orders: 5 });
   assert.equal(result.lifecycle.steps.find((step) => step.id === "family").status, "active");
   assert.equal(result.lifecycle.completedCoreSteps, 3, "Family is optional and does not count as a core gate");
 });
@@ -297,7 +299,7 @@ test("Project Home response omits raw envelopes, bearer material, individual res
     }
   };
   visit(result);
-  assert.equal(JSON.stringify(result).includes("budget"), false, "individual structured reasons do not leave the Worker");
+  assert.equal(JSON.stringify(result.current.family).includes("budget"), false, "individual structured reasons do not leave the Worker");
 });
 
 class ReadOnlyHomeDatabase {

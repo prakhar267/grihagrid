@@ -373,7 +373,7 @@ test("Decision Compare survives real D1 migrations, payment containment, sharing
     const revisedInput = await call(server.origin, `/api/projects/${staleDraft.project.id}`, {
       method: "PATCH",
       auth: owner,
-      body: { input: { bathrooms: 4 } },
+      body: { input: { bathrooms: 4 }, expectedInputRevision: 1 },
     });
     assert.equal(revisedInput.response.status, 200, JSON.stringify(revisedInput.payload));
     assert.equal(revisedInput.payload.project.inputRevision, 2);
