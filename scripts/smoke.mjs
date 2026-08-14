@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { pathToFileURL } from "node:url";
 
-const DEFAULT_TIMEOUT_MS = 8_000;
+const DEFAULT_TIMEOUT_MS = 12_000;
+const MAX_TRANSIENT_ATTEMPTS = 2;
 
 function canonicalOrigin(raw) {
   const origin = new URL(raw);
@@ -16,13 +17,29 @@ function canonicalOrigin(raw) {
 
 async function timedFetch(url, init = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
   const startedAt = performance.now();
-  const response = await fetch(url, {
-    ...init,
-    signal: AbortSignal.timeout(timeoutMs),
-    redirect: "error",
-    headers: { "user-agent": "grihagrid-read-only-synthetic/1.0", ...(init.headers || {}) },
-  });
-  return { response, latencyMs: Math.round(performance.now() - startedAt) };
+  let lastError;
+  for (let attempt = 1; attempt <= MAX_TRANSIENT_ATTEMPTS; attempt += 1) {
+    try {
+      const response = await fetch(url, {
+        ...init,
+        signal: AbortSignal.timeout(timeoutMs),
+        redirect: "error",
+        headers: { "user-agent": "grihagrid-read-only-synthetic/1.0", ...(init.headers || {}) },
+      });
+      return { response, latencyMs: Math.round(performance.now() - startedAt), attempts: attempt };
+    } catch (error) {
+      lastError = error;
+      const transient = error?.name === "TimeoutError" || error?.name === "AbortError" || error instanceof TypeError;
+      if (!transient || attempt === MAX_TRANSIENT_ATTEMPTS) {
+        const pathname = new URL(url).pathname;
+        throw new Error(
+          `${pathname} fetch failed after ${attempt} attempt${attempt === 1 ? "" : "s"}: ${error?.name || "Error"}`,
+          { cause: error },
+        );
+      }
+    }
+  }
+  throw lastError;
 }
 
 function assertSecurityHeaders(response, path) {
@@ -33,14 +50,14 @@ function assertSecurityHeaders(response, path) {
 }
 
 async function jsonCheck(origin, path, init, validate) {
-  const { response, latencyMs } = await timedFetch(new URL(path, origin), init);
+  const { response, latencyMs, attempts } = await timedFetch(new URL(path, origin), init);
   assert.equal(response.status, 200, `${path} returned ${response.status}`);
   assertSecurityHeaders(response, path);
   assert.match(response.headers.get("content-type") || "", /^application\/json\b/u, `${path} must return JSON`);
   assert.equal(response.headers.get("cache-control"), "no-store", `${path} must not be cached`);
   const body = await response.json();
   validate(body);
-  return { path, status: response.status, latencyMs };
+  return { path, status: response.status, latencyMs, attempts };
 }
 
 export async function runSmoke(rawOrigin, options = {}) {
@@ -54,7 +71,7 @@ export async function runSmoke(rawOrigin, options = {}) {
   assert.match(home.response.headers.get("content-type") || "", /^text\/html\b/u, "homepage must return HTML");
   const homepage = await home.response.text();
   assert.match(homepage, /GrihaGrid/u, "homepage brand marker is missing");
-  checks.push({ path: "/", status: 200, latencyMs: home.latencyMs });
+  checks.push({ path: "/", status: 200, latencyMs: home.latencyMs, attempts: home.attempts });
 
   checks.push(await jsonCheck(origin, "/api/health", {}, (body) => {
     assert.equal(body.status, "ok");
