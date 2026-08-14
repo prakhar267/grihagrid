@@ -30,7 +30,13 @@ const PASSWORD_ITERATIONS = 100_000;
 const MAX_JSON_BYTES = 64 * 1024;
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_WEBHOOK_BYTES = 256 * 1024;
-const REPORT_VERSION = 1;
+// v1 reports predate Brief Check and used an unconditional feasibility verdict.
+// Keep those immutable historical rows, but never serve them as the current
+// planning report. Explicit generation materializes the truthful v2 schema.
+const REPORT_VERSION = 2;
+const PROJECT_INPUT_SCHEMA_VERSION = 1;
+const ESTIMATE_RULE_VERSION = 1;
+const BRIEF_CHECK_VERSION = 1;
 const PURCHASE_SNAPSHOT_VERSION = 1;
 const DECISION_COMPARE_SCHEMA_VERSION = 1;
 const DECISION_SNAPSHOT_SCHEMA_VERSION = 1;
@@ -46,7 +52,7 @@ const GEMINI_MAX_ATTEMPTS = 2;
 const AI_USER_HOURLY_LIMIT = 6;
 const AI_PLATFORM_DAILY_PROVIDER_ATTEMPT_LIMIT = 200;
 const AI_GENERATION_LEASE_MS = 45_000;
-const AI_DISCLAIMER = "AI-generated concept guidance grounded in the GrihaGrid feasibility report. Verify all dimensions, costs, structure, services, title, and local approval requirements with appropriately licensed professionals before relying on it.";
+const AI_DISCLAIMER = "AI-generated concept guidance grounded in the GrihaGrid planning report. Verify all dimensions, costs, structure, services, title, and local approval requirements with appropriately licensed professionals before relying on it.";
 
 const AI_BRIEF_RESPONSE_SCHEMA = Object.freeze({
   type: "object",
@@ -139,6 +145,8 @@ const FAMILY_ALIGNMENT_CONFIDENCE = new Set(["high", "medium", "low"]);
 const FAMILY_ALIGNMENT_REASONS = new Set(["budget", "space", "parking", "accessibility", "future_expansion", "construction_complexity"]);
 const FAMILY_ALIGNMENT_RESPONSE_LIMIT = 5;
 const FAMILY_ALIGNMENT_HISTORY_LIMIT = 20;
+const PROJECT_REVISION_HISTORY_LIMIT = 50;
+const PROJECT_REVISION_DEFAULT_LIMIT = 20;
 const RAZORPAY_PAYMENT_LINKS_URL = "https://api.razorpay.com/v1/payment_links/";
 
 const FILE_TYPES = new Set([
@@ -1854,7 +1862,7 @@ function normalizeProjectName(value) {
 function directInput(body) {
   const input = {};
   for (const [key, value] of Object.entries(body)) {
-    if (!["name", "status", "input"].includes(key)) input[key] = value;
+    if (!["name", "status", "input", "expectedInputRevision", "acceptedImpact"].includes(key)) input[key] = value;
   }
   return input;
 }
@@ -1874,6 +1882,276 @@ function normalizeProjectInput(value) {
   return { input, estimate };
 }
 
+const REVISION_INPUT_FIELDS = Object.freeze([
+  "width",
+  "length",
+  "city",
+  "facing",
+  "floors",
+  "bedrooms",
+  "bathrooms",
+  "parking",
+  "style",
+  "quality",
+  "roadWidthFt",
+  "plotShape",
+  "accessibility",
+  "futureUse",
+  "budgetLakh",
+]);
+const REVISION_INPUT_FIELD_SET = new Set(REVISION_INPUT_FIELDS);
+const REVISION_INPUT_LABELS = Object.freeze({
+  width: "Plot width",
+  length: "Plot length",
+  city: "City",
+  facing: "Road-facing side",
+  floors: "Floors",
+  bedrooms: "Bedrooms",
+  bathrooms: "Bathrooms",
+  parking: "Parking",
+  style: "Exterior direction",
+  quality: "Finish",
+  roadWidthFt: "Approach-road width",
+  plotShape: "Plot shape",
+  accessibility: "Accessibility",
+  futureUse: "Future use",
+  budgetLakh: "Planning budget",
+});
+const REVISION_CITIES = new Set(["Pune", "Bengaluru", "Mumbai", "Delhi", "Hyderabad", "Chennai", "Jaipur", "Other"]);
+const REVISION_FACINGS = new Set(["North", "East", "South", "West"]);
+const REVISION_FLOORS = new Set(["G", "G+1", "G+2"]);
+const REVISION_QUALITIES = new Set(["Essential", "Signature", "Premium", "Luxury"]);
+const REVISION_PLOT_SHAPES = new Set(["regular", "irregular", "corner", "unknown"]);
+const REVISION_ACCESSIBILITY = new Set(["none", "step_free", "wheelchair_ready", "unknown"]);
+const REVISION_FUTURE_USES = new Set(["none", "rental", "home_office", "vertical_expansion", "unknown"]);
+const BRIEF_CHECK_STATUSES = new Set(["insufficient_information", "programme_tension", "directionally_plausible"]);
+
+function revisionText(value, field, maximum = 80) {
+  if (typeof value !== "string") throw new HttpError(400, `${field} must be text`, "invalid_revision_request");
+  const text = value.normalize("NFKC").replace(/[\p{Cc}\p{Cf}]/gu, " ").trim().replace(/\s+/gu, " ");
+  if (!text || text.length > maximum) throw new HttpError(400, `${field} is invalid`, "invalid_revision_request");
+  return text;
+}
+
+function revisionNumber(value, field, minimum, maximum, integer = false) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < minimum || number > maximum || (integer && !Number.isInteger(number))) {
+    throw new HttpError(400, `${field} is invalid`, "invalid_revision_request");
+  }
+  return number;
+}
+
+function revisionEnum(value, field, allowed) {
+  const normalized = String(value || "");
+  if (!allowed.has(normalized)) throw new HttpError(400, `${field} is invalid`, "invalid_revision_request");
+  return normalized;
+}
+
+function normalizeRevisionField(field, value) {
+  if (["bathrooms", "roadWidthFt", "budgetLakh"].includes(field) && value == null) return null;
+  if (field === "width" || field === "length") return revisionNumber(value, REVISION_INPUT_LABELS[field], 10, 500);
+  if (field === "city") return revisionEnum(value, "city", REVISION_CITIES);
+  if (field === "facing") return revisionEnum(value, "road-facing side", REVISION_FACINGS);
+  if (field === "floors") return revisionEnum(value, "floors", REVISION_FLOORS);
+  if (field === "quality") return revisionEnum(value, "finish", REVISION_QUALITIES);
+  if (field === "bedrooms") {
+    if (String(value).trim() === "5+") return "5+";
+    return String(revisionNumber(value, "bedrooms", 1, 10, true));
+  }
+  if (field === "bathrooms") return revisionNumber(value, "bathrooms", 1, 12, true);
+  if (field === "parking") {
+    if (typeof value === "boolean") return value;
+    const normalized = String(value || "").trim().toLowerCase();
+    const values = { none: "None", "1 car": "1 car", "2 cars": "2 cars" };
+    if (!Object.hasOwn(values, normalized)) throw new HttpError(400, "parking is invalid", "invalid_revision_request");
+    return values[normalized];
+  }
+  if (field === "style") return revisionText(value, "exterior direction");
+  if (field === "roadWidthFt") return revisionNumber(value, "approach-road width", 6, 200);
+  if (field === "plotShape") return revisionEnum(value, "plot shape", REVISION_PLOT_SHAPES);
+  if (field === "accessibility") return revisionEnum(value, "accessibility", REVISION_ACCESSIBILITY);
+  if (field === "futureUse") return revisionEnum(value, "future use", REVISION_FUTURE_USES);
+  if (field === "budgetLakh") return revisionNumber(value, "planning budget", 5, 10_000);
+  throw new HttpError(400, `unsupported project input field: ${field}`, "invalid_revision_request");
+}
+
+function normalizeRevisionPatch(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new HttpError(400, "input must be an object", "invalid_revision_request");
+  }
+  const entries = Object.entries(value);
+  if (!entries.length) throw new HttpError(400, "input must include at least one editable field", "invalid_revision_request");
+  const patch = {};
+  for (const [field, proposed] of entries) {
+    if (!REVISION_INPUT_FIELD_SET.has(field)) {
+      throw new HttpError(400, `unsupported project input field: ${field}`, "invalid_revision_request");
+    }
+    patch[field] = normalizeRevisionField(field, proposed);
+  }
+  return patch;
+}
+
+function positiveRevision(value) {
+  const revision = Number(value);
+  if (!Number.isInteger(revision) || revision < 1) {
+    throw new HttpError(400, "expectedInputRevision must be a positive integer", "invalid_revision_request");
+  }
+  return revision;
+}
+
+function parkingRequested(value) {
+  if (value === false || value == null) return false;
+  return !["none", "no", "0", "false"].includes(String(value).trim().toLowerCase());
+}
+
+function briefCheck(input, estimate = computeEstimate(input)) {
+  const missingFields = [];
+  const requireField = (field, prompt, missing = input[field] == null || input[field] === "" || input[field] === "unknown") => {
+    if (missing) missingFields.push({ field, label: REVISION_INPUT_LABELS[field], prompt });
+  };
+  requireField("bathrooms", "Add the expected bathroom count, or leave it explicitly not sure.");
+  requireField("roadWidthFt", "Add the measured or best-known approach-road width.");
+  requireField("plotShape", "Confirm whether the plot is regular, irregular, or a corner plot.");
+  requireField("accessibility", "Record whether step-free or wheelchair-ready planning matters.");
+  requireField("futureUse", "Record the likely future use, even when no change is planned.");
+  requireField("budgetLakh", "Add the family's current planning budget range anchor.");
+
+  const tensions = [];
+  const addTension = (code, label, detail) => tensions.push({ code, label, detail });
+  const bedrooms = boundedInteger(input.bedrooms, 0, 0, 10);
+  const bathrooms = input.bathrooms == null ? null : Number(input.bathrooms);
+  const roadWidth = input.roadWidthFt == null ? null : Number(input.roadWidthFt);
+  const budgetInr = input.budgetLakh == null ? null : Number(input.budgetLakh) * 100_000;
+  if (parkingRequested(input.parking) && Number(input.width) < 25) {
+    addTension("narrow_frontage_parking", "Parking competes with the frontage", "A frontage below 25 ft can tighten the entrance, parking, daylight, and stair arrangement.");
+  }
+  if (parkingRequested(input.parking) && Number.isFinite(roadWidth) && roadWidth < 12) {
+    addTension("narrow_road_parking", "Approach geometry needs verification", "A road below 12 ft may make vehicle turning and on-plot parking difficult; measure the actual approach and gate position.");
+  }
+  if (input.plotShape === "irregular") {
+    addTension("irregular_plot", "The usable envelope is uncertain", "An irregular boundary needs a measured survey before area allocation or setbacks can be trusted.");
+  }
+  if (bedrooms > 0 && estimate.builtUpSqft < bedrooms * 350) {
+    addTension("programme_density", "The room programme is tight", "The bedroom count is ambitious for the indicative built-up area and may compress shared rooms or circulation.");
+  }
+  if (Number.isFinite(bathrooms) && bedrooms > 0 && bathrooms > bedrooms + 1) {
+    addTension("service_density", "Wet-area planning may be heavy", "The bathroom count is high for the bedroom programme; aligned plumbing and maintenance access need early study.");
+  }
+  if (Number.isFinite(budgetInr) && budgetInr < estimate.lowInr) {
+    addTension("budget_below_range", "The budget sits below the planning range", "Reduce area, floors, or finish scope before treating the programme as financially aligned.");
+  }
+  if (["step_free", "wheelchair_ready"].includes(input.accessibility) && input.floors !== "G") {
+    addTension("vertical_access", "Vertical access needs a deliberate solution", "A multi-level brief with accessibility needs requires professional review of stairs, lift provision, circulation, and cost.");
+  }
+  if (input.futureUse === "vertical_expansion" && input.floors === "G+2") {
+    addTension("future_vertical_expansion", "Future vertical growth is constrained", "A G+2 starting point may leave little practical or permissible vertical expansion capacity.");
+  }
+
+  const status = missingFields.length
+    ? "insufficient_information"
+    : tensions.length
+      ? "programme_tension"
+      : "directionally_plausible";
+  const headline = {
+    insufficient_information: "More site and budget facts are needed.",
+    programme_tension: "The brief contains decisions that need resolution.",
+    directionally_plausible: "The brief is directionally plausible at concept stage.",
+  }[status];
+  const summary = status === "insufficient_information"
+    ? "Complete the missing facts before relying on the programme or planning range."
+    : status === "programme_tension"
+      ? "The inputs can support a useful architect conversation, but the highlighted trade-offs should be resolved first."
+      : "The stated programme and indicative range do not show an immediate rule-based tension; measured-site and professional validation are still required.";
+  return {
+    version: BRIEF_CHECK_VERSION,
+    status,
+    headline,
+    summary,
+    missingFields,
+    tensions,
+    professionalChecks: [
+      "Measured boundary, levels, access, and site conditions",
+      "Title, setbacks, FAR/FSI, parking, fire, and local sanction rules",
+      "Soil, structure, drainage, services, specifications, and contractor pricing",
+    ],
+  };
+}
+
+function validStoredBriefCheck(value) {
+  const parsed = typeof value === "string" ? parseStoredJson(value, null) : value;
+  if (!parsed || Number(parsed.version) !== BRIEF_CHECK_VERSION || !BRIEF_CHECK_STATUSES.has(parsed.status)) return null;
+  if (!Array.isArray(parsed.missingFields) || !Array.isArray(parsed.tensions) || !Array.isArray(parsed.professionalChecks)) return null;
+  return parsed;
+}
+
+function revisionBasis(input, estimate) {
+  return stableStringify({
+    input,
+    estimate,
+    inputSchemaVersion: PROJECT_INPUT_SCHEMA_VERSION,
+    estimateRuleVersion: ESTIMATE_RULE_VERSION,
+  });
+}
+
+function estimateDelta(before, after) {
+  const left = Number(before || 0);
+  const right = Number(after || 0);
+  return { before: left, after: right, delta: right - left };
+}
+
+function changeStudy(beforeInput, beforeEstimate, afterInput, afterEstimate, beforeCheck = null, afterCheck = null) {
+  const changedFields = REVISION_INPUT_FIELDS
+    .filter((field) => stableStringify(beforeInput?.[field] ?? null) !== stableStringify(afterInput?.[field] ?? null))
+    .map((field) => ({
+      field,
+      label: REVISION_INPUT_LABELS[field],
+      before: beforeInput?.[field] ?? null,
+      after: afterInput?.[field] ?? null,
+    }));
+  const beforeBriefCheck = beforeCheck || briefCheck(beforeInput, beforeEstimate);
+  const afterBriefCheck = afterCheck || briefCheck(afterInput, afterEstimate);
+  return {
+    hasChanges: changedFields.length > 0 || stableStringify(beforeEstimate) !== stableStringify(afterEstimate),
+    changedFields,
+    estimateDeltas: {
+      plotSqft: estimateDelta(beforeEstimate?.plotSqft, afterEstimate?.plotSqft),
+      builtUpSqft: estimateDelta(beforeEstimate?.builtUpSqft, afterEstimate?.builtUpSqft),
+      lowInr: estimateDelta(beforeEstimate?.lowInr, afterEstimate?.lowInr),
+      highInr: estimateDelta(beforeEstimate?.highInr, afterEstimate?.highInr),
+    },
+    status: {
+      before: beforeBriefCheck.status,
+      after: afterBriefCheck.status,
+      changed: beforeBriefCheck.status !== afterBriefCheck.status,
+    },
+    consequences: [
+      { code: "feasibility_refresh", label: "Planning report must be regenerated", detail: "The current planning report is cleared; an earlier generated report remains attached to its original revision." },
+      { code: "comparison_historical", label: "Current comparisons become historical", detail: "Saved options, choices, and purchases remain immutable but do not become current for the new brief." },
+      { code: "family_rooms_closed", label: "Open Family rooms close", detail: "Review links for an earlier brief are permanently revoked so they cannot collect answers against obsolete inputs." },
+      { code: "purchases_unchanged", label: "Purchased evidence stays unchanged", detail: "A revision never rewrites, unlocks, or re-entitles a purchased artifact." },
+    ],
+  };
+}
+
+function prepareRevisionCandidate(project, proposedInput) {
+  const patch = normalizeRevisionPatch(proposedInput);
+  const previousInput = parseStoredJson(project.input_json, {});
+  const previousEstimate = parseStoredJson(project.estimate_json, computeEstimate(previousInput));
+  const normalized = normalizeProjectInput({ ...previousInput, ...patch });
+  const previousCheck = validStoredBriefCheck(project.brief_check_json) || briefCheck(previousInput, previousEstimate);
+  const nextCheck = briefCheck(normalized.input, normalized.estimate);
+  const impact = changeStudy(previousInput, previousEstimate, normalized.input, normalized.estimate, previousCheck, nextCheck);
+  return {
+    previousInput,
+    previousEstimate,
+    previousCheck,
+    input: normalized.input,
+    estimate: normalized.estimate,
+    briefCheck: nextCheck,
+    changeStudy: impact,
+  };
+}
+
 function parseStoredJson(value, fallback = null) {
   try {
     return JSON.parse(value);
@@ -1883,12 +2161,15 @@ function parseStoredJson(value, fallback = null) {
 }
 
 function projectFromRow(row) {
+  const input = parseStoredJson(row.input_json, {});
+  const estimate = parseStoredJson(row.estimate_json, null);
   return {
     id: row.id,
     name: row.name,
     status: row.status,
-    input: parseStoredJson(row.input_json, {}),
-    estimate: parseStoredJson(row.estimate_json, null),
+    input,
+    estimate,
+    briefCheck: validStoredBriefCheck(row.brief_check_json) || briefCheck(input, estimate || computeEstimate(input)),
     inputRevision: Number(row.input_revision || 1),
     reportAvailable: Boolean(row.report_available),
     createdAt: row.created_at,
@@ -1898,7 +2179,9 @@ function projectFromRow(row) {
 
 async function ownedProject(db, projectId, userId) {
   const row = await db.prepare(
-    `SELECT p.*,EXISTS(SELECT 1 FROM reports r WHERE r.project_id=p.id) AS report_available
+    `SELECT p.*,EXISTS(SELECT 1 FROM project_revision_reports rr
+                        WHERE rr.project_id=p.id AND rr.project_revision=p.input_revision
+                          AND rr.report_schema_version=${REPORT_VERSION}) AS report_available
        FROM projects p WHERE p.id=? AND p.user_id=?`,
   ).bind(projectId, userId).first();
   if (!row) throw new HttpError(404, "project not found", "project_not_found");
@@ -1920,14 +2203,32 @@ async function createProject(request, env) {
   const body = await readJson(request);
   const sourceInput = body.input == null ? directInput(body) : body.input;
   const { input, estimate } = normalizeProjectInput(sourceInput);
+  const assessment = briefCheck(input, estimate);
+  const inputHash = await digestHex(revisionBasis(input, estimate));
   const id = crypto.randomUUID();
   const name = normalizeProjectName(body.name);
   const now = sqliteTimestamp();
   await db.prepare(
-    `INSERT INTO projects (id,user_id,name,status,input_json,estimate_json,created_at,updated_at)
-     VALUES (?,?,?,?,?,?,?,?)`,
-  ).bind(id, session.user_id, name, "feasibility_ready", JSON.stringify(input), JSON.stringify(estimate), now, now).run();
-  return json({ project: { id, name, status: "feasibility_ready", input, estimate, inputRevision: 1, reportAvailable: false, createdAt: now, updatedAt: now } }, 201);
+    `INSERT INTO projects
+       (id,user_id,name,status,input_json,estimate_json,input_hash,input_schema_version,
+        estimate_rule_version,brief_check_version,brief_check_json,created_at,updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+  ).bind(
+    id, session.user_id, name, "feasibility_ready", JSON.stringify(input), JSON.stringify(estimate), inputHash,
+    PROJECT_INPUT_SCHEMA_VERSION, ESTIMATE_RULE_VERSION, BRIEF_CHECK_VERSION, JSON.stringify(assessment), now, now,
+  ).run();
+  return json({ project: {
+    id,
+    name,
+    status: "feasibility_ready",
+    input,
+    estimate,
+    briefCheck: assessment,
+    inputRevision: 1,
+    reportAvailable: false,
+    createdAt: now,
+    updatedAt: now,
+  } }, 201);
 }
 
 async function listProjects(request, env, url) {
@@ -1939,7 +2240,9 @@ async function listProjects(request, env, url) {
     throw new HttpError(400, "invalid pagination", "invalid_pagination");
   }
   const result = await db.prepare(
-    `SELECT p.*,EXISTS(SELECT 1 FROM reports r WHERE r.project_id=p.id) AS report_available
+    `SELECT p.*,EXISTS(SELECT 1 FROM project_revision_reports rr
+                        WHERE rr.project_id=p.id AND rr.project_revision=p.input_revision
+                          AND rr.report_schema_version=${REPORT_VERSION}) AS report_available
        FROM projects p WHERE p.user_id=? ORDER BY p.updated_at DESC,p.id DESC LIMIT ? OFFSET ?`,
   ).bind(session.user_id, limitValue + 1, offsetValue).all();
   const rows = result.results || [];
@@ -2007,10 +2310,10 @@ function projectHomeNextAction(stage, reportAvailable = false) {
   if (stage === "feasibility_pending") {
     return {
       code: "open_feasibility",
-      label: reportAvailable ? "Refresh feasibility" : "Open feasibility",
+      label: reportAvailable ? "Refresh Brief Check" : "Open Brief Check",
       description: reportAvailable
-        ? "Refresh the feasibility brief so it matches the current project inputs."
-        : "Generate the current plot-fit and indicative planning range.",
+        ? "Refresh the planning report so it matches the current brief."
+        : "Generate the current Brief Check and indicative planning range.",
       target: "report",
     };
   }
@@ -2065,7 +2368,10 @@ async function projectHomeProjection({
 
   const reportHash = await digestHex(stableStringify({ version: REPORT_VERSION, input, estimate }));
   const reportAvailable = Boolean(reportRow);
-  const reportCurrent = reportAvailable && reportRow.input_hash === reportHash;
+  const reportCurrent = reportAvailable
+    && Number(reportRow.version) === REPORT_VERSION
+    && Number(reportRow.project_input_revision) === Number(projectRow.input_revision || 1)
+    && reportRow.input_hash === reportHash;
   current.feasibility = {
     available: reportAvailable,
     current: reportCurrent,
@@ -2186,12 +2492,12 @@ async function projectHomeProjection({
     {
       id: "feasibility",
       status: feasibilityStatus,
-      label: "Feasibility",
+      label: "Brief Check",
       detail: reportCurrent
-        ? "The saved feasibility matches the current project inputs."
+        ? "The saved planning report matches the current brief."
         : reportAvailable
-          ? "The saved feasibility belongs to an earlier project input."
-          : "Open the feasibility brief to establish the current plot and cost basis.",
+          ? "The saved planning report belongs to an earlier brief."
+          : "Open Brief Check to establish the current site and planning-cost basis.",
     },
     {
       id: "comparison",
@@ -2238,6 +2544,7 @@ async function projectHomeProjection({
     },
     current,
     counts: {
+      revisions: Number(countsRow?.revisions || 0),
       comparisons: Number(countsRow?.comparisons || 0),
       familyRooms: Number(countsRow?.family_rooms || 0),
       purchasedArtifacts: Number(countsRow?.purchased_artifacts || 0),
@@ -2252,12 +2559,19 @@ async function getProjectHome(request, env, projectId) {
   const userId = session.user_id;
   const results = await db.batch([
     db.prepare(
-      `SELECT p.*,EXISTS(SELECT 1 FROM reports r WHERE r.project_id=p.id AND r.user_id=p.user_id) AS report_available
+      `SELECT p.*,EXISTS(SELECT 1 FROM project_revision_reports rr
+                          WHERE rr.project_id=p.id AND rr.project_revision=p.input_revision
+                            AND rr.report_schema_version=${REPORT_VERSION}) AS report_available
          FROM projects p WHERE p.id=? AND p.user_id=?`,
     ).bind(projectId, userId),
     db.prepare(
-      `SELECT id,version,input_hash,generated_at
-         FROM reports WHERE project_id=? AND user_id=? LIMIT 1`,
+      `SELECT rr.source_report_id AS id,rr.report_schema_version AS version,
+              rr.input_hash,rr.generated_at,rr.project_revision AS project_input_revision
+         FROM project_revision_reports rr
+         JOIN projects p ON p.id=rr.project_id
+        WHERE rr.project_id=? AND p.user_id=? AND rr.project_revision=p.input_revision
+          AND rr.report_schema_version=${REPORT_VERSION}
+        LIMIT 1`,
     ).bind(projectId, userId),
     db.prepare(
       `SELECT id,source_report_id,source_input_hash,prompt_version,schema_version,model,generated_at
@@ -2307,13 +2621,15 @@ async function getProjectHome(request, env, projectId) {
     ).bind(projectId, userId, projectId, userId, projectId, userId),
     db.prepare(
       `SELECT
+         (SELECT COUNT(*) FROM project_revisions r JOIN projects p ON p.id=r.project_id
+           WHERE r.project_id=? AND p.user_id=?) AS revisions,
          (SELECT COUNT(*) FROM decision_comparisons WHERE project_id=? AND user_id=?) AS comparisons,
          (SELECT COUNT(*) FROM family_alignment_rooms WHERE project_id=? AND user_id=?) AS family_rooms,
          (SELECT COUNT(*) FROM purchased_decision_snapshots s
             JOIN orders o ON o.id=s.order_id
            WHERE s.project_id=? AND s.user_id=? AND o.status IN ('paid','refunded')) AS purchased_artifacts,
          (SELECT COUNT(*) FROM orders WHERE project_id=? AND user_id=?) AS orders`,
-    ).bind(projectId, userId, projectId, userId, projectId, userId, projectId, userId),
+    ).bind(projectId, userId, projectId, userId, projectId, userId, projectId, userId, projectId, userId),
   ]);
   const first = (index) => results?.[index]?.results?.[0] || null;
   const projectRow = first(0);
@@ -2329,6 +2645,338 @@ async function getProjectHome(request, env, projectId) {
     purchaseRow: first(7),
     countsRow: first(8),
   }));
+}
+
+const REVISION_REPORT_COLUMNS = `
+  EXISTS(SELECT 1 FROM project_revision_reports rr
+          WHERE rr.project_id=r.project_id AND rr.project_revision=r.revision) AS report_available,
+  (SELECT rr.report_schema_version FROM project_revision_reports rr
+    WHERE rr.project_id=r.project_id AND rr.project_revision=r.revision
+    ORDER BY rr.report_schema_version DESC LIMIT 1) AS report_schema_version,
+  (SELECT rr.generated_at FROM project_revision_reports rr
+    WHERE rr.project_id=r.project_id AND rr.project_revision=r.revision
+    ORDER BY rr.report_schema_version DESC LIMIT 1) AS report_generated_at`;
+
+function exactRevisionBody(body, fields) {
+  if (Object.keys(body).some((field) => !fields.includes(field)) || fields.some((field) => !Object.hasOwn(body, field))) {
+    throw new HttpError(400, `request must contain exactly: ${fields.join(", ")}`, "invalid_revision_request");
+  }
+  return body;
+}
+
+function allowedRevisionBody(body, fields) {
+  if (Object.keys(body).some((field) => !fields.includes(field))) {
+    throw new HttpError(400, `request may contain only: ${fields.join(", ")}`, "invalid_revision_request");
+  }
+  return body;
+}
+
+function revisionInputSummary(input) {
+  return Object.fromEntries(REVISION_INPUT_FIELDS.map((field) => [field, input?.[field] ?? null]));
+}
+
+function revisionProjectFromRow(row) {
+  const project = projectFromRow(row);
+  return { ...project, input: revisionInputSummary(project.input) };
+}
+
+function revisionFromRow(row, currentRevision, includeInput = true) {
+  const input = parseStoredJson(row.input_json, {});
+  const estimate = parseStoredJson(row.estimate_json, computeEstimate(input));
+  const assessment = validStoredBriefCheck(row.brief_check_json) || briefCheck(input, estimate);
+  const revision = {
+    revision: Number(row.revision),
+    current: Number(row.revision) === Number(currentRevision),
+    provenance: row.provenance,
+    createdAt: row.created_at,
+    inputSchemaVersion: Number(row.input_schema_version),
+    estimateRuleVersion: Number(row.estimate_rule_version),
+    estimate,
+    briefCheck: assessment,
+    report: {
+      available: Boolean(row.report_available),
+      schemaVersion: row.report_schema_version == null ? null : Number(row.report_schema_version),
+      generatedAt: row.report_generated_at || null,
+    },
+  };
+  if (includeInput) revision.input = revisionInputSummary(input);
+  else revision.inputSummary = revisionInputSummary(input);
+  return revision;
+}
+
+async function revisionRow(db, projectId, revision) {
+  return db.prepare(
+    `SELECT r.*,${REVISION_REPORT_COLUMNS}
+       FROM project_revisions r
+      WHERE r.project_id=? AND r.revision=?`,
+  ).bind(projectId, revision).first();
+}
+
+async function revisionResponseFromMapping(db, project, mapping, idempotentReplay) {
+  const resultRow = await revisionRow(db, project.id, mapping.result_revision);
+  const previousRow = await revisionRow(db, project.id, mapping.expected_revision);
+  if (!resultRow || !previousRow) {
+    throw new HttpError(409, "the stored revision result is incomplete", "project_revision_conflict");
+  }
+  const resultRevision = revisionFromRow(resultRow, project.input_revision, true);
+  const previousRevision = revisionFromRow(previousRow, project.input_revision, true);
+  const impact = changeStudy(
+    previousRevision.input,
+    previousRevision.estimate,
+    resultRevision.input,
+    resultRevision.estimate,
+    previousRevision.briefCheck,
+    resultRevision.briefCheck,
+  );
+  return {
+    project: revisionProjectFromRow(project),
+    revision: resultRevision,
+    briefCheck: resultRevision.briefCheck,
+    changeStudy: impact,
+    idempotentReplay,
+  };
+}
+
+async function revisionIdempotencyHash(userId, key) {
+  return digestBase64(`brief-revision:${userId}:${key}`);
+}
+
+async function revisionRequestHash(projectId, expectedInputRevision, patch) {
+  return digestHex(stableStringify({
+    version: 1,
+    projectId,
+    expectedInputRevision,
+    input: patch,
+    acceptedImpact: true,
+  }));
+}
+
+function assertRevisionCurrent(project, expectedInputRevision) {
+  if (Number(project.input_revision || 1) !== expectedInputRevision) {
+    throw new HttpError(409, "the project brief changed; reload before retrying", "project_revision_conflict");
+  }
+}
+
+async function previewProjectRevision(request, env, projectId) {
+  requireTrustedOrigin(request, env);
+  const db = requireDatabase(env);
+  const session = await getSession(request, env);
+  await requireCsrf(request, session);
+  const project = requireActiveProject(await ownedProject(db, projectId, session.user_id));
+  requireAbuseControl(env);
+  await rateLimit(request, env, `brief-revision-preview:${session.user_id}`, 60, 60 * 60);
+  const body = exactRevisionBody(await readJson(request), ["expectedInputRevision", "input"]);
+  const expectedInputRevision = positiveRevision(body.expectedInputRevision);
+  assertRevisionCurrent(project, expectedInputRevision);
+  const candidate = prepareRevisionCandidate(project, body.input);
+  return json({
+    baseRevision: expectedInputRevision,
+    proposedRevision: expectedInputRevision + 1,
+    input: revisionInputSummary(candidate.input),
+    estimate: candidate.estimate,
+    briefCheck: candidate.briefCheck,
+    changeStudy: candidate.changeStudy,
+  });
+}
+
+async function commitProjectRevision(request, env, projectId) {
+  requireTrustedOrigin(request, env);
+  const db = requireDatabase(env);
+  const session = await getSession(request, env);
+  await requireCsrf(request, session);
+  const project = await ownedProject(db, projectId, session.user_id);
+  requireAbuseControl(env);
+  await rateLimit(request, env, `brief-revision-commit:${session.user_id}`, 30, 60 * 60);
+  const body = allowedRevisionBody(await readJson(request), ["expectedInputRevision", "input", "acceptedImpact"]);
+  if (body.acceptedImpact !== true) {
+    throw new HttpError(400, "acceptedImpact must be true before saving this revision", "impact_acceptance_required");
+  }
+  if (!Object.hasOwn(body, "expectedInputRevision") || !Object.hasOwn(body, "input")) {
+    throw new HttpError(400, "expectedInputRevision and input are required", "invalid_revision_request");
+  }
+  const expectedInputRevision = positiveRevision(body.expectedInputRevision);
+  const patch = normalizeRevisionPatch(body.input);
+  const keyHash = await revisionIdempotencyHash(session.user_id, normalizeIdempotencyKey(request));
+  const requestHash = await revisionRequestHash(projectId, expectedInputRevision, patch);
+
+  // Ownership has already been established. Only then is the user-scoped key
+  // consulted, so key reuse cannot become a project-existence oracle.
+  const mapped = await db.prepare("SELECT * FROM project_revision_requests WHERE idempotency_key_hash=?")
+    .bind(keyHash).first();
+  if (mapped) {
+    if (mapped.project_id !== projectId || mapped.request_hash !== requestHash) {
+      throw new HttpError(409, "this Idempotency-Key was already used for a different revision", "idempotency_conflict");
+    }
+    return json(await revisionResponseFromMapping(db, project, mapped, true));
+  }
+
+  requireActiveProject(project);
+  assertRevisionCurrent(project, expectedInputRevision);
+  const candidate = prepareRevisionCandidate(project, patch);
+  if (!candidate.changeStudy.hasChanges) {
+    throw new HttpError(409, "the proposed input does not change the project brief", "no_revision_changes");
+  }
+  const resultRevision = expectedInputRevision + 1;
+  const resultContentHash = await digestHex(revisionBasis(candidate.input, candidate.estimate));
+  const now = sqliteTimestamp();
+  try {
+    await db.batch([
+      db.prepare(
+        `UPDATE projects
+            SET input_json=?,estimate_json=?,input_hash=?,input_schema_version=?,estimate_rule_version=?,
+                brief_check_version=?,brief_check_json=?,status='feasibility_ready',
+                input_revision=input_revision+1,updated_at=?
+          WHERE id=? AND user_id=? AND status!='archived' AND input_revision=?`,
+      ).bind(
+        JSON.stringify(candidate.input), JSON.stringify(candidate.estimate), resultContentHash,
+        PROJECT_INPUT_SCHEMA_VERSION, ESTIMATE_RULE_VERSION, BRIEF_CHECK_VERSION,
+        JSON.stringify(candidate.briefCheck), now, projectId, session.user_id, expectedInputRevision,
+      ),
+      // This final unconditional insert is intentional. Its SQL trigger checks
+      // the exact winning revision/hash and aborts the entire D1 batch when the
+      // conditional update above lost a race.
+      db.prepare(
+        `INSERT INTO project_revision_requests
+           (idempotency_key_hash,request_hash,result_content_hash,project_id,
+            expected_revision,result_revision,created_at)
+         VALUES (?,?,?,?,?,?,?)`,
+      ).bind(keyHash, requestHash, resultContentHash, projectId, expectedInputRevision, resultRevision, now),
+    ]);
+  } catch (error) {
+    const replay = await db.prepare("SELECT * FROM project_revision_requests WHERE idempotency_key_hash=?")
+      .bind(keyHash).first();
+    if (replay) {
+      if (replay.project_id !== projectId || replay.request_hash !== requestHash) {
+        throw new HttpError(409, "this Idempotency-Key was already used for a different revision", "idempotency_conflict");
+      }
+      const latest = await ownedProject(db, projectId, session.user_id);
+      return json(await revisionResponseFromMapping(db, latest, replay, true));
+    }
+    const latest = await ownedProject(db, projectId, session.user_id);
+    if (latest.status === "archived") {
+      throw new HttpError(409, "restore the project before changing its planning record", "project_archived");
+    }
+    if (/project revision compare and swap failed/iu.test(String(error?.message || error))
+        || Number(latest.input_revision) !== expectedInputRevision) {
+      throw new HttpError(409, "the project brief changed; reload before retrying", "project_revision_conflict");
+    }
+    throw error;
+  }
+  const latest = await ownedProject(db, projectId, session.user_id);
+  const mapping = {
+    expected_revision: expectedInputRevision,
+    result_revision: resultRevision,
+  };
+  return json(await revisionResponseFromMapping(db, latest, mapping, false), 201);
+}
+
+async function listProjectRevisions(request, env, projectId, url) {
+  const db = requireDatabase(env);
+  const session = await getSession(request, env);
+  const rawLimit = url.searchParams.get("limit");
+  const limit = rawLimit == null ? PROJECT_REVISION_DEFAULT_LIMIT : Number(rawLimit);
+  const rawBefore = url.searchParams.get("beforeRevision");
+  const beforeRevision = rawBefore == null ? null : Number(rawBefore);
+  if (!Number.isInteger(limit) || limit < 1 || limit > PROJECT_REVISION_HISTORY_LIMIT
+      || (beforeRevision != null && (!Number.isInteger(beforeRevision) || beforeRevision < 1))) {
+    throw new HttpError(400, "invalid revision pagination", "invalid_pagination");
+  }
+  // One read batch gives the project projection, page, and honest history
+  // boundary from the same D1 snapshot. Every statement repeats ownership so
+  // neither a foreign project nor a concurrent commit can produce a mixed
+  // envelope.
+  const results = await db.batch([
+    db.prepare(
+      `SELECT p.*,EXISTS(SELECT 1 FROM project_revision_reports rr
+                          WHERE rr.project_id=p.id AND rr.project_revision=p.input_revision
+                            AND rr.report_schema_version=${REPORT_VERSION}) AS report_available
+         FROM projects p WHERE p.id=? AND p.user_id=?`,
+    ).bind(projectId, session.user_id),
+    db.prepare(
+      `SELECT r.*,${REVISION_REPORT_COLUMNS}
+         FROM project_revisions r
+         JOIN projects p ON p.id=r.project_id
+        WHERE r.project_id=? AND p.user_id=? AND (? IS NULL OR r.revision<?)
+        ORDER BY r.revision DESC LIMIT ?`,
+    ).bind(projectId, session.user_id, beforeRevision, beforeRevision, limit + 1),
+    db.prepare(
+      `SELECT MIN(r.revision) AS revision
+         FROM project_revisions r
+         JOIN projects p ON p.id=r.project_id
+        WHERE r.project_id=? AND p.user_id=?`,
+    ).bind(projectId, session.user_id),
+  ]);
+  const project = results?.[0]?.results?.[0] || null;
+  if (!project) throw new HttpError(404, "project not found", "project_not_found");
+  const rows = results?.[1]?.results || [];
+  const hasMore = rows.length > limit;
+  const page = rows.slice(0, limit);
+  const earliest = results?.[2]?.results?.[0] || null;
+  return json({
+    project: revisionProjectFromRow(project),
+    briefCheck: projectFromRow(project).briefCheck,
+    revisions: page.map((row) => revisionFromRow(row, project.input_revision, false)),
+    pagination: {
+      limit,
+      beforeRevision,
+      nextBeforeRevision: hasMore && page.length ? Number(page.at(-1).revision) : null,
+      hasMore,
+    },
+    historyStartsAtRevision: Number(earliest?.revision || project.input_revision || 1),
+  });
+}
+
+async function getProjectRevision(request, env, projectId, revision) {
+  const db = requireDatabase(env);
+  const session = await getSession(request, env);
+  const project = await ownedProject(db, projectId, session.user_id);
+  const row = await revisionRow(db, projectId, revision);
+  if (!row) throw new HttpError(404, "project revision not found", "project_revision_not_found");
+  const previous = await db.prepare(
+    `SELECT r.*,${REVISION_REPORT_COLUMNS}
+       FROM project_revisions r
+      WHERE r.project_id=? AND r.revision<? ORDER BY r.revision DESC LIMIT 1`,
+  ).bind(projectId, revision).first();
+  const currentRevision = revisionFromRow(row, project.input_revision, true);
+  const previousRevision = previous ? revisionFromRow(previous, project.input_revision, true) : null;
+  return json({
+    project: revisionProjectFromRow(project),
+    revision: currentRevision,
+    previousRevision,
+    changeStudy: previousRevision
+      ? changeStudy(
+        previousRevision.input, previousRevision.estimate,
+        currentRevision.input, currentRevision.estimate,
+        previousRevision.briefCheck, currentRevision.briefCheck,
+      )
+      : null,
+  });
+}
+
+async function getProjectRevisionReport(request, env, projectId, revision) {
+  const db = requireDatabase(env);
+  const session = await getSession(request, env);
+  await ownedProject(db, projectId, session.user_id);
+  const revisionRecord = await db.prepare(
+    `SELECT r.revision,r.created_at,rr.content_json,rr.report_schema_version,rr.generated_at
+       FROM project_revisions r
+       JOIN project_revision_reports rr
+         ON rr.project_id=r.project_id AND rr.project_revision=r.revision
+      WHERE r.project_id=? AND r.revision=?
+      ORDER BY rr.report_schema_version DESC LIMIT 1`,
+  ).bind(projectId, revision).first();
+  if (!revisionRecord) {
+    const exists = await db.prepare("SELECT 1 AS present FROM project_revisions WHERE project_id=? AND revision=?")
+      .bind(projectId, revision).first();
+    if (!exists) throw new HttpError(404, "project revision not found", "project_revision_not_found");
+    throw new HttpError(404, "no report was generated for this project revision", "revision_report_not_found");
+  }
+  const report = parseStoredJson(revisionRecord.content_json, null);
+  if (!report) throw new HttpError(500, "stored revision report is invalid", "report_invalid");
+  return json({
+    revision: { revision: Number(revisionRecord.revision), createdAt: revisionRecord.created_at },
+    report,
+  });
 }
 
 async function updateProject(request, env, projectId) {
@@ -2363,17 +3011,28 @@ async function updateProject(request, env, projectId) {
   const name = hasName ? normalizeProjectName(body.name) : current.name;
   let input = parseStoredJson(current.input_json, {});
   let estimate = parseStoredJson(current.estimate_json, null);
+  let assessment = validStoredBriefCheck(current.brief_check_json) || briefCheck(input, estimate || computeEstimate(input));
+  let inputHash = current.input_hash || await digestHex(revisionBasis(input, estimate || computeEstimate(input)));
   let inputChanged = false;
   if (hasNestedInput || hasDirectInput) {
     const nested = hasNestedInput ? body.input : {};
     if (!nested || typeof nested !== "object" || Array.isArray(nested)) {
-      throw new HttpError(400, "project input must be an object", "invalid_project_input");
+      throw new HttpError(400, "project input must be an object", "invalid_revision_request");
     }
-    const previousBasis = stableStringify({ input, estimate });
-    const normalized = normalizeProjectInput({ ...input, ...nested, ...patchInput });
-    inputChanged = previousBasis !== stableStringify({ input: normalized.input, estimate: normalized.estimate });
-    input = normalized.input;
-    estimate = normalized.estimate;
+    if (!Object.hasOwn(body, "expectedInputRevision")) {
+      throw new HttpError(400, "expectedInputRevision is required for project input changes", "invalid_revision_request");
+    }
+    const expectedInputRevision = positiveRevision(body.expectedInputRevision);
+    assertRevisionCurrent(current, expectedInputRevision);
+    const candidate = prepareRevisionCandidate(current, { ...nested, ...patchInput });
+    inputChanged = candidate.changeStudy.hasChanges;
+    if (!inputChanged) {
+      throw new HttpError(409, "the proposed input does not change the project brief", "no_revision_changes");
+    }
+    input = candidate.input;
+    estimate = candidate.estimate;
+    assessment = candidate.briefCheck;
+    inputHash = await digestHex(revisionBasis(input, estimate));
   }
 
   let status = current.status;
@@ -2392,21 +3051,31 @@ async function updateProject(request, env, projectId) {
   const storedInputJson = inputChanged ? JSON.stringify(input) : current.input_json;
   const storedEstimateJson = inputChanged ? JSON.stringify(estimate) : current.estimate_json;
   const statusFence = current.status === "archived" ? "status='archived'" : "status!='archived'";
+  const revisionFence = inputChanged ? "AND input_revision=?" : "";
+  const bindings = [
+    name,
+    status,
+    storedInputJson,
+    storedEstimateJson,
+    inputHash,
+    PROJECT_INPUT_SCHEMA_VERSION,
+    ESTIMATE_RULE_VERSION,
+    BRIEF_CHECK_VERSION,
+    JSON.stringify(assessment),
+    inputChanged ? 1 : 0,
+    now,
+    projectId,
+    session.user_id,
+  ];
+  if (inputChanged) bindings.push(Number(current.input_revision || 1));
   const statements = [db.prepare(
     `UPDATE projects
-        SET name=?,status=?,input_json=?,estimate_json=?,
+        SET name=?,status=?,input_json=?,estimate_json=?,input_hash=?,input_schema_version=?,
+            estimate_rule_version=?,brief_check_version=?,brief_check_json=?,
             input_revision=input_revision+?,updated_at=?
-      WHERE id=? AND user_id=? AND ${statusFence}
+      WHERE id=? AND user_id=? AND ${statusFence} ${revisionFence}
     RETURNING id`,
-  ).bind(name, status, storedInputJson, storedEstimateJson, inputChanged ? 1 : 0, now, projectId, session.user_id)];
-  if (inputChanged) {
-    statements.push(db.prepare(
-      `DELETE FROM reports
-        WHERE project_id=? AND user_id=?
-          AND EXISTS (SELECT 1 FROM projects p
-                       WHERE p.id=? AND p.user_id=? AND p.status!='archived')`,
-    ).bind(projectId, session.user_id, projectId, session.user_id));
-  }
+  ).bind(...bindings)];
   if (current.status !== "archived" && status === "archived") {
     // Archiving closes outstanding bearer review rooms permanently. Reopening
     // the project must never silently reactivate a link the owner stopped.
@@ -2424,9 +3093,13 @@ async function updateProject(request, env, projectId) {
     if (latest.status === "archived") {
       throw new HttpError(409, "restore the project before changing its planning record", "project_archived");
     }
-    throw new HttpError(409, "the project changed concurrently; reload before retrying", "project_update_conflict");
+    throw new HttpError(
+      409,
+      inputChanged ? "the project brief changed; reload before retrying" : "the project changed concurrently; reload before retrying",
+      inputChanged ? "project_revision_conflict" : "project_update_conflict",
+    );
   }
-  return json({ project: { id: projectId, name, status, input, estimate, inputRevision: Number(current.input_revision || 1) + (inputChanged ? 1 : 0), reportAvailable: inputChanged ? false : Boolean(current.report_available), createdAt: current.created_at, updatedAt: now } });
+  return json({ project: projectFromRow(await ownedProject(db, projectId, session.user_id)) });
 }
 
 async function ensureProjectDeletable(db, projectId) {
@@ -2630,7 +3303,7 @@ function buildDecisionScenario(projectInput, scenario, index, comparisonId) {
 function decisionRecommendation(priority, scenarios, projectInput) {
   const [left, right] = scenarios;
   let selected = left;
-  let reason = "It stays closer to the current feasibility brief while avoiding unnecessary cost and vertical complexity.";
+  let reason = "It stays closer to the current brief while avoiding unnecessary cost and vertical complexity.";
   if (priority === "space") {
     selected = left.estimate.builtUpSqft >= right.estimate.builtUpSqft ? left : right;
     reason = "It creates the larger indicative built-up area for the same plot, with the added cost and circulation burden shown below.";
@@ -4252,13 +4925,11 @@ async function getAiBrief(request, env, projectId) {
   const db = requireDatabase(env);
   const session = await getSession(request, env);
   const project = await ownedProject(db, projectId, session.user_id);
-  const currentInputHash = await digestHex(stableStringify({
-    version: REPORT_VERSION,
-    input: parseStoredJson(project.input_json, {}),
-    estimate: parseStoredJson(project.estimate_json, null),
-  }));
+  const currentReport = await currentGeneratedReport(db, project);
+  const currentInputHash = currentReport?.inputHash || null;
   const existing = await ownedAiBrief(db, projectId, session.user_id);
-  if (!existing
+  if (!currentReport || !existing
+      || existing.source_report_id !== currentReport.id
       || existing.source_input_hash !== currentInputHash
       || existing.prompt_version !== AI_PROMPT_VERSION
       || Number(existing.schema_version) !== AI_BRIEF_SCHEMA_VERSION) {
@@ -4269,6 +4940,17 @@ async function getAiBrief(request, env, projectId) {
   } catch {
     throw new HttpError(500, "stored AI planning brief is invalid", "ai_brief_invalid");
   }
+}
+
+async function currentGeneratedReport(db, project) {
+  const row = await db.prepare(
+    `SELECT content_json FROM project_revision_reports
+      WHERE project_id=? AND project_revision=? AND report_schema_version=?`,
+  ).bind(project.id, Number(project.input_revision || 1), REPORT_VERSION).first();
+  const report = row ? parseStoredJson(row.content_json, null) : null;
+  if (!report || Number(report.version) !== REPORT_VERSION || report.projectId !== project.id
+      || typeof report.id !== "string" || typeof report.inputHash !== "string") return null;
+  return report;
 }
 
 async function generateAiBrief(request, env, projectId) {
@@ -4291,8 +4973,10 @@ async function generateAiBrief(request, env, projectId) {
 
   const project = await ownedProject(db, projectId, session.user_id);
   if (project.status === "archived") throw new HttpError(409, "restore the project before generating an AI brief", "project_archived");
-  const reportResult = await ensureReport(db, session, project);
-  const report = reportResult.report;
+  const report = await currentGeneratedReport(db, project);
+  if (!report) {
+    throw new HttpError(409, "generate the current planning report before requesting an AI brief", "report_required");
+  }
   const existing = await ownedAiBrief(db, projectId, session.user_id);
   const sourceMatches = existing
     && existing.source_report_id === report.id
@@ -4325,8 +5009,15 @@ async function generateAiBrief(request, env, projectId) {
            WHERE project_id=? AND user_id=? AND lease_token=? AND source_input_hash=? AND expires_at>?
         )
           AND EXISTS (
-            SELECT 1 FROM reports
-             WHERE id=? AND project_id=? AND user_id=? AND input_hash=?
+            SELECT 1 FROM projects p
+             WHERE p.id=? AND p.user_id=? AND p.status!='archived'
+               AND p.input_revision=? AND p.input_json=? AND p.estimate_json IS ?
+          )
+          AND EXISTS (
+            SELECT 1 FROM project_revision_reports rr
+             WHERE rr.source_report_id=? AND rr.project_id=?
+               AND rr.project_revision=? AND rr.report_schema_version=?
+               AND rr.input_hash=? AND rr.content_json=?
           )
        ON CONFLICT(project_id) DO UPDATE SET
          user_id=excluded.user_id,schema_version=excluded.schema_version,prompt_version=excluded.prompt_version,
@@ -4357,10 +5048,17 @@ async function generateAiBrief(request, env, projectId) {
       leaseToken,
       report.inputHash,
       now,
-      report.id,
       projectId,
       session.user_id,
+      Number(project.input_revision || 1),
+      project.input_json,
+      project.estimate_json,
+      report.id,
+      projectId,
+      Number(project.input_revision || 1),
+      REPORT_VERSION,
       report.inputHash,
+      JSON.stringify(report),
     ).first();
     if (persisted?.id !== id) {
       throw new HttpError(409, "the project changed while its AI brief was generating", "ai_generation_superseded");
@@ -4402,6 +5100,12 @@ function buildReport(project, inputHash, reportId, generatedAt) {
   if (estimate.quality === "Luxury") risks.push("Imported or custom finishes can materially extend procurement lead times.");
   if (!input.soilReport) risks.push("Foundation assumptions must be validated through a geotechnical investigation.");
   risks.push("Municipal setbacks, FAR/FSI, fire, and parking rules require verification by a locally licensed architect.");
+  const assessment = validStoredBriefCheck(project.brief_check_json) || briefCheck(input, estimate);
+  const verdict = {
+    insufficient_information: "More brief information is needed before a directional assessment",
+    programme_tension: "Programme tensions identified; professional review is required",
+    directionally_plausible: "Directionally plausible at concept stage; professional validation is still required",
+  }[assessment.status];
 
   return {
     id: reportId,
@@ -4409,9 +5113,10 @@ function buildReport(project, inputHash, reportId, generatedAt) {
     version: REPORT_VERSION,
     inputHash,
     generatedAt,
-    title: `${project.name} — feasibility report`,
+    title: `${project.name} — planning report`,
+    briefCheck: assessment,
     summary: {
-      verdict: "Conceptually feasible, subject to local approvals and site verification",
+      verdict,
       city: estimate.city,
       plotSqft: estimate.plotSqft,
       targetBuiltUpSqft: estimate.builtUpSqft,
@@ -4429,8 +5134,8 @@ function buildReport(project, inputHash, reportId, generatedAt) {
         `${bathrooms} bathrooms`,
         "Living and dining zone",
         "Kitchen with utility",
-        input.parking === false || String(input.parking || "").toLowerCase() === "none" ? "Arrival court" : "At least one on-plot parking bay",
-        floorCount > 1 ? "Code-compliant stair core" : "Future-ready expansion zone",
+        input.parking === false || String(input.parking || "").toLowerCase() === "none" ? "Arrival court to test with the site plan" : "Parking arrangement to test against access, turning, setbacks, and frontage",
+        floorCount > 1 ? "Stair and vertical-circulation provision for professional sizing" : "Potential expansion zone for structural and approval review",
       ],
     },
     costPlan: {
@@ -4465,29 +5170,83 @@ function buildReport(project, inputHash, reportId, generatedAt) {
 
 async function ensureReport(db, session, project) {
   const projectId = project.id;
-  const inputHash = await digestHex(stableStringify({ version: REPORT_VERSION, input: parseStoredJson(project.input_json, {}), estimate: parseStoredJson(project.estimate_json, null) }));
-  const existing = await db.prepare("SELECT * FROM reports WHERE project_id=? AND user_id=?").bind(projectId, session.user_id).first();
-  const existingContent = existing ? parseStoredJson(existing.content_json, null) : null;
-  if (existing?.input_hash === inputHash && existingContent) return { report: existingContent, cached: true, created: false };
+  const revision = Number(project.input_revision || 1);
+  const input = parseStoredJson(project.input_json, {});
+  const estimate = parseStoredJson(project.estimate_json, computeEstimate(input));
+  const inputHash = await digestHex(stableStringify({ version: REPORT_VERSION, input, estimate }));
+  const historical = await db.prepare(
+    `SELECT source_report_id,content_json FROM project_revision_reports
+      WHERE project_id=? AND project_revision=? AND report_schema_version=?`,
+  ).bind(projectId, revision, REPORT_VERSION).first();
+  const historicalContent = historical ? parseStoredJson(historical.content_json, null) : null;
+  if (historicalContent) return { report: historicalContent, cached: true, created: false };
   if (project.status === "archived") throw new HttpError(409, "restore the project before generating a report", "project_archived");
 
+  const existing = await db.prepare("SELECT * FROM reports WHERE project_id=? AND user_id=?")
+    .bind(projectId, session.user_id).first();
+  const revisionSource = await db.prepare(
+    "SELECT content_hash FROM project_revisions WHERE project_id=? AND revision=?",
+  ).bind(projectId, revision).first();
+  const actualContentHash = await digestHex(revisionBasis(input, estimate));
+  const sourceContentHash = revisionSource?.content_hash === actualContentHash ? actualContentHash : null;
   const id = existing?.id || crypto.randomUUID();
   const now = sqliteTimestamp();
   const report = buildReport(project, inputHash, id, now);
-  await db.prepare(
-    `INSERT INTO reports (id,project_id,user_id,version,input_hash,content_json,generated_at,updated_at)
-     VALUES (?,?,?,?,?,?,?,?)
-     ON CONFLICT(project_id) DO UPDATE SET
-       user_id=excluded.user_id,version=excluded.version,input_hash=excluded.input_hash,
-       content_json=excluded.content_json,generated_at=excluded.generated_at,updated_at=excluded.updated_at`,
-  ).bind(id, projectId, session.user_id, REPORT_VERSION, inputHash, JSON.stringify(report), now, now).run();
-  // Never let a late report-status write reopen a project that was archived
-  // after the report itself committed. Migration 0011 fences the inverse
-  // ordering (archive before report upsert) at SQL time.
-  await db.prepare(
-    "UPDATE projects SET status='report_ready',updated_at=? WHERE id=? AND user_id=? AND status!='archived'",
-  ).bind(now, projectId, session.user_id).run();
-  return { report, cached: false, created: !existing };
+  const contentJson = JSON.stringify(report);
+  try {
+    await db.batch([
+      db.prepare(
+        `INSERT INTO reports
+           (id,project_id,user_id,version,input_hash,content_json,generated_at,updated_at,project_input_revision)
+         SELECT ?,?,?,?,?,?,?,?,?
+          WHERE EXISTS (SELECT 1 FROM projects
+                         WHERE id=? AND user_id=? AND status!='archived' AND input_revision=?)
+         ON CONFLICT(project_id) DO UPDATE SET
+           user_id=excluded.user_id,version=excluded.version,input_hash=excluded.input_hash,
+           content_json=excluded.content_json,generated_at=excluded.generated_at,
+           updated_at=excluded.updated_at,project_input_revision=excluded.project_input_revision`,
+      ).bind(
+        id, projectId, session.user_id, REPORT_VERSION, inputHash, contentJson, now, now, revision,
+        projectId, session.user_id, revision,
+      ),
+      // The insert trigger binds these bytes to the same still-current source
+      // revision and aborts the complete batch if an edit or archive won first.
+      db.prepare(
+        `INSERT INTO project_revision_reports
+           (project_id,project_revision,report_schema_version,source_report_id,
+            source_content_hash,input_hash,content_json,generated_at)
+         VALUES (?,?,?,?,?,?,?,?)`,
+      ).bind(projectId, revision, REPORT_VERSION, id, sourceContentHash, inputHash, contentJson, now),
+      db.prepare(
+        `UPDATE projects SET status='report_ready',updated_at=?
+          WHERE id=? AND user_id=? AND status!='archived' AND input_revision=?`,
+      ).bind(now, projectId, session.user_id, revision),
+    ]);
+  } catch (error) {
+    if (/UNIQUE constraint failed:\s*project_revision_reports\.project_id,\s*project_revision_reports\.project_revision,\s*project_revision_reports\.report_schema_version/iu.test(String(error?.message || error))) {
+      const latest = await ownedProject(db, projectId, session.user_id);
+      if (Number(latest.input_revision || 1) === revision) {
+        const winner = await db.prepare(
+          `SELECT content_json FROM project_revision_reports
+            WHERE project_id=? AND project_revision=? AND report_schema_version=?`,
+        ).bind(projectId, revision, REPORT_VERSION).first();
+        const winnerReport = winner ? parseStoredJson(winner.content_json, null) : null;
+        if (winnerReport && Number(winnerReport.version) === REPORT_VERSION && winnerReport.projectId === projectId) {
+          return { report: winnerReport, cached: true, created: false };
+        }
+      }
+      throw new HttpError(409, "the project brief changed while its report was generating", "project_revision_conflict");
+    }
+    if (/report source revision changed|archived project is read only/iu.test(String(error?.message || error))) {
+      const latest = await ownedProject(db, projectId, session.user_id);
+      if (latest.status === "archived") {
+        throw new HttpError(409, "restore the project before generating a report", "project_archived");
+      }
+      throw new HttpError(409, "the project brief changed while its report was generating", "project_revision_conflict");
+    }
+    throw error;
+  }
+  return { report, cached: false, created: true };
 }
 
 async function generateReport(request, env, projectId) {
@@ -4502,8 +5261,14 @@ async function generateReport(request, env, projectId) {
 async function getReport(request, env, projectId) {
   const db = requireDatabase(env);
   const session = await getSession(request, env);
-  const result = await ensureReport(db, session, await ownedProject(db, projectId, session.user_id));
-  return json({ report: result.report, cached: result.cached, autoGenerated: !result.cached });
+  const project = await ownedProject(db, projectId, session.user_id);
+  const row = await db.prepare(
+    `SELECT content_json FROM project_revision_reports
+      WHERE project_id=? AND project_revision=? AND report_schema_version=?`,
+  ).bind(projectId, Number(project.input_revision || 1), REPORT_VERSION).first();
+  const report = row ? parseStoredJson(row.content_json, null) : null;
+  if (!report) throw new HttpError(404, "report has not been generated for the current project brief", "report_not_found");
+  return json({ report, cached: true });
 }
 
 function normalizeFileName(value) {
@@ -4656,6 +5421,22 @@ function methodNotAllowed(allowed) {
   return json({ error: "method not allowed", code: "method_not_allowed" }, 405, { allow: allowed.join(", ") });
 }
 
+function decodeResourcePathSegment(value, message, code) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    throw new HttpError(404, message, code);
+  }
+}
+
+function decodeProjectPathSegment(value) {
+  return decodeResourcePathSegment(value, "project not found", "project_not_found");
+}
+
+function decodeOrderPathSegment(value) {
+  return decodeResourcePathSegment(value, "order not found", "order_not_found");
+}
+
 async function api(request, env, ctx, url) {
   if (request.method === "OPTIONS") {
     if (["/api/health", "/api/readiness", "/api/estimate", "/api/commerce/catalog"].includes(url.pathname)) return empty(204, CORS_HEADERS);
@@ -4689,6 +5470,7 @@ async function api(request, env, ctx, url) {
       let paymentSchema = "unknown";
       let familyAlignmentSchema = "unknown";
       let archiveSafetySchema = "unknown";
+      let revisionSchema = "unknown";
       if (env.DB) {
         try {
           const result = await env.DB.prepare(
@@ -4697,6 +5479,7 @@ async function api(request, env, ctx, url) {
                     SUM(CASE WHEN name IN ('ai_generation_counters','ai_generation_leases') THEN 1 ELSE 0 END) AS ai_abuse_count,
                     SUM(CASE WHEN name IN ('payment_terminal_records','payment_reconciliation_cases') THEN 1 ELSE 0 END) AS payment_hardening_count,
                     SUM(CASE WHEN name IN ('family_alignment_rooms','family_alignment_responses') THEN 1 ELSE 0 END) AS family_alignment_count,
+                    SUM(CASE WHEN name IN ('project_revisions','project_revision_requests','project_revision_reports') THEN 1 ELSE 0 END) AS revision_table_count,
                     SUM(CASE WHEN name IN
                       ('decision_comparisons','decision_selections','purchased_decision_snapshots',
                        'decision_shares','product_event_aggregates','decision_progress') THEN 1 ELSE 0 END) AS decision_table_count
@@ -4706,10 +5489,62 @@ async function api(request, env, ctx, url) {
                  'ai_planning_briefs','ai_generation_counters','ai_generation_leases','decision_comparisons',
                  'decision_selections','purchased_decision_snapshots','decision_shares','product_event_aggregates',
                  'decision_progress','payment_terminal_records','payment_reconciliation_cases',
-                 'family_alignment_rooms','family_alignment_responses')`,
+                 'family_alignment_rooms','family_alignment_responses','project_revisions',
+                 'project_revision_requests','project_revision_reports')`,
           ).first();
           database = "ok";
-          const requiredTablesPresent = Number(result?.count) === 19;
+          const requiredTablesPresent = Number(result?.count) === 22;
+          if (Number(result?.revision_table_count) === 3) {
+            try {
+              await env.DB.prepare(
+                `SELECT input_hash,input_schema_version,estimate_rule_version,brief_check_version,brief_check_json
+                   FROM projects LIMIT 0`,
+              ).first();
+              await env.DB.prepare("SELECT project_input_revision FROM reports LIMIT 0").first();
+              await env.DB.prepare(
+                `SELECT project_id,revision,provenance,input_schema_version,estimate_rule_version,
+                        brief_check_version,content_hash,input_json,estimate_json,brief_check_json,created_at
+                   FROM project_revisions LIMIT 0`,
+              ).first();
+              await env.DB.prepare(
+                `SELECT idempotency_key_hash,request_hash,result_content_hash,project_id,
+                        expected_revision,result_revision,created_at
+                   FROM project_revision_requests LIMIT 0`,
+              ).first();
+              await env.DB.prepare(
+                `SELECT project_id,project_revision,report_schema_version,source_report_id,
+                        source_content_hash,input_hash,content_json,generated_at
+                   FROM project_revision_reports LIMIT 0`,
+              ).first();
+              const revisionObjects = await env.DB.prepare(
+                `SELECT
+                   SUM(CASE WHEN type='trigger' AND name IN (
+                     'project_revision_capture_insert','project_revision_capture_update',
+                     'projects_input_revision_guard',
+                     'project_revision_source_change_effects','project_revisions_identity_guard',
+                     'archived_project_revision_insert_guard','project_revisions_immutable_update',
+                     'project_revisions_immutable_delete','project_revision_request_result_guard',
+                     'project_revision_requests_immutable_update','project_revision_requests_immutable_delete',
+                     'project_revision_report_source_guard','project_revision_reports_immutable_update',
+                     'project_revision_reports_immutable_delete'
+                   ) THEN 1 ELSE 0 END) AS trigger_count,
+                   SUM(CASE WHEN type='index' AND name IN (
+                     'idx_project_revisions_owner_created','idx_project_revision_requests_project',
+                     'idx_project_revision_reports_source'
+                   ) THEN 1 ELSE 0 END) AS index_count
+                 FROM sqlite_master
+                WHERE type IN ('trigger','index')`,
+              ).first();
+              revisionSchema = Number(revisionObjects?.trigger_count) === 14
+                && Number(revisionObjects?.index_count) === 3
+                ? "current"
+                : "outdated";
+            } catch {
+              revisionSchema = "outdated";
+            }
+          } else {
+            revisionSchema = "outdated";
+          }
           if (Number(result?.family_alignment_count) === 2) {
             try {
               await env.DB.prepare(
@@ -4865,7 +5700,7 @@ async function api(request, env, ctx, url) {
           }
           schema = requiredTablesPresent && aiSchema === "current" && aiAbuseControl === "configured"
             && decisionSchema === "current" && paymentSchema === "current" && familyAlignmentSchema === "current"
-            && archiveSafetySchema === "current"
+            && archiveSafetySchema === "current" && revisionSchema === "current"
             ? "current"
             : "outdated";
         } catch {
@@ -4877,6 +5712,7 @@ async function api(request, env, ctx, url) {
           paymentSchema = "unknown";
           familyAlignmentSchema = "unknown";
           archiveSafetySchema = "unknown";
+          revisionSchema = "unknown";
         }
       }
       const rateLimit = env.GRIHAGRID_CACHE ? "configured" : "missing";
@@ -4905,6 +5741,7 @@ async function api(request, env, ctx, url) {
           paymentSchema,
           familyAlignmentSchema,
           archiveSafetySchema,
+          revisionSchema,
           ai: geminiConfigured ? "configured" : "unavailable",
           privateStorage: env.FILES ? "configured" : "unavailable",
           acceptingPaidPlans: acceptingPlans,
@@ -4916,6 +5753,7 @@ async function api(request, env, ctx, url) {
           aiPlanningBrief: geminiConfigured,
           decisionCompare: freeReady && decisionSchema === "current",
           familyAlignment: freeReady && decisionSchema === "current" && familyAlignmentSchema === "current" && rateLimit === "configured",
+          briefCheck: freeReady && revisionSchema === "current" && rateLimit === "configured",
         },
         time: new Date().toISOString(),
       }, freeReady ? 200 : 503);
@@ -4963,7 +5801,7 @@ async function api(request, env, ctx, url) {
     }
     const publicDecisionMatch = url.pathname.match(/^\/api\/shared\/decision-compare\/([^/]+)$/u);
     if (publicDecisionMatch) {
-      const token = decodeURIComponent(publicDecisionMatch[1]);
+      const token = decodeResourcePathSegment(publicDecisionMatch[1], "shared decision not found", "share_not_found");
       return request.method === "GET" ? await getSharedDecision(request, env, token) : methodNotAllowed(["GET"]);
     }
     if (url.pathname === "/api/auth/register") {
@@ -4989,114 +5827,138 @@ async function api(request, env, ctx, url) {
 
     const projectOrdersMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/orders$/u);
     if (projectOrdersMatch) {
-      const projectId = decodeURIComponent(projectOrdersMatch[1]);
+      const projectId = decodeProjectPathSegment(projectOrdersMatch[1]);
       return request.method === "POST" ? await createOrder(request, env, projectId) : methodNotAllowed(["POST"]);
     }
     const fulfillmentMatch = url.pathname.match(/^\/api\/orders\/([^/]+)\/fulfillment$/u);
     if (fulfillmentMatch) {
-      const orderId = decodeURIComponent(fulfillmentMatch[1]);
+      const orderId = decodeOrderPathSegment(fulfillmentMatch[1]);
       return request.method === "GET" ? await getOrderFulfillment(request, env, orderId) : methodNotAllowed(["GET"]);
     }
     const artifactMatch = url.pathname.match(/^\/api\/orders\/([^/]+)\/artifact$/u);
     if (artifactMatch) {
-      const orderId = decodeURIComponent(artifactMatch[1]);
+      const orderId = decodeOrderPathSegment(artifactMatch[1]);
       return request.method === "GET" ? await getOrderArtifact(request, env, orderId) : methodNotAllowed(["GET"]);
     }
     const progressMatch = url.pathname.match(/^\/api\/orders\/([^/]+)\/progress$/u);
     if (progressMatch) {
-      const orderId = decodeURIComponent(progressMatch[1]);
+      const orderId = decodeOrderPathSegment(progressMatch[1]);
       return request.method === "POST" ? await updateDecisionProgress(request, env, orderId) : methodNotAllowed(["POST"]);
     }
     const orderMatch = url.pathname.match(/^\/api\/orders\/([^/]+)$/u);
     if (orderMatch) {
-      const orderId = decodeURIComponent(orderMatch[1]);
+      const orderId = decodeOrderPathSegment(orderMatch[1]);
       return request.method === "GET" ? await getOrder(request, env, orderId) : methodNotAllowed(["GET"]);
+    }
+
+    const revisionPreviewMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/revisions\/preview$/u);
+    if (revisionPreviewMatch) {
+      const projectId = decodeProjectPathSegment(revisionPreviewMatch[1]);
+      return request.method === "POST"
+        ? await previewProjectRevision(request, env, projectId)
+        : methodNotAllowed(["POST"]);
+    }
+    const revisionReportMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/revisions\/(\d+)\/report$/u);
+    if (revisionReportMatch) {
+      const projectId = decodeProjectPathSegment(revisionReportMatch[1]);
+      return request.method === "GET"
+        ? await getProjectRevisionReport(request, env, projectId, positiveRevision(revisionReportMatch[2]))
+        : methodNotAllowed(["GET"]);
+    }
+    const revisionDetailMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/revisions\/(\d+)$/u);
+    if (revisionDetailMatch) {
+      const projectId = decodeProjectPathSegment(revisionDetailMatch[1]);
+      return request.method === "GET"
+        ? await getProjectRevision(request, env, projectId, positiveRevision(revisionDetailMatch[2]))
+        : methodNotAllowed(["GET"]);
+    }
+    const revisionsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/revisions$/u);
+    if (revisionsMatch) {
+      const projectId = decodeProjectPathSegment(revisionsMatch[1]);
+      if (request.method === "GET") return await listProjectRevisions(request, env, projectId, url);
+      if (request.method === "POST") return await commitProjectRevision(request, env, projectId);
+      return methodNotAllowed(["GET", "POST"]);
     }
 
     const reportMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/report$/u);
     if (reportMatch) {
-      const projectId = decodeURIComponent(reportMatch[1]);
+      const projectId = decodeProjectPathSegment(reportMatch[1]);
       if (request.method === "GET") return await getReport(request, env, projectId);
       if (request.method === "POST") return await generateReport(request, env, projectId);
       return methodNotAllowed(["GET", "POST"]);
     }
     const aiBriefMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/ai-brief$/u);
     if (aiBriefMatch) {
-      const projectId = decodeURIComponent(aiBriefMatch[1]);
+      const projectId = decodeProjectPathSegment(aiBriefMatch[1]);
       if (request.method === "GET") return await getAiBrief(request, env, projectId);
       if (request.method === "POST") return await generateAiBrief(request, env, projectId);
       return methodNotAllowed(["GET", "POST"]);
     }
     const decisionShareMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/decision-compare\/shares\/([^/]+)$/u);
     if (decisionShareMatch) {
-      const projectId = decodeURIComponent(decisionShareMatch[1]);
-      const shareId = decodeURIComponent(decisionShareMatch[2]);
+      const projectId = decodeProjectPathSegment(decisionShareMatch[1]);
+      const shareId = decodeResourcePathSegment(decisionShareMatch[2], "share link not found", "share_not_found");
       return request.method === "DELETE"
         ? await revokeDecisionShare(request, env, projectId, shareId)
         : methodNotAllowed(["DELETE"]);
     }
     const decisionSharesMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/decision-compare\/shares$/u);
     if (decisionSharesMatch) {
-      const projectId = decodeURIComponent(decisionSharesMatch[1]);
+      const projectId = decodeProjectPathSegment(decisionSharesMatch[1]);
       if (request.method === "GET") return await listDecisionShares(request, env, projectId);
       if (request.method === "POST") return await createDecisionShare(request, env, projectId);
       return methodNotAllowed(["GET", "POST"]);
     }
     const decisionChoiceMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/decision-compare\/choice$/u);
     if (decisionChoiceMatch) {
-      const projectId = decodeURIComponent(decisionChoiceMatch[1]);
+      const projectId = decodeProjectPathSegment(decisionChoiceMatch[1]);
       return request.method === "POST" ? await chooseDecisionScenario(request, env, projectId) : methodNotAllowed(["POST"]);
     }
     const familyAlignmentRoomMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/family-alignment\/([^/]+)$/u);
     if (familyAlignmentRoomMatch) {
-      const projectId = decodeURIComponent(familyAlignmentRoomMatch[1]);
-      const roomId = decodeURIComponent(familyAlignmentRoomMatch[2]);
+      const projectId = decodeProjectPathSegment(familyAlignmentRoomMatch[1]);
+      const roomId = decodeResourcePathSegment(familyAlignmentRoomMatch[2], "review room not found", "family_alignment_not_found");
       return request.method === "DELETE"
         ? await revokeFamilyAlignment(request, env, projectId, roomId)
         : methodNotAllowed(["DELETE"]);
     }
     const familyAlignmentMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/family-alignment$/u);
     if (familyAlignmentMatch) {
-      const projectId = decodeURIComponent(familyAlignmentMatch[1]);
+      const projectId = decodeProjectPathSegment(familyAlignmentMatch[1]);
       if (request.method === "GET") return await getFamilyAlignment(request, env, projectId);
       if (request.method === "POST") return await createFamilyAlignment(request, env, projectId);
       return methodNotAllowed(["GET", "POST"]);
     }
     const decisionCompareMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/decision-compare$/u);
     if (decisionCompareMatch) {
-      const projectId = decodeURIComponent(decisionCompareMatch[1]);
+      const projectId = decodeProjectPathSegment(decisionCompareMatch[1]);
       if (request.method === "GET") return await getDecisionCompare(request, env, projectId);
       if (request.method === "PUT") return await putDecisionCompare(request, env, projectId);
       return methodNotAllowed(["GET", "PUT"]);
     }
     const fileMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/files\/([^/]+)$/u);
     if (fileMatch) {
-      const projectId = decodeURIComponent(fileMatch[1]);
-      const fileId = decodeURIComponent(fileMatch[2]);
+      const projectId = decodeProjectPathSegment(fileMatch[1]);
+      const fileId = decodeResourcePathSegment(fileMatch[2], "file not found", "file_not_found");
       if (["GET", "HEAD"].includes(request.method)) return await downloadFile(request, env, projectId, fileId);
       if (request.method === "DELETE") return await deleteFile(request, env, projectId, fileId);
       return methodNotAllowed(["GET", "HEAD", "DELETE"]);
     }
     const filesMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/files$/u);
     if (filesMatch) {
-      const projectId = decodeURIComponent(filesMatch[1]);
+      const projectId = decodeProjectPathSegment(filesMatch[1]);
       if (request.method === "GET") return await listFiles(request, env, projectId);
       if (request.method === "POST") return await uploadFile(request, env, projectId);
       return methodNotAllowed(["GET", "POST"]);
     }
     const projectHomeMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/home$/u);
     if (projectHomeMatch) {
-      let projectId;
-      try {
-        projectId = decodeURIComponent(projectHomeMatch[1]);
-      } catch {
-        throw new HttpError(404, "project not found", "project_not_found");
-      }
+      const projectId = decodeProjectPathSegment(projectHomeMatch[1]);
       return request.method === "GET" ? await getProjectHome(request, env, projectId) : methodNotAllowed(["GET"]);
     }
     const projectMatch = url.pathname.match(/^\/api\/projects\/([^/]+)$/u);
     if (projectMatch) {
-      const projectId = decodeURIComponent(projectMatch[1]);
+      const projectId = decodeProjectPathSegment(projectMatch[1]);
       if (request.method === "GET") return await getProject(request, env, projectId);
       if (["PATCH", "PUT"].includes(request.method)) return await updateProject(request, env, projectId);
       if (request.method === "DELETE") return await deleteProject(request, env, projectId);
@@ -5134,7 +5996,7 @@ function isApiRoute(pathname) {
     || /^\/api\/orders\/[^/]+(?:\/(?:fulfillment|artifact|progress))?$/u.test(pathname)
     || /^\/api\/shared\/decision-compare\/[^/]+$/u.test(pathname)
     || /^\/api\/family-alignment\/[^/]+(?:\/response)?$/u.test(pathname)
-    || /^\/api\/projects\/[^/]+(?:\/home|\/report|\/ai-brief|\/orders|\/family-alignment(?:\/[^/]+)?|\/decision-compare(?:\/choice|\/shares(?:\/[^/]+)?)?|\/files(?:\/[^/]+)?)?$/u.test(pathname);
+    || /^\/api\/projects\/[^/]+(?:\/home|\/report|\/ai-brief|\/orders|\/revisions(?:\/preview|\/\d+(?:\/report)?)?|\/family-alignment(?:\/[^/]+)?|\/decision-compare(?:\/choice|\/shares(?:\/[^/]+)?)?|\/files(?:\/[^/]+)?)?$/u.test(pathname);
 }
 
 function isAppNavigation(request, url) {
@@ -5153,13 +6015,15 @@ function operationalRoute(pathname) {
   if (/^\/api\/family-alignment\/[^/]+$/u.test(pathname)) return "/api/family-alignment/:token";
   if (/^\/share\/decision\/[^/]+$/u.test(pathname)) return "/share/decision/:token";
   if (/^\/align\/[^/]+$/u.test(pathname)) return "/align/:token";
-  const templated = pathname
-    .replace(/^\/api\/projects\/[^/]+/u, "/api/projects/:projectId")
-    .replace(/^\/api\/orders\/[^/]+/u, "/api/orders/:orderId")
-    .replace(/\/family-alignment\/[^/]+$/u, "/family-alignment/:roomId")
-    .replace(/\/files\/[^/]+$/u, "/files/:fileId")
-    .replace(/\/shares\/[^/]+$/u, "/shares/:shareId");
-  if (templated !== pathname || isApiRoute(pathname)) return templated;
+  if (isApiRoute(pathname)) {
+    return pathname
+      .replace(/^\/api\/projects\/[^/]+/u, "/api/projects/:projectId")
+      .replace(/^\/api\/orders\/[^/]+/u, "/api/orders/:orderId")
+      .replace(/\/revisions\/\d+(?=\/|$)/u, "/revisions/:revision")
+      .replace(/\/family-alignment\/[^/]+$/u, "/family-alignment/:roomId")
+      .replace(/\/files\/[^/]+$/u, "/files/:fileId")
+      .replace(/\/shares\/[^/]+$/u, "/shares/:shareId");
+  }
   if (pathname === "/" || pathname === "/index.html") return "/:frontend";
   if (pathname.startsWith("/api/")) return "/api/:unmatched";
   return pathname.split("/").at(-1)?.includes(".") ? "/:static-asset" : "/:frontend";
@@ -5251,12 +6115,15 @@ export const __test = {
   aiModel,
   aiPrompt,
   buildReport,
+  briefCheck,
+  changeStudy,
   callGemini,
   canonicalAppOrigin,
   commerceCatalog,
   computeEstimate,
   constantTimeEqual,
   derivePassword,
+  directInput,
   digestBase64,
   fromBase64Url,
   makePasswordRecord,
@@ -5264,12 +6131,16 @@ export const __test = {
   normalizeDecisionInput,
   normalizeIdempotencyKey,
   normalizeProjectInput,
+  normalizeRevisionPatch,
   operationalRoute,
   orderFromRow,
   ownedProject,
   paymentPlan,
   parseCookies,
   projectHomeProjection,
+  projectFromRow,
+  prepareRevisionCandidate,
+  revisionFromRow,
   requireCsrf,
   ensureProjectDeletable,
   familyAlignmentPublicProjection,

@@ -274,7 +274,7 @@ function assertHomeEnvelope(home, projectId, expected) {
     assert.deepEqual(Object.keys(projection).sort(), projectionKeys[key].sort(), `${key} projection drifted from its allowlist`);
     assert.equal(typeof projection.available, "boolean", `${key}.available must be a boolean`);
   }
-  assert.deepEqual(Object.keys(home.counts).sort(), ["comparisons", "familyRooms", "orders", "purchasedArtifacts"]);
+  assert.deepEqual(Object.keys(home.counts).sort(), ["comparisons", "familyRooms", "orders", "purchasedArtifacts", "revisions"]);
   for (const value of Object.values(home.counts)) {
     assert.equal(Number.isSafeInteger(value) && value >= 0, true, "history counts must be non-negative integers");
   }
@@ -557,7 +557,7 @@ test("Project Decision Home is owner-only, zero-write, lifecycle-correct, and pa
     const revised = await call(server.origin, `/api/projects/${project.id}`, {
       method: "PATCH",
       auth: owner,
-      body: { input: { bathrooms: 4 } },
+      body: { input: { bathrooms: 4 }, expectedInputRevision: 1 },
     });
     assert.equal(revised.response.status, 200, JSON.stringify(revised.payload));
     homeResult = await call(server.origin, homePath, { auth: owner });

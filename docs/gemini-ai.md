@@ -3,7 +3,8 @@
 ## Purpose and boundary
 
 GrihaGrid uses Google Gemini only for an optional, owner-triggered second reading
-of an existing deterministic feasibility report. Gemini does not calculate the
+of an explicitly generated, current deterministic planning report (schema v2).
+Gemini does not calculate the
 server-side estimate, decide whether a plot is compliant, create a construction
 drawing, authorize a payment, or replace a licensed professional.
 
@@ -16,7 +17,7 @@ invalid response.
 ```text
 Authenticated adult project owner
   -> POST /api/projects/:id/ai-brief (same origin + CSRF + acknowledgement)
-  -> Worker loads the owner-scoped project and deterministic report from D1
+  -> Worker requires the owner-scoped project's exact current v2 report in D1
   -> Worker builds an allowlisted, sanitized source record
   -> Google Gemini Interactions API (store: false, structured JSON)
   -> Worker validates syntax, shape, lengths, and advisory boundaries
@@ -37,8 +38,9 @@ files. Gemini never receives the API key from the browser.
 - `GEMINI_MODEL`: non-secret pinned model ID. Production currently uses
   `gemini-3.6-flash`, a stable generally available model rather than a moving
   `-latest` alias.
-- D1 migrations `0005` and `0006`: required for the saved brief, atomic
-  generation counters, and the expiring per-project lease. KV remains a
+- D1 migrations `0005`, `0006`, and `0012`: required for the saved brief,
+  atomic generation counters, expiring per-project lease, and immutable current
+  report source. KV remains a
   best-effort authentication/checkout abuse brake, not the AI spend boundary.
 
 Create or rotate the secret with `npx wrangler secret put GEMINI_API_KEY` and
@@ -85,7 +87,10 @@ appropriate paid/zero-data-retention arrangement.
   per UTC day, and one live lease per project. A request reserves up to two
   provider attempts before calling Google; the reservation is not refunded on
   provider failure. Cache hits are free, while explicit refreshes are admitted.
-- Fence persistence with the live lease and unchanged report hash. Reject
+- Fence persistence with the live lease, immutable report bytes, and the
+  owner project's still-active exact input revision/source bytes. An edit or
+  archive completed during provider work returns `409 ai_generation_superseded`
+  and stores no stale AI row. Reject
   generated claims of assured compliance/approval, structural certainty,
   professional bypass, or instructions to begin construction.
 - Log route outcome, duration, model, and token counts only; never log prompts,
@@ -98,6 +103,10 @@ appropriate paid/zero-data-retention arrangement.
 - `POST /api/projects/:id/ai-brief` accepts
   `{ "acceptedAiTerms": true, "refresh": false }` and returns a cached or newly
   generated structured brief.
+- AI routes never create, promote, or refresh a deterministic report. When the
+  current project revision has no explicitly generated schema-v2 report, POST
+  returns `409 report_required`; generate the report first through
+  `POST /api/projects/:id/report`.
 - Missing acknowledgement is `400 ai_terms_required`.
 - Authentication, ownership, same-origin, CSRF, and rate-limit failures use the
   standard API error envelope.
@@ -109,8 +118,9 @@ appropriate paid/zero-data-retention arrangement.
 ## Operational checks
 
 1. Confirm `/api/readiness` reports AI configured without revealing any secret.
-2. Generate once from a synthetic, owner-scoped project; confirm a structured
-   brief and a subsequent cached read.
+2. Confirm AI POST returns `409 report_required` before report generation.
+   Explicitly generate the synthetic project's current v2 planning report,
+   then generate one AI brief and confirm a subsequent cached read.
 3. Confirm a second account receives `404` for both GET and POST.
 4. Confirm POST without CSRF and without `acceptedAiTerms` fails.
 5. Race two refreshes and confirm only one provider call is admitted. Confirm

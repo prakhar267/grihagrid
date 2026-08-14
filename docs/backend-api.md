@@ -109,7 +109,10 @@ ready.
 Free-product readiness probe. Returns `200 status=ready` only when D1 is
 reachable, the required schema is present, and the KV abuse-control binding
 exists. The response separately reports Gemini planning, private upload, and
-paid-checkout capabilities, including `decisionSchema` and `paymentSchema`;
+paid-checkout capabilities, including `decisionSchema`, `paymentSchema`, and
+`revisionSchema`. `capabilities.briefCheck` is true only when migration 0012,
+its immutable guards, the pre-existing `projects_input_revision_guard`, and KV
+abuse control are ready;
 unavailable optional capabilities do not
 make the free product unready. Returns `503 status=not_ready` if a required
 free-product dependency is absent or unhealthy.
@@ -242,8 +245,12 @@ Returns `{ project }` or ownership-safe `404 project_not_found`.
 
 Requires CSRF. Accepts `name`, a partial `input`, direct legacy input fields,
 and/or a client-selectable status of `draft`, `feasibility_ready`, or
-`archived`. An actual input/estimate change recomputes the estimate, invalidates
-the prior report, and increments monotonic `inputRevision`; a rename or
+`archived`. An input change also requires top-level
+`expectedInputRevision`; the editable fields and validation rules are the Brief
+Check allowlist. An actual input/estimate change uses compare-and-swap,
+recomputes the estimate and Brief Check, captures an immutable revision,
+invalidates the current report, permanently closes active Family rooms, and
+increments monotonic `inputRevision`; a rename or
 status-only update preserves the revision. Server-managed report statuses
 cannot be forged by the client. Once archived, the only accepted PATCH is an
 exact status-only reopen to `draft` or `feasibility_ready`; name/input edits
@@ -295,14 +302,14 @@ no-store`.
     }
   },
   "current": {
-    "feasibility": { "available": true, "current": true, "version": 1, "generatedAt": "..." },
+    "feasibility": { "available": true, "current": true, "version": 2, "generatedAt": "..." },
     "aiBrief": { "available": false, "current": false, "generatedAt": null, "model": null },
     "comparison": { "available": true, "current": true, "id": "uuid", "version": 2, "createdAt": "...", "projectInputRevision": 2 },
     "selection": { "available": false, "scenarioId": null, "key": null, "label": null, "selectedAt": null, "lockedAt": null },
     "family": { "available": false, "current": false, "roomId": null, "status": null, "responseCount": null, "maxResponses": null, "active": false, "expiresAt": null, "preferences": null },
     "purchase": { "available": false, "current": false, "orderId": null, "status": null, "fulfillmentStatus": null, "entitlementActive": false }
   },
-  "counts": { "comparisons": 2, "familyRooms": 1, "purchasedArtifacts": 0, "orders": 0 }
+  "counts": { "revisions": 3, "comparisons": 2, "familyRooms": 1, "purchasedArtifacts": 0, "orders": 0 }
 }
 ```
 
@@ -629,23 +636,56 @@ event rows it returns `paidDecisionCohort` with `paidOrders`,
 first print, share, or explicit professional handoff occurs no later than seven
 days after payment. No order/snapshot key or individual milestone is returned.
 
+## Brief Check and revision endpoints
+
+Brief Check has a deterministic three-state assessment
+(`insufficient_information`, `programme_tension`, or
+`directionally_plausible`), a no-write Change Study, and append-only history.
+It never claims statutory or technical feasibility. Restore is intentionally
+absent. The exact field, response, concurrency, privacy, and rollback contracts
+are in [brief-check.md](brief-check.md).
+
+- `POST /api/projects/:projectId/revisions/preview` accepts exactly
+  `{ expectedInputRevision, input }` and returns
+  `{ baseRevision, proposedRevision, input, estimate, briefCheck, changeStudy }`.
+- `POST /api/projects/:projectId/revisions` requires an `Idempotency-Key` and
+  exactly `{ expectedInputRevision, input, acceptedImpact: true }`. It returns
+  `201` for the winner or `200` for an exact replay.
+- `GET /api/projects/:projectId/revisions?limit=20&beforeRevision=N` lists
+  newest first with cursor metadata and the honest first retained revision.
+- `GET /api/projects/:projectId/revisions/:revision` returns one revision, its
+  nearest retained predecessor, and their Change Study.
+- `GET /api/projects/:projectId/revisions/:revision/report` reads the highest
+  retained report schema for that revision.
+
+Unknown proposed input keys return `400 invalid_revision_request`. Missing
+impact acknowledgement returns `400 impact_acceptance_required`; stale writers
+return `409 project_revision_conflict`; no-op commits return
+`409 no_revision_changes`; different same-key requests return
+`409 idempotency_conflict`. Preview and commit require configured KV and can
+return `503 abuse_control_unavailable`.
+
 ## Report endpoints
 
 ### `GET /api/projects/:projectId/report`
 
-Returns the persisted report. If no current report exists, GET deterministically
-generates and persists one from normalized project input, then returns it with
-`autoGenerated: true`. Repeated calls return the same report and
-`cached: true`. This makes direct dashboard/report links useful without a
-separate warm-up call.
+Strictly read-only. Returns `{ report, cached: true }` only for an explicitly
+generated schema-v2 report attached to the project's exact current input
+revision. Missing current material returns `404 report_not_found`; GET never
+generates, changes status, or updates a timestamp. Historical v1 reports are
+available only through the revision-report endpoint.
 
 ### `POST /api/projects/:projectId/report`
 
-Requires CSRF and explicitly generates/regenerates the current report. An
-unchanged input hash returns the persisted report with `cached: true`; changed
-inputs produce a new version and set project status to `report_ready`.
+Requires CSRF and explicitly generates the current report. An unchanged exact
+revision returns its immutable persisted bytes with `cached: true`; a missing
+v2 report is generated, fenced to the current revision, copied into immutable
+history, and sets project status to `report_ready`. A concurrent edit returns
+`409 project_revision_conflict`; concurrent identical POSTs converge on the
+same winning bytes without a 5xx.
 
-Report contents include feasibility summary, area program, itemized cost range,
+Report schema v2 embeds `briefCheck` and derives its cautious verdict from the
+assessment state. Report contents include an area program, itemized cost range,
 delivery phases, project-sensitive risks, next actions, an input hash, and the
 concept-stage disclaimer. It is intentionally deterministic product logic, not
 a statutory drawing, engineering design, contractor quote, or permit approval.
@@ -677,6 +717,8 @@ fail-closed as `503 ai_unavailable`, `503 ai_capacity_unavailable`, or
 Concurrent work for the same project returns `409 ai_generation_in_progress`;
 an exhausted per-user or platform allowance returns `429 ai_rate_limited`.
 Cache hits consume no strict generation allowance; refreshes do.
+AI POST requires a previously generated current report and returns
+`409 report_required` otherwise. It never creates a report as a side effect.
 
 ## Private file endpoints
 
