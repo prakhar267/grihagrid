@@ -48,15 +48,11 @@ function route(path) {
   window.history.pushState({}, "", path);
   window.dispatchEvent(new PopStateEvent("popstate"));
   const hash = path.includes("#") ? path.slice(path.indexOf("#") + 1) : "";
-  window.requestAnimationFrame(() => {
-    const target = hash ? document.getElementById(decodeURIComponent(hash)) : null;
-    if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
-    else {
-      window.scrollTo({ top: 0, behavior: "smooth" });
-      const heading = document.querySelector("main h1");
-      if (heading) { heading.setAttribute("tabindex", "-1"); heading.focus({ preventScroll: true }); }
-    }
-  });
+  if (hash) window.requestAnimationFrame(() => document.getElementById(decodeURIComponent(hash))?.scrollIntoView({ behavior: "smooth", block: "start" }));
+}
+
+function safeDecodePathSegment(value) {
+  try { return decodeURIComponent(value); } catch { return value; }
 }
 
 function Brand({ inverted = false }) {
@@ -216,12 +212,12 @@ function StartPage({ user }) {
   const update=(key,value)=>setData(prev=>({...prev,[key]:value}));
   async function createProject(){
     setBusy(true);setError("");
-    try { const result=await api("/api/projects",{method:"POST",body:data}); sessionStorage.removeItem("grihagrid.pendingProject");sessionStorage.removeItem('grihagrid.estimator');const failed=[];for(const file of files){const form=new FormData();form.append('file',file);form.append('kind','reference');try{await api(`/api/projects/${result.project.id}/files`,{method:'POST',body:form})}catch{failed.push(file.name)}}if(failed.length)sessionStorage.setItem(`grihagrid.uploadWarning.${result.project.id}`,`${failed.length} file${failed.length===1?'':'s'} could not be saved. Add them again from the report.`);route(sessionStorage.getItem('grihagrid.plan')==='decision_compare'?`/projects/${result.project.id}/compare`:`/report/${result.project.id}`); }
+    try { const result=await api("/api/projects",{method:"POST",body:data}); sessionStorage.removeItem("grihagrid.pendingProject");sessionStorage.removeItem('grihagrid.estimator');const failed=[];for(const file of files){const form=new FormData();form.append('file',file);form.append('kind','reference');try{await api(`/api/projects/${result.project.id}/files`,{method:'POST',body:form})}catch{failed.push(file.name)}}if(failed.length)sessionStorage.setItem(`grihagrid.uploadWarning.${result.project.id}`,`${failed.length} file${failed.length===1?'':'s'} could not be saved. Add them again from the report.`);route(`/projects/${result.project.id}`); }
     catch(err){ if(err instanceof ApiError && err.status===401){sessionStorage.setItem("grihagrid.pendingProject",JSON.stringify(data));route("/register");} else setError(err.message); }
     finally{setBusy(false)}
   }
   return <main className="wizard-page"><div className="wizard-header"><Brand/><button className="quiet-action" onClick={()=>route('/')}>Exit</button></div><div className="wizard-progress" aria-label="Project brief progress">{wizardSteps.map((label,i)=><div className={i<=step?"active":""} aria-current={i===step?'step':undefined} key={label}><span>{i<step?<Check/>:i+1}</span><small>{label}</small></div>)}</div><section className="wizard-sheet">
-    {step===0&&<><span className="kicker">Step one · The plot</span><h1>Begin with the measured ground.</h1><p>Use your sale deed or current survey where possible. You can revise these details later.</p><div className="form-grid"><label>Project name<input value={data.name} onChange={e=>update('name',e.target.value)} maxLength="100"/></label><label>City<select value={data.city} onChange={e=>update('city',e.target.value)}>{Object.keys(cityFactors).map(c=><option key={c}>{c}</option>)}</select></label><label>Plot width <span>feet</span><input type="number" min="10" max="500" value={data.width} onChange={e=>update('width',+e.target.value)}/></label><label>Plot length <span>feet</span><input type="number" min="10" max="500" value={data.length} onChange={e=>update('length',+e.target.value)}/></label><label>Road-facing side<select value={data.facing} onChange={e=>update('facing',e.target.value)}>{['North','East','South','West'].map(x=><option key={x}>{x}</option>)}</select></label></div></>}
+    {step===0&&<><span className="kicker">Step one · The plot</span><h1>Begin with the measured ground.</h1><p>Use your sale deed or current survey where possible. These facts become the measured basis for this first decision.</p><div className="form-grid"><label>Project name<input value={data.name} onChange={e=>update('name',e.target.value)} maxLength="100"/></label><label>City<select value={data.city} onChange={e=>update('city',e.target.value)}>{Object.keys(cityFactors).map(c=><option key={c}>{c}</option>)}</select></label><label>Plot width <span>feet</span><input type="number" min="10" max="500" value={data.width} onChange={e=>update('width',+e.target.value)}/></label><label>Plot length <span>feet</span><input type="number" min="10" max="500" value={data.length} onChange={e=>update('length',+e.target.value)}/></label><label>Road-facing side<select value={data.facing} onChange={e=>update('facing',e.target.value)}>{['North','East','South','West'].map(x=><option key={x}>{x}</option>)}</select></label></div></>}
     {step===1&&<><span className="kicker">Step two · The home</span><h1>Describe the life it needs to hold.</h1><p>Choose the practical starting point. Your architect can refine the programme later.</p><Choice label="Floors" value={data.floors} choices={['G','G+1','G+2']} onChange={v=>update('floors',v)}/><Choice label="Bedrooms" value={data.bedrooms} choices={['2','3','4','5+']} onChange={v=>update('bedrooms',v)}/><Choice label="Parking" value={data.parking} choices={['None','1 car','2 cars']} onChange={v=>update('parking',v)}/><Choice label="Finish" value={data.quality} choices={['Essential','Signature','Premium','Luxury']} onChange={v=>update('quality',v)}/></>}
     {step===2&&<><span className="kicker">Step three · Context</span><h1>Give the concept a sense of place.</h1><p>Site photographs are optional and are stored privately with your project.</p>{user?<label className="upload-field"><UploadSimple/><strong>{files.length?`${files.length} photograph${files.length===1?'':'s'} selected`:'Choose plot photographs'}</strong><span>JPG, PNG or WebP · up to 10 MB each</span><input type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={e=>setFiles([...e.target.files].filter(file=>file.size<=10*1024*1024))}/></label>:<div className="account-note"><LockKey/><p>Create or log into your private account first, then add site photographs from the report.</p></div>}<label className="select-block">Exterior direction<select value={data.style} onChange={e=>update('style',e.target.value)}>{['Warm modern','Contemporary','Traditional Indian','Tropical modern','Minimal'].map(x=><option key={x}>{x}</option>)}</select></label></>}
     {step===3&&<><span className="kicker">Step four · Review</span><h1>Your first brief is ready.</h1><p>These inputs become the assumption record behind the feasibility result.</p><div className="brief-lines">{[['Plot',`${data.width} × ${data.length} ft · ${data.facing}-facing`],['Home',`${data.floors} · ${data.bedrooms} bedrooms · ${data.parking}`],['Context',`${data.city} · ${data.style}`],['Finish',data.quality]].map(([k,v])=><div key={k}><span>{k}</span><strong>{v}</strong></div>)}</div><div className="warning-note"><WarningCircle/><p>This is a concept-stage planning brief—not a municipal, architectural or structural approval.</p></div>{!user&&<div className="account-note"><LockKey/><p>You will create an account next so this project remains private and can be revisited.</p></div>}</>}
@@ -236,16 +232,312 @@ function AuthPage({ mode, onAuthenticated }) {
   const isLogin=mode==="login";
   const [form,setForm]=useState({name:"",email:"",password:""});
   const [busy,setBusy]=useState(false);const [error,setError]=useState("");
-  async function submit(e){e.preventDefault();setBusy(true);setError("");try{const result=await api(`/api/auth/${isLogin?'login':'register'}`,{method:'POST',body:form});onAuthenticated(result.user);const pending=sessionStorage.getItem('grihagrid.pendingProject');if(pending){const project=await api('/api/projects',{method:'POST',body:JSON.parse(pending)});sessionStorage.removeItem('grihagrid.pendingProject');route(sessionStorage.getItem('grihagrid.plan')==='decision_compare'?`/projects/${project.project.id}/compare`:`/report/${project.project.id}`);}else route('/dashboard');}catch(err){setError(err.message);}finally{setBusy(false)}}
-  return <main className="auth-page"><div className="auth-architecture"><img width="1536" height="1024" src="/assets/v2/monograph-house-v2.jpg" onError={e=>{e.currentTarget.src='/assets/grihagrid-hero.jpg'}} alt="Contemporary Indian home"/><div><Brand inverted/><blockquote>Start with clarity.<br/>Build with confidence.</blockquote></div></div><section className="auth-form"><button className="back-action" onClick={()=>route('/')}><ArrowLeft/> Home</button><span className="kicker">Private project workspace</span><h1>{isLogin?'Welcome back.':'Create your account.'}</h1><p>{isLogin?'Return to your saved home plans.':'Save the brief you just created and keep every revision together.'}</p><form onSubmit={submit}>{!isLogin&&<label>Full name<input required autoComplete="name" value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label>}<label>Email address<input required type="email" autoComplete="email" value={form.email} onChange={e=>setForm({...form,email:e.target.value})}/></label><label>Password<input required type="password" minLength="10" autoComplete={isLogin?'current-password':'new-password'} value={form.password} onChange={e=>setForm({...form,password:e.target.value})}/><small>At least 10 characters</small></label>{error&&<p className="form-error" role="alert">{error}</p>}<button disabled={busy} className="copper-button" type="submit">{busy?'Please wait…':isLogin?'Log in':'Create account'} <ArrowRight/></button></form><p className="auth-switch">{isLogin?'New to GrihaGrid?':'Already have an account?'} <button onClick={()=>route(isLogin?'/register':'/login')}>{isLogin?'Create account':'Log in'}</button></p></section></main>;
+  async function submit(e){e.preventDefault();setBusy(true);setError("");try{const result=await api(`/api/auth/${isLogin?'login':'register'}`,{method:'POST',body:form});onAuthenticated(result.user);const pending=sessionStorage.getItem('grihagrid.pendingProject');if(pending){const project=await api('/api/projects',{method:'POST',body:JSON.parse(pending)});sessionStorage.removeItem('grihagrid.pendingProject');route(`/projects/${project.project.id}`);}else route('/dashboard');}catch(err){setError(err.message);}finally{setBusy(false)}}
+  return <main className="auth-page"><div className="auth-architecture"><img width="1536" height="1024" src="/assets/v2/monograph-house-v2.jpg" onError={e=>{e.currentTarget.src='/assets/grihagrid-hero.jpg'}} alt="Contemporary Indian home"/><div><Brand inverted/><blockquote>Start with clarity.<br/>Build with confidence.</blockquote></div></div><section className="auth-form"><button className="back-action" onClick={()=>route('/')}><ArrowLeft/> Home</button><span className="kicker">Private project workspace</span><h1>{isLogin?'Welcome back.':'Create your account.'}</h1><p>{isLogin?'Return to your saved home plans.':'Save the brief you just created and keep every decision together.'}</p><form onSubmit={submit}>{!isLogin&&<label>Full name<input required autoComplete="name" value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label>}<label>Email address<input required type="email" autoComplete="email" value={form.email} onChange={e=>setForm({...form,email:e.target.value})}/></label><label>Password<input required type="password" minLength="10" autoComplete={isLogin?'current-password':'new-password'} value={form.password} onChange={e=>setForm({...form,password:e.target.value})}/><small>At least 10 characters</small></label>{error&&<p className="form-error" role="alert">{error}</p>}<button disabled={busy} className="copper-button" type="submit">{busy?'Please wait…':isLogin?'Log in':'Create account'} <ArrowRight/></button></form><p className="auth-switch">{isLogin?'New to GrihaGrid?':'Already have an account?'} <button onClick={()=>route(isLogin?'/register':'/login')}>{isLogin?'Create account':'Log in'}</button></p></section></main>;
 }
 
 function Dashboard({ user, onLogout }) {
   const [projects,setProjects]=useState([]);const [loading,setLoading]=useState(true);const [error,setError]=useState("");
   useEffect(()=>{api('/api/projects').then(x=>setProjects(x.projects||[])).catch(e=>{if(e instanceof ApiError&&e.status===401)route('/login');else setError(e.message)}).finally(()=>setLoading(false));},[]);
   async function logout(){await api('/api/auth/logout',{method:'POST',body:{}}).catch(()=>{});onLogout();route('/');}
-  async function removeProject(project){if(!window.confirm(`Delete “${project.name}” and its private files? This cannot be undone.`))return;setError("");try{await api(`/api/projects/${project.id}`,{method:'DELETE',body:{}});setProjects(current=>current.filter(item=>item.id!==project.id));}catch(err){setError(err.message)}}
-  return <main className="workspace"><aside><Brand/><nav><button className="active"><Blueprint/> Projects</button><button onClick={()=>route('/orders')}><Receipt/> Orders</button><button onClick={()=>route('/start')}><Plus/> New brief</button><button onClick={()=>route('/plans')}><FileText/> Sample plan</button></nav><div><p>{user?.name||user?.email}</p><button onClick={logout}><SignOut/> Log out</button></div></aside><section className="workspace-main"><header><div><span className="kicker">Your private workspace</span><h1>Home plans, in one place.</h1></div><button className="copper-button" onClick={()=>route('/start')}><Plus/> New project</button></header>{loading&&<p className="loading-line" role="status">Loading your projects…</p>}{error&&<p className="form-error" role="alert">{error}</p>}{!loading&&!error&&projects.length===0&&<div className="empty-state"><Blueprint/><h2>Your first plot is still blank paper.</h2><p>Create a brief to see feasibility and cost before commissioning drawings.</p><button className="copper-button" onClick={()=>route('/start')}>Plan my home <ArrowRight/></button></div>}<div className="project-list">{projects.map((project,i)=><article key={project.id}><span className="project-number">{String(i+1).padStart(2,'0')}</span><div><small>{project.status?.replaceAll('_',' ')}</small><h2>{project.name}</h2><p>{project.input?.width||project.width||30} × {project.input?.length||project.length||50} ft · {project.input?.city||project.city||'India'} · {project.input?.floors||project.floors||'G+1'}</p></div><div><span>Planning range</span><strong>{formatLakh(project.estimate?.lowInr||project.low_inr)} – {formatLakh(project.estimate?.highInr||project.high_inr)}</strong></div><div className="project-actions"><button onClick={()=>route(`/report/${project.id}`)}>Report <ArrowRight/></button><button className="compare-action" onClick={()=>route(`/projects/${project.id}/compare`)}><ArrowsLeftRight/> Compare</button><button className="delete-action" onClick={()=>removeProject(project)} aria-label={`Delete ${project.name}`}><Trash/></button></div></article>)}</div></section></main>;
+  return <main className="workspace"><aside><Brand/><nav><button className="active"><Blueprint/> Projects</button><button onClick={()=>route('/orders')}><Receipt/> Orders</button><button onClick={()=>route('/start')}><Plus/> New brief</button><button onClick={()=>route('/plans')}><FileText/> Sample plan</button></nav><div><p>{user?.name||user?.email}</p><button onClick={logout}><SignOut/> Log out</button></div></aside><section className="workspace-main"><header><div><span className="kicker">Your private workspace</span><h1>Home plans, in one place.</h1></div><button className="copper-button" onClick={()=>route('/start')}><Plus/> New project</button></header>{loading&&<p className="loading-line" role="status">Loading your projects…</p>}{error&&<p className="form-error" role="alert">{error}</p>}{!loading&&!error&&projects.length===0&&<div className="empty-state"><Blueprint/><h2>Your first plot is still blank paper.</h2><p>Create a brief to see feasibility and cost before commissioning drawings.</p><button className="copper-button" onClick={()=>route('/start')}>Plan my home <ArrowRight/></button></div>}<div className="project-list">{projects.map((project,i)=><article key={project.id}><span className="project-number">{String(i+1).padStart(2,'0')}</span><div><small>{project.status?.replaceAll('_',' ')}</small><h2>{project.name}</h2><p>{project.input?.width||project.width||30} × {project.input?.length||project.length||50} ft · {project.input?.city||project.city||'India'} · {project.input?.floors||project.floors||'G+1'}</p></div><div><span>Planning range</span><strong>{formatLakh(project.estimate?.lowInr||project.low_inr)} – {formatLakh(project.estimate?.highInr||project.high_inr)}</strong></div><div className="project-actions"><button onClick={()=>route(`/projects/${project.id}`)}>{project.status==='archived'?'Open project':'Resume'} <ArrowRight/></button></div></article>)}</div></section></main>;
+}
+
+const projectHomeSteps = {
+  feasibility: {
+    title: "Feasibility",
+    copy: "Understand what may fit, what it may cost, and what still needs local verification.",
+  },
+  comparison: {
+    title: "Compare alternatives",
+    copy: "Hold the plot steady and make two programme, area, and budget trade-offs visible.",
+  },
+  family: {
+    title: "Family input",
+    copy: "Collect a small, anonymous reading when another family conversation would help.",
+    optional: true,
+  },
+  direction: {
+    title: "Choose a direction",
+    copy: "Record the owner's working choice and take one coherent brief to a licensed professional.",
+  },
+};
+
+const projectHomeActions = {
+  open_feasibility: {
+    target: "report",
+    label: "Open feasibility",
+    title: "Read the ground truth first.",
+    copy: "Review the current fit, planning range, assumptions, and professional checks before changing the brief.",
+    Icon: FileText,
+  },
+  start_comparison: {
+    target: "compare",
+    label: "Compare two alternatives",
+    title: "Put two real directions on the table.",
+    copy: "Keep the plot fixed, change only the choices that matter, and make the trade-off visible.",
+    Icon: ArrowsLeftRight,
+  },
+  recalculate_comparison: {
+    target: "compare",
+    label: "Recalculate comparison",
+    title: "Bring the comparison up to date.",
+    copy: "The project brief has moved since these alternatives were saved. Recalculate before choosing or sharing.",
+    Icon: ArrowClockwise,
+  },
+  choose_direction: {
+    target: "compare",
+    label: "Choose a direction",
+    title: "Turn the evidence into one working choice.",
+    copy: "Review the current alternatives and any advisory family response, then record the direction you want a professional to challenge.",
+    Icon: SealCheck,
+  },
+  open_handoff: {
+    target: "compare",
+    label: "Open handoff material",
+    title: "Take one decision into the room.",
+    copy: "Your direction is recorded. Open the current comparison, architect questions, and printable working copy for the professional conversation.",
+    Icon: ArrowRight,
+  },
+  view_archived: {
+    target: "dashboard",
+    label: "Back to all projects",
+    title: "This project is resting in the archive.",
+    copy: "Its existing evidence remains readable. Return to the workspace to continue with another active project.",
+    Icon: ArrowLeft,
+  },
+};
+
+const projectStageCopy = {
+  feasibility_pending: ["Begin with the measured brief.", "One clear feasibility reading comes before alternatives, family input, or a direction."],
+  comparison_pending: ["The ground is understood. Now test the brief.", "Two bounded alternatives can reveal where space, budget, and delivery complexity pull apart."],
+  comparison_stale: ["The brief moved. The old comparison did not.", "Recalculate the two alternatives before relying on their figures, family room, or recorded direction."],
+  direction_pending: ["The evidence is ready for a choice.", "Family input is advisory. The owner's current saved direction remains the authoritative working decision."],
+  decision_ready: ["One direction is ready for professional challenge.", "Carry the selected brief, its trade-offs, and unresolved questions into a licensed architect conversation."],
+  archived: ["This project is archived.", "Its saved evidence remains readable, but GrihaGrid will not invite new generation or other changes from this page."],
+};
+
+function homeObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function homeNumber(...values) {
+  for (const value of values) {
+    if (value == null || value === "") continue;
+    const number = Number(value);
+    if (Number.isFinite(number)) return number;
+  }
+  return 0;
+}
+
+function homeRecordAvailable(value) {
+  if (typeof value === "boolean") return value;
+  const record = homeObject(value);
+  for (const key of ["available", "exists", "present"]) {
+    if (Object.hasOwn(record, key)) return Boolean(record[key]);
+  }
+  return Boolean(record.id || record.version || record.generatedAt || record.generated_at || record.createdAt || record.created_at);
+}
+
+function homeRecordCurrent(value) {
+  if (typeof value === "boolean") return value;
+  const record = homeObject(value);
+  if (Object.hasOwn(record, "current")) return Boolean(record.current);
+  return homeRecordAvailable(value);
+}
+
+function projectStepState(step) {
+  if (step?.completed === true) return "complete";
+  if (step?.current === true) return "current";
+  const raw = String(step?.state || step?.status || "pending").toLowerCase();
+  if (["complete", "completed", "ready", "done"].includes(raw)) return "complete";
+  if (raw === "current") return "current";
+  if (["stale", "attention", "blocked"].includes(raw)) return "attention";
+  if (["optional", "active", "closed"].includes(raw)) return "optional";
+  return "pending";
+}
+
+function projectStepStatus(step, meta, archived = false) {
+  const raw = String(step?.state || step?.status || "pending").toLowerCase();
+  if (meta.optional && raw === "active") return "Active · optional";
+  if (meta.optional && raw === "closed") return "Closed · optional";
+  if (archived && raw === "current") return "Current record";
+  const state = projectStepState(step);
+  if (state === "complete") return "Complete";
+  if (state === "current") return "Current step";
+  if (state === "attention") return "Needs refresh";
+  if (state === "optional" || meta.optional) return "Optional";
+  return "Not started";
+}
+
+function projectHomePath(projectId, action) {
+  const definition = projectHomeActions[action?.code];
+  if (!definition || (action?.target && action.target !== definition.target)) return null;
+  const encodedProjectId=encodeURIComponent(projectId);
+  if (definition.target === "report") return `/report/${encodedProjectId}`;
+  if (definition.target === "compare") return `/projects/${encodedProjectId}/compare`;
+  if (definition.target === "dashboard") return "/dashboard";
+  return null;
+}
+
+function EvidenceCard({ Icon, eyebrow, title, copy, meta, tone = "neutral" }) {
+  return <article className={`project-evidence__item project-evidence__item--${tone}`}>
+    <div className="project-evidence__icon" aria-hidden="true"><Icon/></div>
+    <div><span>{eyebrow}</span><h3>{title}</h3><p>{copy}</p>{meta&&<small>{meta}</small>}</div>
+  </article>;
+}
+
+function ProjectHomePage({ projectId }) {
+  const [state,setState]=useState({phase:"loading",payload:null,error:""});
+  const [deleting,setDeleting]=useState(false);
+  const [deleteError,setDeleteError]=useState("");
+  const trackedOpen=useRef(false);
+
+  async function load(signal) {
+    setState(current=>({...current,phase:"loading",error:""}));
+    try {
+      const payload=await api(`/api/projects/${encodeURIComponent(projectId)}/home`,{signal});
+      if(signal?.aborted)return;
+      setState({phase:"ready",payload,error:""});
+      if(!trackedOpen.current){trackedOpen.current=true;trackEvent("project_home_opened",{surface:"project_home",outcome:"success"});}
+    } catch(err) {
+      if(signal?.aborted)return;
+      if(err instanceof ApiError&&err.status===401){route("/login");return;}
+      if(err instanceof ApiError&&err.status===404){setState({phase:"missing",payload:null,error:""});return;}
+      setState({phase:"error",payload:null,error:err?.message||"The project home could not be opened."});
+    }
+  }
+
+  useEffect(()=>{const controller=new AbortController();load(controller.signal);return()=>controller.abort()},[projectId]);
+
+  if(state.phase!=="ready")return <main className="project-home project-home--state">
+    <header className="project-home__topbar"><button onClick={()=>route("/dashboard")}><ArrowLeft/> My projects</button><Brand inverted/><span><LockKey/> Private project</span></header>
+    <section className="project-home__state-panel" aria-busy={state.phase==="loading"}>
+      {state.phase==="loading"&&<><Blueprint/><span className="kicker">Project decision home</span><h1>Reading the current record…</h1><p role="status">Checking the feasibility, comparison, family summary, and owner direction without changing the project.</p></>}
+      {state.phase==="missing"&&<><Compass/><span className="kicker">Project unavailable</span><h1>This private project cannot be opened.</h1><p>The project may no longer exist, or this account may not have access to it.</p><button className="copper-button" onClick={()=>route("/dashboard")}>Back to my projects <ArrowRight/></button></>}
+      {state.phase==="error"&&<><WarningCircle/><span className="kicker">Project temporarily unavailable</span><h1>Your project remains private and unchanged.</h1><p role="alert">{state.error}</p><div className="error-actions"><button className="outline-button" onClick={()=>route("/dashboard")}><ArrowLeft/> My projects</button><button className="copper-button" onClick={()=>load()}>Try again <ArrowClockwise/></button></div></>}
+    </section>
+  </main>;
+
+  const payload=homeObject(state.payload);
+  const project=homeObject(payload.project);
+  const lifecycle=homeObject(payload.lifecycle);
+  const current=homeObject(payload.current);
+  const counts=homeObject(payload.counts);
+  const input=homeObject(project.input);
+  const estimate=homeObject(project.estimate);
+  const feasibility=homeObject(current.feasibility);
+  const aiBrief=homeObject(current.aiBrief||current.ai_brief);
+  const comparison=homeObject(current.comparison);
+  const selection=homeObject(current.selection);
+  const family=homeObject(current.family);
+  const purchase=homeObject(current.purchase);
+  const stage=String(lifecycle.stage||"feasibility_pending");
+  const archived=stage==="archived"||project.status==="archived";
+  const stale=stage==="comparison_stale"||comparison.stale===true||comparison.current===false&&homeRecordAvailable(current.comparison);
+  const stageCopy=projectStageCopy[stage]||projectStageCopy.feasibility_pending;
+  const action=projectHomeActions[lifecycle.nextAction?.code];
+  const ActionIcon=action?.Icon;
+  const actionPath=projectHomePath(projectId,lifecycle.nextAction);
+  const serverSteps=new Map((Array.isArray(lifecycle.steps)?lifecycle.steps:[]).map(step=>[step?.id,step]));
+  const comparisonVersion=homeNumber(comparison.version,comparison.comparisonVersion);
+  const familyResponses=homeNumber(family.totalResponses,family.responseCount,family.responses,counts.familyResponses,counts.family_responses);
+  const familyMax=homeNumber(family.maxResponses,family.max_responses)||5;
+  const familyAvailable=homeRecordAvailable(current.family);
+  const familyClosed=familyAvailable&&family.active===false;
+  const familySummary=familyClosed?["Family review closed","Recorded responses remain aggregate, advisory evidence. No new review is invited from this closed room."]:familyStatusCopy[family.status];
+  const purchaseCount=homeNumber(purchase.count,purchase.total,counts.purchasedArtifacts,counts.purchased_artifacts,counts.purchases);
+  const orderCount=homeNumber(counts.orders,purchase.orderCount,purchase.order_count);
+  const selectionKey=String(selection.optionKey||selection.scenarioKey||selection.key||"").toUpperCase();
+  const selectionName=selection.label||selection.scenarioLabel||(selectionKey==="A"||selectionKey==="B"?`Option ${selectionKey}`:"");
+  const feasibilityAvailable=homeRecordAvailable(current.feasibility);
+  const feasibilityReady=homeRecordCurrent(current.feasibility);
+  const aiAvailable=homeRecordAvailable(current.aiBrief||current.ai_brief);
+  const aiReady=homeRecordCurrent(current.aiBrief||current.ai_brief);
+  const comparisonAvailable=homeRecordAvailable(current.comparison);
+  const comparisonReady=homeRecordCurrent(current.comparison);
+  const selectionReady=homeRecordAvailable(current.selection);
+  const familyReady=familyAvailable&&homeRecordCurrent(current.family);
+  const purchaseReady=homeRecordAvailable(current.purchase)&&homeRecordCurrent(current.purchase);
+  const lower=formatLakh(estimate.lowInr||estimate.low_inr);
+  const upper=formatLakh(estimate.highInr||estimate.high_inr);
+  const hasRange=lower!=="—"&&upper!=="—";
+
+  async function deleteProject() {
+    const name=project.name||"this project";
+    if(!window.confirm(`Delete “${name}”? This permanently removes its unpaid project record, report, working comparisons, and Family Alignment rooms. Private files must be deleted individually first; any purchase or payment evidence prevents project deletion.`))return;
+    setDeleting(true);setDeleteError("");
+    try {
+      await api(`/api/projects/${encodeURIComponent(projectId)}`,{method:"DELETE",body:{}});
+      route("/dashboard");
+    } catch(err) {
+      if(err instanceof ApiError&&err.status===409&&err.payload?.code==="project_has_files"){setDeleteError("This project still has private files. Delete each file individually from the feasibility report before deleting the project. Archived report files remain readable and can still be deleted.");}
+      else if(err instanceof ApiError&&err.status===409){setDeleteError("This project has purchase or payment evidence and cannot be deleted. Its financial record and purchased evidence must remain intact.");}
+      else if(err instanceof ApiError&&err.status===401){route("/login");}
+      else setDeleteError(err?.message||"The project could not be deleted. Check its private files and purchase history before trying again.");
+    } finally { setDeleting(false); }
+  }
+
+  function takeNextAction() {
+    if(!actionPath)return;
+    trackEvent("project_home_next_action_clicked",{surface:"project_home",outcome:"success"});
+    route(actionPath);
+  }
+
+  return <main className={`project-home project-home--${archived?"archived":stale?"stale":stage}`}>
+    <header className="project-home__topbar"><button onClick={()=>route("/dashboard")}><ArrowLeft/> My projects</button><Brand inverted/><button onClick={()=>route("/orders")}><Receipt/> Orders</button></header>
+    <section className="project-home__masthead" aria-labelledby="project-home-title">
+      <div><span className="kicker">Private project · decision home</span><h1 id="project-home-title">{project.name||"My family home"}</h1><p>{stageCopy[0]} <span>{stageCopy[1]}</span></p></div>
+      <div className="project-home__folio" aria-hidden="true"><span>Project record</span><strong>{String(project.inputRevision||1).padStart(2,"0")}</strong><small>Current input revision</small></div>
+    </section>
+    <section className="project-home__facts" aria-label="Current project facts">
+      <div><span>Measured plot</span><strong>{input.width||"—"} × {input.length||"—"} ft</strong><small>{input.facing?`${input.facing}-facing`:"Facing to confirm"}</small></div>
+      <div><span>Context</span><strong>{input.city||"India"}</strong><small>{input.floors||"Floor count to confirm"} · {input.quality||"Finish to confirm"}</small></div>
+      <div><span>Planning range</span><strong>{hasRange?`${lower} – ${upper}`:"—"}</strong><small>Indicative, not a contractor quotation</small></div>
+      <div><span>Current record</span><strong>Revision {project.inputRevision||1}</strong><small>Updated {formatDate(project.updatedAt)}</small></div>
+    </section>
+
+    {stale&&<section className="project-home__notice project-home__notice--stale" role="status"><ArrowClockwise/><div><strong>The comparison is out of date.</strong><p>The current brief changed after these alternatives were saved. Family and choice evidence tied to that older version stays historical; recalculate before relying on it.</p></div></section>}
+    {archived&&<section className="project-home__notice project-home__notice--archived" role="status"><LockKey/><div><strong>Archived planning record.</strong><p>Existing evidence remains visible. This home will not suggest planning changes, generation, sharing, checkout, or uploads; privacy deletion remains available below.</p></div></section>}
+
+    <section className="project-home__journey" aria-labelledby="project-journey-title">
+      <div className="project-home__journey-main">
+        <header><div><span className="kicker">The decision path</span><h2 id="project-journey-title">One measured step at a time.</h2></div><p><strong>{homeNumber(lifecycle.completedCoreSteps)}</strong> of {homeNumber(lifecycle.totalCoreSteps)||3} core steps complete</p></header>
+        <ol className="project-home__steps">
+          {Object.entries(projectHomeSteps).map(([id,meta],index)=>{const step=serverSteps.get(id)||{id};const stepState=projectStepState(step);return <li key={id} className={`project-home__step project-home__step--${stepState}`} aria-current={!archived&&stepState==="current"?"step":undefined}>
+            <div><span>{String(index+1).padStart(2,"0")}</span>{stepState==="complete"?<CheckCircle/>:stepState==="attention"?<WarningCircle/>:<i aria-hidden="true"/>}</div>
+            <small>{projectStepStatus(step,meta,archived)}</small>
+            <h3>{meta.title}{meta.optional&&<em> · Optional</em>}</h3>
+            <p>{step.detail||meta.copy}</p>
+          </li>})}
+        </ol>
+      </div>
+      <aside className="project-home__next" aria-labelledby="project-next-title">
+        <span className="kicker">Recommended next step</span>
+        {ActionIcon&&actionPath?<><ActionIcon aria-hidden="true"/><h2 id="project-next-title">{action.title}</h2><p>{action.copy}</p><button className="copper-button copper-button--large" onClick={takeNextAction}>{action.label} <ArrowRight/></button><small><ShieldCheck/> Concept-stage guidance. A licensed local professional validates the decision before design or construction.</small></>:<><WarningCircle aria-hidden="true"/><h2 id="project-next-title">No action is available from this record.</h2><p>The project is unchanged. Return to your workspace or try this page again once the current state is available.</p></>}
+      </aside>
+    </section>
+
+    <section className="project-evidence" aria-labelledby="project-evidence-title">
+      <header><div><span className="kicker">Current evidence</span><h2 id="project-evidence-title">What this decision rests on.</h2></div><p>Current records are separated from older history. Family input remains aggregate and advisory.</p></header>
+      <div className="project-evidence__grid">
+        <EvidenceCard Icon={FileText} eyebrow="Feasibility" tone={feasibilityReady?"ready":feasibilityAvailable?"attention":"pending"} title={feasibilityReady?`Current feasibility${feasibility.version?` · v${feasibility.version}`:""}`:feasibilityAvailable?`Earlier feasibility${feasibility.version?` · v${feasibility.version}`:""} needs refresh`:"Feasibility not opened"} copy={feasibilityReady?"The saved report matches the current project facts and planning estimate.":feasibilityAvailable?"This saved report belongs to an earlier project input. Refresh before relying on it.":"Open the feasibility before treating later decisions as current."} meta={feasibility.generatedAt?`Generated ${formatDate(feasibility.generatedAt)}`:null}/>
+        <EvidenceCard Icon={Sparkle} eyebrow="AI planning memo" tone={aiReady?"ready":aiAvailable?"attention":"optional"} title={aiReady?"Current Gemini reading":aiAvailable?"Earlier Gemini reading":"Optional reading not created"} copy={aiReady?"The saved advisory memo is tied to the current feasibility source.":aiAvailable?"This advisory memo belongs to an earlier feasibility source and is not presented as current.":"AI is an optional second reading. It never changes the deterministic range or professional boundary."} meta={aiBrief.generatedAt?`Generated ${formatDate(aiBrief.generatedAt)}`:null}/>
+        <EvidenceCard Icon={ArrowsLeftRight} eyebrow="Decision Compare" tone={stale?"attention":comparisonReady?"ready":"pending"} title={stale?`Comparison${comparisonVersion?` v${comparisonVersion}`:""} needs refresh`:comparisonReady?`Comparison${comparisonVersion?` v${comparisonVersion}`:""} is current`:comparisonAvailable?"Earlier comparison":"No saved comparison"} copy={stale?"Its inputs no longer match this project revision.":comparisonReady?"Exactly two alternatives share the same current plot and cost basis.":"Create two alternatives when the feasibility has framed the decision."} meta={homeNumber(counts.comparisons)>1?`${homeNumber(counts.comparisons)} saved comparison versions`:null}/>
+        <EvidenceCard Icon={UserCircle} eyebrow="Family Alignment · optional" tone={familyReady&&familyResponses>0?"ready":"optional"} title={familyClosed?`${familyResponses} recorded response${familyResponses===1?"":"s"}`:familyReady?`${familyResponses} of ${familyMax} responses`:"No current family room"} copy={familySummary?.[1]||"Family input is optional, aggregate, and advisory. It never blocks or overrides the owner's direction."} meta={family.active&&family.expiresAt?`Room closes ${formatDateTime(family.expiresAt)}`:familySummary?.[0]||null}/>
+        <EvidenceCard Icon={SealCheck} eyebrow="Owner direction" tone={selectionReady?"ready":"pending"} title={selectionReady?(selectionName||"Direction recorded"):"No direction recorded"} copy={selectionReady?"This is the owner's authoritative working choice for the current comparison.":"A family response is never substituted for the owner's saved direction."} meta={selection.selectedAt?`Chosen ${formatDate(selection.selectedAt)}`:null}/>
+        <EvidenceCard Icon={Receipt} eyebrow="Purchased history" tone={purchaseReady?"ready":"neutral"} title={purchaseCount?`${purchaseCount} purchased artifact${purchaseCount===1?"":"s"}`:"No purchased artifact"} copy={purchaseReady?"The current comparison has an active immutable purchased artifact.":purchaseCount?"Earlier purchased evidence remains immutable and separate from this current working brief.":"No payment or entitlement is inferred from this project home."} meta={orderCount?`${orderCount} order record${orderCount===1?"":"s"} retained`:null}/>
+      </div>
+    </section>
+
+    <section className="project-home__boundary"><ShieldCheck/><p><strong>Decision support, not professional approval.</strong> GrihaGrid helps the family frame one informed brief. A licensed architect, structural engineer, site investigation, and local authority remain responsible for design, safety, and permission.</p></section>
+
+    <section className="project-home__danger" aria-labelledby="project-danger-title">
+      <div><span className="kicker">Private project controls</span><h2 id="project-danger-title">Delete this project.</h2><p>This permanently removes an unpaid project record, its report, working comparisons, and Family Alignment rooms. The project must have no private files and no purchase or payment evidence. Delete each private file individually before returning here; archived report files remain readable and can still be deleted.</p></div>
+      <button className="project-home__delete" disabled={deleting} onClick={deleteProject}><Trash/>{deleting?"Deleting…":"Delete project"}</button>
+      {deleteError&&<p className="form-error" role="alert">{deleteError}</p>}
+    </section>
+  </main>;
 }
 
 function listOf(value) {
@@ -458,19 +750,19 @@ function DecisionDocument({ comparison, project, onChoose, choosing = false, rea
   </article>;
 }
 
-function DecisionPurchasePanel({ projectId, comparison, orders, onOrdersChange }) {
+function DecisionPurchasePanel({ projectId, comparison, orders, onOrdersChange, readonly = false }) {
   const [catalog,setCatalog]=useState([]);
   const [busy,setBusy]=useState(false);
   const [error,setError]=useState("");
   const [acceptedCheckoutTerms,setAcceptedCheckoutTerms]=useState(false);
-  useEffect(()=>{let active=true;api('/api/commerce/catalog').then(result=>{if(active)setCatalog(result.plans||[])}).catch(()=>{if(active)setCatalog([])});return()=>{active=false}},[]);
+  useEffect(()=>{if(readonly){setCatalog([]);return undefined}let active=true;api('/api/commerce/catalog').then(result=>{if(active)setCatalog(result.plans||[])}).catch(()=>{if(active)setCatalog([])});return()=>{active=false}},[readonly]);
   const plan = catalog.find(item=>decisionPlanIds.includes(item.id)) || catalog.find(item=>/decision\s*compare/i.test(item.label||""));
   const productOrder = orders.find(item=>decisionPlanIds.includes(item.plan) || /decision\s*compare/i.test(item.planLabel||""));
   const order = comparison.entitlement?.orderId ? orders.find(item=>item.id===comparison.entitlement.orderId) : productOrder;
   const ready = Boolean(comparison.entitlement?.active) && order?.status==='paid' && order?.fulfillment?.status==='ready';
   const earlierPurchase = productOrder?.status==='paid' && !comparison.entitlement?.active;
   async function checkout(){
-    if(!plan?.acceptingOrders||!comparison.selectedScenarioId||!acceptedCheckoutTerms)return;
+    if(readonly||!plan?.acceptingOrders||!comparison.selectedScenarioId||!acceptedCheckoutTerms)return;
     setBusy(true);setError("");
     try{
       const storageKey=`grihagrid.checkout.${projectId}.${plan.id}`;
@@ -491,6 +783,16 @@ function DecisionPurchasePanel({ projectId, comparison, orders, onOrdersChange }
       setError(err.status===503?'Checkout is closed right now. Your chosen option and free comparison remain saved; no payment was taken.':err.message);
     }finally{setBusy(false)}
   }
+  if(readonly)return <section className="decision-purchase decision-purchase--archived" aria-labelledby="decision-purchase-title">
+    <div><span className="kicker">Archived purchase record</span><h2 id="decision-purchase-title">Checkout is closed for this project.</h2><p>No purchase or payment flow can start or resume from an archived planning record. Existing orders and immutable artifacts remain readable.</p></div>
+    <div className="decision-purchase__action">
+      {order&&<span className={`order-status order-status--${order.status}`}><i/> {earlierPurchase?'Earlier comparison purchased':order.status==='paid'?(ready?'Artifact ready':'Payment confirmed'):order.status?.replaceAll('_',' ')}</span>}
+      {ready&&<button className="copper-button" onClick={()=>route(`/orders/${order.id}/artifact`)}>Open purchased artifact <ArrowRight/></button>}
+      {earlierPurchase&&<button className="copper-button" onClick={()=>route(`/orders/${productOrder.id}/artifact`)}>Open purchased version <ArrowRight/></button>}
+      {!ready&&!earlierPurchase&&<small>{order?'This order remains in history, but checkout controls are unavailable while the project is archived.':'No purchased Decision Compare is attached to this project.'}</small>}
+      <button className="underlined-action" onClick={()=>route('/orders')}>View order history</button>
+    </div>
+  </section>;
   return <section className="decision-purchase" aria-labelledby="decision-purchase-title">
     <div><span className="kicker">Freeze the decision</span><h2 id="decision-purchase-title">Purchase this Decision Compare.</h2><p>A purchased Decision Compare preserves the two options, chosen direction, assumptions, recommendation and architect questions as one immutable artifact.</p></div>
     <div className="decision-purchase__action">
@@ -506,7 +808,7 @@ function DecisionPurchasePanel({ projectId, comparison, orders, onOrdersChange }
   </section>;
 }
 
-function DecisionSharePanel({ projectId, comparison, orderId, canShare }) {
+function DecisionSharePanel({ projectId, comparison, orderId, canShare, readonly = false }) {
   const [shares,setShares]=useState([]);
   const [days,setDays]=useState("7");
   const [busy,setBusy]=useState(false);
@@ -519,6 +821,7 @@ function DecisionSharePanel({ projectId, comparison, orderId, canShare }) {
   }
   useEffect(()=>{const controller=new AbortController();load(controller.signal);return()=>controller.abort()},[projectId]);
   async function createShare(){
+    if(readonly)return;
     setBusy(true);setError("");setMessage("");
     try{
       const storageKey=`grihagrid.share.${projectId}.${orderId}.${days}`;
@@ -537,22 +840,22 @@ function DecisionSharePanel({ projectId, comparison, orderId, canShare }) {
     try{await api(`/api/projects/${projectId}/decision-compare/shares/${encodeURIComponent(share.id)}`,{method:'DELETE',body:{}});setShares(current=>current.map(item=>item.id===share.id?{...item,revokedAt:new Date().toISOString(),active:false}:item));setMessage('Link revoked. Future visits are blocked.');trackEvent('decision_compare_share_revoked',{surface:'owner_compare',outcome:'success'});}
     catch(err){setError(err.message)}finally{setBusy(false)}
   }
-  async function copyShare(share){setError("");setMessage("");try{const value=share.url || (share.token?`${window.location.origin}/share/decision/${share.token}`:"");if(!value)throw new Error('For security, this link is only shown once. Create a new link to share again.');await copyText(value);setMessage('Secure link copied.');}catch(err){setError(err.message)}}
-  return <section className="decision-sharing" aria-labelledby="decision-sharing-title">
-    <div><span className="kicker">Family & professional handoff</span><h2 id="decision-sharing-title">Share one version of the truth.</h2><p>Links expire automatically, can be revoked at any time, and reveal the frozen decision artifact—not your account, files or editing workspace.</p></div>
-    <div>
+  async function copyShare(share){if(readonly)return;setError("");setMessage("");try{const value=share.url || (share.token?`${window.location.origin}/share/decision/${share.token}`:"");if(!value)throw new Error('For security, this link is only shown once. Create a new link to share again.');await copyText(value);setMessage('Secure link copied.');}catch(err){setError(err.message)}}
+  return <section className={`decision-sharing ${readonly?'decision-sharing--archived':''}`} aria-labelledby="decision-sharing-title">
+    <div><span className="kicker">{readonly?'Archived share history':'Family & professional handoff'}</span><h2 id="decision-sharing-title">{readonly?'Saved links, controlled.':'Share one version of the truth.'}</h2><p>{readonly?'Existing link status remains visible for audit. New links and copying are unavailable; an active bearer link can still be revoked to reduce access.':'Links expire automatically, can be revoked at any time, and reveal the frozen decision artifact—not your account, files or editing workspace.'}</p></div>
+    {readonly?<div className="decision-readonly-meta"><LockKey/><p>Return to Project Home to review the archived record. Privacy deletion is available only there when the project has no payment evidence.</p></div>:<div>
       <label>Link expires<select value={days} disabled={busy||!canShare} onChange={event=>setDays(event.target.value)}><option value="1">In 24 hours</option><option value="7">In 7 days</option><option value="30">In 30 days</option></select></label>
       <button className="outline-button" disabled={busy||!canShare||!orderId||phase==='unavailable'} onClick={createShare}><ShareNetwork/>{busy?'Working…':'Create & copy link'}</button>
       {!canShare&&<small>Purchase the immutable Decision Compare before sharing.</small>}
       {phase==='unavailable'&&<small>Secure sharing is closed until its storage and access controls are enabled.</small>}
-    </div>
+    </div>}
     {message&&<p className="success-message" role="status"><CheckCircle/>{message}</p>}{error&&<p className="form-error" role="alert">{error}</p>}
     {phase==='loading'&&<p className="loading-line" role="status">Checking secure links…</p>}
-    {shares.length>0&&<div className="share-list">{shares.map(share=>{const revoked=Boolean(share.revokedAt||share.revoked_at);const expired=!revoked&&share.active===false;const canCopy=Boolean(share.url||share.token);return <article key={share.id}><LinkSimple/><div><strong>{revoked?'Revoked link':expired?'Expired link':'Active private link'}{share.comparisonVersion?` · v${share.comparisonVersion}`:''}</strong><span>Expires {formatDate(share.expiresAt||share.expires_at)} · {Number(share.accessCount||share.access_count||0)} views</span></div><button disabled={revoked||expired||busy||!canCopy} onClick={()=>copyShare(share)} aria-label={canCopy?'Copy secure share link':'Secret link is no longer displayed'}><Copy/></button><button disabled={revoked||expired||busy} onClick={()=>revoke(share)} aria-label="Revoke secure share link"><XCircle/></button></article>})}</div>}
+    {shares.length>0&&<div className={`share-list ${readonly?'share-list--readonly':''}`}>{shares.map(share=>{const revoked=Boolean(share.revokedAt||share.revoked_at);const expired=!revoked&&share.active===false;const canCopy=Boolean(share.url||share.token);return <article key={share.id}><LinkSimple/><div><strong>{revoked?'Revoked link':expired?'Expired link':'Active private link'}{share.comparisonVersion?` · v${share.comparisonVersion}`:''}</strong><span>Expires {formatDate(share.expiresAt||share.expires_at)} · {Number(share.accessCount||share.access_count||0)} views</span></div>{!readonly&&<button disabled={revoked||expired||busy||!canCopy} onClick={()=>copyShare(share)} aria-label={canCopy?'Copy secure share link':'Secret link is no longer displayed'}><Copy/></button>}<button disabled={revoked||expired||busy} onClick={()=>revoke(share)} aria-label="Revoke secure share link"><XCircle/></button></article>})}</div>}
   </section>;
 }
 
-function FamilyAlignmentPanel({ projectId, comparison }) {
+function FamilyAlignmentPanel({ projectId, comparison, readonly = false }) {
   const [room,setRoom]=useState(null);
   const [rooms,setRooms]=useState([]);
   const [summary,setSummary]=useState(null);
@@ -602,7 +905,7 @@ function FamilyAlignmentPanel({ projectId, comparison }) {
   useEffect(()=>{const controller=new AbortController();setSecretUrl("");setMessage("");setPhase('loading');load(controller.signal);return()=>controller.abort()},[projectId,comparison.id]);
 
   async function createRoom() {
-    if(createInFlight.current)return;
+    if(readonly||createInFlight.current)return;
     createInFlight.current=true;
     setBusy(true);setError("");setMessage("");
     const storageKey=`grihagrid.familyAlignment.${projectId}.${comparison.id}`;
@@ -637,6 +940,7 @@ function FamilyAlignmentPanel({ projectId, comparison }) {
   }
 
   async function copyRoomLink() {
+    if(readonly)return;
     setError("");setMessage("");
     try{if(!secretUrl)throw new Error('For security, this link is shown only when the room is created.');await copyText(secretUrl);setMessage('Private review link copied.');}
     catch(err){setError(err.message)}
@@ -667,8 +971,8 @@ function FamilyAlignmentPanel({ projectId, comparison }) {
   const reasonCountKeys={future_expansion:'futureExpansion',construction_complexity:'constructionComplexity'};
   const rankedReasons=familyReasons.map(([key,label])=>({key,label,count:familyCount(reasonCounts,[reasonCountKeys[key]||key])})).filter(item=>item.count>0).sort((a,b)=>b.count-a.count);
 
-  return <section className="family-alignment" aria-labelledby="family-alignment-title">
-    <header className="family-alignment__intro"><div><span className="kicker">Family Alignment · free</span><h2 id="family-alignment-title">One comparison.<br/><i>Every voice.</i></h2><p>Invite up to five family members to review this exact saved version. They respond privately without seeing your choice or GrihaGrid’s recommendation.</p></div><div className="family-alignment__promise"><UserCircle/><strong>Seven days</strong><span>One private room · no account needed</span></div></header>
+  return <section className={`family-alignment ${readonly?'family-alignment--readonly':''}`} aria-labelledby="family-alignment-title">
+    <header className="family-alignment__intro"><div><span className="kicker">Family Alignment · {readonly?'archived evidence':'free'}</span><h2 id="family-alignment-title">{readonly?<>Family input.<br/><i>Saved as evidence.</i></>:<>One comparison.<br/><i>Every voice.</i></>}</h2><p>{readonly?'Recorded response totals and reasons remain readable. No room can be created, copied, or refreshed; any still-active bearer link can be revoked.':'Invite up to five family members to review this exact saved version. They respond privately without seeing your choice or GrihaGrid’s recommendation.'}</p></div><div className="family-alignment__promise">{readonly?<LockKey/>:<UserCircle/>}<strong>{readonly?'Read only':'Seven days'}</strong><span>{readonly?'Revocation remains available':'One private room · no account needed'}</span></div></header>
     {phase==='loading'&&<p className="family-alignment__loading" role="status"><ArrowClockwise/> Checking this version’s review room…</p>}
     {phase==='unavailable'&&<div className="family-alignment__notice"><LockKey/><div><strong>Family review is not open yet.</strong><p>Your working comparison and owner choice remain private and available.</p></div></div>}
     {phase==='error'&&<div className="family-alignment__notice family-alignment__notice--error"><WarningCircle/><div><strong>We could not open the review room.</strong><p role="alert">{error}</p><button className="underlined-action" onClick={()=>{setPhase('loading');load()}}>Try again <ArrowClockwise/></button></div></div>}
@@ -676,7 +980,7 @@ function FamilyAlignmentPanel({ projectId, comparison }) {
       <div className="family-alignment__workspace">
         <div className="family-alignment__room">
           <span className="family-alignment__eyebrow">Current comparison · v{comparison.version||1}</span>
-          {!room?<><h3>Open the family conversation.</h3><p>Create one private seven-day room tied to these two saved options. No names, emails, phone numbers, files, or free-text comments are collected.</p><button className="copper-button" disabled={busy} onClick={createRoom}><ShareNetwork/>{busy?'Creating private room…':'Create & copy review link'}</button></>:<><div className="family-alignment__room-state"><span className={`family-room-state family-room-state--${familyRoomState(room).toLowerCase()}`}><i/>{familyRoomState(room)}</span><span>{room.responseCount} of {room.maxResponses||5} responses</span></div><h3>{room.active?'This saved version is with the family.':'This review room is closed.'}</h3><p>{room.active?`Seven-day room · private until ${formatDateTime(room.expiresAt)}. The secret URL cannot be recovered after creation.`:`The responses remain visible in this owner summary, but the old link accepts no visits or changes.`}</p><div className="family-alignment__room-actions">{room.active&&secretUrl&&<button className="copper-button" disabled={busy} onClick={copyRoomLink}><Copy/> Copy link</button>}<button className="outline-button" disabled={busy} onClick={()=>{setPhase('loading');load()}}><ArrowClockwise/> Refresh</button>{room.active&&<button className="family-alignment__revoke" disabled={busy} onClick={()=>revokeRoom(room)}><XCircle/> Revoke</button>}</div></>}
+          {!room?<><h3>{readonly?'No saved family review.':'Open the family conversation.'}</h3><p>{readonly?'This archived comparison has no Family Alignment room or response evidence.': 'Create one private seven-day room tied to these two saved options. No names, emails, phone numbers, files, or free-text comments are collected.'}</p>{!readonly&&<button className="copper-button" disabled={busy} onClick={createRoom}><ShareNetwork/>{busy?'Creating private room…':'Create & copy review link'}</button>}</>:<><div className="family-alignment__room-state"><span className={`family-room-state family-room-state--${familyRoomState(room).toLowerCase()}`}><i/>{familyRoomState(room)}</span><span>{room.responseCount} of {room.maxResponses||5} responses</span></div><h3>{room.active?'This saved version is with the family.':'This review room is closed.'}</h3><p>{room.active?`Seven-day room · private until ${formatDateTime(room.expiresAt)}. ${readonly?'Its status is shown without copy controls.':'The secret URL cannot be recovered after creation.'}`:`The responses remain visible in this owner summary, but the old link accepts no visits or changes.`}</p>{(!readonly||room.active)&&<div className="family-alignment__room-actions">{!readonly&&room.active&&secretUrl&&<button className="copper-button" disabled={busy} onClick={copyRoomLink}><Copy/> Copy link</button>}{!readonly&&<button className="outline-button" disabled={busy} onClick={()=>{setPhase('loading');load()}}><ArrowClockwise/> Refresh</button>}{room.active&&<button className="family-alignment__revoke" disabled={busy} onClick={()=>revokeRoom(room)}><XCircle/> Revoke</button>}</div>}</>}
         </div>
         <div className="family-alignment__summary" aria-live="polite">
           <span className="family-alignment__eyebrow">Owner-only summary</span>
@@ -714,7 +1018,7 @@ function DecisionComparePage({ projectId }) {
       try{decisionResult=await api(`/api/projects/${projectId}/decision-compare`,{signal})}catch(err){if(err.status!==404)throw err}
       const normalized=normalizeDecisionResponse(decisionResult,ownedProject);
       let recovered=normalized.scenarios;
-      try{const saved=JSON.parse(sessionStorage.getItem(`grihagrid.decisionDraft.${projectId}`)||'null');if(Array.isArray(saved)&&saved.length===2)recovered=saved.map((item,index)=>normalizeScenario(item,normalized.scenarios[index]))}catch{}
+      if(ownedProject.status!=='archived')try{const saved=JSON.parse(sessionStorage.getItem(`grihagrid.decisionDraft.${projectId}`)||'null');if(Array.isArray(saved)&&saved.length===2)recovered=saved.map((item,index)=>normalizeScenario(item,normalized.scenarios[index]))}catch{}
       let orderResult={orders:[]};try{orderResult=await api(`/api/orders?projectId=${encodeURIComponent(projectId)}`,{signal})}catch(err){if(err.status!==404)throw err}
       if(signal?.aborted)return;
       setProject(ownedProject);setComparison(normalized);setDrafts(recovered);setPriority(normalized.priority||'balanced');setOrders(orderResult.orders||[]);setPhase(decisionResult?.comparison?'ready':'empty');
@@ -730,6 +1034,7 @@ function DecisionComparePage({ projectId }) {
   function changeDraft(index,value){setDrafts(current=>current.map((item,itemIndex)=>itemIndex===index?value:item));setDirty(true);sessionStorage.setItem(`grihagrid.decisionDraft.${projectId}`,JSON.stringify(drafts.map((item,itemIndex)=>itemIndex===index?value:item)))}
   async function save(event){
     event.preventDefault();
+    if(project?.status==='archived'){setError('This archived comparison is read only. Return to Project Home to review the record.');return}
     if(drafts.length!==2||drafts.some(item=>!item.label.trim())){setError('Name both options before comparing them.');return}
     setSaving(true);setError("");
     try{
@@ -742,35 +1047,40 @@ function DecisionComparePage({ projectId }) {
     }catch(err){setError(err.status===503?'Comparison generation is temporarily closed. Your two drafts are kept safely in this browser.':err.message)}finally{setSaving(false)}
   }
   async function choose(scenario){
+    if(project?.status==='archived'){setError('The saved direction cannot be changed while this project is archived.');return}
     if(!comparison?.id){setError('Save both options before choosing a direction.');document.getElementById('decision-editor')?.scrollIntoView({behavior:'smooth'});return}
     setChoosing(true);setError("");
     try{const result=await api(`/api/projects/${projectId}/decision-compare/choice`,{method:'POST',body:{scenarioId:scenario.id}});setComparison(current=>({...current,selectedScenarioId:result.selection?.scenarioId||scenario.id,selection:result.selection||{scenarioId:scenario.id}}));trackEvent('decision_compare_option_chosen',{surface:'owner_compare',outcome:'success'});}
     catch(err){setError(err.message)}finally{setChoosing(false)}
   }
   if(phase==='loading')return <main className="decision-loading" aria-busy="true"><Brand/><div role="status"><ArrowsLeftRight/><span className="kicker">Opening your private project</span><h1>Setting two options on the table…</h1><p>The feasibility report remains unchanged.</p></div></main>;
-  if(phase==='error')return <main className="error-page"><WarningCircle/><h1>We could not open Decision Compare.</h1><p role="alert">{error}</p><div className="error-actions"><button className="outline-button" onClick={()=>route(`/report/${projectId}`)}><ArrowLeft/> Free report</button><button className="copper-button" onClick={()=>load()}>Try again <ArrowClockwise/></button></div></main>;
-  return <main className="decision-page">
-    <header className="decision-topbar"><button onClick={()=>route(`/report/${projectId}`)}><ArrowLeft/> Feasibility report</button><Brand inverted/><div><button onClick={()=>route('/orders')}><Receipt/> Orders</button><button onClick={()=>window.print()}><DownloadSimple/> Print working copy</button></div></header>
-    <section className="decision-intro"><div><span className="kicker">A decision instrument, prepared before drawings</span><h1>Two options.<br/><i>One clear direction.</i></h1><p>Keep the plot fixed. Change only the choices that matter, then make the area, budget and programme trade-off visible to everyone.</p></div><div className="decision-intro__index" aria-hidden="true"><span>Decision instrument</span><strong>02</strong><small>Exactly two alternatives</small></div></section>
-    <form id="decision-editor" className="decision-editor" onSubmit={save} aria-busy={saving}>
+  if(phase==='error')return <main className="error-page"><WarningCircle/><h1>We could not open Decision Compare.</h1><p role="alert">{error}</p><div className="error-actions"><button className="outline-button" onClick={()=>route(`/projects/${projectId}`)}><ArrowLeft/> Project home</button><button className="copper-button" onClick={()=>load()}>Try again <ArrowClockwise/></button></div></main>;
+  const archived=project?.status==='archived';
+  const hasSavedComparison=phase==='ready'&&Boolean(comparison?.id);
+  return <main className={`decision-page ${archived?'decision-page--archived':''}`}>
+    <header className="decision-topbar"><button onClick={()=>route(`/projects/${projectId}`)}><ArrowLeft/> Project home</button><Brand inverted/><div><button onClick={()=>route('/orders')}><Receipt/> Orders</button><button onClick={()=>window.print()}><DownloadSimple/> {archived?'Print archived copy':'Print working copy'}</button></div></header>
+    <section className="decision-intro"><div><span className="kicker">{archived?'Archived decision record':'A decision instrument, prepared before drawings'}</span><h1>Two options.<br/><i>{archived?'One saved record.':'One clear direction.'}</i></h1><p>{archived?'This page preserves the comparison as it was saved. Editing, recalculation, choice changes, sharing and checkout are unavailable.':'Keep the plot fixed. Change only the choices that matter, then make the area, budget and programme trade-off visible to everyone.'}</p></div><div className="decision-intro__index" aria-hidden="true"><span>{archived?'Read-only record':'Decision instrument'}</span><strong>02</strong><small>{archived?'No planning changes':'Exactly two alternatives'}</small></div></section>
+    {archived&&<section className="decision-archived-notice" role="status"><LockKey/><div><strong>Archived · read only</strong><p>Saved comparison, family response totals, order history and link status remain readable. Return to Project Home for the archived overview and any eligible privacy deletion.</p></div></section>}
+    {!archived&&<form id="decision-editor" className="decision-editor" onSubmit={save} aria-busy={saving}>
       <header><div><span className="kicker">Draft the alternatives</span><h2>Change the brief—not the ground.</h2><p>Both options inherit the same plot, city and facing. Saved comparisons are recalculated from one cost basis.</p></div><div className="decision-editor__basis"><span className="decision-plot-lock"><LockKey/> {project.input?.width} × {project.input?.length} ft · {project.input?.city}</span><label>Decision priority<select value={priority} disabled={saving} onChange={event=>{setPriority(event.target.value);setDirty(true)}}><option value="balanced">Balanced outcome</option><option value="budget">Protect budget</option><option value="space">Maximise space</option><option value="speed">Simplify delivery</option></select></label></div></header>
       <div className="scenario-editors">{drafts.map((scenario,index)=><ScenarioEditor key={scenario.key||index} scenario={scenario} index={index} onChange={changeDraft} disabled={saving}/>)}</div>
       {dirty&&<p className="draft-recovery" role="status"><FloppyDisk/> Unsaved edits are kept in this browser until you compare them.</p>}
       {error&&<p className="form-error" role="alert">{error}</p>}
       <div className="decision-editor__actions"><p><ShieldCheck/> Concept-stage calculations only. Local rules and site conditions remain unresolved.</p><button className="copper-button" type="submit" disabled={saving||drafts.length!==2}>{saving?'Recalculating both options…':phase==='empty'?'Create comparison':'Save & recalculate'} <ArrowsLeftRight/></button></div>
-    </form>
-    <section id="decision-results" className="decision-results" tabIndex="-1">{phase==='empty'&&<div className="decision-preview-note" role="status"><PencilSimple/><p><strong>Unsaved preview.</strong> These two starting options are visible only in this browser. Save them to create a versioned comparison and choose a direction.</p></div>}<DecisionDocument comparison={comparison} project={project} onChoose={choose} choosing={choosing}/></section>
-    {phase==='ready'&&comparison?.id&&<FamilyAlignmentPanel projectId={projectId} comparison={comparison}/>}
-    <DecisionPurchasePanel projectId={projectId} comparison={comparison} orders={orders} onOrdersChange={setOrders}/>
-    <DecisionSharePanel projectId={projectId} comparison={comparison} orderId={comparison.entitlement?.orderId||null} canShare={Boolean(comparison.entitlement?.active)}/>
+    </form>}
+    {archived&&!hasSavedComparison?<section className="decision-archived-empty"><ArrowsLeftRight/><h2>No saved comparison record.</h2><p>This project was archived without a versioned Decision Compare. Browser drafts are not presented as project evidence.</p><button className="outline-button" onClick={()=>route(`/projects/${projectId}`)}><ArrowLeft/> Project home</button></section>:<section id="decision-results" className="decision-results" tabIndex="-1">{phase==='empty'&&<div className="decision-preview-note" role="status"><PencilSimple/><p><strong>Unsaved preview.</strong> These two starting options are visible only in this browser. Save them to create a versioned comparison and choose a direction.</p></div>}<DecisionDocument comparison={comparison} project={project} onChoose={choose} choosing={choosing} readonly={archived}/></section>}
+    {hasSavedComparison&&<FamilyAlignmentPanel projectId={projectId} comparison={comparison} readonly={archived}/>}
+    {(!archived||hasSavedComparison)&&<DecisionPurchasePanel projectId={projectId} comparison={comparison} orders={orders} onOrdersChange={setOrders} readonly={archived}/>}
+    {(!archived||hasSavedComparison)&&<DecisionSharePanel projectId={projectId} comparison={comparison} orderId={comparison.entitlement?.orderId||null} canShare={Boolean(comparison.entitlement?.active)} readonly={archived}/>}
   </main>;
 }
 
-function PurchasePanel({ projectId }) {
+function PurchasePanel({ projectId, readonly = false }) {
   const selected=sessionStorage.getItem('grihagrid.plan')==='decision_compare'?'decision_compare':null;
   const [plan,setPlan]=useState(selected||'plan');const [busy,setBusy]=useState(false);const [error,setError]=useState("");
   const availability=useCommerceCatalog();
   const details={plan:['Planning report','₹499'],decision_compare:['Decision Compare','₹999'],site_plus:['Site-informed','₹999'],expert:['Architect reviewed','₹3,499']};
+  if(readonly)return null;
   if(!selected)return <section className="purchase-panel"><div><span className="kicker">Need more confidence?</span><h2>Put two options on the table.</h2><p>Use Decision Compare when the free feasibility has helped you frame the problem but competing directions still need one clear choice.</p></div><button className="underlined-action" onClick={()=>route('/pricing')}>Compare offers <ArrowRight/></button></section>;
   if(selected==='decision_compare')return <section className="purchase-panel purchase-panel--selected"><div><span className="kicker">Selected next step</span><h2>Decision Compare</h2><p>Create exactly two alternatives and choose a direction before secure checkout opens.</p></div><button className="copper-button" onClick={()=>{sessionStorage.removeItem('grihagrid.plan');route(`/projects/${projectId}/compare`)}}>Compare two options <ArrowsLeftRight/></button></section>;
   async function checkout(){setBusy(true);setError("");try{const keyName=`grihagrid.checkout.${projectId}.${plan}`;let key=sessionStorage.getItem(keyName);if(!key){key=crypto.randomUUID();sessionStorage.setItem(keyName,key)}const result=await api(`/api/projects/${projectId}/orders`,{method:'POST',headers:{'idempotency-key':key},body:{plan}});sessionStorage.removeItem('grihagrid.plan');if(result.checkoutUrl)window.location.assign(result.checkoutUrl);else if(result.order?.id)route(`/checkout/return?order=${encodeURIComponent(result.order.id)}`);else throw new Error('Checkout is not available for this order.');}catch(err){setError(err.status===503?'Secure checkout is being connected. Your project is saved; no payment was taken.':err.message);}finally{setBusy(false)}}
@@ -778,15 +1088,15 @@ function PurchasePanel({ projectId }) {
   return <section className="purchase-panel purchase-panel--selected"><div><span className="kicker">Selected next step</span><h2>{details[plan][0]}</h2><p>{accepting?'One project · one payment. The checkout provider confirms payment directly with GrihaGrid before fulfillment begins.':'This paid service is visible for comparison, but is not accepting orders yet. Your free project remains saved.'}</p></div><div><label>Plan<select value={plan} onChange={e=>setPlan(e.target.value)}>{Object.entries(details).map(([value,[name,price]])=><option key={value} value={value}>{name} · {price}</option>)}</select></label><button disabled={busy||!accepting} className="copper-button" onClick={checkout}>{busy?'Opening checkout…':accepting?`Continue · ${details[plan][1]}`:'Not accepting orders'} {accepting&&<ArrowRight/>}</button></div>{error&&<p className="form-error" role="alert">{error}</p>}</section>;
 }
 
-function ProjectFiles({ projectId }) {
+function ProjectFiles({ projectId, readonly = false }) {
   const [files,setFiles]=useState([]);const [busy,setBusy]=useState(false);const [error,setError]=useState("");const [storageState,setStorageState]=useState('loading');
   useEffect(()=>{api(`/api/projects/${projectId}/files`).then(x=>{setFiles(x.files||[]);setStorageState('ready')}).catch(e=>{if(e.status===503){setStorageState('unavailable');return}setStorageState('error');setError(e.message)});},[projectId]);
-  async function upload(event){const selected=[...(event.target.files||[])];if(!selected.length)return;setBusy(true);setError("");try{for(const file of selected){const form=new FormData();form.append('file',file);form.append('kind','reference');const result=await api(`/api/projects/${projectId}/files`,{method:'POST',body:form});setFiles(current=>[result.file,...current]);}}catch(err){if(err.status===503){setStorageState('unavailable');setError('');return}setError(err.message);}finally{setBusy(false);event.target.value='';}}
+  async function upload(event){if(readonly)return;const selected=[...(event.target.files||[])];if(!selected.length)return;setBusy(true);setError("");try{for(const file of selected){const form=new FormData();form.append('file',file);form.append('kind','reference');const result=await api(`/api/projects/${projectId}/files`,{method:'POST',body:form});setFiles(current=>[result.file,...current]);}}catch(err){if(err.status===503){setStorageState('unavailable');setError('');return}setError(err.message);}finally{setBusy(false);event.target.value='';}}
   async function remove(file){const name=file.name||file.fileName||file.file_name||'this file';if(!window.confirm(`Delete “${name}”?`))return;try{await api(`/api/projects/${projectId}/files/${file.id}`,{method:'DELETE',body:{}});setFiles(current=>current.filter(item=>item.id!==file.id));}catch(err){setError(err.message)}}
-  return <section className={`project-files project-files--${storageState}`}><div><span className="kicker">Private site context</span><h2>Plot photographs & documents</h2><p>{storageState==='unavailable'?'Private file storage is not active in this release. Your feasibility and saved project are complete without uploads.':'Keep the evidence behind your brief together. Files remain account-scoped.'}</p></div>{storageState==='loading'?<span className="file-storage-state" role="status"><ArrowClockwise/> Checking storage…</span>:storageState==='unavailable'?<span className="file-storage-state"><LockKey/> Uploads unavailable</span>:<label className="file-upload-action"><UploadSimple/>{busy?'Uploading…':'Add files'}<input disabled={busy||storageState!=='ready'} type="file" multiple accept="image/jpeg,image/png,image/webp,application/pdf" onChange={upload}/></label>}{error&&<p className="form-error" role="alert">{error}</p>}{files.length>0&&<div className="file-list">{files.map(file=>{const name=file.name||file.fileName||file.file_name||'Project file';return <div key={file.id}><FileText/><a href={`/api/projects/${projectId}/files/${file.id}`}>{name}</a><span>{Math.max(1,Math.round((file.sizeBytes||file.size_bytes||0)/1024))} KB</span><button onClick={()=>remove(file)} aria-label={`Delete ${name}`}><Trash/></button></div>})}</div>}</section>;
+  return <section className={`project-files project-files--${storageState} ${readonly?'project-files--readonly':''}`}><div><span className="kicker">Private site context</span><h2>Plot photographs & documents</h2><p>{storageState==='unavailable'?'Private file storage is not active in this release. Your feasibility and saved project are complete without uploads.':readonly?'Existing files remain available to open or permanently delete. Uploads are unavailable while this project is archived.':'Keep the evidence behind your brief together. Files remain account-scoped.'}</p></div>{storageState==='loading'?<span className="file-storage-state" role="status"><ArrowClockwise/> Checking storage…</span>:storageState==='unavailable'?<span className="file-storage-state"><LockKey/> Uploads unavailable</span>:readonly?<span className="file-storage-state project-files__readonly"><LockKey/> Uploads closed</span>:<label className="file-upload-action"><UploadSimple/>{busy?'Uploading…':'Add files'}<input disabled={busy||storageState!=='ready'} type="file" multiple accept="image/jpeg,image/png,image/webp,application/pdf" onChange={upload}/></label>}{error&&<p className="form-error" role="alert">{error}</p>}{files.length>0&&<div className="file-list">{files.map(file=>{const name=file.name||file.fileName||file.file_name||'Project file';return <div key={file.id}><FileText/><a href={`/api/projects/${projectId}/files/${file.id}`}>{name}</a><span>{Math.max(1,Math.round((file.sizeBytes||file.size_bytes||0)/1024))} KB</span><button onClick={()=>remove(file)} aria-label={`Delete ${name}`}><Trash/></button></div>})}</div>}</section>;
 }
 
-function AiPlanningBrief({ projectId }) {
+function AiPlanningBrief({ projectId, readonly = false }) {
   const [analysis,setAnalysis]=useState(null);
   const [cached,setCached]=useState(false);
   const [consented,setConsented]=useState(false);
@@ -817,6 +1127,7 @@ function AiPlanningBrief({ projectId }) {
   useEffect(()=>{const controller=new AbortController();load(controller.signal);return()=>controller.abort()},[projectId]);
 
   async function generate(){
+    if(readonly)return;
     const hadAnalysis=Boolean(analysis);
     setError('');setPhase(hadAnalysis?'refreshing':'generating');
     try{applyResult(await api(`/api/projects/${projectId}/ai-brief`,{method:'POST',body:{acceptedAiTerms:consented,refresh:hadAnalysis},timeoutMs:60_000}));}
@@ -842,7 +1153,7 @@ function AiPlanningBrief({ projectId }) {
   const priorities=list(content.planningPriorities);const layoutSuggestions=list(content.layoutSuggestions);const costNotes=list(content.costAndDeliveryNotes);const risks=list(content.riskFlags);const questions=list(content.questionsForArchitect);
   const hasAnalysis=Boolean(analysis);
 
-  return <section className={`ai-brief ${hasAnalysis?'ai-brief--has-analysis':''}`} aria-labelledby="ai-brief-title" aria-busy={phase==='loading'||phase==='generating'||phase==='refreshing'}>
+  return <section className={`ai-brief ${hasAnalysis?'ai-brief--has-analysis':''} ${readonly?'ai-brief--readonly':''}`} aria-labelledby="ai-brief-title" aria-busy={phase==='loading'||phase==='generating'||phase==='refreshing'}>
     <header className="ai-brief-heading">
       <div><span className="kicker">Gemini · AI-assisted</span><h2 id="ai-brief-title">A second reading of your brief.</h2><p>Gemini turns sanitized planning facts into a concise memorandum—what feels strong, what needs care, and what to ask next. Account details and project files are not sent.</p></div>
       <div className="ai-brief-folio" aria-hidden="true"><span>AI</span><strong>01</strong></div>
@@ -850,7 +1161,7 @@ function AiPlanningBrief({ projectId }) {
 
     {phase==='loading'&&<div className="ai-brief-state" role="status" aria-live="polite"><Sparkle/><div><span>Checking this private project</span><h3>Looking for a saved AI brief…</h3><p>Your feasibility report remains available while this loads.</p></div></div>}
 
-    {phase==='empty'&&<div className="ai-brief-state ai-brief-state--action"><Sparkle/><div><span>Optional planning layer</span><h3>Create a Gemini planning memo.</h3><p>Only sanitized planning facts are sent to Google Gemini—never account details, precise addresses or uploaded files. On Google’s Free tier, inputs and outputs may be reviewed or used to improve its products.</p><label className="ai-consent"><input type="checkbox" checked={consented} onChange={event=>setConsented(event.target.checked)}/><span>I confirm I am 18 or older and consent to the sanitized planning facts described above being processed by Google Gemini.</span></label><button className="copper-button" disabled={!consented} onClick={generate}>Generate AI brief <ArrowRight/></button><small>Usually ready in under a minute · output is advisory and saved with this project</small></div></div>}
+    {phase==='empty'&&(readonly?<div className="ai-brief-state ai-brief-state--muted"><LockKey/><div><span>Archived AI record</span><h3>No saved AI brief.</h3><p>This archived project has no Gemini planning memo. Generation is unavailable; the deterministic feasibility evidence above remains unchanged.</p></div></div>:<div className="ai-brief-state ai-brief-state--action"><Sparkle/><div><span>Optional planning layer</span><h3>Create a Gemini planning memo.</h3><p>Only sanitized planning facts are sent to Google Gemini—never account details, precise addresses or uploaded files. On Google’s Free tier, inputs and outputs may be reviewed or used to improve its products.</p><label className="ai-consent"><input type="checkbox" checked={consented} onChange={event=>setConsented(event.target.checked)}/><span>I confirm I am 18 or older and consent to the sanitized planning facts described above being processed by Google Gemini.</span></label><button className="copper-button" disabled={!consented} onClick={generate}>Generate AI brief <ArrowRight/></button><small>Usually ready in under a minute · output is advisory and saved with this project</small></div></div>)}
 
     {phase==='generating'&&<div className="ai-brief-state ai-brief-state--working" role="status" aria-live="polite"><Sparkle/><div><span>Gemini is reading your project</span><h3>Drafting the planning memorandum…</h3><p>This may take up to a minute. Keep this page open; no payment is involved.</p></div></div>}
 
@@ -859,7 +1170,7 @@ function AiPlanningBrief({ projectId }) {
     {phase==='error'&&!hasAnalysis&&<div className="ai-brief-state ai-brief-state--error"><WarningCircle/><div><span>AI brief unavailable</span><h3>We could not open the planning memo.</h3><p role="alert">{error}</p><button className="outline-button" onClick={()=>load()}>Try again <ArrowClockwise/></button></div></div>}
 
     {hasAnalysis&&<div className="ai-brief-document">
-      <div className="ai-brief-provenance"><span><i/> {cached?'Cached brief · saved privately':'New brief · saved privately'}</span><span>{generatedLabel?`Generated ${generatedLabel}`:'Saved AI brief'} · {model}</span></div>
+      <div className="ai-brief-provenance"><span><i/> {readonly?'Archived brief · read only':cached?'Cached brief · saved privately':'New brief · saved privately'}</span><span>{generatedLabel?`Generated ${generatedLabel}`:'Saved AI brief'} · {model}</span></div>
       {phase==='refreshing'&&<p className="ai-brief-refresh-status" role="status" aria-live="polite"><Sparkle/> Gemini is refreshing the memo. The saved version remains visible.</p>}
       {error&&<p className="ai-brief-inline-error" role="alert"><WarningCircle/>{error}</p>}
       <div className="ai-brief-overview"><span>Planning overview</span>{content.headline&&<h3>{content.headline}</h3>}<p>{content.overview||'Gemini has generated a planning brief for this project.'}</p></div>
@@ -873,7 +1184,7 @@ function AiPlanningBrief({ projectId }) {
       </div>}
       {questions.length>0&&<section className="ai-numbered-list"><span className="ai-section-label">Questions for your architect</span><ol>{questions.map((item,index)=><li key={`${item}-${index}`}><span>{String(index+1).padStart(2,'0')}</span><p>{item}</p></li>)}</ol></section>}
       <footer className="ai-brief-boundary"><ShieldCheck/><p><strong>AI-assisted, not professional advice.</strong> {content.disclaimer||'This planning memo is indicative and may be incomplete. A licensed local architect and structural engineer must validate site conditions, regulations, dimensions, drawings and specifications before construction.'}</p></footer>
-      <div className="ai-brief-actions"><div><p>Refresh after changing the project brief to create a new saved reading.</p><label className="ai-consent ai-consent--compact"><input type="checkbox" checked={consented} onChange={event=>setConsented(event.target.checked)}/><span>I confirm I am 18 or older and consent to this sanitized refresh being processed by Google Gemini.</span></label></div><button className="outline-button" disabled={phase==='refreshing'||!consented} onClick={generate}>{phase==='refreshing'?'Refreshing…':'Refresh analysis'} <ArrowClockwise/></button></div>
+      {!readonly&&<div className="ai-brief-actions"><div><p>Refresh after changing the project brief to create a new saved reading.</p><label className="ai-consent ai-consent--compact"><input type="checkbox" checked={consented} onChange={event=>setConsented(event.target.checked)}/><span>I confirm I am 18 or older and consent to this sanitized refresh being processed by Google Gemini.</span></label></div><button className="outline-button" disabled={phase==='refreshing'||!consented} onClick={generate}>{phase==='refreshing'?'Refreshing…':'Refresh analysis'} <ArrowClockwise/></button></div>}
     </div>}
   </section>;
 }
@@ -1022,7 +1333,7 @@ function FamilyAlignmentReviewPage({ token }) {
   if(phase==='loading')return <main className="shared-state family-review-state"><Brand/><div role="status"><UserCircle/><span className="kicker">Private family review</span><h1>Opening the two options…</h1><p>No account is needed. The room is checked before any project facts are shown.</p></div></main>;
   if(phase!=='ready'&&phase!=='full'){
     const closed=phase==='closed';
-    return <main className="shared-state family-review-state"><Brand/><div><XCircle/><span className="kicker">{closed?'Review closed':'Review unavailable'}</span><h1>{closed?'This family review has ended.':'This private link cannot be opened.'}</h1><p>{closed?'The room expired after seven days or was revoked by the project owner. Ask them for a current review link.':error||'The link may be incomplete. Ask the project owner for a fresh link.'}</p><button className="copper-button" onClick={()=>route('/start')}>Plan my own home <ArrowRight/></button></div></main>;
+    return <main className="shared-state family-review-state"><Brand/><div><XCircle/><span className="kicker">{closed?'Review closed':'Review unavailable'}</span><h1>{closed?'This family review has ended.':'This private link cannot be opened.'}</h1><p>{closed?'The room expired after seven days or was revoked by the project owner. No response can be viewed or submitted from this link.':error||'The link may be incomplete or unavailable. No response was collected on this page.'}</p><button className="copper-button" onClick={()=>route('/start')}>Plan my own home <ArrowRight/></button></div></main>;
   }
   const scenarios=Array.isArray(room.scenarios)?room.scenarios:[];
   const maxResponses=Number(room.maxResponses||5);
@@ -1061,10 +1372,11 @@ function ReportPage({ id }) {
   const [project,setProject]=useState(null);const [error,setError]=useState("");
   const [uploadWarning,setUploadWarning]=useState(()=>sessionStorage.getItem(`grihagrid.uploadWarning.${id}`)||"");
   useEffect(()=>{Promise.all([api(`/api/projects/${id}`),api(`/api/projects/${id}/report`)]).then(([projectResult,reportResult])=>setProject({...projectResult.project,generatedReport:reportResult.report})).catch(e=>{if(e instanceof ApiError&&e.status===401)route('/login');else setError(e.message)})},[id]);
-  if(error)return <main className="error-page"><WarningCircle/><h1>We could not open this report.</h1><p>{error}</p><button className="copper-button" onClick={()=>route('/dashboard')}>Back to projects</button></main>;
+  if(error)return <main className="error-page"><WarningCircle/><h1>We could not open this report.</h1><p>{error}</p><button className="copper-button" onClick={()=>route(`/projects/${id}`)}>Back to project home</button></main>;
   if(!project)return <main className="error-page"><p>Preparing your decision book…</p></main>;
   const input=project.input||{};const estimate=project.estimate||{};const report=project.generatedReport||{};const firstRisk=report.risks?.[0]||'Local setbacks and site conditions require professional validation.';const costCategories=report.costPlan?.categories||[['Civil and structure',38],['Finishes',26],['Electrical and plumbing',14],['Doors and windows',9],['Approvals and setup',5],['Contingency',8]].map(([name,percent])=>({name,percent,amountInr:Math.round(((estimate.lowInr+estimate.highInr)/2||4000000)*percent/100)}));
-  return <main className="report-page"><header><button onClick={()=>route('/dashboard')}><ArrowLeft/> Projects</button><Brand/><button onClick={()=>window.print()}><DownloadSimple/> Download / print</button></header><div className="report-document">{uploadWarning&&<div className="report-upload-warning" role="alert"><WarningCircle/><span>{uploadWarning}</span><button onClick={()=>{sessionStorage.removeItem(`grihagrid.uploadWarning.${id}`);setUploadWarning("")}}>Dismiss</button></div>}<section className="report-cover"><span className="kicker">GrihaGrid feasibility brief · v{report.version||1}</span><h1>{project.name||'My family home'}</h1><p>{input.width} × {input.length} ft · {input.facing||'East'}-facing · {input.city}</p><div><span>Concept stage</span><span>{new Date(report.generatedAt||project.createdAt||Date.now()).toLocaleDateString('en-IN',{day:'numeric',month:'long',year:'numeric'})}</span></div></section><section className="report-hero"><img loading="lazy" width="1536" height="1024" src="/assets/grihagrid-hero.jpg" alt="Warm modern home direction"/><div><span>Exterior direction</span><strong>{input.style||'Warm modern'}</strong></div></section><section className="report-facts"><div><span>Plot fit</span><strong>Feasible*</strong><small>Subject to local verification</small></div><div><span>Likely built-up</span><strong>{(estimate.builtUpSqft||report.summary?.targetBuiltUpSqft||0).toLocaleString('en-IN')} sq ft</strong><small>{input.floors} concept</small></div><div><span>Planning range</span><strong>{formatLakh(estimate.lowInr||report.costPlan?.lowInr)}–{formatLakh(estimate.highInr||report.costPlan?.highInr)}</strong><small>{input.quality} finish</small></div></section><section className="report-copy"><div><span className="kicker">Executive readout</span><h2>{report.summary?.verdict||'Conceptually feasible, subject to verification.'}</h2></div><div><p>{firstRisk}</p><p>{report.nextActions?.slice(0,2).join(' ')||'Commission a measured survey and validate the brief with every decision-maker before detailed design.'}</p></div></section><section className="report-budget"><h2>Indicative cost allocation</h2>{costCategories.map(category=><div key={category.name}><span>{category.name}</span><i><b style={{width:`${category.percent}%`}}/></i><strong>{formatLakh(category.amountInr)}</strong></div>)}</section><section className="report-boundary"><ShieldCheck/><p><strong>Use this report to decide—not to construct.</strong> A licensed local architect and structural engineer must validate site conditions, bylaws, drawings and specifications.</p></section><section className="report-compare-bridge"><div><span className="kicker">Decision Compare · two alternatives</span><h2>What changes if the brief changes?</h2><p>Hold the plot constant. Compare exactly two ways to trade area, programme and planning cost—then record one direction for the family and architect.</p></div><div><ArrowsLeftRight/><button className="copper-button" onClick={()=>route(`/projects/${id}/compare`)}>Compare two options <ArrowRight/></button><button className="underlined-action" onClick={()=>route('/compare/sample')}>See a sample first</button></div></section><AiPlanningBrief projectId={id}/><PurchasePanel projectId={id}/><ProjectFiles projectId={id}/></div></main>;
+  const archived=project.status==='archived';
+  return <main className={`report-page ${archived?'report-page--archived':''}`}><header><button onClick={()=>route(`/projects/${id}`)}><ArrowLeft/> Project home</button><Brand/><button onClick={()=>window.print()}><DownloadSimple/> Download / print</button></header><div className="report-document">{uploadWarning&&<div className="report-upload-warning" role="alert"><WarningCircle/><span>{uploadWarning}</span><button onClick={()=>{sessionStorage.removeItem(`grihagrid.uploadWarning.${id}`);setUploadWarning("")}}>Dismiss</button></div>}{archived&&<section className="report-archived-notice" role="status"><LockKey/><div><strong>Archived feasibility · read only</strong><p>This saved report and its private evidence remain readable. AI generation, comparison changes, checkout, link creation, copying and uploads are unavailable. Existing private files may still be permanently deleted below.</p></div></section>}<section className="report-cover"><span className="kicker">GrihaGrid feasibility brief · v{report.version||1}</span><h1>{project.name||'My family home'}</h1><p>{input.width} × {input.length} ft · {input.facing||'East'}-facing · {input.city}</p><div><span>{archived?'Archived concept':'Concept stage'}</span><span>{new Date(report.generatedAt||project.createdAt||Date.now()).toLocaleDateString('en-IN',{day:'numeric',month:'long',year:'numeric'})}</span></div></section><section className="report-hero"><img loading="lazy" width="1536" height="1024" src="/assets/grihagrid-hero.jpg" alt="Warm modern home direction"/><div><span>Exterior direction</span><strong>{input.style||'Warm modern'}</strong></div></section><section className="report-facts"><div><span>Plot fit</span><strong>Feasible*</strong><small>Subject to local verification</small></div><div><span>Likely built-up</span><strong>{(estimate.builtUpSqft||report.summary?.targetBuiltUpSqft||0).toLocaleString('en-IN')} sq ft</strong><small>{input.floors} concept</small></div><div><span>Planning range</span><strong>{formatLakh(estimate.lowInr||report.costPlan?.lowInr)}–{formatLakh(estimate.highInr||report.costPlan?.highInr)}</strong><small>{input.quality} finish</small></div></section><section className="report-copy"><div><span className="kicker">Executive readout</span><h2>{report.summary?.verdict||'Conceptually feasible, subject to verification.'}</h2></div><div><p>{firstRisk}</p><p>{report.nextActions?.slice(0,2).join(' ')||'Commission a measured survey and validate the brief with every decision-maker before detailed design.'}</p></div></section><section className="report-budget"><h2>Indicative cost allocation</h2>{costCategories.map(category=><div key={category.name}><span>{category.name}</span><i><b style={{width:`${category.percent}%`}}/></i><strong>{formatLakh(category.amountInr)}</strong></div>)}</section><section className="report-boundary"><ShieldCheck/><p><strong>Use this report to decide—not to construct.</strong> A licensed local architect and structural engineer must validate site conditions, bylaws, drawings and specifications.</p></section><section className={`report-compare-bridge ${archived?'report-compare-bridge--archived':''}`}><div><span className="kicker">Decision Compare · two alternatives</span><h2>{archived?'Open the saved comparison record.':'What changes if the brief changes?'}</h2><p>{archived?'If a versioned comparison exists, it opens as read-only evidence. No browser draft will be treated as a saved project record.':'Hold the plot constant. Compare exactly two ways to trade area, programme and planning cost—then record one direction for the family and architect.'}</p></div><div><ArrowsLeftRight/><button className={archived?'outline-button':'copper-button'} onClick={()=>route(`/projects/${id}/compare`)}>{archived?'Open comparison record':'Compare two options'} <ArrowRight/></button>{!archived&&<button className="underlined-action" onClick={()=>route('/compare/sample')}>See a sample first</button>}</div></section><AiPlanningBrief projectId={id} readonly={archived}/>{!archived&&<PurchasePanel projectId={id}/>}<ProjectFiles projectId={id} readonly={archived}/></div></main>;
 }
 
 function LegalPage({ type }) {
@@ -1078,11 +1390,55 @@ function AppShell({ user, children }) { return <><a className="skip-link" href="
 
 export function App() {
   const [path,setPath]=useState(window.location.pathname);const [user,setUser]=useState(undefined);
+  const focusedPath=useRef(path);
   useEffect(()=>{const onPop=()=>setPath(window.location.pathname);window.addEventListener('popstate',onPop);return()=>window.removeEventListener('popstate',onPop)},[]);
   useEffect(()=>{api('/api/auth/me').then(x=>setUser(x.user||null)).catch(()=>setUser(null));},[]);
-  useEffect(()=>{const titles={'/':'GrihaGrid — Know what fits. Know what it costs.','/pricing':'Pricing — GrihaGrid','/about':'About — GrihaGrid','/plans':'Sample plan — GrihaGrid','/compare/sample':'Sample Decision Compare — GrihaGrid','/start':'Plan my home — GrihaGrid','/login':'Log in — GrihaGrid','/register':'Create account — GrihaGrid','/dashboard':'My projects — GrihaGrid','/orders':'Orders — GrihaGrid','/privacy':'Privacy — GrihaGrid','/terms':'Terms — GrihaGrid','/refund':'Refunds — GrihaGrid'};document.title=path.startsWith('/report/')?'Decision book — GrihaGrid':path.startsWith('/projects/')&&path.endsWith('/compare')?'Decision Compare — GrihaGrid':path.startsWith('/orders/')?'Purchased artifact — GrihaGrid':path.startsWith('/share/decision/')?'Shared decision — GrihaGrid':path.startsWith('/align/')?'Family review — GrihaGrid':(titles[path]||'Page not found — GrihaGrid')},[path]);
+  useEffect(()=>{const titles={'/':'GrihaGrid — Know what fits. Know what it costs.','/pricing':'Pricing — GrihaGrid','/about':'About — GrihaGrid','/plans':'Sample plan — GrihaGrid','/compare/sample':'Sample Decision Compare — GrihaGrid','/start':'Plan my home — GrihaGrid','/login':'Log in — GrihaGrid','/register':'Create account — GrihaGrid','/dashboard':'My projects — GrihaGrid','/orders':'Orders — GrihaGrid','/privacy':'Privacy — GrihaGrid','/terms':'Terms — GrihaGrid','/refund':'Refunds — GrihaGrid'};document.title=path.startsWith('/report/')?'Decision book — GrihaGrid':path.startsWith('/projects/')&&path.endsWith('/compare')?'Decision Compare — GrihaGrid':path.startsWith('/projects/')?'Project home — GrihaGrid':path.startsWith('/orders/')?'Purchased artifact — GrihaGrid':path.startsWith('/share/decision/')?'Shared decision — GrihaGrid':path.startsWith('/align/')?'Family review — GrihaGrid':(titles[path]||'Page not found — GrihaGrid')},[path]);
+  useEffect(()=>{
+    if(focusedPath.current===path)return undefined;
+    focusedPath.current=path;
+    let frame;
+    let focusedHeading=null;
+    let restoreTabIndex=()=>{};
+    const focusHeading=()=>{
+      const heading=document.querySelector('main h1');
+      if(!heading||heading===focusedHeading)return;
+      restoreTabIndex();
+      const previousTabIndex=heading.getAttribute('tabindex');
+      focusedHeading=heading;
+      heading.setAttribute('tabindex','-1');
+      restoreTabIndex=()=>{
+        if(previousTabIndex===null)heading.removeAttribute('tabindex');
+        else heading.setAttribute('tabindex',previousTabIndex);
+      };
+      heading.addEventListener('blur',restoreTabIndex,{once:true});
+      heading.focus({preventScroll:true});
+    };
+    frame=window.requestAnimationFrame(()=>{
+      focusHeading();
+      const hash=window.location.hash.slice(1);
+      const target=hash?document.getElementById(safeDecodePathSegment(hash)):null;
+      if(target)target.scrollIntoView({block:'start'});
+      else window.scrollTo({top:0,behavior:'auto'});
+    });
+    const observer=new MutationObserver(()=>{
+      if(focusedHeading?.isConnected)return;
+      const active=document.activeElement;
+      if(active&&active!==document.body&&active!==document.documentElement)return;
+      window.cancelAnimationFrame(frame);
+      frame=window.requestAnimationFrame(focusHeading);
+    });
+    observer.observe(document.body,{childList:true,subtree:true});
+    return()=>{
+      observer.disconnect();
+      window.cancelAnimationFrame(frame);
+      if(focusedHeading)focusedHeading.removeEventListener('blur',restoreTabIndex);
+      restoreTabIndex();
+    };
+  },[path]);
   const reportMatch=path.match(/^\/report\/([^/]+)$/);
   const decisionMatch=path.match(/^\/projects\/([^/]+)\/compare$/);
+  const projectHomeMatch=path.match(/^\/projects\/([^/]+)$/);
   const artifactMatch=path.match(/^\/orders\/([^/]+)\/artifact$/);
   const shareMatch=path.match(/^\/share\/decision\/([^/]+)$/);
   const alignmentMatch=path.match(/^\/align\/([^/]+)$/);
@@ -1091,7 +1447,8 @@ export function App() {
   if(path==='/login'||path==='/register')return <AuthPage key={path} mode={path.slice(1)} onAuthenticated={setUser}/>;
   if(path==='/dashboard')return <Dashboard user={user} onLogout={()=>setUser(null)}/>;
   if(path==='/orders')return <OrderHistoryPage user={user} onLogout={()=>setUser(null)}/>;
-  if(decisionMatch)return <DecisionComparePage projectId={decodeURIComponent(decisionMatch[1])}/>;
+  if(decisionMatch)return <DecisionComparePage projectId={safeDecodePathSegment(decisionMatch[1])}/>;
+  if(projectHomeMatch)return <ProjectHomePage projectId={safeDecodePathSegment(projectHomeMatch[1])}/>;
   if(reportMatch)return <ReportPage id={reportMatch[1]}/>;
   if(artifactMatch)return <PurchasedArtifactPage orderId={decodeURIComponent(artifactMatch[1])}/>;
   if(shareMatch)return <SharedDecisionPage token={decodeURIComponent(shareMatch[1])}/>;

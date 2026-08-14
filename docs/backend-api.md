@@ -245,7 +245,10 @@ and/or a client-selectable status of `draft`, `feasibility_ready`, or
 `archived`. An actual input/estimate change recomputes the estimate, invalidates
 the prior report, and increments monotonic `inputRevision`; a rename or
 status-only update preserves the revision. Server-managed report statuses
-cannot be forged by the client.
+cannot be forged by the client. Once archived, the only accepted PATCH is an
+exact status-only reopen to `draft` or `feasibility_ready`; name/input edits
+return `409 project_archived`. Archiving also permanently revokes outstanding
+Family Alignment rooms so reopening never silently reactivates a bearer link.
 
 ### `DELETE /api/projects/:projectId`
 
@@ -256,9 +259,91 @@ immutable terminal payment fact, reconciliation case, fulfillment, share, or
 fulfillment-progress row. A failed checkout that never received any of that
 evidence is an abandoned attempt, not financial history; its unused purchase
 snapshot and order are removed atomically before the project is permanently
-deleted. A project without payment evidence cascades its report/file metadata;
-associated private R2 objects are removed first.
-Returns `204` only after that preflight succeeds.
+deleted. A project with any private-file metadata returns `409
+project_has_files` before R2 is accessed or D1 is mutated; delete each file explicitly and
+retry. This fence avoids irrecoverable object loss if a later D1 transaction
+fails. A file-free project is deleted in one D1 batch. Returns `204` only after
+all preflights and the conditional project delete succeed.
+
+### `GET /api/projects/:projectId/home`
+
+Authenticated, owner-only read projection for the Project Decision Home. It
+uses one D1 read batch and never generates a report, advances project status,
+records progress, or changes timestamps. Missing and foreign projects both
+return `404 project_not_found`; every successful response is `Cache-Control:
+no-store`.
+
+```json
+{
+  "project": {},
+  "lifecycle": {
+    "state": "active",
+    "stage": "direction_pending",
+    "completedCoreSteps": 2,
+    "totalCoreSteps": 3,
+    "steps": [
+      { "id": "feasibility", "status": "complete", "label": "Feasibility", "detail": "..." },
+      { "id": "comparison", "status": "complete", "label": "Compare alternatives", "detail": "..." },
+      { "id": "family", "status": "optional", "label": "Family input", "detail": "..." },
+      { "id": "direction", "status": "current", "label": "Choose a direction", "detail": "..." }
+    ],
+    "nextAction": {
+      "code": "choose_direction",
+      "label": "Choose a direction",
+      "description": "...",
+      "target": "compare"
+    }
+  },
+  "current": {
+    "feasibility": { "available": true, "current": true, "version": 1, "generatedAt": "..." },
+    "aiBrief": { "available": false, "current": false, "generatedAt": null, "model": null },
+    "comparison": { "available": true, "current": true, "id": "uuid", "version": 2, "createdAt": "...", "projectInputRevision": 2 },
+    "selection": { "available": false, "scenarioId": null, "key": null, "label": null, "selectedAt": null, "lockedAt": null },
+    "family": { "available": false, "current": false, "roomId": null, "status": null, "responseCount": null, "maxResponses": null, "active": false, "expiresAt": null, "preferences": null },
+    "purchase": { "available": false, "current": false, "orderId": null, "status": null, "fulfillmentStatus": null, "entitlementActive": false }
+  },
+  "counts": { "comparisons": 2, "familyRooms": 1, "purchasedArtifacts": 0, "orders": 0 }
+}
+```
+
+Active lifecycle stages have strict precedence: `feasibility_pending`, then
+`comparison_pending` or `comparison_stale`, then `direction_pending`, then
+`decision_ready`. An archived project instead returns state and stage
+`archived`, remains readable, and receives only the read-only
+`view_archived`/`dashboard` action. Family input is optional and never changes
+the three-step core completion count. Archived planning/content writes—project
+edits, comparison choice/save, checkout, upload, new Family room, new paid
+share, report generation, and AI generation—fail closed. Privacy deletion,
+file deletion, and owner revocation remain intentionally available. Migration
+`0011_archived_project_write_fence.sql` supplies the final SQL-time race fence;
+readiness exposes `checks.archiveSafetySchema` and is not ready unless all 13
+named triggers are present.
+
+For navigation semantics, at most one core step is marked `current`:
+feasibility while its current artifact is missing, comparison after feasibility
+until a comparison is saved, and direction when a current comparison is waiting
+for the owner's choice. Completed stages use `complete`; Family uses only
+`optional`, `active`, or `closed`; an archived project has no current step.
+
+Currentness uses the same server contracts as the underlying products. A
+feasibility must match the exact report-version, project-input and estimate
+hash. A comparison must match both the current project-input hash and monotonic
+`inputRevision`. Selection and aggregate Family state must belong to that exact
+comparison. Purchase is current only for that comparison's paid, non-revoked
+Decision Compare snapshot; Decision Compare's immutable snapshot is its ready
+fulfillment boundary, so it has no separate `order_fulfillments` state.
+Historical comparisons, rooms, orders and paid/refunded artifacts remain in
+the counts but never make a newer working version appear current or purchased.
+For an archived project, the owner-only Decision Compare GET may return its
+latest historical comparison with `current: false` and `stale: true`; every
+write remains blocked. Active projects continue to receive
+`404 decision_compare_stale` for that same stale record.
+
+The projection never returns raw report/comparison/AI/Family JSON, source or
+prompt hashes, AI usage/provider interaction, Family tokens/receipts/individual
+responses, provider payment identifiers, checkout URLs, or arbitrary
+navigation URLs. The browser maps the bounded next-action enum to a same-origin
+route.
 
 ## Decision and Family Alignment endpoints
 
@@ -326,7 +411,8 @@ family_alignment_comparison_stale` and leaves no room behind.
 Requires trusted origin, owner session and CSRF. Revocation is idempotent and
 returns `204`. Missing or foreign rooms use ownership-safe `404
 family_alignment_not_found`. Revocation closes public reads and writes but
-does not delete or alter the immutable comparison.
+does not delete or alter the immutable comparison. Archiving the parent project
+permanently closes its outstanding rooms under the same public `410` boundary.
 
 ### `GET /api/family-alignment/:token`
 
@@ -525,13 +611,15 @@ fulfillment does not block signed webhook persistence.
 ### Product event aggregates
 
 `POST /api/events` accepts only these event names:
+`project_home_opened`, `project_home_next_action_clicked`,
 `decision_compare_opened`, `decision_compare_saved`,
 `decision_compare_option_chosen`, `decision_compare_checkout_started`,
 `decision_compare_artifact_downloaded`, `decision_compare_share_created`, and
 `decision_compare_share_revoked`. Properties may contain only allowlisted
-`surface` and `outcome`. D1 stores daily name/surface/outcome counts—never an
-event stream, identity, resource ID, version, IP, free text, or client
-timestamp.
+`surface` and `outcome`; Project Home uses only surface `project_home` and
+outcome `success`, without sending its project, revision, stage, or action.
+D1 stores daily name/surface/outcome counts—never an event stream, identity,
+resource ID, version, IP, free text, or client timestamp.
 
 `GET /api/events/aggregate?days=30` is an operator endpoint. It returns `404`
 unless a constant-time checked `METRICS_READ_TOKEN` bearer value is present and
@@ -608,6 +696,8 @@ Requires CSRF and R2. Send `multipart/form-data` with:
 
 Raw-body uploads are also accepted with `Content-Type`, `x-file-name`, and
 optional `x-file-kind`. Returns `201 { file }` including SHA-256 checksum.
+Archived projects return `409 project_archived` before the Worker reads the
+upload body or requires R2.
 
 ### `GET /api/projects/:projectId/files`
 

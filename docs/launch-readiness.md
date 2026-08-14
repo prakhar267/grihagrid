@@ -239,6 +239,64 @@ legal, monitoring and operational gates below have dated evidence.
 - [ ] DNS/canonical origin, TLS, HSTS, CSP, robots/sitemap, support/contact and
   privacy/terms/refund pages are correct at the sellable hostname.
 
+## Project Decision Home release gate
+
+Project Decision Home is a read-only owner command centre over existing source
+records. It adds no revision ledger, edit, archive, restore, payment, upload, or
+professional-fulfillment capability. The release is GO only when all items
+below have dated evidence from the same immutable release.
+
+- [ ] The exact authenticated `GET /api/projects/:projectId/home` projection
+  returns only `{ project, lifecycle, current, counts }`, uses `no-store`, maps
+  only fixed action codes to `report`, `compare`, or `dashboard`, and returns
+  ownership-safe `404` for both missing and foreign projects.
+- [ ] A real workerd/D1 journey covers feasibility pending → comparison
+  pending → direction pending → decision ready, optional Family aggregate,
+  input-change invalidation → feasibility pending → comparison stale, and the
+  archived read override.
+- [ ] Archived project-input edits, comparison save/choice, upload, checkout,
+  new share/room and public Family response calls are rejected and a full-table
+  before/after snapshot proves zero D1 writes; no R2 binding is consulted for
+  the blocked upload.
+- [ ] Migration `0011_archived_project_write_fence.sql` applies once after the
+  existing chain; all 13 named triggers exist and readiness reports
+  `archiveSafetySchema=current`. Direct D1 mutation canaries fail with the
+  bounded archive fence while privacy deletes/revocations and paid-state
+  updates retain their documented behavior.
+- [ ] Whole-project deletion with private-file metadata returns
+  `409 project_has_files` before storage or database mutation; file-free project
+  deletion and payment-history retention keep their existing contracts.
+- [ ] Repeated Home GETs reconcile every project/report/AI/comparison/
+  selection/Family/order/snapshot/fulfillment/progress/analytics source row
+  byte-for-byte with no generated report, timestamp, status, counter, progress,
+  or aggregate event mutation.
+- [ ] Currentness is source-derived: stale historical records contribute only
+  to counts; invalid/stale selection and Family state are absent; purchased
+  state appears only for the exact current comparison while paid and
+  non-revoked, and disappears after refund/dispute without changing finance.
+- [ ] Recursive response, DOM, network and log canaries prove no bearer/
+  receipt/hash, individual Family row, stored JSON envelope, provider ID,
+  checkout URL, reconciliation detail, AI usage or arbitrary navigation URL is
+  exposed. Operational logs template `/api/projects/:projectId/home`.
+- [ ] Malformed and encoded IDs, non-GET methods and unknown nested API routes
+  produce bounded JSON `4xx` responses rather than scanner-induced `500` or an
+  HTML SPA fallback.
+- [ ] Dashboard, registration handoff, report, comparison and Home links pass
+  browser back/forward navigation, session expiry and slow-network recovery
+  without a dead end or duplicate request that changes source state.
+- [ ] The ordered four-step semantic list, stale/current/optional/complete/
+  archived text, and single primary action pass keyboard-only, screen-reader,
+  visible focus, contrast, 390 px, 200% zoom, text spacing and reduced-motion
+  checks with no overlap or horizontal overflow.
+- [ ] Fresh migrations, full automated suite, production and staging Worker
+  dry-runs, dependency audit, paid-closed smoke, staging authenticated journey,
+  rollback compatibility, protected CI/CodeQL and a version-scoped production
+  observation all pass.
+
+Any Home read that mutates source state, leaks cross-owner or forbidden data,
+labels historical work as current/purchased, or exposes an unavailable paid or
+upload action is a release blocker.
+
 ## Family Alignment release gate
 
 Family Alignment is a free feature, but it exposes a bearer-authorized public

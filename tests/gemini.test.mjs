@@ -712,7 +712,7 @@ test("readiness reports AI capability without exposing the configured secret", a
     decision_table_count: 6,
     payment_hardening_count: 2,
     family_alignment_count: 2,
-  }, withBatch = true, staleDecisionColumns = false, stalePaymentColumns = false, staleFamilyColumns = false, staleFamilyObjects = false) => ({
+  }, withBatch = true, staleDecisionColumns = false, stalePaymentColumns = false, staleFamilyColumns = false, staleFamilyObjects = false, staleArchiveSafety = false) => ({
     ...(withBatch ? { batch: async () => [] } : {}),
     prepare(sql) {
       return {
@@ -721,6 +721,9 @@ test("readiness reports AI capability without exposing the configured secret", a
             return staleFamilyObjects
               ? { family_alignment_trigger_count: 6, family_alignment_index_count: 3 }
               : { family_alignment_trigger_count: 7, family_alignment_index_count: 3 };
+          }
+          if (sql.includes("archived_decision_comparison_insert_guard")) {
+            return { count: staleArchiveSafety ? 12 : 13 };
           }
           if (sql.includes("FROM sqlite_master")) return counts;
           if (staleFamilyColumns && sql.includes("FROM family_alignment_rooms")) throw new Error("no such column: request_hash");
@@ -744,6 +747,7 @@ test("readiness reports AI capability without exposing the configured secret", a
   assert.equal(body.checks.aiAbuseControl, "configured");
   assert.equal(body.checks.paymentSchema, "current");
   assert.equal(body.checks.familyAlignmentSchema, "current");
+  assert.equal(body.checks.archiveSafetySchema, "current");
   assert.equal(body.capabilities.aiPlanningBrief, true);
   assert.equal(body.capabilities.familyAlignment, true);
   assert.equal(JSON.stringify(body).includes(API_KEY), false);
@@ -791,6 +795,17 @@ test("readiness reports AI capability without exposing the configured secret", a
   const staleFamilyObjectsBody = await staleFamilyObjects.json();
   assert.equal(staleFamilyObjectsBody.checks.familyAlignmentSchema, "outdated");
   assert.equal(staleFamilyObjectsBody.capabilities.familyAlignment, false);
+
+  const staleArchiveSafety = await worker.fetch(request("/api/readiness"), {
+    ASSETS: assets,
+    DB: readinessDb(undefined, true, false, false, false, false, true),
+    GRIHAGRID_CACHE: new MemoryKv(),
+    GEMINI_API_KEY: API_KEY,
+  });
+  assert.equal(staleArchiveSafety.status, 503);
+  const staleArchiveSafetyBody = await staleArchiveSafety.json();
+  assert.equal(staleArchiveSafetyBody.checks.archiveSafetySchema, "outdated");
+  assert.equal(staleArchiveSafetyBody.capabilities.freePlanning, false);
 
   for (const [label, overrides] of [
     ["invalid model", { DB: readinessDb(), GEMINI_API_KEY: API_KEY, GEMINI_MODEL: "bad/model" }],

@@ -251,13 +251,16 @@ test("same-origin auth preflights never emit wildcard CORS", async () => {
   assert.equal(response.headers.get("access-control-allow-credentials"), "true");
 });
 
-test("unknown nested project routes do not enter authenticated handlers", async () => {
+test("unknown nested API routes bypass assets and return bounded JSON", async () => {
   let assetCalls = 0;
   const response = await worker.fetch(request("/api/projects/not-a-project/unknown"), {
     ASSETS: { fetch: async () => { assetCalls += 1; return new Response("missing", { status: 404 }); } },
   });
   assert.equal(response.status, 404);
-  assert.equal(assetCalls, 1);
+  assert.equal(assetCalls, 0);
+  assert.match(response.headers.get("content-type") || "", /^application\/json\b/u);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.deepEqual(await response.json(), { error: "not found", code: "not_found" });
 });
 
 test("balanced Decision Compare recommendation stays consistent with its rationale", async () => {
