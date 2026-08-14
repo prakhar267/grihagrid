@@ -48,6 +48,39 @@ release evidence below applies to the immutable production source
 | Production journey and cleanup | A secure-session synthetic passed register → project → immutable comparison → room → public redaction → first response → own response update → owner aggregate → revoke → public `410` → project delete → logout. Exact cleanup left synthetic users, rooms, responses and orders at zero and preserved the original 1/1/1/1 production boundary | This proves the technical free journey, not long-term retention execution or customer comprehension |
 | Visual, privacy and accessibility review | Production desktop rendered with no horizontal overflow or console errors, semantic headings, four named fieldsets, one live region, 11 radios and six checkboxes. Public canaries confirmed project name, city and raw option labels were absent. The same release passed 390 px reflow, 48 px targets, keyboard focus, three-reason announcements and save → update → reload receipt reuse in the local browser QA | VoiceOver/NVDA, an independent 200% zoom/text-spacing/contrast audit and device-matrix certification remain outstanding |
 
+### Project Decision Home and fail-closed upload release
+
+Project Decision Home and the fail-closed private-upload UI are live in
+Cloudflare Worker version `588f0fb0-5973-44fd-9b6f-299e3aad5c51`, deployed
+from the operator-recorded reviewed application source commit
+`e2935ef27a146c981ceb67c484636a3920ddb573`. PR `#15` changed only the external
+smoke harness and its tests; current-main SHA
+`6c6188833b2bc44d3699f7a156482e1b44c5e7fd` is the source of the hardened
+synthetic, not a newer application bundle. Paid checkout, fulfillment, the
+paid-plan allowlist and private uploads remain closed.
+
+| Evidence | Result | Limitation |
+|---|---|---|
+| Reviewed source and protected checks | Project Decision Home [PR `#12`](https://github.com/prakhar267/grihagrid/pull/12) merged as `ef726dfa1c29762d1cbe8be2b32b12df0dbbd517` from head `354905b0308e21608f02e51a2aa05a7dec13da60` after [CI run `31811918878`](https://github.com/prakhar267/grihagrid/actions/runs/31811918878) and [CodeQL run `31811916943`](https://github.com/prakhar267/grihagrid/actions/runs/31811916943) completed successfully. The fail-closed upload correction [PR `#13`](https://github.com/prakhar267/grihagrid/pull/13) merged as `dfaa9f54450f7c6007e0e033d48b22c9273d70fd` from exact head `d4caa852d18da16e6dc1ad8a6cca2a34c7f105c8`; [CI `31814603407`](https://github.com/prakhar267/grihagrid/actions/runs/31814603407) and [CodeQL `31814602303`](https://github.com/prakhar267/grihagrid/actions/runs/31814602303) passed. The final storage-qualified copy [PR `#14`](https://github.com/prakhar267/grihagrid/pull/14) merged as `e2935ef27a146c981ceb67c484636a3920ddb573` from head `1654236ed722039fbc9f03996328444861ed088b` after [CI `31815815854`](https://github.com/prakhar267/grihagrid/actions/runs/31815815854) and [CodeQL `31815814074`](https://github.com/prakhar267/grihagrid/actions/runs/31815814074) passed. The bounded synthetic retry [PR `#15`](https://github.com/prakhar267/grihagrid/pull/15) merged as `6c6188833b2bc44d3699f7a156482e1b44c5e7fd` from head `271fdfbffe38ff6ab259527c069b47ecf33ee2ff` after [CI `31816645379`](https://github.com/prakhar267/grihagrid/actions/runs/31816645379) and [CodeQL `31816643227`](https://github.com/prakhar267/grihagrid/actions/runs/31816643227) passed. Post-merge [main CI `31816883423`](https://github.com/prakhar267/grihagrid/actions/runs/31816883423) and [CodeQL `31816882564`](https://github.com/prakhar267/grihagrid/actions/runs/31816882564) also passed on exact SHA `6c6188833b2bc44d3699f7a156482e1b44c5e7fd` | GitHub still does not require an independent human approval or protected environment reviewer; automated review does not replace penetration or accessibility testing |
+| Staging schema and deployment | Migration `0011_archived_project_write_fence.sql` applied successfully, no migration remains pending, and all 13 named archive-safety triggers exist. Project Decision Home first deployed as Worker version `6f4726ab-1271-4cc3-b324-3af076e8d8d1`, the fail-closed upload-UI correction as `553626b4-1eb7-4989-9abb-59c2065b6c0e`, and final storage-qualified copy as `091268fd-8359-4367-981e-e38d64440b47`. Public smoke and readiness passed with `schema=current`, `archiveSafetySchema=current`, `privateStorage=unavailable`, `privateUploads=false`, `paidCheckout=false` and `acceptingPaidPlans=[]` | Staging intentionally has no Gemini, R2 or payment secrets and no cron; it proves the deterministic paid-closed release, not provider or scheduled-operation behavior |
+| Staging browser and synthetic cleanup | Browser checks showed the unavailable private-storage state instead of a file picker while project creation and report use remained available without uploads. The authenticated Project Decision Home lifecycle and archive/write-fence synthetic passed. Cleanup removed the canary user and returned comparisons, selections, Family rooms/responses, orders and project files to zero while preserving the pre-release staging boundary of two existing project rows | The browser check is targeted release evidence, not an assistive-technology, device-matrix or slow-network certification |
+| Local release gates | The production build, full 85/85 automated suite, fresh `0001`–`0011` migration rehearsal, production and staging Worker dry-runs, high-severity dependency audit and `git diff --check` all passed | Local and CI automation does not replace a production penetration test, accessibility certification or provider-backed purchase rehearsal |
+| Production recovery point | Immediately before migration `0011`, a mode-0600 export named `grihagrid-db-pre-0011-20260814T153456Z.sql` was stored outside the repository with SHA-256 `2ae738c8192f7f350919c60c260fc574820a8de5a0b09dae5fba0a80b38f01b4`. Time Travel bookmark `0000003e-00000000-000050c7-027b91a9b57fe4fcdbd05f9b56eb2619` and previous Worker version `13643004-0686-47e9-96b1-f4d836340ccb` were recorded | The operator-local export is a temporary recovery copy and must be moved to governed encrypted backup storage; no new remote restore drill is claimed |
+| Production migration and deployment | Migration `0011` applied successfully, no migration remains pending, and D1 exposes all 13 archive-safety triggers. Worker version `a9c557d5-9a23-40ab-bf80-4300eb814776` passed the authenticated lifecycle canary; copy-only version `588f0fb0-5973-44fd-9b6f-299e3aad5c51` is the final deployment. Public smoke and readiness passed with every schema check current, `archiveSafetySchema=current`, `privateStorage=unavailable`, `privateUploads=false`, `paidCheckout=false` and `acceptingPaidPlans=[]` | R2 and paid commerce remain deliberately unavailable; this release does not prove uploads, Razorpay, professional fulfillment or paid quality control |
+| Production cleanup and boundary | Canary cleanup returned production to users=1, projects=1, reports=1 and AI briefs=1, with zero comparisons, selections, Family rooms/responses, orders and project files | Aggregate counts prove cleanup at the recorded boundary, not absence of every possible logical or privacy defect |
+| Public read-only synthetic | The initial post-deploy [run `31816218985`](https://github.com/prakhar267/grihagrid/actions/runs/31816218985) and its failed-job rerun each hit the staging readiness request's fixed eight-second client deadline; production passed and direct staging checks remained healthy. PR `#15` added one bounded retry only for transient timeout/network errors, a 12-second attempt budget and attempt telemetry. [Run `31816895236`](https://github.com/prakhar267/grihagrid/actions/runs/31816895236) then passed staging and production in 11–12 seconds; HTTP and contract failures remain immediate | A successful bounded synthetic is availability evidence, not a substitute for continuous external multi-region monitoring |
+
+The final version-scoped production observation ran from
+`2026-08-14T15:50:25.247Z` through `2026-08-14T16:20:26.734Z` (30 minutes,
+1.487 seconds) with Worker version
+`588f0fb0-5973-44fd-9b6f-299e3aad5c51` at 100% traffic. All 21 sample sets
+passed and all 63 health, readiness and catalog requests returned HTTP 200;
+endpoint failures, invariant failures and failed sample sets were zero. Every
+readiness/schema and fail-closed capability stayed at its release baseline. The
+exact-version
+Cloudflare `status=error` tail remained live beyond the observation end and
+captured zero Worker error events.
+
 The free feature is **GO for a controlled household cohort** with the paid
 controls closed. Do not describe the wider product as enterprise-certified or
 open payment acceptance until the remaining legal, recovery, monitoring,
@@ -101,13 +134,15 @@ npm run deploy -- --env staging
 npm run smoke -- https://grihagrid-staging.prakhargupta267.workers.dev
 ```
 
-The final migration list must show 0001–0009 applied. The smoke must report
+The final migration list must show 0001–0011 applied. The smoke must report
 HTTP 200 for home, health, readiness, estimate and catalog, with
 `freePlanning=true`, `paidCheckout=false` and no accepting catalog plan. Also
-capture `/api/readiness` and confirm `checks.schema`, `checks.decisionSchema`
-and `checks.paymentSchema` are all `current`, then record the new Worker version
-and watch structured error logs for at least 30 minutes. Staging declares no
-cron, so this deployment does not consume a sixth Cloudflare free-plan cron.
+capture `/api/readiness` and confirm `checks.schema`, `checks.decisionSchema`,
+`checks.paymentSchema`, `checks.familyAlignmentSchema` and
+`checks.archiveSafetySchema` are all `current`, then record the new Worker
+version and watch structured error logs for at least 30 minutes. Staging
+declares no cron, so this deployment does not consume a sixth Cloudflare
+free-plan cron.
 
 No secret is required merely to deploy the paid-closed deterministic flow.
 `GEMINI_API_KEY` is intentionally absent; add a distinct staging key only if
@@ -243,42 +278,44 @@ legal, monitoring and operational gates below have dated evidence.
 
 Project Decision Home is a read-only owner command centre over existing source
 records. It adds no revision ledger, edit, archive, restore, payment, upload, or
-professional-fulfillment capability. The release is GO only when all items
-below have dated evidence from the same immutable release.
+professional-fulfillment capability. The controlled paid-closed cohort above
+is live. Checked items document completed technical evidence; unchecked items
+remain expansion gates before a broad unattended cohort or
+enterprise-certified claim.
 
-- [ ] The exact authenticated `GET /api/projects/:projectId/home` projection
+- [x] The exact authenticated `GET /api/projects/:projectId/home` projection
   returns only `{ project, lifecycle, current, counts }`, uses `no-store`, maps
   only fixed action codes to `report`, `compare`, or `dashboard`, and returns
   ownership-safe `404` for both missing and foreign projects.
-- [ ] A real workerd/D1 journey covers feasibility pending → comparison
+- [x] A real workerd/D1 journey covers feasibility pending → comparison
   pending → direction pending → decision ready, optional Family aggregate,
   input-change invalidation → feasibility pending → comparison stale, and the
   archived read override.
-- [ ] Archived project-input edits, comparison save/choice, upload, checkout,
+- [x] Archived project-input edits, comparison save/choice, upload, checkout,
   new share/room and public Family response calls are rejected and a full-table
   before/after snapshot proves zero D1 writes; no R2 binding is consulted for
   the blocked upload.
-- [ ] Migration `0011_archived_project_write_fence.sql` applies once after the
+- [x] Migration `0011_archived_project_write_fence.sql` applies once after the
   existing chain; all 13 named triggers exist and readiness reports
   `archiveSafetySchema=current`. Direct D1 mutation canaries fail with the
   bounded archive fence while privacy deletes/revocations and paid-state
   updates retain their documented behavior.
-- [ ] Whole-project deletion with private-file metadata returns
+- [x] Whole-project deletion with private-file metadata returns
   `409 project_has_files` before storage or database mutation; file-free project
   deletion and payment-history retention keep their existing contracts.
-- [ ] Repeated Home GETs reconcile every project/report/AI/comparison/
+- [x] Repeated Home GETs reconcile every project/report/AI/comparison/
   selection/Family/order/snapshot/fulfillment/progress/analytics source row
   byte-for-byte with no generated report, timestamp, status, counter, progress,
   or aggregate event mutation.
-- [ ] Currentness is source-derived: stale historical records contribute only
+- [x] Currentness is source-derived: stale historical records contribute only
   to counts; invalid/stale selection and Family state are absent; purchased
   state appears only for the exact current comparison while paid and
   non-revoked, and disappears after refund/dispute without changing finance.
-- [ ] Recursive response, DOM, network and log canaries prove no bearer/
+- [x] Recursive response, DOM, network and log canaries prove no bearer/
   receipt/hash, individual Family row, stored JSON envelope, provider ID,
   checkout URL, reconciliation detail, AI usage or arbitrary navigation URL is
   exposed. Operational logs template `/api/projects/:projectId/home`.
-- [ ] Malformed and encoded IDs, non-GET methods and unknown nested API routes
+- [x] Malformed and encoded IDs, non-GET methods and unknown nested API routes
   produce bounded JSON `4xx` responses rather than scanner-induced `500` or an
   HTML SPA fallback.
 - [ ] Dashboard, registration handoff, report, comparison and Home links pass
@@ -288,7 +325,7 @@ below have dated evidence from the same immutable release.
   archived text, and single primary action pass keyboard-only, screen-reader,
   visible focus, contrast, 390 px, 200% zoom, text spacing and reduced-motion
   checks with no overlap or horizontal overflow.
-- [ ] Fresh migrations, full automated suite, production and staging Worker
+- [x] Fresh migrations, full automated suite, production and staging Worker
   dry-runs, dependency audit, paid-closed smoke, staging authenticated journey,
   rollback compatibility, protected CI/CodeQL and a version-scoped production
   observation all pass.
