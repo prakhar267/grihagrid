@@ -21,6 +21,7 @@ test("read-only smoke rejects unsafe targets before network access", async () =>
 test("read-only smoke verifies health, readiness, estimate and fail-closed catalog", async () => {
   const originalFetch = globalThis.fetch;
   const requested = [];
+  let readinessAttempts = 0;
   const securityHeaders = {
     "strict-transport-security": "max-age=31536000; includeSubDomains",
     "x-content-type-options": "nosniff",
@@ -39,6 +40,8 @@ test("read-only smoke verifies health, readiness, estimate and fail-closed catal
       return Response.json({ status: "ok", service: "grihagrid", time: "2026-08-13T00:00:00.000Z" }, { headers: { ...securityHeaders, "cache-control": "no-store" } });
     }
     if (url.pathname === "/api/readiness") {
+      readinessAttempts += 1;
+      if (readinessAttempts === 1) throw new DOMException("synthetic timeout", "TimeoutError");
       return Response.json({
         status: "ready",
         checks: { familyAlignmentSchema: "current" },
@@ -57,9 +60,11 @@ test("read-only smoke verifies health, readiness, estimate and fail-closed catal
   try {
     const result = await runSmoke("https://worker.example.test");
     assert.equal(result.checks.length, 5);
+    assert.equal(result.checks.find((check) => check.path === "/api/readiness")?.attempts, 2);
     assert.deepEqual(requested, [
       { path: "/", method: "GET" },
       { path: "/api/health", method: "GET" },
+      { path: "/api/readiness", method: "GET" },
       { path: "/api/readiness", method: "GET" },
       { path: "/api/estimate", method: "POST" },
       { path: "/api/commerce/catalog", method: "GET" },
