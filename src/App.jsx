@@ -487,7 +487,7 @@ function ProjectHomePage({ projectId }) {
       await api(`/api/projects/${encodeURIComponent(projectId)}`,{method:"DELETE",body:{}});
       route("/dashboard");
     } catch(err) {
-      if(err instanceof ApiError&&err.status===409&&err.payload?.code==="project_has_files"){setDeleteError("This project still has private files. Delete each file individually from the feasibility report before deleting the project. Archived report files remain readable and can still be deleted.");}
+      if(err instanceof ApiError&&err.status===409&&err.payload?.code==="project_has_files"){setDeleteError("This project still has private file records. Open the feasibility report to review them. Their stored content can be opened or permanently deleted only while private storage is available.");}
       else if(err instanceof ApiError&&err.status===409){setDeleteError("This project has purchase or payment evidence and cannot be deleted. Its financial record and purchased evidence must remain intact.");}
       else if(err instanceof ApiError&&err.status===401){route("/login");}
       else setDeleteError(err?.message||"The project could not be deleted. Check its private files and purchase history before trying again.");
@@ -549,7 +549,7 @@ function ProjectHomePage({ projectId }) {
     <section className="project-home__boundary"><ShieldCheck/><p><strong>Decision support, not professional approval.</strong> GrihaGrid helps the family frame one informed brief. A licensed architect, structural engineer, site investigation, and local authority remain responsible for design, safety, and permission.</p></section>
 
     <section className="project-home__danger" aria-labelledby="project-danger-title">
-      <div><span className="kicker">Private project controls</span><h2 id="project-danger-title">Delete this project.</h2><p>This permanently removes an unpaid project record, its report, working comparisons, and Family Alignment rooms. The project must have no private files and no purchase or payment evidence. Delete each private file individually before returning here; archived report files remain readable and can still be deleted.</p></div>
+      <div><span className="kicker">Private project controls</span><h2 id="project-danger-title">Delete this project.</h2><p>This permanently removes an unpaid project record, its report, working comparisons, and Family Alignment rooms. The project must have no private file records and no purchase or payment evidence. Open the feasibility report to review any file records; their stored content can be opened or permanently deleted only while private storage is available.</p></div>
       <button className="project-home__delete" disabled={deleting} onClick={deleteProject}><Trash/>{deleting?"Deleting…":"Delete project"}</button>
       {deleteError&&<p className="form-error" role="alert">{deleteError}</p>}
     </section>
