@@ -236,6 +236,12 @@ Migrations currently run in this order:
 9. `0009_decision_selection_lock.sql`: monotonic project-input revisions,
    comparison source-revision pins, an editable pre-checkout choice and the D1
    trigger fence that atomically locks the exact current choice at checkout.
+10. `0010_family_alignment.sql`: redacted seven-day Family Alignment rooms,
+    bounded response receipts, response-count integrity triggers and retention
+    indexes.
+11. `0011_archived_project_write_fence.sql`: database-level race fences that
+    prevent planning/content inserts or updates after a project archive while
+    preserving explicit privacy deletes, revocations and paid-state updates.
 
 Apply the exact files to staging first and complete its smoke suite. For
 production:

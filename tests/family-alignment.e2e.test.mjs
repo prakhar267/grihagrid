@@ -286,7 +286,7 @@ test("Family Alignment is redacted, bounded, owner-scoped, revocable, and retain
   let server = null;
   const capturedLogs = [];
   try {
-    requireD1Success(d1(stateDirectory, "migrate"), "fresh 0001-0010 migrations failed");
+    requireD1Success(d1(stateDirectory, "migrate"), "fresh migrations failed");
     requireD1Success(d1(
       stateDirectory,
       "execute",

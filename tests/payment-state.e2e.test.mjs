@@ -195,7 +195,7 @@ test("real D1 enforces terminal payment facts and late-capture transactions", { 
   mkdirSync(assetsDirectory, { recursive: true });
   let server;
   try {
-    requireD1Success(d1(stateDirectory, "migrate"), "fresh 0001-0009 migrations failed");
+    requireD1Success(d1(stateDirectory, "migrate"), "fresh migrations failed");
     const projects = [
       "refund-before", "cumulative", "late-created", "late-paid",
       "race-duplicate", "race-refund", "race-dispute",

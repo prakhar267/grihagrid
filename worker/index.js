@@ -115,6 +115,8 @@ const PAYMENT_PLANS = Object.freeze({
 });
 const SELLABLE_PAYMENT_PLANS = new Set(["decision_compare"]);
 const PRODUCT_EVENT_NAMES = new Set([
+  "project_home_opened",
+  "project_home_next_action_clicked",
   "decision_compare_opened",
   "decision_compare_saved",
   "decision_compare_option_chosen",
@@ -129,7 +131,7 @@ const FAMILY_ALIGNMENT_EVENT_NAMES = new Set([
   "family_alignment_review_opened",
   "family_alignment_response_submitted",
 ]);
-const PRODUCT_EVENT_SURFACES = new Set(["owner_compare", "family_review", "checkout", "orders", "artifact", "public_share", "unknown"]);
+const PRODUCT_EVENT_SURFACES = new Set(["project_home", "owner_compare", "family_review", "checkout", "orders", "artifact", "public_share", "unknown"]);
 const PRODUCT_EVENT_OUTCOMES = new Set(["success", "failure", "saved", "preview", "cancelled", "unknown"]);
 const FAMILY_ALIGNMENT_ROLES = new Set(["spouse", "parent", "sibling", "advisor", "other"]);
 const FAMILY_ALIGNMENT_PREFERENCES = new Set(["A", "B", "not_ready"]);
@@ -1903,6 +1905,13 @@ async function ownedProject(db, projectId, userId) {
   return row;
 }
 
+function requireActiveProject(project, message = "restore the project before changing its planning record") {
+  if (project?.status === "archived") {
+    throw new HttpError(409, message, "project_archived");
+  }
+  return project;
+}
+
 async function createProject(request, env) {
   requireTrustedOrigin(request, env);
   const db = requireDatabase(env);
@@ -1944,6 +1953,384 @@ async function getProject(request, env, projectId) {
   return json({ project: projectFromRow(await ownedProject(db, projectId, session.user_id)) });
 }
 
+function projectHomeEmptyCurrent() {
+  return {
+    feasibility: { available: false, current: false, version: null, generatedAt: null },
+    aiBrief: { available: false, current: false, generatedAt: null, model: null },
+    comparison: {
+      available: false,
+      current: false,
+      id: null,
+      version: null,
+      createdAt: null,
+      projectInputRevision: null,
+    },
+    selection: {
+      available: false,
+      scenarioId: null,
+      key: null,
+      label: null,
+      selectedAt: null,
+      lockedAt: null,
+    },
+    family: {
+      available: false,
+      current: false,
+      roomId: null,
+      status: null,
+      responseCount: null,
+      maxResponses: null,
+      active: false,
+      expiresAt: null,
+      preferences: null,
+    },
+    purchase: {
+      available: false,
+      current: false,
+      orderId: null,
+      status: null,
+      fulfillmentStatus: null,
+      entitlementActive: false,
+    },
+  };
+}
+
+function projectHomeNextAction(stage, reportAvailable = false) {
+  if (stage === "archived") {
+    return {
+      code: "view_archived",
+      label: "Review archived project",
+      description: "Your saved records remain available here while this project stays read-only.",
+      target: "dashboard",
+    };
+  }
+  if (stage === "feasibility_pending") {
+    return {
+      code: "open_feasibility",
+      label: reportAvailable ? "Refresh feasibility" : "Open feasibility",
+      description: reportAvailable
+        ? "Refresh the feasibility brief so it matches the current project inputs."
+        : "Generate the current plot-fit and indicative planning range.",
+      target: "report",
+    };
+  }
+  if (stage === "comparison_pending") {
+    return {
+      code: "start_comparison",
+      label: "Compare two directions",
+      description: "Put two concept-stage alternatives on the same current cost and plot basis.",
+      target: "compare",
+    };
+  }
+  if (stage === "comparison_stale") {
+    return {
+      code: "recalculate_comparison",
+      label: "Recalculate comparison",
+      description: "Save two alternatives against the current project inputs before choosing a direction.",
+      target: "compare",
+    };
+  }
+  if (stage === "direction_pending") {
+    return {
+      code: "choose_direction",
+      label: "Choose a direction",
+      description: "Review the current alternatives and record the direction you want to take forward.",
+      target: "compare",
+    };
+  }
+  return {
+    code: "open_handoff",
+    label: "Open decision handoff",
+    description: "Review the chosen direction and carry its assumptions into the professional conversation.",
+    target: "compare",
+  };
+}
+
+async function projectHomeProjection({
+  projectRow,
+  reportRow = null,
+  aiRow = null,
+  comparisonRow = null,
+  selectionRow = null,
+  familyRoomRow = null,
+  familyResponseRows = [],
+  purchaseRow = null,
+  countsRow = null,
+  now = new Date(),
+}) {
+  const project = projectFromRow(projectRow);
+  const input = parseStoredJson(projectRow.input_json, {});
+  const estimate = parseStoredJson(projectRow.estimate_json, null);
+  const current = projectHomeEmptyCurrent();
+
+  const reportHash = await digestHex(stableStringify({ version: REPORT_VERSION, input, estimate }));
+  const reportAvailable = Boolean(reportRow);
+  const reportCurrent = reportAvailable && reportRow.input_hash === reportHash;
+  current.feasibility = {
+    available: reportAvailable,
+    current: reportCurrent,
+    version: reportAvailable ? Number(reportRow.version) : null,
+    generatedAt: reportAvailable ? reportRow.generated_at : null,
+  };
+
+  const aiAvailable = Boolean(aiRow);
+  const aiCurrent = aiAvailable
+    && reportCurrent
+    && aiRow.source_report_id === reportRow.id
+    && aiRow.source_input_hash === reportHash
+    && aiRow.prompt_version === AI_PROMPT_VERSION
+    && Number(aiRow.schema_version) === AI_BRIEF_SCHEMA_VERSION;
+  current.aiBrief = {
+    available: aiAvailable,
+    current: aiCurrent,
+    generatedAt: aiAvailable ? aiRow.generated_at : null,
+    model: aiAvailable ? aiRow.model : null,
+  };
+
+  const comparisonAvailable = Boolean(comparisonRow);
+  const comparisonContent = comparisonAvailable ? parseStoredJson(comparisonRow.content_json, {}) : {};
+  const comparisonHash = await digestHex(stableStringify({ input, estimate }));
+  const comparisonCurrent = comparisonAvailable
+    && comparisonContent.sourceInputHash === comparisonHash
+    && Number(comparisonRow.project_input_revision || 1) === Number(projectRow.input_revision || 1);
+  current.comparison = {
+    available: comparisonAvailable,
+    current: comparisonCurrent,
+    id: comparisonAvailable ? comparisonRow.id : null,
+    version: comparisonAvailable ? Number(comparisonRow.version) : null,
+    createdAt: comparisonAvailable ? comparisonRow.created_at : null,
+    projectInputRevision: comparisonAvailable ? Number(comparisonRow.project_input_revision || 1) : null,
+  };
+
+  const selectedScenario = comparisonCurrent && selectionRow
+    ? (Array.isArray(comparisonContent.scenarios)
+      ? comparisonContent.scenarios.find((scenario) => scenario?.id === selectionRow.scenario_id)
+      : null)
+    : null;
+  const selectionAvailable = Boolean(selectedScenario);
+  if (selectionAvailable) {
+    current.selection = {
+      available: true,
+      scenarioId: selectionRow.scenario_id,
+      key: typeof selectedScenario.key === "string" ? selectedScenario.key : null,
+      label: typeof selectedScenario.label === "string" ? selectedScenario.label : null,
+      selectedAt: selectionRow.selected_at,
+      lockedAt: selectionRow.locked_at || null,
+    };
+  }
+
+  const familyCurrent = comparisonCurrent
+    && familyRoomRow?.comparison_id === comparisonRow.id;
+  if (familyCurrent) {
+    const summary = familyAlignmentSummary(familyResponseRows);
+    const expiresAt = new Date(`${String(familyRoomRow.expires_at).replace(" ", "T")}Z`).getTime();
+    const active = projectRow.status !== "archived"
+      && !familyRoomRow.revoked_at
+      && Number.isFinite(expiresAt)
+      && expiresAt > now.getTime();
+    current.family = {
+      available: true,
+      current: true,
+      roomId: familyRoomRow.id,
+      status: summary.status,
+      responseCount: Number(familyRoomRow.response_count || 0),
+      maxResponses: FAMILY_ALIGNMENT_RESPONSE_LIMIT,
+      active,
+      expiresAt: familyRoomRow.expires_at,
+      preferences: summary.preferences,
+    };
+  }
+
+  const purchaseCurrent = comparisonCurrent
+    && purchaseRow?.comparison_id === comparisonRow.id
+    && purchaseRow.status === "paid"
+    && !purchaseRow.entitlement_revoked_at;
+  if (purchaseCurrent) {
+    // Decision Compare is fulfilled by the immutable decision snapshot itself.
+    // Unlike legacy report products, it deliberately has no separate
+    // order_fulfillments row; orderFromRow exposes the same paid+active
+    // snapshot invariant as immediately ready.
+    current.purchase = {
+      available: true,
+      current: true,
+      orderId: purchaseRow.order_id,
+      status: "paid",
+      fulfillmentStatus: "ready",
+      entitlementActive: true,
+    };
+  }
+
+  let stage = "decision_ready";
+  if (projectRow.status === "archived") stage = "archived";
+  else if (!reportCurrent) stage = "feasibility_pending";
+  else if (!comparisonAvailable) stage = "comparison_pending";
+  else if (!comparisonCurrent) stage = "comparison_stale";
+  else if (!selectionAvailable) stage = "direction_pending";
+
+  const archived = projectRow.status === "archived";
+  const feasibilityStatus = reportCurrent
+    ? "complete"
+    : archived
+      ? reportAvailable ? "stale" : "pending"
+      : "current";
+  const comparisonStatus = comparisonCurrent
+    ? "complete"
+    : comparisonAvailable
+      ? "stale"
+      : !archived && reportCurrent ? "current" : "pending";
+  const familyStatus = familyCurrent ? (current.family.active ? "active" : "closed") : "optional";
+  const directionStatus = selectionAvailable
+    ? "complete"
+    : !archived && comparisonCurrent ? "current" : "pending";
+  const steps = [
+    {
+      id: "feasibility",
+      status: feasibilityStatus,
+      label: "Feasibility",
+      detail: reportCurrent
+        ? "The saved feasibility matches the current project inputs."
+        : reportAvailable
+          ? "The saved feasibility belongs to an earlier project input."
+          : "Open the feasibility brief to establish the current plot and cost basis.",
+    },
+    {
+      id: "comparison",
+      status: comparisonStatus,
+      label: "Compare alternatives",
+      detail: comparisonCurrent
+        ? `Saved comparison v${Number(comparisonRow.version)} matches the current project input.`
+        : comparisonAvailable
+          ? `Saved comparison v${Number(comparisonRow.version)} belongs to an earlier project input.`
+          : "No two-option comparison has been saved for this project.",
+    },
+    {
+      id: "family",
+      status: familyStatus,
+      label: "Family input",
+      detail: familyCurrent
+        ? current.family.active
+          ? `${current.family.responseCount} of ${FAMILY_ALIGNMENT_RESPONSE_LIMIT} structured responses are recorded in the current room.`
+          : `The current comparison's review room is closed with ${current.family.responseCount} structured responses.`
+        : "Optional: invite up to five family members after saving a current comparison.",
+    },
+    {
+      id: "direction",
+      status: directionStatus,
+      label: "Choose a direction",
+      detail: selectionAvailable
+        ? `${current.selection.key || "Selected"} · ${current.selection.label || "Direction chosen"} is the owner's recorded direction.`
+        : comparisonAvailable && !comparisonCurrent
+          ? "Recalculate the alternatives before recording a current direction."
+          : "Record one owner-authoritative direction from the current comparison.",
+    },
+  ];
+  const completedCoreSteps = Number(reportCurrent) + Number(comparisonCurrent) + Number(selectionAvailable);
+
+  return {
+    project,
+    lifecycle: {
+      state: projectRow.status === "archived" ? "archived" : "active",
+      stage,
+      completedCoreSteps,
+      totalCoreSteps: 3,
+      steps,
+      nextAction: projectHomeNextAction(stage, reportAvailable),
+    },
+    current,
+    counts: {
+      comparisons: Number(countsRow?.comparisons || 0),
+      familyRooms: Number(countsRow?.family_rooms || 0),
+      purchasedArtifacts: Number(countsRow?.purchased_artifacts || 0),
+      orders: Number(countsRow?.orders || 0),
+    },
+  };
+}
+
+async function getProjectHome(request, env, projectId) {
+  const db = requireDatabase(env);
+  const session = await getSession(request, env);
+  const userId = session.user_id;
+  const results = await db.batch([
+    db.prepare(
+      `SELECT p.*,EXISTS(SELECT 1 FROM reports r WHERE r.project_id=p.id AND r.user_id=p.user_id) AS report_available
+         FROM projects p WHERE p.id=? AND p.user_id=?`,
+    ).bind(projectId, userId),
+    db.prepare(
+      `SELECT id,version,input_hash,generated_at
+         FROM reports WHERE project_id=? AND user_id=? LIMIT 1`,
+    ).bind(projectId, userId),
+    db.prepare(
+      `SELECT id,source_report_id,source_input_hash,prompt_version,schema_version,model,generated_at
+         FROM ai_planning_briefs WHERE project_id=? AND user_id=? LIMIT 1`,
+    ).bind(projectId, userId),
+    db.prepare(
+      `SELECT id,version,content_json,project_input_revision,created_at
+         FROM decision_comparisons
+        WHERE project_id=? AND user_id=? ORDER BY version DESC LIMIT 1`,
+    ).bind(projectId, userId),
+    db.prepare(
+      `SELECT s.scenario_id,s.selected_at,s.locked_at
+         FROM decision_selections s
+         JOIN decision_comparisons c ON c.id=s.comparison_id
+        WHERE c.id=(SELECT id FROM decision_comparisons
+                     WHERE project_id=? AND user_id=? ORDER BY version DESC LIMIT 1)
+          AND s.project_id=? AND s.user_id=? LIMIT 1`,
+    ).bind(projectId, userId, projectId, userId),
+    db.prepare(
+      `SELECT r.id,r.comparison_id,r.response_count,r.expires_at,r.revoked_at
+         FROM family_alignment_rooms r
+        WHERE r.comparison_id=(SELECT id FROM decision_comparisons
+                                WHERE project_id=? AND user_id=? ORDER BY version DESC LIMIT 1)
+          AND r.project_id=? AND r.user_id=? LIMIT 1`,
+    ).bind(projectId, userId, projectId, userId),
+    db.prepare(
+      `SELECT response.preference,response.confidence,response.reasons_json
+         FROM family_alignment_responses response
+        WHERE response.room_id=(
+          SELECT r.id FROM family_alignment_rooms r
+           WHERE r.comparison_id=(SELECT id FROM decision_comparisons
+                                   WHERE project_id=? AND user_id=? ORDER BY version DESC LIMIT 1)
+             AND r.project_id=? AND r.user_id=? LIMIT 1
+        )
+        ORDER BY response.created_at,response.id LIMIT ?`,
+    ).bind(projectId, userId, projectId, userId, FAMILY_ALIGNMENT_RESPONSE_LIMIT),
+    db.prepare(
+      `SELECT o.id AS order_id,o.status,o.entitlement_revoked_at,s.comparison_id
+         FROM purchased_decision_snapshots s
+         JOIN orders o ON o.id=s.order_id
+        WHERE s.comparison_id=(SELECT id FROM decision_comparisons
+                               WHERE project_id=? AND user_id=? ORDER BY version DESC LIMIT 1)
+          AND s.project_id=? AND s.user_id=?
+          AND o.project_id=? AND o.user_id=?
+          AND o.status='paid' AND o.entitlement_revoked_at IS NULL
+        ORDER BY o.paid_at DESC,o.id DESC LIMIT 1`,
+    ).bind(projectId, userId, projectId, userId, projectId, userId),
+    db.prepare(
+      `SELECT
+         (SELECT COUNT(*) FROM decision_comparisons WHERE project_id=? AND user_id=?) AS comparisons,
+         (SELECT COUNT(*) FROM family_alignment_rooms WHERE project_id=? AND user_id=?) AS family_rooms,
+         (SELECT COUNT(*) FROM purchased_decision_snapshots s
+            JOIN orders o ON o.id=s.order_id
+           WHERE s.project_id=? AND s.user_id=? AND o.status IN ('paid','refunded')) AS purchased_artifacts,
+         (SELECT COUNT(*) FROM orders WHERE project_id=? AND user_id=?) AS orders`,
+    ).bind(projectId, userId, projectId, userId, projectId, userId, projectId, userId),
+  ]);
+  const first = (index) => results?.[index]?.results?.[0] || null;
+  const projectRow = first(0);
+  if (!projectRow) throw new HttpError(404, "project not found", "project_not_found");
+  return json(await projectHomeProjection({
+    projectRow,
+    reportRow: first(1),
+    aiRow: first(2),
+    comparisonRow: first(3),
+    selectionRow: first(4),
+    familyRoomRow: first(5),
+    familyResponseRows: results?.[6]?.results || [],
+    purchaseRow: first(7),
+    countsRow: first(8),
+  }));
+}
+
 async function updateProject(request, env, projectId) {
   requireTrustedOrigin(request, env);
   const db = requireDatabase(env);
@@ -1958,6 +2345,19 @@ async function updateProject(request, env, projectId) {
   const hasStatus = Object.hasOwn(body, "status");
   if (!hasName && !hasNestedInput && !hasDirectInput && !hasStatus) {
     throw new HttpError(400, "no supported project fields supplied", "empty_update");
+  }
+  if (hasStatus && body.status === "archived" && Object.keys(body).length !== 1) {
+    throw new HttpError(400, "archive the project separately from planning edits", "invalid_archive_request");
+  }
+  if (current.status === "archived") {
+    const keys = Object.keys(body);
+    const requestedStatus = String(body.status || "");
+    const isExactReopen = keys.length === 1
+      && hasStatus
+      && ["draft", "feasibility_ready"].includes(requestedStatus);
+    if (!isExactReopen) {
+      throw new HttpError(409, "restore the project before changing its planning record", "project_archived");
+    }
   }
 
   const name = hasName ? normalizeProjectName(body.name) : current.name;
@@ -1991,13 +2391,41 @@ async function updateProject(request, env, projectId) {
   // estimate JSON as the source-of-truth for whether a revision must advance.
   const storedInputJson = inputChanged ? JSON.stringify(input) : current.input_json;
   const storedEstimateJson = inputChanged ? JSON.stringify(estimate) : current.estimate_json;
-  await db.prepare(
+  const statusFence = current.status === "archived" ? "status='archived'" : "status!='archived'";
+  const statements = [db.prepare(
     `UPDATE projects
         SET name=?,status=?,input_json=?,estimate_json=?,
             input_revision=input_revision+?,updated_at=?
-      WHERE id=? AND user_id=?`,
-  ).bind(name, status, storedInputJson, storedEstimateJson, inputChanged ? 1 : 0, now, projectId, session.user_id).run();
-  if (inputChanged) await db.prepare("DELETE FROM reports WHERE project_id=? AND user_id=?").bind(projectId, session.user_id).run();
+      WHERE id=? AND user_id=? AND ${statusFence}
+    RETURNING id`,
+  ).bind(name, status, storedInputJson, storedEstimateJson, inputChanged ? 1 : 0, now, projectId, session.user_id)];
+  if (inputChanged) {
+    statements.push(db.prepare(
+      `DELETE FROM reports
+        WHERE project_id=? AND user_id=?
+          AND EXISTS (SELECT 1 FROM projects p
+                       WHERE p.id=? AND p.user_id=? AND p.status!='archived')`,
+    ).bind(projectId, session.user_id, projectId, session.user_id));
+  }
+  if (current.status !== "archived" && status === "archived") {
+    // Archiving closes outstanding bearer review rooms permanently. Reopening
+    // the project must never silently reactivate a link the owner stopped.
+    statements.push(db.prepare(
+      `UPDATE family_alignment_rooms SET revoked_at=?
+        WHERE project_id=? AND user_id=? AND revoked_at IS NULL`,
+    ).bind(now, projectId, session.user_id));
+  }
+  const updateResults = await db.batch(statements);
+  if (!updateResults[0]?.results?.[0]) {
+    const latest = await ownedProject(db, projectId, session.user_id);
+    if (hasStatus && Object.keys(body).length === 1 && latest.status === status) {
+      return json({ project: projectFromRow(latest) });
+    }
+    if (latest.status === "archived") {
+      throw new HttpError(409, "restore the project before changing its planning record", "project_archived");
+    }
+    throw new HttpError(409, "the project changed concurrently; reload before retrying", "project_update_conflict");
+  }
   return json({ project: { id: projectId, name, status, input, estimate, inputRevision: Number(current.input_revision || 1) + (inputChanged ? 1 : 0), reportAvailable: inputChanged ? false : Boolean(current.report_available), createdAt: current.created_at, updatedAt: now } });
 }
 
@@ -2050,32 +2478,48 @@ async function deleteProject(request, env, projectId) {
   const db = requireDatabase(env);
   const session = await getSession(request, env);
   await requireCsrf(request, session);
-  const project = await ownedProject(db, projectId, session.user_id);
+  await ownedProject(db, projectId, session.user_id);
   // Orders use ON DELETE RESTRICT. Preflight that constraint before touching
   // R2 so a database rejection can never strand metadata without its object.
   await ensureProjectDeletable(db, projectId);
-  const result = await db.prepare("SELECT object_key FROM project_files WHERE project_id=? AND user_id=?").bind(projectId, session.user_id).all();
-  const objectKeys = (result.results || []).map((row) => row.object_key);
-  if (objectKeys.length) await requireFileStore(env).delete(objectKeys);
+  const file = await db.prepare(
+    "SELECT id FROM project_files WHERE project_id=? AND user_id=? LIMIT 1",
+  ).bind(projectId, session.user_id).first();
+  if (file) {
+    throw new HttpError(409, "delete private files individually before deleting the project", "project_has_files");
+  }
   const abandoned = abandonedOrderPredicate("o");
-  await db.batch([
+  const noFiles = "NOT EXISTS (SELECT 1 FROM project_files pf WHERE pf.project_id=?)";
+  const deletionResults = await db.batch([
     // Remove ephemeral Family Alignment rooms explicitly before the project
     // cascade reaches their immutable comparison. This also makes response
     // counter cleanup deterministic across SQLite cascade ordering.
     db.prepare(
-      "DELETE FROM family_alignment_rooms WHERE project_id=? AND user_id=?",
-    ).bind(projectId, session.user_id),
+      `DELETE FROM family_alignment_rooms
+        WHERE project_id=? AND user_id=? AND ${noFiles}`,
+    ).bind(projectId, session.user_id, projectId),
     db.prepare(
       `DELETE FROM purchased_decision_snapshots
-        WHERE order_id IN (SELECT o.id FROM orders o WHERE o.project_id=? AND ${abandoned})`,
-    ).bind(projectId),
+        WHERE order_id IN (SELECT o.id FROM orders o WHERE o.project_id=? AND ${abandoned})
+          AND ${noFiles}`,
+    ).bind(projectId, projectId),
     db.prepare(
       `DELETE FROM purchased_report_snapshots
-        WHERE order_id IN (SELECT o.id FROM orders o WHERE o.project_id=? AND ${abandoned})`,
-    ).bind(projectId),
-    db.prepare(`DELETE FROM orders AS o WHERE o.project_id=? AND ${abandoned}`).bind(projectId),
-    db.prepare("DELETE FROM projects WHERE id=? AND user_id=?").bind(projectId, session.user_id),
+        WHERE order_id IN (SELECT o.id FROM orders o WHERE o.project_id=? AND ${abandoned})
+          AND ${noFiles}`,
+    ).bind(projectId, projectId),
+    db.prepare(
+      `DELETE FROM orders AS o WHERE o.project_id=? AND ${abandoned} AND ${noFiles}`,
+    ).bind(projectId, projectId),
+    db.prepare(
+      `DELETE FROM projects
+        WHERE id=? AND user_id=? AND ${noFiles}
+      RETURNING id`,
+    ).bind(projectId, session.user_id, projectId),
   ]);
+  if (!deletionResults.at(-1)?.results?.[0]) {
+    throw new HttpError(409, "delete private files individually before deleting the project", "project_has_files");
+  }
   return empty();
 }
 
@@ -2334,12 +2778,17 @@ async function getDecisionCompare(request, env, projectId) {
     input: parseStoredJson(project.input_json, {}),
     estimate: parseStoredJson(project.estimate_json, null),
   }));
-  if (content.sourceInputHash !== sourceInputHash
-    || Number(row.project_input_revision || 1) !== Number(project.input_revision || 1)) {
+  const current = content.sourceInputHash === sourceInputHash
+    && Number(row.project_input_revision || 1) === Number(project.input_revision || 1);
+  if (!current && project.status !== "archived") {
     throw new HttpError(404, "Decision Compare is stale for the current project inputs", "decision_compare_stale");
   }
   const { selection, entitlement } = await decisionContext(db, row);
-  return json({ comparison: decisionComparisonFromRow(row, selection, entitlement), selection, entitlement });
+  return json({
+    comparison: { ...decisionComparisonFromRow(row, selection, entitlement), current, stale: !current },
+    selection,
+    entitlement,
+  });
 }
 
 async function putDecisionCompare(request, env, projectId) {
@@ -2635,12 +3084,15 @@ async function publicFamilyAlignmentRoom(request, env, token) {
   if (!/^[A-Za-z0-9_-]{40,64}$/u.test(token)) throw new HttpError(404, "review room not found", "family_alignment_not_found");
   await rateLimit(request, env, "family-alignment-public", 180, 60 * 60);
   const room = await db.prepare(
-    `SELECT r.*,c.content_json FROM family_alignment_rooms r
+    `SELECT r.*,c.content_json,p.status AS project_status FROM family_alignment_rooms r
        JOIN decision_comparisons c ON c.id=r.comparison_id
+       JOIN projects p ON p.id=r.project_id AND p.user_id=r.user_id
       WHERE r.token_hash=?`,
   ).bind(await digestHex(token)).first();
   if (!room) throw new HttpError(404, "review room not found", "family_alignment_not_found");
-  if (room.revoked_at) throw new HttpError(410, "this review room is no longer available", "family_alignment_unavailable");
+  if (room.revoked_at || room.project_status === "archived") {
+    throw new HttpError(410, "this review room is no longer available", "family_alignment_unavailable");
+  }
   if (new Date(`${room.expires_at.replace(" ", "T")}Z`) <= new Date()) {
     throw new HttpError(410, "this review room has expired", "family_alignment_expired");
   }
@@ -2695,8 +3147,12 @@ async function updateFamilyAlignmentReceipt(db, roomId, receiptHash, responseId,
       `UPDATE family_alignment_responses
           SET role=?,preference=?,confidence=?,reasons_json=?,updated_at=?
         WHERE id=? AND room_id=? AND receipt_hash=?
-          AND EXISTS (SELECT 1 FROM family_alignment_rooms r
-                       WHERE r.id=? AND r.revoked_at IS NULL AND r.expires_at>datetime('now'))
+          AND EXISTS (
+            SELECT 1 FROM family_alignment_rooms r
+            JOIN projects p ON p.id=r.project_id AND p.user_id=r.user_id
+             WHERE r.id=? AND r.revoked_at IS NULL AND r.expires_at>datetime('now')
+               AND p.status!='archived'
+          )
       RETURNING id`,
     ).bind(normalized.role, normalized.preference, normalized.confidence, JSON.stringify(normalized.reasons), now, responseId, roomId, receiptHash, roomId).first();
     if (!updated) throw new HttpError(410, "this review room is no longer available", "family_alignment_unavailable");
@@ -2731,7 +3187,12 @@ async function putPublicFamilyAlignmentResponse(request, env, token) {
       `INSERT INTO family_alignment_responses
          (id,room_id,receipt_hash,role,preference,confidence,reasons_json,created_at,updated_at)
        SELECT ?,?,?,?,?,?,?,?,?
-        WHERE (SELECT response_count FROM family_alignment_rooms WHERE id=? AND revoked_at IS NULL AND expires_at>datetime('now'))<5
+        WHERE (
+          SELECT r.response_count FROM family_alignment_rooms r
+          JOIN projects p ON p.id=r.project_id AND p.user_id=r.user_id
+           WHERE r.id=? AND r.revoked_at IS NULL AND r.expires_at>datetime('now')
+             AND p.status!='archived'
+        )<5
        RETURNING id`,
     ).bind(crypto.randomUUID(), room.id, receiptHash, normalized.role, normalized.preference, normalized.confidence, JSON.stringify(normalized.reasons), now, now, room.id).first();
   } catch (error) {
@@ -2744,8 +3205,13 @@ async function putPublicFamilyAlignmentResponse(request, env, token) {
         await familyAlignmentEvent(db, "family_alignment_response_submitted", "family_review");
         return json({ response: normalized, saved: true, updated: true });
       }
-      const state = await db.prepare("SELECT response_count,revoked_at,expires_at FROM family_alignment_rooms WHERE id=?").bind(room.id).first();
-      if (state?.revoked_at || new Date(`${String(state?.expires_at).replace(" ", "T")}Z`) <= new Date()) {
+      const state = await db.prepare(
+        `SELECT r.response_count,r.revoked_at,r.expires_at,p.status AS project_status
+           FROM family_alignment_rooms r
+           JOIN projects p ON p.id=r.project_id AND p.user_id=r.user_id
+          WHERE r.id=?`,
+      ).bind(room.id).first();
+      if (state?.revoked_at || state?.project_status === "archived" || new Date(`${String(state?.expires_at).replace(" ", "T")}Z`) <= new Date()) {
         throw new HttpError(410, "this review room is no longer available", "family_alignment_unavailable");
       }
       throw new HttpError(409, "this review room already has five responses", "family_alignment_full");
@@ -2763,8 +3229,13 @@ async function putPublicFamilyAlignmentResponse(request, env, token) {
     throw error;
   }
   if (!inserted) {
-    const state = await db.prepare("SELECT response_count,revoked_at,expires_at FROM family_alignment_rooms WHERE id=?").bind(room.id).first();
-    if (state?.revoked_at || !state || new Date(`${String(state.expires_at).replace(" ", "T")}Z`) <= new Date()) {
+    const state = await db.prepare(
+      `SELECT r.response_count,r.revoked_at,r.expires_at,p.status AS project_status
+         FROM family_alignment_rooms r
+         JOIN projects p ON p.id=r.project_id AND p.user_id=r.user_id
+        WHERE r.id=?`,
+    ).bind(room.id).first();
+    if (state?.revoked_at || state?.project_status === "archived" || !state || new Date(`${String(state.expires_at).replace(" ", "T")}Z`) <= new Date()) {
       throw new HttpError(410, "this review room is no longer available", "family_alignment_unavailable");
     }
     throw new HttpError(409, "this review room already has five responses", "family_alignment_full");
@@ -2779,6 +3250,7 @@ async function chooseDecisionScenario(request, env, projectId) {
   const session = await getSession(request, env);
   await requireCsrf(request, session);
   const project = await ownedProject(db, projectId, session.user_id);
+  requireActiveProject(project, "restore the project before choosing a direction");
   const body = await readJson(request);
   if (Object.keys(body).some((key) => key !== "scenarioId")) throw new HttpError(400, "unsupported selection fields", "invalid_selection");
   const scenarioId = String(body.scenarioId || "");
@@ -3152,7 +3624,8 @@ async function createDecisionShare(request, env, projectId) {
   const session = await getSession(request, env);
   await requireCsrf(request, session);
   await rateLimit(request, env, `decision-share:${session.user_id}`, 20, 60 * 60);
-  await ownedProject(db, projectId, session.user_id);
+  const project = await ownedProject(db, projectId, session.user_id);
+  requireActiveProject(project, "restore the project before creating a new share link");
   const body = await readJson(request);
   if (Object.keys(body).some((key) => !["orderId", "expiresInDays"].includes(key))) {
     throw new HttpError(400, "unsupported share fields", "invalid_share");
@@ -4008,7 +4481,12 @@ async function ensureReport(db, session, project) {
        user_id=excluded.user_id,version=excluded.version,input_hash=excluded.input_hash,
        content_json=excluded.content_json,generated_at=excluded.generated_at,updated_at=excluded.updated_at`,
   ).bind(id, projectId, session.user_id, REPORT_VERSION, inputHash, JSON.stringify(report), now, now).run();
-  await db.prepare("UPDATE projects SET status='report_ready',updated_at=? WHERE id=? AND user_id=?").bind(now, projectId, session.user_id).run();
+  // Never let a late report-status write reopen a project that was archived
+  // after the report itself committed. Migration 0011 fences the inverse
+  // ordering (archive before report upsert) at SQL time.
+  await db.prepare(
+    "UPDATE projects SET status='report_ready',updated_at=? WHERE id=? AND user_id=? AND status!='archived'",
+  ).bind(now, projectId, session.user_id).run();
   return { report, cached: false, created: !existing };
 }
 
@@ -4095,10 +4573,11 @@ function fileFromRow(row) {
 async function uploadFile(request, env, projectId) {
   requireTrustedOrigin(request, env);
   const db = requireDatabase(env);
-  const store = requireFileStore(env);
   const session = await getSession(request, env);
   await requireCsrf(request, session);
-  await ownedProject(db, projectId, session.user_id);
+  const project = await ownedProject(db, projectId, session.user_id);
+  requireActiveProject(project, "restore the project before uploading files");
+  const store = requireFileStore(env);
   const upload = await readUpload(request);
   const id = crypto.randomUUID();
   const objectKey = `users/${session.user_id}/projects/${projectId}/${id}`;
@@ -4209,6 +4688,7 @@ async function api(request, env, ctx, url) {
       let decisionSchema = "unknown";
       let paymentSchema = "unknown";
       let familyAlignmentSchema = "unknown";
+      let archiveSafetySchema = "unknown";
       if (env.DB) {
         try {
           const result = await env.DB.prepare(
@@ -4271,6 +4751,29 @@ async function api(request, env, ctx, url) {
             }
           } else {
             familyAlignmentSchema = "outdated";
+          }
+          try {
+            const archiveSafety = await env.DB.prepare(
+              `SELECT COUNT(*) AS count FROM sqlite_master
+                WHERE type='trigger' AND name IN (
+                  'archived_decision_comparison_insert_guard',
+                  'archived_decision_selection_insert_guard',
+                  'archived_decision_selection_update_guard',
+                  'archived_project_file_insert_guard',
+                  'archived_order_insert_guard',
+                  'archived_decision_share_insert_guard',
+                  'archived_report_insert_guard',
+                  'archived_report_update_guard',
+                  'archived_ai_brief_insert_guard',
+                  'archived_ai_brief_update_guard',
+                  'archived_family_room_insert_guard',
+                  'archived_family_response_insert_guard',
+                  'archived_family_response_update_guard'
+                )`,
+            ).first();
+            archiveSafetySchema = Number(archiveSafety?.count) === 13 ? "current" : "outdated";
+          } catch {
+            archiveSafetySchema = "outdated";
           }
           if (Number(result?.decision_table_count) === 6) {
             try {
@@ -4362,6 +4865,7 @@ async function api(request, env, ctx, url) {
           }
           schema = requiredTablesPresent && aiSchema === "current" && aiAbuseControl === "configured"
             && decisionSchema === "current" && paymentSchema === "current" && familyAlignmentSchema === "current"
+            && archiveSafetySchema === "current"
             ? "current"
             : "outdated";
         } catch {
@@ -4372,6 +4876,7 @@ async function api(request, env, ctx, url) {
           decisionSchema = "unknown";
           paymentSchema = "unknown";
           familyAlignmentSchema = "unknown";
+          archiveSafetySchema = "unknown";
         }
       }
       const rateLimit = env.GRIHAGRID_CACHE ? "configured" : "missing";
@@ -4399,6 +4904,7 @@ async function api(request, env, ctx, url) {
           decisionSchema,
           paymentSchema,
           familyAlignmentSchema,
+          archiveSafetySchema,
           ai: geminiConfigured ? "configured" : "unavailable",
           privateStorage: env.FILES ? "configured" : "unavailable",
           acceptingPaidPlans: acceptingPlans,
@@ -4578,6 +5084,16 @@ async function api(request, env, ctx, url) {
       if (request.method === "POST") return await uploadFile(request, env, projectId);
       return methodNotAllowed(["GET", "POST"]);
     }
+    const projectHomeMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/home$/u);
+    if (projectHomeMatch) {
+      let projectId;
+      try {
+        projectId = decodeURIComponent(projectHomeMatch[1]);
+      } catch {
+        throw new HttpError(404, "project not found", "project_not_found");
+      }
+      return request.method === "GET" ? await getProjectHome(request, env, projectId) : methodNotAllowed(["GET"]);
+    }
     const projectMatch = url.pathname.match(/^\/api\/projects\/([^/]+)$/u);
     if (projectMatch) {
       const projectId = decodeURIComponent(projectMatch[1]);
@@ -4590,6 +5106,9 @@ async function api(request, env, ctx, url) {
   } catch (error) {
     const respond = ["/api/health", "/api/readiness", "/api/estimate", "/api/commerce/catalog"].includes(url.pathname) ? publicJson : json;
     if (error instanceof HttpError) return respond({ error: error.message, code: error.code }, error.status);
+    if (/archived project is read only/iu.test(String(error?.message || error))) {
+      return respond({ error: "restore the project before changing its planning record", code: "project_archived" }, 409);
+    }
     console.error("Unhandled API error");
     return respond({ error: "internal server error", code: "internal_error" }, 500);
   }
@@ -4615,7 +5134,7 @@ function isApiRoute(pathname) {
     || /^\/api\/orders\/[^/]+(?:\/(?:fulfillment|artifact|progress))?$/u.test(pathname)
     || /^\/api\/shared\/decision-compare\/[^/]+$/u.test(pathname)
     || /^\/api\/family-alignment\/[^/]+(?:\/response)?$/u.test(pathname)
-    || /^\/api\/projects\/[^/]+(?:\/report|\/ai-brief|\/orders|\/family-alignment(?:\/[^/]+)?|\/decision-compare(?:\/choice|\/shares(?:\/[^/]+)?)?|\/files(?:\/[^/]+)?)?$/u.test(pathname);
+    || /^\/api\/projects\/[^/]+(?:\/home|\/report|\/ai-brief|\/orders|\/family-alignment(?:\/[^/]+)?|\/decision-compare(?:\/choice|\/shares(?:\/[^/]+)?)?|\/files(?:\/[^/]+)?)?$/u.test(pathname);
 }
 
 function isAppNavigation(request, url) {
@@ -4685,7 +5204,7 @@ export default {
     const requestId = crypto.randomUUID();
     const url = new URL(request.url);
     let finalResponse;
-    if (isApiRoute(url.pathname)) {
+    if (url.pathname === "/api" || url.pathname.startsWith("/api/")) {
       finalResponse = secure(await api(request, env, ctx, url));
     } else {
       const response = await env.ASSETS.fetch(request);
@@ -4750,6 +5269,7 @@ export const __test = {
   ownedProject,
   paymentPlan,
   parseCookies,
+  projectHomeProjection,
   requireCsrf,
   ensureProjectDeletable,
   familyAlignmentPublicProjection,

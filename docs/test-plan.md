@@ -25,6 +25,10 @@ interleaved within their own real-D1 fixtures.
    room → open redacted public review → create five receipts → update one
    receipt → reject a sixth → refresh owner summary → explicitly choose A/B →
    revoke → public `410`; repeat expiry, retention, and cross-owner cases.
+9. Register → create project → open Project Decision Home → generate the
+   current feasibility → save a comparison → choose a direction → collect
+   optional Family input → recover the exact paid state. Repeat after a project
+   input change, refund, archive, new login, and browser back/forward navigation.
 
 ## API cases
 
@@ -36,6 +40,15 @@ interleaved within their own real-D1 fixtures.
 - `POST /api/leads`: valid email; invalid email; duplicate email; unavailable database.
 - `POST /api/projects`: valid project, normalized estimate, length-limited name and invalid dimensions.
 - Unknown `/api/*`: JSON 404. Unknown browser route: SPA fallback.
+- Project Decision Home: `GET /api/projects/:projectId/home` is authenticated,
+  owner-scoped, `no-store`, bounded to the documented `{ project, lifecycle,
+  current, counts }` projection, and read-only. Exercise all active stages,
+  archived override, current/stale report and comparison, valid/invalid
+  selection, optional Family aggregate, exact-comparison paid entitlement,
+  refund/revocation, historical counts, missing/foreign/malformed IDs, non-GET
+  `405`, unknown nested routes, recursive forbidden keys, and templated logs.
+  Snapshot every source table around repeated GETs and require byte-equivalent
+  rows with no progress, analytics, timestamp, counter, or status mutation.
 - Gemini brief: owner isolation; explicit 18+ consent; CSRF/origin enforcement;
   sanitized allowlisted prompt; structured validation; advisory-policy
   rejection; cached replay; refresh; atomic user/platform limits; one-project
@@ -101,8 +114,9 @@ interleaved within their own real-D1 fixtures.
   the same request ID. Raw resource IDs, query strings, share tokens,
   secret/PII/project-content canaries never appear. Captured-log canary and
   deployed release-correlation evidence remain explicit paid-launch gates.
-- Browser-event telemetry: only the seven `decision_compare_*` event names and
-  documented `surface`/`outcome` values are accepted; storage is daily
+- Browser-event telemetry: only the two `project_home_*` and seven
+  `decision_compare_*` event names plus documented `surface`/`outcome` values
+  are accepted; storage is daily
   aggregate count only. Reject IDs, versions, free text, client timestamps, and
   unknown properties. The separate paid-cohort table contains only opaque
   order/snapshot keys plus four first timestamps. Metrics read requires a
@@ -165,6 +179,11 @@ interleaved within their own real-D1 fixtures.
   recorded/updated/full/expired/revoked states. Keyboard-only and screen-reader
   flows, 200% zoom/text spacing, 390 px reflow, and absolute expiry copy pass;
   print/share metadata contains no secret or project identity.
+- Project Decision Home is one ordered semantic progress list with visible text
+  for current, optional, stale, complete, and archived states. Its one primary
+  next action has a stable accessible name and fixed same-origin target; the
+  complete page works at 390 px, 200% zoom, increased text spacing, reduced
+  motion, slow network, keyboard-only, and browser back/forward navigation.
 - At 2× forecast pilot concurrency, p95 public health/estimate stays below 500
   ms and authenticated/compare requests below 750 ms; no duplicate orders,
   issues, selections, Family Alignment rooms/receipts, cap overruns, or D1
@@ -203,6 +222,21 @@ interleaved within their own real-D1 fixtures.
 | Retention | Seed active, recently revoked/expired and retention-eligible rows; invoke scheduled handler | Only eligible Family Alignment rows are removed; comparison/selection/project/payment evidence is unchanged |
 | Paid isolation | Run the entire flow with paid switches closed and inspect commerce tables | No order, provider ID, entitlement, artifact or paid flag is created or changed |
 
+## Project Decision Home manual acceptance matrix
+
+| Area | Test | Required result |
+|---|---|---|
+| Resume path | Open a new, feasible, compared, selected, Family-active, stale and archived project | Exactly one truthful stage and next action; Family remains optional; archived state offers no planning/content mutation, while separately governed privacy deletion remains visually isolated |
+| Archive fence | After archiving, attempt project edits, comparison save/choice, upload, checkout, new Decision share, new Family room, and public Family response | Every planning/content write fails closed with no D1/R2 mutation; archiving closes bearer rooms; explicit privacy deletion and revocation retain their documented scope |
+| File deletion containment | Seed private-file metadata and request whole-project deletion without an R2 binding | `409 project_has_files` is returned before any R2 or D1 mutation; after explicit file deletion, the normal file-free project delete remains atomic |
+| Currentness | Create old reports/comparisons/selections/rooms and a paid artifact, then change the project | Historical counts remain, but only exact current source facts receive current/purchased badges |
+| Read purity | Compare D1 rows before and after repeated authenticated Home reads | No source, timestamp, count, progress, analytics, lifecycle or payment row changes |
+| Ownership | Request a real project as another account and a missing project as its owner | Both return the same ownership-safe `404`; anonymous access is `401` |
+| Privacy | Inspect response, DOM, network, logs and error output with synthetic canaries | No bearer/receipt/hash, individual Family row, raw stored JSON, provider identifier, checkout URL or arbitrary navigation URL appears |
+| Routing | Exercise malformed/encoded IDs, non-GET methods, unknown nested routes and browser history | No scanner-induced `500` or SPA fallback for API routes; logs use `/api/projects/:projectId/home`; back/forward state is coherent |
+| Accessibility | Run keyboard, screen reader, 200% zoom, text spacing, reduced motion and 390 px | Ordered stage semantics, visible non-colour status, one named primary action, no overlap/overflow, and stable focus |
+| Paid containment | Capture and refund the exact selected comparison with checkout closed | Home exposes only active exact-comparison entitlement, removes it after refund/revocation, and never changes financial evidence |
+
 ## Required release evidence
 
 Attach to the release record, without secrets or customer data:
@@ -219,6 +253,9 @@ Attach to the release record, without secrets or customer data:
 - Family Alignment redaction diff, five-writer concurrency/cap evidence,
   cross-owner and token-log canaries, revoke/expiry race proof, scheduled
   retention proof, and keyboard/screen-reader/reflow results;
+- Project Decision Home lifecycle fixtures, pre/post read-only D1 snapshots,
+  forbidden-key/log canaries, stale/exact-purchase evidence, and
+  keyboard/history/reflow results;
 - encrypted D1 backup checksum, isolated restore counts and measured RTO; and
 - go/no-go sign-off from founder/product, engineering on-call, payment owner,
   and quality/professional owner.

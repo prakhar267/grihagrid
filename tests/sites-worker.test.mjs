@@ -94,9 +94,9 @@ test("overrides platform HTML fallbacks for known SPA routes", async () => {
 });
 
 test("does not turn missing API or write requests into the app shell", async () => {
-  for (const request of [
-    new Request("https://example.test/api/missing", { headers: { accept: "application/json" } }),
-    new Request("https://example.test/flow", { method: "POST", headers: { accept: "text/html" } }),
+  for (const [request, expectedAssetCalls, expectJson] of [
+    [new Request("https://example.test/api/missing", { headers: { accept: "application/json" } }), 0, true],
+    [new Request("https://example.test/flow", { method: "POST", headers: { accept: "text/html" } }), 1, false],
   ]) {
     let calls = 0;
     const response = await worker.fetch(request, {
@@ -109,7 +109,11 @@ test("does not turn missing API or write requests into the app shell", async () 
     });
 
     assert.equal(response.status, 404);
-    assert.equal(calls, 1);
+    assert.equal(calls, expectedAssetCalls);
+    if (expectJson) {
+      assert.match(response.headers.get("content-type") || "", /^application\/json\b/u);
+      assert.deepEqual(await response.json(), { error: "not found", code: "not_found" });
+    }
   }
 });
 
