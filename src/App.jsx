@@ -9,7 +9,7 @@ import {
 import { api, ApiError, copyText, formatDate, formatDateTime, formatLakh, idempotencyKey, trackEvent } from "./api.js";
 import {
   LOGOUT_CHANNEL_NAME, LOGOUT_FAILURE_MESSAGE, broadcastLogout, clearLocalLogoutState, confirmLogout,
-  isLogoutBroadcast, isLogoutChannelMessage,
+  isLogoutBroadcast, isLogoutChannelMessage, privateRouteAfterUnauthenticated,
 } from "./logout.js";
 
 const cityFactors = { Pune: 1, Bengaluru: 1.08, Mumbai: 1.18, Delhi: 1.1, Hyderabad: .98, Chennai: 1.02, Jaipur: .88, Other: .95 };
@@ -1880,9 +1880,10 @@ export function App() {
   const [path,setPath]=useState(window.location.pathname);const [user,setUser]=useState(undefined);
   const focusedPath=useRef(path);
   const authRevision=useRef(0);
+  const authenticatedSession=useRef(false);
   useEffect(()=>{const onPop=()=>setPath(window.location.pathname);window.addEventListener('popstate',onPop);return()=>window.removeEventListener('popstate',onPop)},[]);
   useEffect(()=>{
-    const applyRemoteLogout=()=>{authRevision.current+=1;clearLocalLogoutState();setUser(null);if(isPrivateAccountPath(window.location.pathname))replaceRoute('/',{logoutConfirmed:true})};
+    const applyRemoteLogout=()=>{authRevision.current+=1;authenticatedSession.current=false;clearLocalLogoutState();setUser(null);if(isPrivateAccountPath(window.location.pathname))replaceRoute('/',{logoutConfirmed:true})};
     const onStorage=event=>{if(isLogoutBroadcast(event))applyRemoteLogout()};
     const onChannel=event=>{if(isLogoutChannelMessage(event))applyRemoteLogout()};
     let channel=null;
@@ -1890,14 +1891,14 @@ export function App() {
     window.addEventListener('storage',onStorage);
     return()=>{window.removeEventListener('storage',onStorage);if(channel){channel.removeEventListener('message',onChannel);channel.close()}};
   },[]);
-  useEffect(()=>{const revision=authRevision.current;api('/api/auth/me').then(x=>{if(authRevision.current===revision)setUser(x.user||null)}).catch(()=>{if(authRevision.current===revision)setUser(null)});},[]);
+  useEffect(()=>{const revision=authRevision.current;api('/api/auth/me').then(x=>{if(authRevision.current===revision){authenticatedSession.current=Boolean(x.user);setUser(x.user||null)}}).catch(()=>{if(authRevision.current===revision){authenticatedSession.current=false;setUser(null)}});},[]);
   useEffect(()=>{
     let checking=false;
     const revalidate=async()=>{
       if(checking||!isPrivateAccountPath(window.location.pathname))return;
       checking=true;const revision=authRevision.current;
-      try{const result=await api('/api/auth/me');if(authRevision.current===revision)setUser(result.user||null)}
-      catch(error){if(authRevision.current===revision&&error instanceof ApiError&&error.status===401&&error.payload?.code==='unauthenticated'){authRevision.current+=1;clearLocalLogoutState();setUser(null);replaceRoute('/',{logoutConfirmed:true})}}
+      try{const result=await api('/api/auth/me');if(authRevision.current===revision){authenticatedSession.current=Boolean(result.user);setUser(result.user||null)}}
+      catch(error){if(authRevision.current===revision&&error instanceof ApiError&&error.status===401&&error.payload?.code==='unauthenticated'){const destination=privateRouteAfterUnauthenticated(authenticatedSession.current);authRevision.current+=1;authenticatedSession.current=false;clearLocalLogoutState();setUser(null);replaceRoute(destination.path,destination.state)}}
       finally{checking=false}
     };
     const onVisibility=()=>{if(document.visibilityState==='visible')revalidate()};
@@ -1957,9 +1958,9 @@ export function App() {
   const alignmentMatch=path.match(/^\/align\/([^/]+)$/);
   const checkoutOrder=path==='/checkout/return'?new URLSearchParams(window.location.search).get('order'):null;
   if(path==='/start')return <StartPage user={user}/>;
-  if(path==='/login'||path==='/register')return <AuthPage key={path} mode={path.slice(1)} onAuthenticated={authenticated=>{authRevision.current+=1;setUser(authenticated)}}/>;
-  if(path==='/dashboard')return <Dashboard user={user} onLogout={()=>{authRevision.current+=1;setUser(null)}}/>;
-  if(path==='/orders')return <OrderHistoryPage user={user} onLogout={()=>{authRevision.current+=1;setUser(null)}}/>;
+  if(path==='/login'||path==='/register')return <AuthPage key={path} mode={path.slice(1)} onAuthenticated={authenticated=>{authRevision.current+=1;authenticatedSession.current=true;setUser(authenticated)}}/>;
+  if(path==='/dashboard')return <Dashboard user={user} onLogout={()=>{authRevision.current+=1;authenticatedSession.current=false;setUser(null)}}/>;
+  if(path==='/orders')return <OrderHistoryPage user={user} onLogout={()=>{authRevision.current+=1;authenticatedSession.current=false;setUser(null)}}/>;
   if(briefMatch)return <BriefPage projectId={safeDecodePathSegment(briefMatch[1])}/>;
   if(decisionMatch)return <DecisionComparePage projectId={safeDecodePathSegment(decisionMatch[1])}/>;
   if(projectHomeMatch)return <ProjectHomePage projectId={safeDecodePathSegment(projectHomeMatch[1])}/>;

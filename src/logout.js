@@ -82,3 +82,9 @@ export function isLogoutBroadcast(event) {
 export function isLogoutChannelMessage(event) {
   return event?.data?.type === "logout" && typeof event.data.marker === "string" && event.data.marker.length > 0;
 }
+
+export function privateRouteAfterUnauthenticated(wasAuthenticated) {
+  return wasAuthenticated === true
+    ? { path: "/", state: { logoutConfirmed: true } }
+    : { path: "/login", state: {} };
+}

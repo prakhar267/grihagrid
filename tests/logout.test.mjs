@@ -12,6 +12,7 @@ import {
   confirmLogout,
   isLogoutBroadcast,
   isLogoutChannelMessage,
+  privateRouteAfterUnauthenticated,
 } from "../src/logout.js";
 
 class MemoryStorage {
@@ -162,6 +163,17 @@ test("logout broadcast is non-sensitive and recognized only for the exact key", 
   assert.equal(isLogoutBroadcast({ key: "grihagrid.family.receipt", newValue: "test-marker" }), false);
   assert.equal(isLogoutChannelMessage({ data: messages[0] }), true);
   assert.equal(isLogoutChannelMessage({ data: { type: "logout", marker: "" } }), false);
+});
+
+test("private-route 401 confirmation requires prior authenticated-session evidence", () => {
+  assert.deepEqual(
+    privateRouteAfterUnauthenticated(false),
+    { path: "/login", state: {} },
+  );
+  assert.deepEqual(
+    privateRouteAfterUnauthenticated(true),
+    { path: "/", state: { logoutConfirmed: true } },
+  );
 });
 
 test("Dashboard and Orders share one accessible, retry-safe mobile logout control", () => {
