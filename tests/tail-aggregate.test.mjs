@@ -7,6 +7,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const scriptPath = fileURLToPath(new URL("../scripts/tail-aggregate.mjs", import.meta.url));
+const processGroupFixturePath = fileURLToPath(new URL("./tail-process-group-fixture.mjs", import.meta.url));
 
 function spawnAggregator(outputPath, env = {}) {
   const child = spawn(process.execPath, [scriptPath, outputPath], {
@@ -115,21 +116,9 @@ test("tail aggregate terminates its supervised process group after durable first
 
   await withTemporaryDirectory(async (directory) => {
     const outputPath = join(directory, "process-group.json");
-    const pipeline = `
-      set -o pipefail
-      { printf '%s\\n' '{"outcome":"server_error","private":"never-store"}'; while :; do sleep 60; done; } \\
-        | TAIL_STOP_ON_EVENT=true TAIL_PROCESS_GROUP=$$ "$2" "$3" "$1"
-    `;
-    const child = spawn("/bin/bash", [
-      "-c",
-      pipeline,
-      "grihagrid-tail-test",
-      outputPath,
-      process.execPath,
-      scriptPath,
-    ], {
+    const child = spawn(process.execPath, [processGroupFixturePath, scriptPath, outputPath], {
       detached: true,
-      env: process.env,
+      env: {},
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
