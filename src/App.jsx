@@ -12,6 +12,7 @@ import {
   isApplicationUnauthenticated, isCurrentSessionRevalidationTarget, isLogoutBroadcast,
   isLogoutChannelMessage, privateRouteAfterUnauthenticated, shouldRevalidateSession,
 } from "./logout.js";
+import { reportFeedbackConcernState } from "./report-feedback-state.js";
 
 const cityFactors = { Pune: 1, Bengaluru: 1.08, Mumbai: 1.18, Delhi: 1.1, Hyderabad: .98, Chennai: 1.02, Jaipur: .88, Other: .95 };
 const qualityRates = { Essential: 1750, Signature: 2200, Premium: 2850, Luxury: 3900 };
@@ -282,23 +283,30 @@ function StructuredSelect({ label, value, options, onChange, help }) {
   return <label>{label}<select value={value} onChange={event=>onChange(event.target.value)}>{options.map(([optionValue,optionLabel])=><option value={optionValue} key={optionValue}>{optionLabel}</option>)}</select>{help&&<small>{help}</small>}</label>;
 }
 
+function projectRequestBody(value={}) {
+  const body={...value};
+  if(typeof body.bedrooms==="string"&&body.bedrooms!=="5+"&&/^\d{1,2}$/u.test(body.bedrooms))body.bedrooms=Number(body.bedrooms);
+  return body;
+}
+
 function StartPage({ user }) {
   const [step,setStep]=useState(0);
   const [busy,setBusy]=useState(false);
   const [error,setError]=useState("");
   const [files,setFiles]=useState([]);
   const privateUploads=usePrivateUploadCapability();
-  const [data,setData]=useState(()=>{let scenario={};try{scenario=JSON.parse(sessionStorage.getItem('grihagrid.estimator')||'{}')}catch{}return {name:"My family home",width:30,length:50,city:"Pune",facing:"East",floors:"G+1",bedrooms:"3",bathrooms:null,parking:"1 car",roadWidthFt:null,plotShape:"unknown",accessibility:"unknown",futureUse:"unknown",budgetLakh:null,style:"Warm modern",quality:"Signature",...scenario}});
+  const [data,setData]=useState(()=>{let scenario={};try{scenario=JSON.parse(sessionStorage.getItem('grihagrid.estimator')||'{}')}catch{}return {name:"My family home",width:30,length:50,city:"Pune",facing:"East",floors:"G+1",bedrooms:3,bathrooms:null,parking:"1 car",roadWidthFt:null,plotShape:"unknown",accessibility:"unknown",futureUse:"unknown",budgetLakh:null,style:"Warm modern",quality:"Signature",...scenario}});
   const update=(key,value)=>setData(prev=>({...prev,[key]:value}));
   async function createProject(){
+    const request=projectRequestBody(data);
     setBusy(true);setError("");
-    try { const result=await api("/api/projects",{method:"POST",body:data}); sessionStorage.removeItem("grihagrid.pendingProject");sessionStorage.removeItem('grihagrid.estimator');const failed=[];const uploadQueue=privateUploads.enabled?files:[];for(const file of uploadQueue){const form=new FormData();form.append('file',file);form.append('kind','reference');try{await api(`/api/projects/${result.project.id}/files`,{method:'POST',body:form})}catch{failed.push(file.name)}}if(failed.length)sessionStorage.setItem(`grihagrid.uploadWarning.${result.project.id}`,`${failed.length} file${failed.length===1?'':'s'} could not be saved. Add them again from the report.`);route(`/projects/${result.project.id}`); }
-    catch(err){ if(err instanceof ApiError && err.status===401){sessionStorage.setItem("grihagrid.pendingProject",JSON.stringify(data));route("/register");} else setError(err.message); }
+    try { const result=await api("/api/projects",{method:"POST",body:request}); sessionStorage.removeItem("grihagrid.pendingProject");sessionStorage.removeItem('grihagrid.estimator');const failed=[];const uploadQueue=privateUploads.enabled?files:[];for(const file of uploadQueue){const form=new FormData();form.append('file',file);form.append('kind','reference');try{await api(`/api/projects/${result.project.id}/files`,{method:'POST',body:form})}catch{failed.push(file.name)}}if(failed.length)sessionStorage.setItem(`grihagrid.uploadWarning.${result.project.id}`,`${failed.length} file${failed.length===1?'':'s'} could not be saved. Add them again from the report.`);route(`/projects/${result.project.id}`); }
+    catch(err){ if(err instanceof ApiError && err.status===401){sessionStorage.setItem("grihagrid.pendingProject",JSON.stringify(request));route("/register");} else setError(err.message); }
     finally{setBusy(false)}
   }
   return <main className="wizard-page"><div className="wizard-header"><Brand/><button className="quiet-action" onClick={()=>route('/')}>Exit</button></div><div className="wizard-progress" aria-label="Project brief progress">{wizardSteps.map((label,i)=><div className={i<=step?"active":""} aria-current={i===step?'step':undefined} key={label}><span>{i<step?<Check/>:i+1}</span><small>{label}</small></div>)}</div><form className="wizard-sheet" onSubmit={event=>{event.preventDefault();if(step<3)setStep(step+1);else createProject()}}>
     {step===0&&<><span className="kicker">Step one · The plot</span><h1>Begin with the measured ground.</h1><p>Use your sale deed or current survey where possible. Leave uncertain facts clearly marked—not guessed.</p><div className="form-grid"><label>Project name<input required value={data.name} onChange={e=>update('name',e.target.value)} maxLength="100"/></label><label>City<select value={data.city} onChange={e=>update('city',e.target.value)}>{Object.keys(cityFactors).map(c=><option key={c}>{c}</option>)}</select></label><label>Plot width <span>feet</span><input required type="number" min="10" max="500" value={data.width} onChange={e=>update('width',+e.target.value)}/></label><label>Plot length <span>feet</span><input required type="number" min="10" max="500" value={data.length} onChange={e=>update('length',+e.target.value)}/></label><label>Road-facing side<select value={data.facing} onChange={e=>update('facing',e.target.value)}>{['North','East','South','West'].map(x=><option key={x}>{x}</option>)}</select></label><label>Road width <span>feet · optional</span><input type="number" min="6" max="200" inputMode="decimal" value={data.roadWidthFt??''} placeholder="Not sure" onChange={e=>update('roadWidthFt',e.target.value===''?null:Number(e.target.value))}/><small>Leave blank until measured.</small></label><StructuredSelect label="Plot shape" value={data.plotShape||'unknown'} options={plotShapeOptions} onChange={value=>update('plotShape',value)}/></div></>}
-    {step===1&&<><span className="kicker">Step two · The home</span><h1>Describe the life it needs to hold.</h1><p>Choose the practical starting point. “Not sure” is useful information when the family has not decided.</p><Choice label="Floors" value={data.floors} choices={['G','G+1','G+2']} onChange={v=>update('floors',v)}/><Choice label="Bedrooms" value={data.bedrooms} choices={['2','3','4','5+']} onChange={v=>update('bedrooms',v)}/><div className="form-grid form-grid--programme"><label>Bathrooms <span>optional</span><select value={data.bathrooms??''} onChange={e=>update('bathrooms',e.target.value===''?null:Number(e.target.value))}><option value="">Not sure</option>{Array.from({length:12},(_,index)=>index+1).map(value=><option value={value} key={value}>{value}</option>)}</select></label><StructuredSelect label="Accessibility" value={data.accessibility||'unknown'} options={accessibilityOptions} onChange={value=>update('accessibility',value)}/><StructuredSelect label="Future use" value={data.futureUse||'unknown'} options={futureUseOptions} onChange={value=>update('futureUse',value)}/><label>Working budget <span>₹ lakh · optional</span><input type="number" min="5" max="10000" inputMode="decimal" value={data.budgetLakh??''} placeholder="Not sure" onChange={e=>update('budgetLakh',e.target.value===''?null:Number(e.target.value))}/><small>A planning limit, not a quotation.</small></label></div><Choice label="Parking" value={data.parking} choices={['None','1 car','2 cars']} onChange={v=>update('parking',v)}/><Choice label="Finish" value={data.quality} choices={['Essential','Signature','Premium','Luxury']} onChange={v=>update('quality',v)}/></>}
+    {step===1&&<><span className="kicker">Step two · The home</span><h1>Describe the life it needs to hold.</h1><p>Choose the practical starting point. “Not sure” is useful information when the family has not decided.</p><Choice label="Floors" value={data.floors} choices={['G','G+1','G+2']} onChange={v=>update('floors',v)}/><Choice label="Bedrooms" value={data.bedrooms} choices={[2,3,4,'5+']} onChange={v=>update('bedrooms',v)}/><div className="form-grid form-grid--programme"><label>Bathrooms <span>optional</span><select value={data.bathrooms??''} onChange={e=>update('bathrooms',e.target.value===''?null:Number(e.target.value))}><option value="">Not sure</option>{Array.from({length:12},(_,index)=>index+1).map(value=><option value={value} key={value}>{value}</option>)}</select></label><StructuredSelect label="Accessibility" value={data.accessibility||'unknown'} options={accessibilityOptions} onChange={value=>update('accessibility',value)}/><StructuredSelect label="Future use" value={data.futureUse||'unknown'} options={futureUseOptions} onChange={value=>update('futureUse',value)}/><label>Working budget <span>₹ lakh · optional</span><input type="number" min="5" max="10000" inputMode="decimal" value={data.budgetLakh??''} placeholder="Not sure" onChange={e=>update('budgetLakh',e.target.value===''?null:Number(e.target.value))}/><small>A planning limit, not a quotation.</small></label></div><Choice label="Parking" value={data.parking} choices={['None','1 car','2 cars']} onChange={v=>update('parking',v)}/><Choice label="Finish" value={data.quality} choices={['Essential','Signature','Premium','Luxury']} onChange={v=>update('quality',v)}/></>}
     {step===2&&<><span className="kicker">Step three · Context</span><h1>Give the concept a sense of place.</h1><p>{privateUploads.enabled?'Site photographs are optional and are stored in private, account-scoped storage.':'Site photographs are not required for this Brief Check. Your structured facts are enough to identify what is known and what still needs verification.'}</p>{privateUploads.enabled?(user?<label className="upload-field"><UploadSimple/><strong>{files.length?`${files.length} photograph${files.length===1?'':'s'} selected`:'Choose plot photographs'}</strong><span>JPG, PNG or WebP · up to 10 MB each</span><input type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={e=>{if(privateUploads.enabled)setFiles([...e.target.files].filter(file=>file.size<=10*1024*1024))}}/></label>:<div className="account-note"><LockKey/><p>Create or log into your private account first, then add site photographs from the report.</p></div>):<div className="account-note upload-capability-note" role="status"><LockKey/><p>{privateUploads.phase==='loading'?'Checking private photo storage. Uploads stay closed until availability is verified; the Brief Check continues without them.':'Private photo storage is not enabled in this release. Keep site photos on your device and share them directly with your licensed professional when needed.'}</p></div>}<label className="select-block">Exterior direction<select value={data.style} onChange={e=>update('style',e.target.value)}>{['Warm modern','Contemporary','Traditional Indian','Tropical modern','Minimal'].map(x=><option key={x}>{x}</option>)}</select></label></>}
     {step===3&&<><span className="kicker">Step four · Review</span><h1>Ready for a Brief Check.</h1><p>These stated facts—and the facts left unknown—become the assumption record behind the planning range.</p><div className="brief-lines">{[['Plot',`${data.width} × ${data.length} ft · ${data.facing}-facing · ${plotShapeOptions.find(([value])=>value===data.plotShape)?.[1]||'Not sure'}`],['Access',data.roadWidthFt?`${data.roadWidthFt} ft road`:'Road width not known'],['Home',`${data.floors} · ${data.bedrooms} bedrooms · ${data.bathrooms??'Bathrooms not sure'}${data.bathrooms?' bathrooms':''} · ${data.parking}`],['Household',`${accessibilityOptions.find(([value])=>value===data.accessibility)?.[1]||'Not sure'} · ${futureUseOptions.find(([value])=>value===data.futureUse)?.[1]||'Not sure'}`],['Context',`${data.city} · ${data.style}`],['Budget & finish',`${data.budgetLakh?`₹${data.budgetLakh} lakh working limit`:'Budget not stated'} · ${data.quality}`]].map(([k,v])=><div key={k}><span>{k}</span><strong>{v}</strong></div>)}</div><div className="warning-note"><WarningCircle/><p>A Brief Check identifies evidence gaps and programme pressure. It does not validate site suitability, bylaws, design, structure or construction readiness.</p></div>{!user&&<div className="account-note"><LockKey/><p>You will create an account next so this project remains private and can be revisited.</p></div>}</>}
     {error&&<p className="form-error" role="alert">{error}</p>}
@@ -312,7 +320,7 @@ function AuthPage({ mode, onAuthenticated }) {
   const isLogin=mode==="login";
   const [form,setForm]=useState({name:"",email:"",password:""});
   const [busy,setBusy]=useState(false);const [error,setError]=useState("");
-  async function submit(e){e.preventDefault();setBusy(true);setError("");try{const result=await api(`/api/auth/${isLogin?'login':'register'}`,{method:'POST',body:form});onAuthenticated(result.user);const pending=sessionStorage.getItem('grihagrid.pendingProject');if(pending){const project=await api('/api/projects',{method:'POST',body:JSON.parse(pending)});sessionStorage.removeItem('grihagrid.pendingProject');route(`/projects/${project.project.id}`);}else route('/dashboard');}catch(err){setError(err.message);}finally{setBusy(false)}}
+  async function submit(e){e.preventDefault();setBusy(true);setError("");try{const result=await api(`/api/auth/${isLogin?'login':'register'}`,{method:'POST',body:form});onAuthenticated(result.user);const pending=sessionStorage.getItem('grihagrid.pendingProject');if(pending){const project=await api('/api/projects',{method:'POST',body:projectRequestBody(JSON.parse(pending))});sessionStorage.removeItem('grihagrid.pendingProject');route(`/projects/${project.project.id}`);}else route('/dashboard');}catch(err){setError(err.message);}finally{setBusy(false)}}
   return <main className="auth-page"><div className="auth-architecture"><img width="1536" height="1024" src="/assets/v2/monograph-house-v2.jpg" onError={e=>{e.currentTarget.src='/assets/grihagrid-hero.jpg'}} alt="Contemporary Indian home"/><div><Brand inverted/><blockquote>Start with clarity.<br/>Build with confidence.</blockquote></div></div><section className="auth-form"><button className="back-action" onClick={()=>route('/')}><ArrowLeft/> Home</button><span className="kicker">Private project workspace</span><h1>{isLogin?'Welcome back.':'Create your account.'}</h1><p>{isLogin?'Return to your saved home plans.':'Save the brief you just created and keep every decision together.'}</p><form onSubmit={submit}>{!isLogin&&<label>Full name<input required autoComplete="name" value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label>}<label>Email address<input required type="email" autoComplete="email" value={form.email} onChange={e=>setForm({...form,email:e.target.value})}/></label><label>Password<input required type="password" minLength="10" autoComplete={isLogin?'current-password':'new-password'} value={form.password} onChange={e=>setForm({...form,password:e.target.value})}/><small>At least 10 characters</small></label>{error&&<p className="form-error" role="alert">{error}</p>}<button disabled={busy} className="copper-button" type="submit">{busy?'Please wait…':isLogin?'Log in':'Create account'} <ArrowRight/></button></form><p className="auth-switch">{isLogin?'New to GrihaGrid?':'Already have an account?'} <button onClick={()=>route(isLogin?'/register':'/login')}>{isLogin?'Create account':'Log in'}</button></p></section></main>;
 }
 
@@ -765,7 +773,7 @@ function BriefEditor({ form, onChange, disabled=false }) {
     </div></fieldset>
     <fieldset disabled={disabled}><legend><span>02</span><strong>Household programme</strong><small>Describe need, not a promised layout.</small></legend><div className="brief-editor__grid">
       <label>Floors<select required value={form.floors} onChange={event=>update("floors",event.target.value)}><option value="" disabled>Not stated</option>{["G","G+1","G+2"].map(value=><option key={value}>{value}</option>)}</select></label>
-      <label>Bedrooms<select required value={String(form.bedrooms)} onChange={event=>update("bedrooms",event.target.value)}><option value="" disabled>Not stated</option>{!["2","3","4","5+"].includes(String(form.bedrooms))&&form.bedrooms!==""&&<option value={String(form.bedrooms)}>{form.bedrooms} · saved value</option>}{["2","3","4","5+"].map(value=><option value={value} key={value}>{value}</option>)}</select></label>
+      <label>Bedrooms<select required value={String(form.bedrooms)} onChange={event=>update("bedrooms",event.target.value==="5+"?"5+":Number(event.target.value))}><option value="" disabled>Not stated</option>{!["2","3","4","5+"].includes(String(form.bedrooms))&&form.bedrooms!==""&&<option value={String(form.bedrooms)}>{form.bedrooms} · saved value</option>}{["2","3","4","5+"].map(value=><option value={value} key={value}>{value}</option>)}</select></label>
       <label>Bathrooms <span>optional</span><select value={form.bathrooms??""} onChange={event=>update("bathrooms",event.target.value===""?null:Number(event.target.value))}><option value="">Not sure</option>{Array.from({length:12},(_,index)=>index+1).map(value=><option value={value} key={value}>{value}</option>)}</select></label>
       <label>Parking<select required value={form.parking} onChange={event=>update("parking",event.target.value)}><option value="" disabled>Not stated</option>{["None","1 car","2 cars"].map(value=><option key={value}>{value}</option>)}</select></label>
     </div></fieldset>
@@ -1790,10 +1798,10 @@ const reportFeedbackOutcomes = [
 const reportFeedbackSections = [
   ["overall", "Whole report"],
   ["brief_check", "Brief Check"],
-  ["programme", "Room programme"],
-  ["cost_range", "Cost range"],
-  ["assumptions", "Assumptions"],
-  ["next_actions", "Next actions"],
+  ["programme", "Likely built-up & programme"],
+  ["cost_range", "Planning range & cost allocation"],
+  ["assumptions", "Risks & assumptions"],
+  ["next_actions", "Professional checks & next actions"],
 ];
 
 function normalizeReportFeedback(value, projectRevision, reportSchemaVersion) {
@@ -1836,21 +1844,29 @@ function normalizeReportEnvelope(value, projectId, expectedRevision=null) {
   return {project,snapshot,report,projectRevision,reportSchemaVersion};
 }
 
-function ReportFeedback({ projectId, projectRevision, reportSchemaVersion, readonly=false }) {
+function ReportFeedbackConcern({ unsaved=false }) {
+  return <div className="report-feedback__concern" role="status"><WarningCircle/><p><strong>{unsaved?"Your concern was not saved—but do not rely on the item.":"Do not rely on a concerning item."}</strong> Take it to a licensed local professional. {unsaved?"The rejected response was not included in product learning and did not alert support.":"This structured response improves aggregate product learning but does not alert support."} For a product error, email <a href="mailto:hello@grihagrid.in">hello@grihagrid.in</a> without sending sensitive site details.</p></div>;
+}
+
+function ReportFeedback({ projectId, projectRevision, reportSchemaVersion, readonly=false, onProjectArchived=null }) {
   const [phase,setPhase]=useState("loading");
   const [feedback,setFeedback]=useState(null);
   const [outcome,setOutcome]=useState("");
   const [sections,setSections]=useState([]);
   const [error,setError]=useState("");
   const [message,setMessage]=useState("");
+  const [archivedDuringSave,setArchivedDuringSave]=useState(false);
+  const [archiveConflict,setArchiveConflict]=useState(null);
+  const archiveNoticeRef=useRef(null);
   const groupId=useId();
   const boundaryId=`${groupId}-boundary`;
   const errorId=`${groupId}-error`;
   const sectionGuidanceId=`${groupId}-section-guidance`;
   const endpoint=`/api/projects/${encodeURIComponent(projectId)}/revisions/${projectRevision}/reports/${reportSchemaVersion}/feedback`;
+  const readOnly=readonly||archivedDuringSave;
 
   async function load(signal) {
-    setPhase("loading");setError("");setMessage("");
+    setPhase("loading");setError("");setMessage("");setArchiveConflict(null);
     try{
       const result=await api(endpoint,{signal});
       if(signal?.aborted)return;
@@ -1864,6 +1880,7 @@ function ReportFeedback({ projectId, projectRevision, reportSchemaVersion, reado
   }
 
   useEffect(()=>{const controller=new AbortController();load(controller.signal);return()=>controller.abort()},[endpoint]);
+  useEffect(()=>{if(archivedDuringSave)archiveNoticeRef.current?.focus()},[archivedDuringSave]);
 
   function toggleSection(section) {
     setMessage("");setError("");
@@ -1890,12 +1907,16 @@ function ReportFeedback({ projectId, projectRevision, reportSchemaVersion, reado
       setMessage(updating?"Feedback updated. The saved report remains unchanged.":"Feedback saved. The saved report remains unchanged.");
     }catch(err){
       if(err instanceof ApiError&&err.status===401){route("/login");return}
+      if(err instanceof ApiError&&err.status===409&&err.payload?.code==="project_archived"){
+        setArchiveConflict({attemptedOutcome:outcome,hadSavedFeedback:Boolean(feedback)});setArchivedDuringSave(true);onProjectArchived?.();setError("");setMessage("");setPhase("ready");return
+      }
       setError(err?.message||"Feedback could not be saved. Your report remains unchanged.");setPhase("ready");
     }
   }
 
   const outcomeLabel=reportFeedbackOutcomes.find(([key])=>key===feedback?.outcome)?.[1];
   const sectionLabels=(feedback?.sections||[]).map(section=>reportFeedbackSections.find(([key])=>key===section)?.[1]).filter(Boolean);
+  const concernState=reportFeedbackConcernState(feedback?.outcome,archiveConflict?.attemptedOutcome);
   const busy=phase==="saving";
   const sectionGuidance=sections.includes("overall")
     ? "Whole report selected. Clear it to choose individual parts."
@@ -1903,14 +1924,17 @@ function ReportFeedback({ projectId, projectRevision, reportSchemaVersion, reado
       ? "3 of 3 parts selected. Clear a selected part before choosing another."
       : `${sections.length} of 3 parts selected. Choose one to three; Whole report cannot be combined with another part.`;
 
-  return <section className={`report-feedback ${readonly?"report-feedback--readonly":""}`} aria-labelledby={`${groupId}-title`} aria-busy={phase==="loading"||busy}>
+  return <section className={`report-feedback ${readOnly?"report-feedback--readonly":""}`} aria-labelledby={`${groupId}-title`} aria-busy={phase==="loading"||busy}>
     <header className="report-feedback__heading"><div><span className="kicker">Report feedback · separate record</span><h2 id={`${groupId}-title`}>Did this make the next decision clearer?</h2></div><p>Rate this exact revision so GrihaGrid can learn where its planning evidence helps—and where it needs more care.</p></header>
     <div className="report-feedback__boundary" id={boundaryId}><LockKey/><p><strong>Your report stays immutable.</strong> Feedback is stored separately against revision {projectRevision}, report schema v{reportSchemaVersion}. It never changes the saved report and is not a request for, or a substitute for, professional review.</p></div>
     {phase==="loading"&&<div className="report-feedback__loading" role="status"><ArrowClockwise/> Opening saved feedback…</div>}
     {phase==="error"&&<div className="report-feedback__message"><p className="form-error" id={errorId} role="alert">{error}</p><button type="button" className="outline-button report-feedback__retry" onClick={()=>load()}>Try again <ArrowClockwise/></button></div>}
-    {phase!=="loading"&&phase!=="error"&&readonly&&<div className="report-feedback__readonly" role="status">{feedback?<><CheckCircle/><div><span>Feedback recorded</span><strong>{outcomeLabel}</strong><p>{sectionLabels.join(" · ")}{feedback.updatedAt?` · Updated ${formatDate(feedback.updatedAt)}`:""}</p></div></>:<><LockKey/><div><span>Archived feedback</span><strong>No feedback was recorded.</strong><p>This report is read only, so a new response cannot be added.</p></div></>}</div>}
-    {phase!=="loading"&&phase!=="error"&&!readonly&&<form className="report-feedback__form" onSubmit={save} aria-describedby={`${boundaryId}${error?` ${errorId}`:""}`}>
+    {archivedDuringSave&&<p ref={archiveNoticeRef} tabIndex="-1" className="report-feedback__archive-notice" role="status">This project was archived in another session. Your latest feedback {archiveConflict?.hadSavedFeedback?"change":"response"} was not saved. {archiveConflict?.hadSavedFeedback?"The previously saved response below remains on the report.":"No feedback response was recorded."} The full report is now read only.</p>}
+    {phase!=="loading"&&phase!=="error"&&readOnly&&<div className="report-feedback__readonly" role="status">{feedback?<><CheckCircle/><div><span>{archiveConflict?"Previously recorded feedback":"Feedback recorded"}</span><strong>{outcomeLabel}</strong><p>{sectionLabels.join(" · ")}{feedback.updatedAt?` · Updated ${formatDate(feedback.updatedAt)}`:""}</p></div></>:<><LockKey/><div><span>Archived feedback</span><strong>No feedback was recorded.</strong><p>This report is read only, so a new response cannot be added.</p></div></>}</div>}
+    {phase!=="loading"&&phase!=="error"&&readOnly&&concernState.visible&&<ReportFeedbackConcern unsaved={concernState.unsaved}/>}
+    {phase!=="loading"&&phase!=="error"&&!readOnly&&<form className="report-feedback__form" onSubmit={save} aria-describedby={`${boundaryId}${error?` ${errorId}`:""}`}>
       <fieldset className="report-feedback__outcomes" disabled={busy}><legend>How did this report land?</legend><div>{reportFeedbackOutcomes.map(([key,label,copy])=><label key={key}><input type="radio" name={`${groupId}-outcome`} value={key} checked={outcome===key} onChange={()=>{setOutcome(key);setError("");setMessage("")}}/><span><strong>{label}</strong><small>{copy}</small></span></label>)}</div></fieldset>
+      {outcome==="needs_review"&&<ReportFeedbackConcern/>}
       <fieldset className="report-feedback__sections" disabled={busy} aria-describedby={sectionGuidanceId}><legend>Which part shaped that answer?</legend><p id={sectionGuidanceId} aria-live="polite" aria-atomic="true">{sectionGuidance}</p><div>{reportFeedbackSections.map(([key,label])=>{const checked=sections.includes(key);const atLimit=!checked&&key!=="overall"&&!sections.includes("overall")&&sections.length>=3;return <label key={key}><input type="checkbox" value={key} checked={checked} disabled={busy||atLimit} onChange={()=>toggleSection(key)}/><span>{label}</span></label>})}</div></fieldset>
       <div className="report-feedback__actions"><button type="submit" className="outline-button" disabled={busy}>{busy?"Saving feedback…":feedback?"Update feedback":"Save feedback"}</button>{feedback?.updatedAt&&<small>Last saved {formatDate(feedback.updatedAt)}</small>}</div>
       <div className="report-feedback__message" aria-live="polite">{message&&<p className="success-message" role="status"><CheckCircle/>{message}</p>}{error&&<p className="form-error" id={errorId} role="alert">{error}</p>}</div>
@@ -2000,8 +2024,8 @@ function ReportPage({ id, revision=null }) {
     {legacyArtifact?<>{(report.summary?.targetBuiltUpSqft||report.costPlan?.lowInr||report.costPlan?.highInr)&&<section className="report-facts">{report.summary?.targetBuiltUpSqft&&<div><span>Saved built-up</span><strong>{Number(report.summary.targetBuiltUpSqft).toLocaleString("en-IN")} sq ft</strong></div>}{report.costPlan?.lowInr&&report.costPlan?.highInr&&<div><span>Saved planning range</span><strong>{formatLakh(report.costPlan.lowInr)}–{formatLakh(report.costPlan.highInr)}</strong></div>}{report.summary?.quality&&<div><span>Saved finish</span><strong>{report.summary.quality}</strong></div>}</section>}<section className="report-copy"><div><span className="kicker">Saved legacy reading</span><h2>{report.summary?.verdict||"Legacy report"}</h2></div><div>{Array.isArray(report.risks)&&report.risks.map((risk,index)=><p key={`legacy-risk-${index}`}>{risk}</p>)}{Array.isArray(report.nextActions)&&report.nextActions.length>0&&<p>{report.nextActions.join(" ")}</p>}</div></section></>:<><section className="report-facts"><div><span>Brief Check</span><strong>{check.label}</strong><small>Evidence status, not professional approval</small></div><div><span>Likely built-up</span><strong>{Number(estimate.builtUpSqft||report.summary?.targetBuiltUpSqft||0).toLocaleString("en-IN")} sq ft</strong><small>{input.floors||"Floor count not stated"} concept</small></div><div><span>Planning range</span><strong>{formatLakh(estimate.lowInr||report.costPlan?.lowInr)}–{formatLakh(estimate.highInr||report.costPlan?.highInr)}</strong><small>{input.quality||"Unstated"} finish</small></div></section><section className="report-copy"><div><span className="kicker">Brief Check reading</span><h2>{check.headline}</h2></div><div><p>{check.summary}</p><p>{firstRisk}</p><p>{report.nextActions?.slice(0,2).join(" ")||"Commission a measured survey and validate the brief with every decision-maker before detailed design."}</p></div></section></>}
     {costCategories.length>0&&<section className="report-budget"><h2>Indicative cost allocation</h2>{costCategories.map(category=><div key={category.name}><span>{category.name}</span><i><b style={{width:`${category.percent}%`}}/></i><strong>{formatLakh(category.amountInr)}</strong></div>)}</section>}
     <section className="report-boundary"><ShieldCheck/><p><strong>Use this report to explore—not as professional site validation or construction instruction.</strong> A licensed local architect and structural engineer must validate measurements, access, site conditions, bylaws, drawings and specifications.</p></section>
+    {Number.isInteger(projectRevision)&&projectRevision>0&&reportSchemaVersion===2&&<ReportFeedback key={`${id}:${projectRevision}:${reportSchemaVersion}`} projectId={id} projectRevision={projectRevision} reportSchemaVersion={reportSchemaVersion} readonly={archived} onProjectArchived={()=>setState(current=>({...current,project:{...current.project,status:"archived"}}))}/>}
     {!historical&&<><section className={`report-compare-bridge ${archived?"report-compare-bridge--archived":""}`}><div><span className="kicker">Decision Compare · two alternatives</span><h2>{archived?"Open the saved comparison record.":"What changes if the brief changes?"}</h2><p>{archived?"If a versioned comparison exists, it opens as read-only evidence. No browser draft will be treated as a saved project record.":"Hold the plot constant. Compare exactly two ways to trade area, programme and planning cost—then record one direction for the family and architect."}</p></div><div><ArrowsLeftRight/><button className={archived?"outline-button":"copper-button"} onClick={()=>route(`/projects/${id}/compare`)}>{archived?"Open comparison record":"Compare two options"} <ArrowRight/></button>{!archived&&<button className="underlined-action" onClick={()=>route("/compare/sample")}>See a sample first</button>}</div></section><AiPlanningBrief projectId={id} readonly={archived}/>{!archived&&<PurchasePanel projectId={id}/>}<ProjectFiles projectId={id} readonly={archived}/></>}
-    {Number.isInteger(projectRevision)&&projectRevision>0&&reportSchemaVersion===2&&<ReportFeedback key={`${id}:${projectRevision}:${reportSchemaVersion}`} projectId={id} projectRevision={projectRevision} reportSchemaVersion={reportSchemaVersion} readonly={archived}/>}
   </div></main>;
 }
 

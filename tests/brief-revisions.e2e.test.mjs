@@ -840,6 +840,20 @@ test("Brief Check revisions are truthful, immutable, owner-scoped, and race safe
     });
     assert.equal(unknownInput.response.status, 400);
     assert.equal(unknownInput.payload.code, "invalid_revision_request");
+    for (const body of [
+      { expectedInputRevision: "3", input: { width: 40 } },
+      { expectedInputRevision: 3, input: { width: [40] } },
+      { expectedInputRevision: 3, input: { width: "40" } },
+      { expectedInputRevision: 3, input: { bedrooms: true } },
+    ]) {
+      const confusedScalar = await call(server.origin, revisionPath(project.id, "/preview"), {
+        method: "POST",
+        auth: owner,
+        body,
+      });
+      assert.equal(confusedScalar.response.status, 400, JSON.stringify(confusedScalar.payload));
+      assert.equal(confusedScalar.payload.code, "invalid_revision_request");
+    }
     const oversized = await call(server.origin, revisionPath(project.id, "/preview"), {
       method: "POST",
       auth: owner,

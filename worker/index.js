@@ -157,6 +157,7 @@ const REPORT_FEEDBACK_SECTIONS = Object.freeze([
   "next_actions",
 ]);
 const REPORT_FEEDBACK_SECTION_SET = new Set(REPORT_FEEDBACK_SECTIONS);
+const REPORT_FEEDBACK_METRICS_MINIMUM_COHORT = 5;
 const RAZORPAY_PAYMENT_LINKS_URL = "https://api.razorpay.com/v1/payment_links/";
 
 const FILE_TYPES = new Set([
@@ -1895,7 +1896,10 @@ function validateJsonValue(value, depth = 0) {
 }
 
 function normalizeProjectName(value) {
-  const name = String(value || "My home project").trim().replace(/\s+/gu, " ");
+  if (value != null && typeof value !== "string") {
+    throw new HttpError(400, "project name must be text", "invalid_project_name");
+  }
+  const name = (value || "My home project").trim().replace(/\s+/gu, " ");
   if (!name || name.length > 100) throw new HttpError(400, "project name must be between 1 and 100 characters", "invalid_project_name");
   return name;
 }
@@ -1979,7 +1983,10 @@ function revisionText(value, field, maximum = 80) {
 }
 
 function revisionNumber(value, field, minimum, maximum, integer = false) {
-  const number = Number(value);
+  if (typeof value !== "number") {
+    throw new HttpError(400, `${field} must be a number`, "invalid_revision_request");
+  }
+  const number = value;
   if (!Number.isFinite(number) || number < minimum || number > maximum || (integer && !Number.isInteger(number))) {
     throw new HttpError(400, `${field} is invalid`, "invalid_revision_request");
   }
@@ -1987,9 +1994,10 @@ function revisionNumber(value, field, minimum, maximum, integer = false) {
 }
 
 function revisionEnum(value, field, allowed) {
-  const normalized = String(value || "");
-  if (!allowed.has(normalized)) throw new HttpError(400, `${field} is invalid`, "invalid_revision_request");
-  return normalized;
+  if (typeof value !== "string" || !allowed.has(value)) {
+    throw new HttpError(400, `${field} is invalid`, "invalid_revision_request");
+  }
+  return value;
 }
 
 function normalizeRevisionField(field, value) {
@@ -2000,16 +2008,17 @@ function normalizeRevisionField(field, value) {
   if (field === "floors") return revisionEnum(value, "floors", REVISION_FLOORS);
   if (field === "quality") return revisionEnum(value, "finish", REVISION_QUALITIES);
   if (field === "bedrooms") {
-    if (String(value).trim() === "5+") return "5+";
+    if (value === "5+") return "5+";
     return String(revisionNumber(value, "bedrooms", 1, 10, true));
   }
   if (field === "bathrooms") return revisionNumber(value, "bathrooms", 1, 12, true);
   if (field === "parking") {
     if (typeof value === "boolean") return value;
-    const normalized = String(value || "").trim().toLowerCase();
-    const values = { none: "None", "1 car": "1 car", "2 cars": "2 cars" };
-    if (!Object.hasOwn(values, normalized)) throw new HttpError(400, "parking is invalid", "invalid_revision_request");
-    return values[normalized];
+    const values = new Set(["None", "1 car", "2 cars"]);
+    if (typeof value !== "string" || !values.has(value)) {
+      throw new HttpError(400, "parking is invalid", "invalid_revision_request");
+    }
+    return value;
   }
   if (field === "style") return revisionText(value, "exterior direction");
   if (field === "roadWidthFt") return revisionNumber(value, "approach-road width", 6, 200);
@@ -2079,15 +2088,16 @@ function normalizeReportFeedback(body) {
   if (Object.keys(body).length !== 2 || !Object.hasOwn(body, "outcome") || !Object.hasOwn(body, "sections")) {
     throw new HttpError(400, "feedback must include only outcome and sections", "invalid_report_feedback");
   }
-  const outcome = String(body.outcome || "");
-  if (!REPORT_FEEDBACK_OUTCOMES.has(outcome)) {
+  const outcome = body.outcome;
+  if (typeof outcome !== "string" || !REPORT_FEEDBACK_OUTCOMES.has(outcome)) {
     throw new HttpError(400, "feedback outcome is invalid", "invalid_report_feedback");
   }
   if (!Array.isArray(body.sections) || body.sections.length < 1 || body.sections.length > 3) {
     throw new HttpError(400, "feedback must identify one to three sections", "invalid_report_feedback");
   }
-  const supplied = body.sections.map((section) => String(section || ""));
-  if (supplied.some((section) => !REPORT_FEEDBACK_SECTION_SET.has(section)) || new Set(supplied).size !== supplied.length) {
+  const supplied = [...body.sections];
+  if (supplied.some((section) => typeof section !== "string" || !REPORT_FEEDBACK_SECTION_SET.has(section))
+      || new Set(supplied).size !== supplied.length) {
     throw new HttpError(400, "feedback sections are invalid", "invalid_report_feedback");
   }
   if (supplied.includes("overall") && supplied.length !== 1) {
@@ -2103,6 +2113,13 @@ function positiveRevision(value) {
     throw new HttpError(400, "expectedInputRevision must be a positive integer", "invalid_revision_request");
   }
   return revision;
+}
+
+function requestPositiveRevision(value) {
+  if (typeof value !== "number") {
+    throw new HttpError(400, "expectedInputRevision must be a positive integer", "invalid_revision_request");
+  }
+  return positiveRevision(value);
 }
 
 function positiveReportSchemaVersion(value) {
@@ -2893,7 +2910,7 @@ async function previewProjectRevision(request, env, projectId) {
   requireAbuseControl(env);
   await rateLimit(request, env, `brief-revision-preview:${session.user_id}`, 60, 60 * 60);
   const body = exactRevisionBody(await readJson(request), ["expectedInputRevision", "input"]);
-  const expectedInputRevision = positiveRevision(body.expectedInputRevision);
+  const expectedInputRevision = requestPositiveRevision(body.expectedInputRevision);
   assertRevisionCurrent(project, expectedInputRevision);
   const candidate = prepareRevisionCandidate(project, body.input);
   return json({
@@ -2921,7 +2938,7 @@ async function commitProjectRevision(request, env, projectId) {
   if (!Object.hasOwn(body, "expectedInputRevision") || !Object.hasOwn(body, "input")) {
     throw new HttpError(400, "expectedInputRevision and input are required", "invalid_revision_request");
   }
-  const expectedInputRevision = positiveRevision(body.expectedInputRevision);
+  const expectedInputRevision = requestPositiveRevision(body.expectedInputRevision);
   const patch = normalizeRevisionPatch(body.input);
   const keyHash = await revisionIdempotencyHash(session.user_id, normalizeIdempotencyKey(request));
   const requestHash = await revisionRequestHash(projectId, expectedInputRevision, patch);
@@ -3232,6 +3249,14 @@ async function putReportFeedback(request, env, projectId, revision, reportSchema
   const feedback = normalizeReportFeedback(await readJson(request));
   const sectionsJson = JSON.stringify(feedback.sections);
   const now = new Date().toISOString();
+  const existing = await db.prepare(
+    `SELECT outcome,sections_json,updated_at
+       FROM report_feedback
+      WHERE project_id=? AND project_revision=? AND report_schema_version=? AND user_id=?`,
+  ).bind(projectId, revision, reportSchemaVersion, session.user_id).first();
+  const expectedUpdatedAt = existing?.outcome === feedback.outcome && existing?.sections_json === sectionsJson
+    ? existing.updated_at
+    : now;
   try {
     await db.prepare(
       `INSERT INTO report_feedback
@@ -3251,6 +3276,18 @@ async function putReportFeedback(request, env, projectId, revision, reportSchema
       projectId, revision, reportSchemaVersion, session.user_id,
       feedback.outcome, sectionsJson, now, now,
     ).run();
+    const row = await db.prepare(
+      `SELECT project_id,project_revision,report_schema_version,outcome,sections_json,created_at,updated_at
+         FROM report_feedback
+        WHERE project_id=? AND project_revision=? AND report_schema_version=? AND user_id=?
+          AND outcome=? AND sections_json=? AND updated_at=?`,
+    ).bind(
+      projectId, revision, reportSchemaVersion, session.user_id,
+      feedback.outcome, sectionsJson, expectedUpdatedAt,
+    ).first();
+    const saved = reportFeedbackFromRow(row);
+    if (!saved) throw new HttpError(409, "the report changed while feedback was saving", "report_feedback_conflict");
+    return json({ feedback: saved });
   } catch (error) {
     if (/invalid report feedback/iu.test(String(error?.message || error))) {
       throw new HttpError(409, "restore the project before changing its report feedback", "project_archived");
@@ -3260,14 +3297,6 @@ async function putReportFeedback(request, env, projectId, revision, reportSchema
     }
     throw error;
   }
-  const row = await db.prepare(
-    `SELECT project_id,project_revision,report_schema_version,outcome,sections_json,created_at,updated_at
-       FROM report_feedback
-      WHERE project_id=? AND project_revision=? AND report_schema_version=? AND user_id=?`,
-  ).bind(projectId, revision, reportSchemaVersion, session.user_id).first();
-  const saved = reportFeedbackFromRow(row);
-  if (!saved) throw new HttpError(409, "the report changed while feedback was saving", "report_feedback_conflict");
-  return json({ feedback: saved });
 }
 
 async function updateProject(request, env, projectId) {
@@ -3313,7 +3342,7 @@ async function updateProject(request, env, projectId) {
     if (!Object.hasOwn(body, "expectedInputRevision")) {
       throw new HttpError(400, "expectedInputRevision is required for project input changes", "invalid_revision_request");
     }
-    const expectedInputRevision = positiveRevision(body.expectedInputRevision);
+    const expectedInputRevision = requestPositiveRevision(body.expectedInputRevision);
     assertRevisionCurrent(current, expectedInputRevision);
     const candidate = prepareRevisionCandidate(current, { ...nested, ...patchInput });
     inputChanged = candidate.changeStudy.hasChanges;
@@ -4785,26 +4814,36 @@ async function getProductEventAggregates(request, env, url) {
   ).bind(`-${days - 1} days`).first();
   const paidOrders = Number(cohort?.paid_orders || 0);
   const completedWithin7Days = Number(cohort?.completed_within_7_days || 0);
-  const feedbackOutcomes = await db.prepare(
-    `SELECT outcome,COUNT(*) AS feedback_count
-       FROM report_feedback
-      WHERE created_at>=date('now',?)
-      GROUP BY outcome ORDER BY outcome`,
-  ).bind(`-${days - 1} days`).all();
-  const feedbackSections = await db.prepare(
-    `SELECT section.value AS section,COUNT(*) AS feedback_count
-       FROM report_feedback feedback,json_each(feedback.sections_json) section
-      WHERE feedback.created_at>=date('now',?)
-      GROUP BY section.value ORDER BY section.value`,
-  ).bind(`-${days - 1} days`).all();
-  const byOutcome = (feedbackOutcomes.results || []).map((row) => ({
-    outcome: row.outcome,
-    count: Number(row.feedback_count || 0),
-  }));
-  const bySection = (feedbackSections.results || []).map((row) => ({
-    section: row.section,
-    count: Number(row.feedback_count || 0),
-  }));
+  const feedbackCohort = await db.prepare(
+    `WITH eligible_reports AS (
+       SELECT project_id,project_revision,report_schema_version
+         FROM project_revision_reports
+        WHERE report_schema_version=? AND generated_at>=date('now',?)
+     ),eligible_feedback AS (
+       SELECT feedback.outcome,feedback.sections_json
+         FROM report_feedback feedback
+         JOIN eligible_reports report
+           ON report.project_id=feedback.project_id
+          AND report.project_revision=feedback.project_revision
+          AND report.report_schema_version=feedback.report_schema_version
+     ),feedback_sections AS (
+       SELECT feedback.outcome,section.value AS section
+         FROM eligible_feedback feedback,json_each(feedback.sections_json) section
+     )
+     SELECT
+       (SELECT COUNT(*) FROM eligible_reports) AS eligible_reports,
+       (SELECT COUNT(*) FROM eligible_feedback) AS total_responses,
+       (SELECT COALESCE(json_group_array(json_object('outcome',outcome,'count',feedback_count)),'[]')
+          FROM (SELECT outcome,COUNT(*) AS feedback_count
+                  FROM eligible_feedback GROUP BY outcome ORDER BY outcome)) AS by_outcome_json,
+       (SELECT COALESCE(json_group_array(json_object('section',section,'count',feedback_count)),'[]')
+          FROM (SELECT section,COUNT(*) AS feedback_count
+                  FROM feedback_sections GROUP BY section ORDER BY section)) AS by_section_json,
+       (SELECT COALESCE(json_group_array(json_object('outcome',outcome,'section',section,'count',feedback_count)),'[]')
+          FROM (SELECT outcome,section,COUNT(*) AS feedback_count
+                  FROM feedback_sections GROUP BY outcome,section ORDER BY outcome,section)) AS by_outcome_section_json`,
+  ).bind(REPORT_VERSION, `-${days - 1} days`).first();
+  const reportFeedback = reportFeedbackMetricsFromRow(feedbackCohort);
   return json({
     aggregates: result.results || [],
     windowDays: days,
@@ -4813,12 +4852,47 @@ async function getProductEventAggregates(request, env, url) {
       completedWithin7Days,
       completionRate: paidOrders ? completedWithin7Days / paidOrders : null,
     },
-    reportFeedback: {
-      totalResponses: byOutcome.reduce((total, row) => total + row.count, 0),
-      byOutcome,
-      bySection,
-    },
+    reportFeedback,
   });
+}
+
+function reportFeedbackMetricsFromRow(row) {
+  const eligibleReports = Number(row?.eligible_reports || 0);
+  const totalResponses = Number(row?.total_responses || 0);
+  if (!Number.isInteger(eligibleReports) || !Number.isInteger(totalResponses)
+      || eligibleReports < 0 || totalResponses < 0 || totalResponses > eligibleReports) {
+    throw new Error("report feedback aggregate did not reconcile to its eligible report cohort");
+  }
+  const parseRows = (value, label) => {
+    const parsed = JSON.parse(value || "[]");
+    if (!Array.isArray(parsed)) throw new Error(`${label} aggregate must be an array`);
+    return parsed;
+  };
+  const byOutcome = parseRows(row?.by_outcome_json, "outcome").map((entry) => ({
+    outcome: entry.outcome,
+    count: Number(entry.count || 0),
+  }));
+  const bySection = parseRows(row?.by_section_json, "section").map((entry) => ({
+    section: entry.section,
+    count: Number(entry.count || 0),
+  }));
+  const byOutcomeSection = parseRows(row?.by_outcome_section_json, "outcome-section").map((entry) => ({
+    outcome: entry.outcome,
+    section: entry.section,
+    count: Number(entry.count || 0),
+  }));
+  const breakdownsSuppressed = eligibleReports < REPORT_FEEDBACK_METRICS_MINIMUM_COHORT
+    || totalResponses < REPORT_FEEDBACK_METRICS_MINIMUM_COHORT;
+  return {
+    eligibleReports,
+    totalResponses,
+    responseRate: eligibleReports ? totalResponses / eligibleReports : null,
+    minimumCohortSize: REPORT_FEEDBACK_METRICS_MINIMUM_COHORT,
+    breakdownsSuppressed,
+    byOutcome: breakdownsSuppressed ? [] : byOutcome,
+    bySection: breakdownsSuppressed ? [] : bySection,
+    byOutcomeSection: breakdownsSuppressed ? [] : byOutcomeSection,
+  };
 }
 
 function aiModel(env) {
@@ -6524,6 +6598,7 @@ export const __test = {
   projectHomeProjection,
   projectFromRow,
   prepareRevisionCandidate,
+  reportFeedbackMetricsFromRow,
   revisionFromRow,
   requireCsrf,
   ensureProjectDeletable,

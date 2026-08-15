@@ -489,8 +489,12 @@ test("report feedback is exact, private, immutable-report-safe, and observable o
       { body: { outcome: "helpful" }, code: "invalid_report_feedback" },
       { body: { outcome: "helpful", sections: ["overall"], comment: "free text" }, code: "invalid_report_feedback" },
       { body: { outcome: "excellent", sections: ["overall"] }, code: "invalid_report_feedback" },
+      { body: { outcome: ["helpful"], sections: ["overall"] }, code: "invalid_report_feedback" },
+      { body: { outcome: true, sections: ["overall"] }, code: "invalid_report_feedback" },
       { body: { outcome: "helpful", sections: [] }, code: "invalid_report_feedback" },
       { body: { outcome: "helpful", sections: "overall" }, code: "invalid_report_feedback" },
+      { body: { outcome: "helpful", sections: [["overall"]] }, code: "invalid_report_feedback" },
+      { body: { outcome: "helpful", sections: [true] }, code: "invalid_report_feedback" },
       { body: { outcome: "helpful", sections: ["brief_check", "programme", "cost_range", "assumptions"] }, code: "invalid_report_feedback" },
       { body: { outcome: "helpful", sections: ["brief_check", "brief_check"] }, code: "invalid_report_feedback" },
       { body: { outcome: "helpful", sections: ["not_a_report_section"] }, code: "invalid_report_feedback" },
@@ -629,6 +633,48 @@ test("report feedback is exact, private, immutable-report-safe, and observable o
     );
     assert.deepEqual(reportAfterRevision, reportBefore);
 
+    const oldProjectId = "feedback-old-report-cohort-project";
+    const oldReportId = "feedback-old-report-cohort-report";
+    const oldReportSeed = `
+      INSERT INTO projects (
+        id,user_id,name,status,input_json,estimate_json,created_at,updated_at,
+        input_revision,input_hash,input_schema_version,estimate_rule_version,
+        brief_check_version,brief_check_json
+      )
+      SELECT
+        ${sqlLiteral(oldProjectId)},user_id,'PRIVATE_OLD_REPORT_COHORT_PROJECT','report_ready',
+        input_json,estimate_json,datetime('now','-45 days'),datetime('now','-45 days'),
+        1,input_hash,input_schema_version,estimate_rule_version,brief_check_version,brief_check_json
+      FROM projects WHERE id=${sqlLiteral(project.id)};
+      INSERT INTO reports (
+        id,project_id,user_id,version,input_hash,content_json,generated_at,updated_at,project_input_revision
+      )
+      SELECT
+        ${sqlLiteral(oldReportId)},${sqlLiteral(oldProjectId)},user_id,version,input_hash,
+        json_set(content_json,'$.id',${sqlLiteral(oldReportId)},'$.projectId',${sqlLiteral(oldProjectId)},'$.generatedAt',datetime('now','-45 days')),
+        datetime('now','-45 days'),datetime('now','-45 days'),1
+      FROM reports WHERE project_id=${sqlLiteral(project.id)};
+      INSERT INTO project_revision_reports (
+        project_id,project_revision,report_schema_version,source_report_id,
+        source_content_hash,input_hash,content_json,generated_at
+      )
+      SELECT
+        ${sqlLiteral(oldProjectId)},1,report.version,report.id,revision.content_hash,
+        report.input_hash,report.content_json,report.generated_at
+      FROM reports report
+      JOIN project_revisions revision
+        ON revision.project_id=report.project_id AND revision.revision=1
+      WHERE report.id=${sqlLiteral(oldReportId)};
+      INSERT INTO report_feedback (
+        project_id,project_revision,report_schema_version,user_id,outcome,
+        sections_json,created_at,updated_at
+      ) VALUES (
+        ${sqlLiteral(oldProjectId)},1,${schemaVersion},${sqlLiteral(owner.user.id)},'needs_review',
+        '["assumptions"]',datetime('now'),datetime('now')
+      );
+    `;
+    requireD1Success(d1(stateDirectory, "execute", oldReportSeed), "old report cohort fixture failed");
+
     const hiddenMetrics = await call(server.origin, "/api/events/aggregate?days=30", {
       headers: { authorization: "Bearer wrong-report-feedback-metrics-token" },
     });
@@ -639,12 +685,14 @@ test("report feedback is exact, private, immutable-report-safe, and observable o
     assert.equal(metrics.response.status, 200, JSON.stringify(metrics.payload));
     assert.equal(metrics.payload.windowDays, 30);
     assert.deepEqual(metrics.payload.reportFeedback, {
+      eligibleReports: 2,
       totalResponses: 1,
-      byOutcome: [{ outcome: "unclear", count: 1 }],
-      bySection: [
-        { section: "brief_check", count: 1 },
-        { section: "next_actions", count: 1 },
-      ],
+      responseRate: 0.5,
+      minimumCohortSize: 5,
+      breakdownsSuppressed: true,
+      byOutcome: [],
+      bySection: [],
+      byOutcomeSection: [],
     });
     assertNoAggregateIdentifiers(metrics.payload);
     const metricsJson = JSON.stringify(metrics.payload);
@@ -657,6 +705,10 @@ test("report feedback is exact, private, immutable-report-safe, and observable o
     ]) {
       assert.equal(metricsJson.includes(privateValue), false, `aggregate leaked ${privateValue}`);
     }
+    requireD1Success(
+      d1(stateDirectory, "execute", `DELETE FROM projects WHERE id=${sqlLiteral(oldProjectId)};`),
+      "old report cohort fixture cleanup failed",
+    );
 
     const archived = await call(server.origin, `/api/projects/${encodeURIComponent(project.id)}`, {
       method: "PATCH",

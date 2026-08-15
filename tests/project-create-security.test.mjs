@@ -12,7 +12,7 @@ const validInput = Object.freeze({
   city: "Pune",
   facing: "East",
   floors: "G+1",
-  bedrooms: "3",
+  bedrooms: 3,
   bathrooms: 3,
   parking: "1 car",
   style: "Warm modern",
@@ -226,6 +226,41 @@ test("POST /api/projects rejects categorical and numeric typos instead of silent
       assert.equal(result.response.status, 400, JSON.stringify(result.payload));
       assert.equal(result.payload.code, "invalid_project_input");
       assert.equal(db.projects.length, 0, "a typo must not be replaced with a different planning assumption");
+    });
+  }
+});
+
+test("POST /api/projects rejects scalar type confusion instead of coercing request values", async (t) => {
+  const cases = [
+    ["name array", projectBody(validInput, { name: ["Security regression project"] }), "invalid_project_name"],
+    ["width array", projectBody({ ...validInput, width: [30] }), "invalid_project_input"],
+    ["width text", projectBody({ ...validInput, width: "30" }), "invalid_project_input"],
+    ["width boolean", projectBody({ ...validInput, width: true }), "invalid_project_input"],
+    ["city array", projectBody({ ...validInput, city: ["Pune"] }), "invalid_project_input"],
+    ["city boolean", projectBody({ ...validInput, city: true }), "invalid_project_input"],
+    ["bedrooms array", projectBody({ ...validInput, bedrooms: [3] }), "invalid_project_input"],
+    ["bedrooms text", projectBody({ ...validInput, bedrooms: "3" }), "invalid_project_input"],
+    ["bedrooms boolean", projectBody({ ...validInput, bedrooms: true }), "invalid_project_input"],
+    ["bathrooms text", projectBody({ ...validInput, bathrooms: "3" }), "invalid_project_input"],
+    ["road width array", projectBody({ ...validInput, roadWidthFt: [24] }), "invalid_project_input"],
+    ["budget text", projectBody({ ...validInput, budgetLakh: "55" }), "invalid_project_input"],
+    ["parking array", projectBody({ ...validInput, parking: ["1 car"] }), "invalid_project_input"],
+    ["style array", projectBody({ ...validInput, style: ["Warm modern"] }), "invalid_project_input"],
+  ];
+
+  for (let index = 0; index < cases.length; index += 1) {
+    const [label, body, expectedCode] = cases[index];
+    await t.test(label, async () => {
+      const db = new MemoryD1();
+      const auth = await seedAuth(db, 150 + index);
+      const result = await postProject(
+        { ASSETS: assets, DB: db, GRIHAGRID_CACHE: new MemoryKv() },
+        auth,
+        body,
+      );
+      assert.equal(result.response.status, 400, JSON.stringify(result.payload));
+      assert.equal(result.payload.code, expectedCode);
+      assert.equal(db.projects.length, 0, "coercible JSON shapes must never create a project");
     });
   }
 });
