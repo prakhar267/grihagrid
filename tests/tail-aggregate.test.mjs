@@ -118,9 +118,16 @@ test("tail aggregate terminates its supervised process group after durable first
     const pipeline = `
       set -o pipefail
       { printf '%s\\n' '{"outcome":"server_error","private":"never-store"}'; while :; do sleep 60; done; } \\
-        | TAIL_STOP_ON_EVENT=true TAIL_PROCESS_GROUP=$$ "${process.execPath}" "${scriptPath}" "$1"
+        | TAIL_STOP_ON_EVENT=true TAIL_PROCESS_GROUP=$$ "$2" "$3" "$1"
     `;
-    const child = spawn("/bin/bash", ["-c", pipeline, "grihagrid-tail-test", outputPath], {
+    const child = spawn("/bin/bash", [
+      "-c",
+      pipeline,
+      "grihagrid-tail-test",
+      outputPath,
+      process.execPath,
+      scriptPath,
+    ], {
       detached: true,
       env: process.env,
       stdio: ["ignore", "pipe", "pipe"],
