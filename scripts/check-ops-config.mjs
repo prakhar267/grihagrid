@@ -222,7 +222,13 @@ export async function checkOpsConfig() {
       `Prove ${environment} rollback rehearsal left zero database residue`,
       `Prove ${environment} canary left zero database residue`,
     ]) {
-      assert.match(workflowStep(deployWorkflow, stepName), /umask 077/u, `${stepName} must protect raw evidence with umask 077`);
+      const step = workflowStep(deployWorkflow, stepName);
+      assert.match(step, /umask 077/u, `${stepName} must protect raw evidence with umask 077`);
+      if (stepName.startsWith("Prove ")) {
+        assert.match(step, /residue_sql="\$\(</u, `${stepName} must load the validated read-only SQL`);
+        assert.match(step, /--command "\$residue_sql"/u, `${stepName} must use Wrangler's JSON-only command path`);
+        assert.doesNotMatch(step, /--file/u, `${stepName} must not mix Wrangler file-upload progress with JSON evidence`);
+      }
     }
     const cleanup = workflowStep(deployWorkflow, `Remove ${environment} backup material from the runner`);
     assert.match(cleanup, /if: always\(\)/u, `${environment} raw-evidence cleanup must be unconditional`);
