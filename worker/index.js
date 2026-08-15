@@ -3236,6 +3236,16 @@ async function getReportFeedback(request, env, projectId, revision, reportSchema
   return json({ feedback: reportFeedbackFromRow(row) });
 }
 
+async function reportFeedbackConstraintConflict(db, projectId, userId) {
+  const current = await db.prepare(
+    "SELECT status FROM projects WHERE id=? AND user_id=?",
+  ).bind(projectId, userId).first();
+  if (current?.status === "archived") {
+    throw new HttpError(409, "restore the project before changing its report feedback", "project_archived");
+  }
+  throw new HttpError(409, "the report changed while feedback was saving", "report_feedback_conflict");
+}
+
 async function putReportFeedback(request, env, projectId, revision, reportSchemaVersion) {
   requireTrustedOrigin(request, env);
   const db = requireDatabase(env);
@@ -3249,16 +3259,8 @@ async function putReportFeedback(request, env, projectId, revision, reportSchema
   const feedback = normalizeReportFeedback(await readJson(request));
   const sectionsJson = JSON.stringify(feedback.sections);
   const now = new Date().toISOString();
-  const existing = await db.prepare(
-    `SELECT outcome,sections_json,updated_at
-       FROM report_feedback
-      WHERE project_id=? AND project_revision=? AND report_schema_version=? AND user_id=?`,
-  ).bind(projectId, revision, reportSchemaVersion, session.user_id).first();
-  const expectedUpdatedAt = existing?.outcome === feedback.outcome && existing?.sections_json === sectionsJson
-    ? existing.updated_at
-    : now;
   try {
-    await db.prepare(
+    const row = await db.prepare(
       `INSERT INTO report_feedback
          (project_id,project_revision,report_schema_version,user_id,outcome,sections_json,created_at,updated_at)
        VALUES (?,?,?,?,?,?,?,?)
@@ -3268,29 +3270,21 @@ async function putReportFeedback(request, env, projectId, revision, reportSchema
          sections_json=excluded.sections_json,
          updated_at=CASE
            WHEN report_feedback.outcome=excluded.outcome
-            AND report_feedback.sections_json=excluded.sections_json
-           THEN report_feedback.updated_at
-           ELSE excluded.updated_at
-         END`,
+           AND report_feedback.sections_json=excluded.sections_json
+          THEN report_feedback.updated_at
+          ELSE excluded.updated_at
+         END
+       RETURNING project_id,project_revision,report_schema_version,outcome,sections_json,created_at,updated_at`,
     ).bind(
       projectId, revision, reportSchemaVersion, session.user_id,
       feedback.outcome, sectionsJson, now, now,
-    ).run();
-    const row = await db.prepare(
-      `SELECT project_id,project_revision,report_schema_version,outcome,sections_json,created_at,updated_at
-         FROM report_feedback
-        WHERE project_id=? AND project_revision=? AND report_schema_version=? AND user_id=?
-          AND outcome=? AND sections_json=? AND updated_at=?`,
-    ).bind(
-      projectId, revision, reportSchemaVersion, session.user_id,
-      feedback.outcome, sectionsJson, expectedUpdatedAt,
     ).first();
     const saved = reportFeedbackFromRow(row);
     if (!saved) throw new HttpError(409, "the report changed while feedback was saving", "report_feedback_conflict");
     return json({ feedback: saved });
   } catch (error) {
     if (/invalid report feedback/iu.test(String(error?.message || error))) {
-      throw new HttpError(409, "restore the project before changing its report feedback", "project_archived");
+      return reportFeedbackConstraintConflict(db, projectId, session.user_id);
     }
     if (/FOREIGN KEY constraint failed/iu.test(String(error?.message || error))) {
       throw new HttpError(409, "the report changed while feedback was saving", "report_feedback_conflict");
@@ -4857,32 +4851,120 @@ async function getProductEventAggregates(request, env, url) {
 }
 
 function reportFeedbackMetricsFromRow(row) {
-  const eligibleReports = Number(row?.eligible_reports || 0);
-  const totalResponses = Number(row?.total_responses || 0);
-  if (!Number.isInteger(eligibleReports) || !Number.isInteger(totalResponses)
-      || eligibleReports < 0 || totalResponses < 0 || totalResponses > eligibleReports) {
+  const aggregateCount = (value, label) => {
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+      throw new Error(`report feedback ${label} must be a nonnegative integer`);
+    }
+    return value;
+  };
+  const eligibleReports = aggregateCount(row?.eligible_reports ?? 0, "eligible report count");
+  const totalResponses = aggregateCount(row?.total_responses ?? 0, "response count");
+  if (totalResponses > eligibleReports) {
     throw new Error("report feedback aggregate did not reconcile to its eligible report cohort");
   }
   const parseRows = (value, label) => {
-    const parsed = JSON.parse(value || "[]");
+    const source = value ?? "[]";
+    if (typeof source !== "string") throw new Error(`${label} aggregate must be JSON text`);
+    let parsed;
+    try {
+      parsed = JSON.parse(source);
+    } catch {
+      throw new Error(`${label} aggregate must be valid JSON`);
+    }
     if (!Array.isArray(parsed)) throw new Error(`${label} aggregate must be an array`);
     return parsed;
   };
-  const byOutcome = parseRows(row?.by_outcome_json, "outcome").map((entry) => ({
-    outcome: entry.outcome,
-    count: Number(entry.count || 0),
-  }));
-  const bySection = parseRows(row?.by_section_json, "section").map((entry) => ({
-    section: entry.section,
-    count: Number(entry.count || 0),
-  }));
-  const byOutcomeSection = parseRows(row?.by_outcome_section_json, "outcome-section").map((entry) => ({
-    outcome: entry.outcome,
-    section: entry.section,
-    count: Number(entry.count || 0),
-  }));
+  const aggregateEntry = (entry, label) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new Error(`report feedback ${label} aggregate contains an invalid row`);
+    }
+    return entry;
+  };
+  const outcomesSeen = new Set();
+  const byOutcome = parseRows(row?.by_outcome_json, "outcome").map((value) => {
+    const entry = aggregateEntry(value, "outcome");
+    if (typeof entry.outcome !== "string" || !REPORT_FEEDBACK_OUTCOMES.has(entry.outcome)) {
+      throw new Error("report feedback outcome aggregate contains an invalid outcome");
+    }
+    if (outcomesSeen.has(entry.outcome)) {
+      throw new Error("report feedback outcome aggregate contains a duplicate outcome");
+    }
+    outcomesSeen.add(entry.outcome);
+    return { outcome: entry.outcome, count: aggregateCount(entry.count, "outcome count") };
+  });
+  const sectionsSeen = new Set();
+  const bySection = parseRows(row?.by_section_json, "section").map((value) => {
+    const entry = aggregateEntry(value, "section");
+    if (typeof entry.section !== "string" || !REPORT_FEEDBACK_SECTION_SET.has(entry.section)) {
+      throw new Error("report feedback section aggregate contains an invalid section");
+    }
+    if (sectionsSeen.has(entry.section)) {
+      throw new Error("report feedback section aggregate contains a duplicate section");
+    }
+    sectionsSeen.add(entry.section);
+    return { section: entry.section, count: aggregateCount(entry.count, "section count") };
+  });
+  const outcomeSectionsSeen = new Set();
+  const byOutcomeSection = parseRows(row?.by_outcome_section_json, "outcome-section").map((value) => {
+    const entry = aggregateEntry(value, "outcome-section");
+    if (typeof entry.outcome !== "string" || !REPORT_FEEDBACK_OUTCOMES.has(entry.outcome)) {
+      throw new Error("report feedback outcome-section aggregate contains an invalid outcome");
+    }
+    if (typeof entry.section !== "string" || !REPORT_FEEDBACK_SECTION_SET.has(entry.section)) {
+      throw new Error("report feedback outcome-section aggregate contains an invalid section");
+    }
+    const key = `${entry.outcome}:${entry.section}`;
+    if (outcomeSectionsSeen.has(key)) {
+      throw new Error("report feedback outcome-section aggregate contains a duplicate cell");
+    }
+    outcomeSectionsSeen.add(key);
+    return {
+      outcome: entry.outcome,
+      section: entry.section,
+      count: aggregateCount(entry.count, "outcome-section count"),
+    };
+  });
+  const breakdownCells = [...byOutcome, ...bySection, ...byOutcomeSection];
+  if (breakdownCells.some((entry) => entry.count === 0)) {
+    throw new Error("report feedback aggregate contains an invalid count");
+  }
+  const sumCounts = (entries, label) => entries.reduce((total, entry) => {
+    const next = total + entry.count;
+    if (!Number.isSafeInteger(next)) throw new Error(`report feedback ${label} count overflowed`);
+    return next;
+  }, 0);
+  if (sumCounts(byOutcome, "outcome") !== totalResponses) {
+    throw new Error("report feedback outcome totals did not reconcile to total responses");
+  }
+  const outcomeCounts = new Map(byOutcome.map((entry) => [entry.outcome, entry.count]));
+  const sectionCounts = new Map(bySection.map((entry) => [entry.section, entry.count]));
+  for (const entry of bySection) {
+    if (entry.count > totalResponses) {
+      throw new Error("report feedback section total exceeded total responses");
+    }
+  }
+  for (const section of REPORT_FEEDBACK_SECTIONS) {
+    const matrixTotal = sumCounts(
+      byOutcomeSection.filter((entry) => entry.section === section),
+      `outcome-section ${section}`,
+    );
+    if (matrixTotal !== (sectionCounts.get(section) || 0)) {
+      throw new Error("report feedback section totals did not reconcile to the outcome-section matrix");
+    }
+  }
+  for (const outcome of REPORT_FEEDBACK_OUTCOMES) {
+    const outcomeCount = outcomeCounts.get(outcome) || 0;
+    const matrixTotal = sumCounts(
+      byOutcomeSection.filter((entry) => entry.outcome === outcome),
+      `outcome-section ${outcome}`,
+    );
+    if (matrixTotal < outcomeCount || (outcomeCount > 0 && matrixTotal / outcomeCount > 3)) {
+      throw new Error("report feedback outcome totals did not reconcile to the outcome-section matrix");
+    }
+  }
   const breakdownsSuppressed = eligibleReports < REPORT_FEEDBACK_METRICS_MINIMUM_COHORT
-    || totalResponses < REPORT_FEEDBACK_METRICS_MINIMUM_COHORT;
+    || totalResponses < REPORT_FEEDBACK_METRICS_MINIMUM_COHORT
+    || breakdownCells.some((entry) => entry.count < REPORT_FEEDBACK_METRICS_MINIMUM_COHORT);
   return {
     eligibleReports,
     totalResponses,

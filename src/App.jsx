@@ -12,7 +12,7 @@ import {
   isApplicationUnauthenticated, isCurrentSessionRevalidationTarget, isLogoutBroadcast,
   isLogoutChannelMessage, privateRouteAfterUnauthenticated, shouldRevalidateSession,
 } from "./logout.js";
-import { reportFeedbackConcernState } from "./report-feedback-state.js";
+import { reportFeedbackConcernState, resolveArchivedReportFeedback } from "./report-feedback-state.js";
 
 const cityFactors = { Pune: 1, Bengaluru: 1.08, Mumbai: 1.18, Delhi: 1.1, Hyderabad: .98, Chennai: 1.02, Jaipur: .88, Other: .95 };
 const qualityRates = { Essential: 1750, Signature: 2200, Premium: 2850, Luxury: 3900 };
@@ -1908,7 +1908,21 @@ function ReportFeedback({ projectId, projectRevision, reportSchemaVersion, reado
     }catch(err){
       if(err instanceof ApiError&&err.status===401){route("/login");return}
       if(err instanceof ApiError&&err.status===409&&err.payload?.code==="project_archived"){
-        setArchiveConflict({attemptedOutcome:outcome,hadSavedFeedback:Boolean(feedback)});setArchivedDuringSave(true);onProjectArchived?.();setError("");setMessage("");setPhase("ready");return
+        const conflict={attemptedOutcome:outcome,hadSavedFeedback:Boolean(feedback)};
+        setArchiveConflict(conflict);setArchivedDuringSave(true);onProjectArchived?.();setError("");setMessage("");setPhase("archive_refreshing");
+        try{
+          const authoritative=await resolveArchivedReportFeedback({
+            cachedFeedback:feedback,
+            attemptedOutcome:outcome,
+            readFeedback:()=>api(endpoint),
+            normalizeFeedback:value=>normalizeReportFeedback(value,projectRevision,reportSchemaVersion),
+          });
+          setFeedback(authoritative.feedback);setOutcome(authoritative.outcome);setSections(authoritative.sections);setArchiveConflict(authoritative.conflict);setPhase("ready");
+        }catch(refreshError){
+          if(refreshError instanceof ApiError&&refreshError.status===401){route("/login");return}
+          setError("The project is read only, but the latest saved feedback could not be confirmed. Reload this report before relying on the feedback summary.");setPhase("archive_refresh_error");
+        }
+        return
       }
       setError(err?.message||"Feedback could not be saved. Your report remains unchanged.");setPhase("ready");
     }
@@ -1924,15 +1938,18 @@ function ReportFeedback({ projectId, projectRevision, reportSchemaVersion, reado
       ? "3 of 3 parts selected. Clear a selected part before choosing another."
       : `${sections.length} of 3 parts selected. Choose one to three; Whole report cannot be combined with another part.`;
 
-  return <section className={`report-feedback ${readOnly?"report-feedback--readonly":""}`} aria-labelledby={`${groupId}-title`} aria-busy={phase==="loading"||busy}>
+  return <section className={`report-feedback ${readOnly?"report-feedback--readonly":""}`} aria-labelledby={`${groupId}-title`} aria-busy={phase==="loading"||phase==="archive_refreshing"||busy}>
     <header className="report-feedback__heading"><div><span className="kicker">Report feedback · separate record</span><h2 id={`${groupId}-title`}>Did this make the next decision clearer?</h2></div><p>Rate this exact revision so GrihaGrid can learn where its planning evidence helps—and where it needs more care.</p></header>
     <div className="report-feedback__boundary" id={boundaryId}><LockKey/><p><strong>Your report stays immutable.</strong> Feedback is stored separately against revision {projectRevision}, report schema v{reportSchemaVersion}. It never changes the saved report and is not a request for, or a substitute for, professional review.</p></div>
     {phase==="loading"&&<div className="report-feedback__loading" role="status"><ArrowClockwise/> Opening saved feedback…</div>}
+    {phase==="archive_refreshing"&&<div className="report-feedback__loading" role="status"><ArrowClockwise/> Confirming the latest saved feedback…</div>}
     {phase==="error"&&<div className="report-feedback__message"><p className="form-error" id={errorId} role="alert">{error}</p><button type="button" className="outline-button report-feedback__retry" onClick={()=>load()}>Try again <ArrowClockwise/></button></div>}
-    {archivedDuringSave&&<p ref={archiveNoticeRef} tabIndex="-1" className="report-feedback__archive-notice" role="status">This project was archived in another session. Your latest feedback {archiveConflict?.hadSavedFeedback?"change":"response"} was not saved. {archiveConflict?.hadSavedFeedback?"The previously saved response below remains on the report.":"No feedback response was recorded."} The full report is now read only.</p>}
-    {phase!=="loading"&&phase!=="error"&&readOnly&&<div className="report-feedback__readonly" role="status">{feedback?<><CheckCircle/><div><span>{archiveConflict?"Previously recorded feedback":"Feedback recorded"}</span><strong>{outcomeLabel}</strong><p>{sectionLabels.join(" · ")}{feedback.updatedAt?` · Updated ${formatDate(feedback.updatedAt)}`:""}</p></div></>:<><LockKey/><div><span>Archived feedback</span><strong>No feedback was recorded.</strong><p>This report is read only, so a new response cannot be added.</p></div></>}</div>}
-    {phase!=="loading"&&phase!=="error"&&readOnly&&concernState.visible&&<ReportFeedbackConcern unsaved={concernState.unsaved}/>}
-    {phase!=="loading"&&phase!=="error"&&!readOnly&&<form className="report-feedback__form" onSubmit={save} aria-describedby={`${boundaryId}${error?` ${errorId}`:""}`}>
+    {archivedDuringSave&&<p ref={archiveNoticeRef} tabIndex="-1" className="report-feedback__archive-notice" role="status">This project was archived in another session. Your latest feedback {archiveConflict?.hadSavedFeedback?"change":"response"} was not saved. {phase==="ready"?(feedback?"The latest saved response is shown below.":"No feedback response was recorded."):phase==="archive_refresh_error"?"The latest saved response could not be confirmed.":"GrihaGrid is checking the latest saved response now."} The full report is now read only.</p>}
+    {phase==="archive_refresh_error"&&<div className="report-feedback__message"><p className="form-error" id={errorId} role="alert">{error} Do not rely on any item that seems wrong or concerning.</p><button type="button" className="outline-button report-feedback__retry" onClick={()=>window.location.reload()}>Reload report <ArrowClockwise/></button></div>}
+    {archivedDuringSave&&phase!=="ready"&&archiveConflict?.attemptedOutcome==="needs_review"&&<ReportFeedbackConcern unsaved/>}
+    {phase==="ready"&&readOnly&&<div className="report-feedback__readonly" role="status">{feedback?<><CheckCircle/><div><span>{archiveConflict?"Previously recorded feedback":"Feedback recorded"}</span><strong>{outcomeLabel}</strong><p>{sectionLabels.join(" · ")}{feedback.updatedAt?` · Updated ${formatDate(feedback.updatedAt)}`:""}</p></div></>:<><LockKey/><div><span>Archived feedback</span><strong>No feedback was recorded.</strong><p>This report is read only, so a new response cannot be added.</p></div></>}</div>}
+    {phase==="ready"&&readOnly&&concernState.visible&&<ReportFeedbackConcern unsaved={concernState.unsaved}/>}
+    {(phase==="ready"||phase==="saving")&&!readOnly&&<form className="report-feedback__form" onSubmit={save} aria-describedby={`${boundaryId}${error?` ${errorId}`:""}`}>
       <fieldset className="report-feedback__outcomes" disabled={busy}><legend>How did this report land?</legend><div>{reportFeedbackOutcomes.map(([key,label,copy])=><label key={key}><input type="radio" name={`${groupId}-outcome`} value={key} checked={outcome===key} onChange={()=>{setOutcome(key);setError("");setMessage("")}}/><span><strong>{label}</strong><small>{copy}</small></span></label>)}</div></fieldset>
       {outcome==="needs_review"&&<ReportFeedbackConcern/>}
       <fieldset className="report-feedback__sections" disabled={busy} aria-describedby={sectionGuidanceId}><legend>Which part shaped that answer?</legend><p id={sectionGuidanceId} aria-live="polite" aria-atomic="true">{sectionGuidance}</p><div>{reportFeedbackSections.map(([key,label])=>{const checked=sections.includes(key);const atLimit=!checked&&key!=="overall"&&!sections.includes("overall")&&sections.length>=3;return <label key={key}><input type="checkbox" value={key} checked={checked} disabled={busy||atLimit} onChange={()=>toggleSection(key)}/><span>{label}</span></label>})}</div></fieldset>

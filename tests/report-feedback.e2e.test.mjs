@@ -550,6 +550,43 @@ test("report feedback is exact, private, immutable-report-safe, and observable o
     assert.equal(createReplay.response.status, 200, JSON.stringify(createReplay.payload));
     assert.deepEqual(createReplay.payload, created.payload, "an exact replay must preserve both timestamps");
 
+    const identicalRace = await Promise.all(Array.from({ length: 4 }, () => call(server.origin, pathV1, {
+      method: "PUT",
+      auth: owner,
+      body: { outcome: "helpful", sections: ["overall"] },
+    })));
+    for (const result of identicalRace) {
+      assert.equal(result.response.status, 200, JSON.stringify(result.payload));
+      assert.deepEqual(result.payload, created.payload, "concurrent identical writes must be idempotent");
+    }
+
+    await wait(25);
+    const differentBodies = [
+      { outcome: "needs_review", sections: ["assumptions"] },
+      { outcome: "unclear", sections: ["cost_range"] },
+    ];
+    const differentRace = await Promise.all(differentBodies.map((body) => call(server.origin, pathV1, {
+      method: "PUT",
+      auth: owner,
+      body,
+    })));
+    differentRace.forEach((result, index) => {
+      assert.equal(result.response.status, 200, JSON.stringify(result.payload));
+      assertFeedback(result.payload.feedback, {
+        revision,
+        schemaVersion,
+        outcome: differentBodies[index].outcome,
+        sections: differentBodies[index].sections,
+      });
+      assert.equal(result.payload.feedback.createdAt, created.payload.feedback.createdAt);
+    });
+    const raceWinner = await call(server.origin, pathV1, { auth: owner });
+    assert.equal(raceWinner.response.status, 200, JSON.stringify(raceWinner.payload));
+    assert.ok(
+      differentRace.some((result) => JSON.stringify(result.payload) === JSON.stringify(raceWinner.payload)),
+      "the persisted value must be one complete concurrent write",
+    );
+
     await wait(25);
     const updated = await call(server.origin, pathV1, {
       method: "PUT",
@@ -708,6 +745,90 @@ test("report feedback is exact, private, immutable-report-safe, and observable o
     requireD1Success(
       d1(stateDirectory, "execute", `DELETE FROM projects WHERE id=${sqlLiteral(oldProjectId)};`),
       "old report cohort fixture cleanup failed",
+    );
+
+    const aggregateCohort = Array.from({ length: 9 }, (_, index) => ({
+      projectId: `feedback-metrics-project-${index + 1}`,
+      reportId: `feedback-metrics-report-${index + 1}`,
+      outcome: index < 5 ? "helpful" : "unclear",
+      sections: index < 5 ? ["overall"] : ["brief_check", "next_actions"],
+    }));
+    const aggregateSeed = `
+      PRAGMA foreign_keys=ON;
+      ${aggregateCohort.map((entry) => `
+        INSERT INTO projects (
+          id,user_id,name,status,input_json,estimate_json,created_at,updated_at,
+          input_revision,input_hash,input_schema_version,estimate_rule_version,
+          brief_check_version,brief_check_json
+        )
+        SELECT
+          ${sqlLiteral(entry.projectId)},user_id,'SYNTHETIC_FEEDBACK_METRICS_PROJECT','report_ready',
+          input_json,estimate_json,datetime('now'),datetime('now'),1,input_hash,
+          input_schema_version,estimate_rule_version,brief_check_version,brief_check_json
+        FROM projects WHERE id=${sqlLiteral(project.id)};
+        INSERT INTO reports (
+          id,project_id,user_id,version,input_hash,content_json,generated_at,updated_at,project_input_revision
+        )
+        SELECT
+          ${sqlLiteral(entry.reportId)},${sqlLiteral(entry.projectId)},user_id,version,input_hash,
+          json_set(content_json,'$.id',${sqlLiteral(entry.reportId)},'$.projectId',${sqlLiteral(entry.projectId)}),
+          datetime('now'),datetime('now'),1
+        FROM reports WHERE project_id=${sqlLiteral(project.id)};
+        INSERT INTO project_revision_reports (
+          project_id,project_revision,report_schema_version,source_report_id,
+          source_content_hash,input_hash,content_json,generated_at
+        )
+        SELECT
+          ${sqlLiteral(entry.projectId)},1,report.version,report.id,revision.content_hash,
+          report.input_hash,report.content_json,report.generated_at
+        FROM reports report
+        JOIN project_revisions revision
+          ON revision.project_id=report.project_id AND revision.revision=1
+        WHERE report.id=${sqlLiteral(entry.reportId)};
+        INSERT INTO report_feedback (
+          project_id,project_revision,report_schema_version,user_id,outcome,
+          sections_json,created_at,updated_at
+        ) VALUES (
+          ${sqlLiteral(entry.projectId)},1,${schemaVersion},${sqlLiteral(owner.user.id)},
+          ${sqlLiteral(entry.outcome)},${sqlLiteral(JSON.stringify(entry.sections))},
+          datetime('now'),datetime('now')
+        );
+      `).join("\n")}
+    `;
+    requireD1Success(d1(stateDirectory, "execute", aggregateSeed), "above-threshold feedback cohort seed failed");
+    const aggregateMetrics = await call(server.origin, "/api/events/aggregate?days=30", {
+      headers: { authorization: `Bearer ${metricsToken}` },
+    });
+    assert.equal(aggregateMetrics.response.status, 200, JSON.stringify(aggregateMetrics.payload));
+    assert.deepEqual(aggregateMetrics.payload.reportFeedback, {
+      eligibleReports: 11,
+      totalResponses: 10,
+      responseRate: 10 / 11,
+      minimumCohortSize: 5,
+      breakdownsSuppressed: false,
+      byOutcome: [
+        { outcome: "helpful", count: 5 },
+        { outcome: "unclear", count: 5 },
+      ],
+      bySection: [
+        { section: "brief_check", count: 5 },
+        { section: "next_actions", count: 5 },
+        { section: "overall", count: 5 },
+      ],
+      byOutcomeSection: [
+        { outcome: "helpful", section: "overall", count: 5 },
+        { outcome: "unclear", section: "brief_check", count: 5 },
+        { outcome: "unclear", section: "next_actions", count: 5 },
+      ],
+    });
+    assertNoAggregateIdentifiers(aggregateMetrics.payload);
+    requireD1Success(
+      d1(
+        stateDirectory,
+        "execute",
+        `PRAGMA foreign_keys=ON; DELETE FROM projects WHERE id IN (${aggregateCohort.map((entry) => sqlLiteral(entry.projectId)).join(",")});`,
+      ),
+      "above-threshold feedback cohort cleanup failed",
     );
 
     const archived = await call(server.origin, `/api/projects/${encodeURIComponent(project.id)}`, {
