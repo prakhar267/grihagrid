@@ -367,6 +367,32 @@ unchecked means no-go for this feature.
   records immutable SHA/version/operator/counts, passes public and authenticated
   paid-closed smoke, cleans synthetic data, and preserves a tested rollback owner.
 
+## Report feedback release gate
+
+Report feedback is a separate, structured learning record for one immutable
+schema-v2 report. It must remain discoverable at the report decision boundary
+without becoming a support ticket, professional approval, report mutation, or
+new paid capability.
+
+- [ ] Exact primitive request validation rejects arrays, booleans and numeric
+  strings that could otherwise coerce into valid project, revision or feedback
+  fields; legacy canonical stored records remain readable.
+- [ ] The protected aggregate reconciles eligible schema-v2 reports, total
+  responses, response rate, outcome totals, section totals and the outcome ×
+  section matrix from one report-generated cohort without returning any resource
+  or account identifier. Categorical breakdowns stay suppressed below five
+  eligible reports and five responses.
+- [ ] `needs_review` visibly stops reliance, points to licensed local review and
+  explains that structured feedback does not alert support. Concurrent archive
+  changes the mounted control to read-only.
+- [ ] Staging and production apply migration `0013` under encrypted backup,
+  old-Worker compatibility and exact synthetic-residue gates before candidate
+  promotion; paid checkout, fulfillment, plan allowlist and uploads stay closed.
+- [ ] The exact merged SHA passes protected CI and CodeQL, authenticated
+  report/feedback canaries, public smoke, production cleanup and a 30-minute
+  exact-version error-tail observation. Record the final evidence above before
+  marking this gate complete.
+
 ## Project Decision Home release gate
 
 Project Decision Home is a read-only owner command centre over existing source

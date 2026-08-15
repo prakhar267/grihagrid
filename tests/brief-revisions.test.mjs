@@ -88,6 +88,25 @@ test("revision input validation is allowlisted and keeps honest unknown defaults
   );
   assert.throws(() => __test.normalizeRevisionPatch({ bathrooms: 0 }), /bathrooms is invalid/iu);
   assert.throws(() => __test.normalizeRevisionPatch({ plotShape: "triangle" }), /plot shape is invalid/iu);
+  for (const patch of [
+    { width: [30] },
+    { width: "30" },
+    { width: true },
+    { city: ["Pune"] },
+    { city: true },
+    { bedrooms: [3] },
+    { bedrooms: "3" },
+    { bedrooms: true },
+    { bathrooms: "3" },
+    { parking: ["1 car"] },
+    { style: ["Warm modern"] },
+  ]) {
+    assert.throws(
+      () => __test.normalizeRevisionPatch(patch),
+      (error) => error.status === 400 && error.code === "invalid_revision_request",
+      JSON.stringify(patch),
+    );
+  }
 });
 
 test("Change Study is deterministic, consequence-complete, and rejects no-op commits upstream", () => {

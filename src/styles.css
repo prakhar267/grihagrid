@@ -2401,6 +2401,52 @@ blockquote {
   color: var(--ink);
 }
 
+.report-feedback__concern,
+.report-feedback__archive-notice {
+  margin: 0;
+  padding: 1rem 1.1rem;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 0.8rem;
+  border-left: 3px solid var(--copper);
+  background: rgba(167, 83, 47, 0.065);
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+  line-height: 1.6;
+}
+
+.report-feedback__concern svg {
+  width: 20px;
+  height: 20px;
+  color: var(--copper);
+}
+
+.report-feedback__concern p,
+.report-feedback__archive-notice {
+  margin: 0;
+}
+
+.report-feedback__concern strong {
+  color: var(--ink);
+}
+
+.report-feedback__concern a {
+  color: var(--copper-dark);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.report-feedback__archive-notice {
+  margin-top: 1.5rem;
+  display: block;
+}
+
+.report-feedback__archive-notice:focus-visible {
+  outline: 2px solid var(--copper);
+  outline-offset: 3px;
+}
+
 .report-feedback__loading,
 .report-feedback__readonly {
   min-height: 96px;

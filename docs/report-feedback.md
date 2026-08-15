@@ -17,8 +17,18 @@ request, rating of a person, or input to report generation.
   `assumptions`, and `next_actions`. Choose one to three; `overall` is exclusive.
 - There is no free-text field. The UI explains that the report remains
   immutable and that feedback does not replace professional review.
+- The control appears immediately after the report's professional boundary,
+  before comparison, AI, purchase and file tools. Section labels mirror the
+  visible report headings. Choosing `needs_review` tells the owner not to rely
+  on the concerning item, to consult a licensed local professional, and that
+  the structured response does not alert support; the support route also warns
+  against sending sensitive site details.
 - Existing archived feedback is readable; archived projects cannot add or
-  change a response. Feedback controls do not enter the printed report.
+  change a response. A concurrent archive observed during save turns the
+  mounted control read-only, moves focus to an explicit unsaved-response notice,
+  distinguishes any previously saved feedback, and preserves the professional
+  concern path for a rejected `needs_review` attempt. Feedback controls do not
+  enter the printed report.
 
 ## Data and API boundary
 
@@ -39,15 +49,29 @@ An exact replay preserves `updatedAt`; a changed response updates it. Neither
 path reads or writes report JSON. Operational logs template project, revision
 and report-schema segments.
 
-The protected aggregate endpoint returns only response counts by outcome and
-section for a bounded window. It never returns identity, project, revision,
-report, IP, free text or individual response rows.
+Concurrent tabs use explicit last-completed-write-wins semantics. The upsert
+is followed by an exact content-and-timestamp postcondition, so a later write
+cannot be returned as if it were this request's result. An interleaving write
+returns bounded `409 report_feedback_conflict`; the owner reloads before trying
+again. Otherwise the last completed write remains the saved response.
+
+The protected aggregate endpoint returns the number of eligible schema-v2
+reports, total responses, response rate, counts by outcome and section, and the
+bounded outcome × section matrix for the requested window. One SQL statement
+derives every value from the same report-generated cohort, preventing numerator,
+denominator and breakdown drift during concurrent writes. Outcome and section
+breakdowns remain empty until at least five reports and five responses are in
+the window; denominator, total and response rate remain visible for funnel
+health. It never returns identity, project, revision, report, IP, free text or
+individual response rows.
 
 ## Intake hardening shipped with the schema
 
 Migration `0013_report_feedback_and_intake_hardening.sql` also prevents hidden
 project-input claims from weakening a safety caveat. The Worker accepts only
-the 15 versioned input fields and validates their exact type/range/category.
+the 15 versioned input fields and validates their exact primitive
+type/range/category; arrays, booleans and numeric strings are never coerced into
+valid scalar request values. Legacy stored canonical values remain readable.
 D1 repeats the field allowlist for inserts and source updates, and caps each
 account at 50 projects behind the Worker's best-effort 20/hour per-account edge
 throttle. The D1 ceiling—not KV—is the exact concurrency-safe storage bound.

@@ -655,8 +655,16 @@ event rows it returns `paidDecisionCohort` with `paidOrders`,
 first print, share, or explicit professional handoff occurs no later than seven
 days after payment. No order/snapshot key or individual milestone is returned.
 The same response contains `reportFeedback` with aggregate-only
-`totalResponses`, `byOutcome`, and `bySection` counts for the requested window.
-It contains no account, project, revision, report, or free-text value.
+`eligibleReports`, `totalResponses`, `responseRate`, `byOutcome`, `bySection`,
+`byOutcomeSection`, `minimumCohortSize`, and `breakdownsSuppressed` for the
+requested window. Eligibility means an immutable schema-v2 revision report
+generated within the window; the numerator joins that exact cohort, each report
+has at most one response, and every metric is derived in one SQL statement. The
+rate is therefore `totalResponses / eligibleReports` (or `null` when no report
+is eligible) and cannot exceed one. Outcome, section and matrix arrays remain
+empty until both eligible reports and responses reach the five-record privacy
+threshold. The matrix contains only the approved vocabulary. No account,
+project, revision, report, or free-text value is returned.
 
 ## Brief Check and revision endpoints
 
