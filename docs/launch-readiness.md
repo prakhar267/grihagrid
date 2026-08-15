@@ -380,9 +380,9 @@ new paid capability.
 - [ ] The protected aggregate reconciles eligible schema-v2 reports, total
   responses, response rate, outcome totals, section totals and the outcome ×
   section matrix from one report-generated cohort without returning any resource
-  or account identifier. Categorical breakdowns stay suppressed below five
-  eligible reports or five responses, and whenever any populated outcome,
-  section, or outcome × section cell is below five.
+  or account identifier. Exact categorical breakdowns remain suppressed even
+  above five until fixed, non-overlapping snapshots prevent rolling-window
+  differencing.
 - [ ] `needs_review` visibly stops reliance, points to licensed local review and
   explains that structured feedback does not alert support. Concurrent archive
   changes the mounted control to read-only.

@@ -805,21 +805,10 @@ test("report feedback is exact, private, immutable-report-safe, and observable o
       totalResponses: 10,
       responseRate: 10 / 11,
       minimumCohortSize: 5,
-      breakdownsSuppressed: false,
-      byOutcome: [
-        { outcome: "helpful", count: 5 },
-        { outcome: "unclear", count: 5 },
-      ],
-      bySection: [
-        { section: "brief_check", count: 5 },
-        { section: "next_actions", count: 5 },
-        { section: "overall", count: 5 },
-      ],
-      byOutcomeSection: [
-        { outcome: "helpful", section: "overall", count: 5 },
-        { outcome: "unclear", section: "brief_check", count: 5 },
-        { outcome: "unclear", section: "next_actions", count: 5 },
-      ],
+      breakdownsSuppressed: true,
+      byOutcome: [],
+      bySection: [],
+      byOutcomeSection: [],
     });
     assertNoAggregateIdentifiers(aggregateMetrics.payload);
     requireD1Success(

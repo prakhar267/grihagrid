@@ -59,19 +59,16 @@ the owner-scoped project state: only an authoritative archive is reported as
 `409 report_feedback_conflict` instead of a false archive acknowledgement.
 
 The protected aggregate endpoint returns the number of eligible schema-v2
-reports, total responses, response rate, counts by outcome and section, and the
-bounded outcome × section matrix for the requested window. One SQL statement
-derives every value from the same report-generated cohort, preventing numerator,
-denominator and breakdown drift during concurrent writes. All categorical
-breakdowns remain empty until at least five reports and five responses are in
-the window, and also whenever any populated outcome, section, or outcome ×
-section cell would contain fewer than five responses. Global suppression keeps
-totals or an adjacent-window comparison from exposing a complementary small
-category; denominator, total and response rate remain visible for funnel
-health. It never returns identity, project, revision, report, IP, free text or
-individual response rows. This is small-cell protection on a secret-protected
-operations endpoint, not a formal differential-privacy guarantee; access to the
-metrics token remains privileged and audited deployment configuration.
+reports, total responses and response rate for the requested window. One SQL
+statement derives every value from the same report-generated cohort, preventing
+numerator and denominator drift during concurrent writes. Exact outcome,
+section and outcome × section arrays remain empty even above the five-response
+floor: two independently safe rolling windows can otherwise be differenced to
+expose one response. `breakdownsSuppressed` therefore stays true until fixed,
+non-overlapping privacy snapshots are implemented. Denominator, total and rate
+remain visible for funnel health. The endpoint never returns identity, project,
+revision, report, IP, free text or individual response rows; access to its token
+remains privileged and deployment-audited.
 
 ## Intake hardening shipped with the schema
 
