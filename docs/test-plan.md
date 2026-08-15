@@ -120,8 +120,10 @@ interleaved within their own real-D1 fixtures.
   and templated operational routes. Reject scalar type confusion such as an
   outcome array or nested/boolean section. Seed a recent response on an old
   report and require exclusion from the report-generated cohort; concurrent
-  writes must not make totals and breakdowns diverge. Schema v1 must be rejected
-  by GET, PUT and D1, remain absent from the UI, and print no feedback component.
+  writes must return each atomic statement's own row and must not make totals or
+  breakdowns diverge. Skewed cells and adjacent windows must not disclose a
+  category below five. Schema v1 must be rejected by GET, PUT and D1, remain
+  absent from the UI, and print no feedback component.
 - Revision side effects: saving a revision permanently closes active Family
   rooms, while old comparisons, choices, orders and purchased snapshots remain
   byte-for-byte unchanged and are not presented as current. Paid, upload,
@@ -355,10 +357,10 @@ interleaved within their own real-D1 fixtures.
 | Exact binding | Save on current revision, create a new revision/report, then reopen both | Each report has its own response; neither response follows the mutable project pointer |
 | Immutability | Capture report JSON/checksum before save, update and replay | Report bytes/checksum never change; only feedback timestamps/outcome/sections may change |
 | Vocabulary | Try unknown, duplicate, empty and four-section payloads, `overall` with another section, and array/boolean scalar confusion | Every invalid shape is rejected by API and D1; no free text can persist |
-| Ownership and lifecycle | Repeat GET/PUT as another owner, archive, restore and delete | Foreign resources are safe `404`; archived GET remains readable and PUT is `409`; deletion cascades |
+| Ownership and lifecycle | Repeat GET/PUT as another owner, archive, restore and delete, including archive/delete races after the initial read | Foreign resources are safe `404`; archived GET remains readable and PUT is `409`; only a confirmed archive returns `project_archived`, deletion races return bounded conflict, and deletion cascades |
 | Legacy boundary | Open and print a populated saved schema-v1 report; call feedback GET/PUT and bypass the API in D1 | Only persisted v1 fields render; no modern facts or feedback UI print; API and SQL reject feedback |
 | Accessibility | Keyboard, screen reader, 200% zoom, text spacing, reduced motion and 390 px | Native fieldsets announce labels/status/errors, the three-section limit is understandable, and print excludes the complete feedback component |
-| Measurement | Query the protected window after multiple eligible reports, a recent response on an old report, and synthetic outcomes/sections | Old-report response is excluded; one snapshot reconciles denominator, total and rate; breakdowns stay empty below the five-report/five-response threshold and otherwise reconcile without identity or resource keys |
+| Measurement | Query protected adjacent windows after multiple eligible reports, a recent response on an old report, and skewed synthetic outcomes/sections | Old-report response is excluded; one snapshot reconciles denominator, total and rate; every categorical breakdown stays empty when the global cohort or any populated cell is below five, preventing complementary small-cell disclosure without returning identity or resource keys |
 | Operations | Inspect strict preflight, mode-0600 evidence cleanup, readiness, failed/successful canary cleanup and old-Worker rehearsal | `reportFeedbackSchema=current`, capability true, exact canary IDs have zero residue, templated logs, and rollback is compatibility-gated |
 
 ## Required release evidence
@@ -386,7 +388,8 @@ Attach to the release record, without secrets or customer data:
   keyboard/screen-reader/reflow results;
 - Report feedback outcome/section fixtures, exact-version immutability hashes,
   schema-v1 API/UI/D1 rejection, archived/ownership/CSRF/KV-failure/rate-limit
-  evidence, the exact 50→51 cap, D1 guard bypasses, aggregate redaction,
+  evidence, the exact 60→61 feedback limit and 50→51 project cap, concurrent
+  atomic-write and archive/delete-race evidence, D1 guard bypasses, aggregate redaction,
   populated `0011`→`0013` upgrade, failed/successful exact-ID canary cleanup,
   print exclusion and keyboard/screen-reader/reflow results;
 - encrypted D1 backup checksum, isolated restore counts and measured RTO; and

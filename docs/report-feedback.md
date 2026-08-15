@@ -49,21 +49,29 @@ An exact replay preserves `updatedAt`; a changed response updates it. Neither
 path reads or writes report JSON. Operational logs template project, revision
 and report-schema segments.
 
-Concurrent tabs use explicit last-completed-write-wins semantics. The upsert
-is followed by an exact content-and-timestamp postcondition, so a later write
-cannot be returned as if it were this request's result. An interleaving write
-returns bounded `409 report_feedback_conflict`; the owner reloads before trying
-again. Otherwise the last completed write remains the saved response.
+Concurrent tabs use explicit last-completed-write-wins semantics. One atomic
+upsert returns the row produced by that statement, so every successful request
+receives its own committed result even if another tab writes immediately before
+or after it. An exact replay preserves `updatedAt`; a changed response advances
+it. If the SQL guard fires after the initial ownership read, the Worker rechecks
+the owner-scoped project state: only an authoritative archive is reported as
+`project_archived`; deletion and other source races return bounded
+`409 report_feedback_conflict` instead of a false archive acknowledgement.
 
 The protected aggregate endpoint returns the number of eligible schema-v2
 reports, total responses, response rate, counts by outcome and section, and the
 bounded outcome × section matrix for the requested window. One SQL statement
 derives every value from the same report-generated cohort, preventing numerator,
-denominator and breakdown drift during concurrent writes. Outcome and section
+denominator and breakdown drift during concurrent writes. All categorical
 breakdowns remain empty until at least five reports and five responses are in
-the window; denominator, total and response rate remain visible for funnel
+the window, and also whenever any populated outcome, section, or outcome ×
+section cell would contain fewer than five responses. Global suppression keeps
+totals or an adjacent-window comparison from exposing a complementary small
+category; denominator, total and response rate remain visible for funnel
 health. It never returns identity, project, revision, report, IP, free text or
-individual response rows.
+individual response rows. This is small-cell protection on a secret-protected
+operations endpoint, not a formal differential-privacy guarantee; access to the
+metrics token remains privileged and audited deployment configuration.
 
 ## Intake hardening shipped with the schema
 

@@ -663,8 +663,12 @@ has at most one response, and every metric is derived in one SQL statement. The
 rate is therefore `totalResponses / eligibleReports` (or `null` when no report
 is eligible) and cannot exceed one. Outcome, section and matrix arrays remain
 empty until both eligible reports and responses reach the five-record privacy
-threshold. The matrix contains only the approved vocabulary. No account,
-project, revision, report, or free-text value is returned.
+threshold. They also remain empty when any populated outcome, section, or
+outcome × section cell is below five, so totals and adjacent-window comparisons
+cannot expose a complementary small category. The matrix contains only the
+approved vocabulary. No account, project, revision, report, or free-text value
+is returned. The endpoint is secret-protected and uses small-cell suppression;
+it does not claim formal differential privacy.
 
 ## Brief Check and revision endpoints
 

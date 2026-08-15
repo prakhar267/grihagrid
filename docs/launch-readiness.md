@@ -381,7 +381,8 @@ new paid capability.
   responses, response rate, outcome totals, section totals and the outcome ×
   section matrix from one report-generated cohort without returning any resource
   or account identifier. Categorical breakdowns stay suppressed below five
-  eligible reports and five responses.
+  eligible reports or five responses, and whenever any populated outcome,
+  section, or outcome × section cell is below five.
 - [ ] `needs_review` visibly stops reliance, points to licensed local review and
   explains that structured feedback does not alert support. Concurrent archive
   changes the mounted control to read-only.
