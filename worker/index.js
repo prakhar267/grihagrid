@@ -1819,10 +1819,12 @@ async function login(request, env) {
 async function logout(request, env) {
   requireTrustedOrigin(request, env);
   const db = requireDatabase(env);
-  const session = await getSession(request, env);
-  await requireCsrf(request, session);
-  await db.prepare("DELETE FROM sessions WHERE id=? AND user_id=?").bind(session.session_id, session.user_id).run();
-  return withCookies(empty(), clearSessionCookies());
+  const session = await getSession(request, env, false);
+  if (session) {
+    await requireCsrf(request, session);
+    await db.prepare("DELETE FROM sessions WHERE id=? AND user_id=?").bind(session.session_id, session.user_id).run();
+  }
+  return withCookies(empty(204, { "cache-control": "no-store" }), clearSessionCookies());
 }
 
 async function me(request, env) {

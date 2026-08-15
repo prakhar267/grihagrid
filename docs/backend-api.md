@@ -193,8 +193,13 @@ session and returns `{ user, csrfToken }`.
 
 ### `POST /api/auth/logout`
 
-Requires session, same-origin request, CSRF cookie, and header. Deletes the D1
-session and clears both cookies. Returns `204`.
+Requires a same-origin request and an available database. An active session also
+requires a matching CSRF cookie and header; the endpoint deletes that D1 session
+before clearing both cookies. If the session is missing, expired, or already
+revoked, logout is idempotent and still clears both cookies. Returns `204` only
+after the active session was deleted or the server confirmed that no active
+session exists. Origin, CSRF, and database failures do not clear cookies.
+The `204` response is explicitly `no-store`.
 
 ### `GET /api/auth/me`
 

@@ -95,6 +95,7 @@ test("authenticated smoke proves checkout and private uploads fail closed", asyn
   const releaseId = "22222222-2222-4222-8222-222222222222";
   let marker = "";
   let deleted = false;
+  let loggedOut = false;
   const denied = [];
 
   globalThis.fetch = async (input, init = {}) => {
@@ -104,6 +105,7 @@ test("authenticated smoke proves checkout and private uploads fail closed", asyn
       const headers = new Headers({ "content-type": "application/json" });
       headers.append("set-cookie", "__Host-grihagrid_session=session-value; Path=/; Secure; HttpOnly; SameSite=Lax");
       headers.append("set-cookie", "grihagrid_csrf=csrf-value; Path=/; Secure; SameSite=Strict");
+      headers.append("set-cookie", "edge-routing=keep-me; Path=/; Secure; SameSite=Lax");
       return new Response(JSON.stringify({ csrfToken: "csrf-value" }), { headers });
     }
     if (url.pathname === "/api/readiness") {
@@ -112,7 +114,14 @@ test("authenticated smoke proves checkout and private uploads fail closed", asyn
         capabilities: { paidCheckout: false, paidFulfillment: false, privateUploads: false },
       });
     }
-    if (url.pathname === "/api/auth/me") return Response.json({ user: { email: "release@example.test" } });
+    if (url.pathname === "/api/auth/me") {
+      if (loggedOut) {
+        assert.equal(new Headers(init.headers).get("cookie"), "__Host-grihagrid_session=session-value");
+      }
+      return loggedOut
+        ? Response.json({ code: "unauthenticated" }, { status: 401 })
+        : Response.json({ user: { email: "release@example.test" } });
+    }
     if (url.pathname === "/api/projects" && method === "POST") {
       marker = JSON.parse(init.body).name;
       return Response.json({ project: { id: projectId } }, { status: 201 });
@@ -142,7 +151,18 @@ test("authenticated smoke proves checkout and private uploads fail closed", asyn
       deleted = true;
       return new Response(null, { status: 204 });
     }
-    if (url.pathname === "/api/auth/logout") return new Response(null, { status: 204 });
+    if (url.pathname === "/api/auth/logout") {
+      const headersSent = new Headers(init.headers);
+      assert.equal(headersSent.get("origin"), "https://worker.example.test");
+      assert.equal(headersSent.get("x-csrf-token"), "csrf-value");
+      assert.match(headersSent.get("cookie") || "", /__Host-grihagrid_session=session-value/u);
+      assert.match(headersSent.get("cookie") || "", /grihagrid_csrf=csrf-value/u);
+      loggedOut = true;
+      const headers = new Headers();
+      headers.append("set-cookie", "__Host-grihagrid_session=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax");
+      headers.append("set-cookie", "grihagrid_csrf=; Path=/; Max-Age=0; Secure; SameSite=Strict");
+      return new Response(null, { status: 204, headers });
+    }
     throw new Error(`unexpected request ${method} ${url.pathname}`);
   };
 
@@ -154,6 +174,7 @@ test("authenticated smoke proves checkout and private uploads fail closed", asyn
     );
     assert.deepEqual(denied, ["checkout", "upload"]);
     assert.equal(result.projectDeleted, true);
+    assert.equal(result.sessionRevocationVerified, true);
     assert.equal(deleted, true);
   } finally {
     globalThis.fetch = originalFetch;
@@ -165,6 +186,7 @@ test("authenticated smoke deletes only its exact marker after an ambiguous creat
   let marker = "";
   let deletedId = "";
   let logoutCalled = false;
+  let loggedOut = false;
   const projectId = "11111111-1111-4111-8111-111111111111";
   globalThis.fetch = async (input, init = {}) => {
     const url = new URL(input);
@@ -172,6 +194,7 @@ test("authenticated smoke deletes only its exact marker after an ambiguous creat
       const headers = new Headers({ "content-type": "application/json" });
       headers.append("set-cookie", "__Host-grihagrid_session=session-value; Path=/; Secure; HttpOnly; SameSite=Lax");
       headers.append("set-cookie", "grihagrid_csrf=csrf-value; Path=/; Secure; SameSite=Strict");
+      headers.append("set-cookie", "edge-routing=keep-me; Path=/; Secure; SameSite=Lax");
       return new Response(JSON.stringify({ csrfToken: "csrf-value" }), { headers });
     }
     if (url.pathname === "/api/readiness") {
@@ -181,7 +204,12 @@ test("authenticated smoke deletes only its exact marker after an ambiguous creat
       });
     }
     if (url.pathname === "/api/auth/me") {
-      return Response.json({ user: { email: "release@example.test" } });
+      if (loggedOut) {
+        assert.equal(new Headers(init.headers).get("cookie"), "__Host-grihagrid_session=session-value");
+      }
+      return loggedOut
+        ? Response.json({ code: "unauthenticated" }, { status: 401 })
+        : Response.json({ user: { email: "release@example.test" } });
     }
     if (url.pathname === "/api/projects" && init.method === "POST") {
       marker = JSON.parse(init.body).name;
@@ -202,8 +230,15 @@ test("authenticated smoke deletes only its exact marker after an ambiguous creat
       return Response.json({ code: "project_not_found" }, { status: 404 });
     }
     if (url.pathname === "/api/auth/logout") {
+      const headersSent = new Headers(init.headers);
+      assert.equal(headersSent.get("origin"), "https://worker.example.test");
+      assert.equal(headersSent.get("x-csrf-token"), "csrf-value");
       logoutCalled = true;
-      return new Response(null, { status: 204 });
+      loggedOut = true;
+      const headers = new Headers();
+      headers.append("set-cookie", "__Host-grihagrid_session=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Lax");
+      headers.append("set-cookie", "grihagrid_csrf=; Path=/; Max-Age=0; Secure; SameSite=Strict");
+      return new Response(null, { status: 204, headers });
     }
     throw new Error(`unexpected request ${init.method || "GET"} ${url.pathname}`);
   };

@@ -9,6 +9,10 @@ export class ApiError extends Error {
 
 let csrfToken = null;
 
+export function clearCsrfToken() {
+  csrfToken = null;
+}
+
 function readCookie(name) {
   if (typeof document === "undefined") return null;
   const prefix = `${encodeURIComponent(name)}=`;
@@ -16,7 +20,7 @@ function readCookie(name) {
   return entry ? decodeURIComponent(entry.slice(prefix.length)) : null;
 }
 
-export async function api(path, options = {}) {
+async function apiRequest(path, options = {}) {
   const headers = new Headers(options.headers || {});
   const method = String(options.method || "GET").toUpperCase();
   const controller = new AbortController();
@@ -56,7 +60,16 @@ export async function api(path, options = {}) {
   if (payload && typeof payload === "object" && payload.csrfToken) {
     csrfToken = payload.csrfToken;
   }
-  return payload;
+  return { payload, response };
+}
+
+export async function api(path, options = {}) {
+  return (await apiRequest(path, options)).payload;
+}
+
+export async function apiResponse(path, options = {}) {
+  const { payload, response } = await apiRequest(path, options);
+  return { payload, status: response.status };
 }
 
 export function formatInr(value) {

@@ -63,6 +63,7 @@ export async function runAuthenticatedSmoke(rawOrigin, credentials, options = {}
   let csrfToken = "";
   let projectId = "";
   let releaseId = "";
+  let sessionRevocationVerified = false;
   let primaryError = null;
   const marker = `Release canary ${crypto.randomUUID()}`;
 
@@ -74,7 +75,7 @@ export async function runAuthenticatedSmoke(rawOrigin, credentials, options = {}
     const startedAt = performance.now();
     const method = init.method || "GET";
     const headers = new Headers(init.headers || {});
-    if (jar.size) headers.set("cookie", cookieHeader(jar));
+    if (jar.size && !headers.has("cookie")) headers.set("cookie", cookieHeader(jar));
     if (init.body !== undefined && !(init.body instanceof FormData) && !headers.has("content-type")) {
       headers.set("content-type", "application/json");
     }
@@ -194,12 +195,23 @@ export async function runAuthenticatedSmoke(rawOrigin, credentials, options = {}
     }
     if (jar.has(SESSION_COOKIE) && (csrfToken || jar.has(CSRF_COOKIE))) {
       try {
+        const revokedSession = jar.get(SESSION_COOKIE);
         await call("/api/auth/logout", { method: "POST", body: "{}" }, [204]);
+        assert.equal(jar.has(SESSION_COOKIE), false, "logout did not clear the secure session cookie");
+        assert.equal(jar.has(CSRF_COOKIE), false, "logout did not clear the CSRF cookie");
+        const replay = await call("/api/auth/me", {
+          headers: { cookie: `${SESSION_COOKIE}=${revokedSession}` },
+        }, [401]);
+        assert.equal(replay?.code, "unauthenticated", "revoked session cookie was not rejected");
+        sessionRevocationVerified = true;
       } catch (logoutError) {
         primaryError = primaryError
-          ? new AggregateError([primaryError, logoutError], "authenticated smoke and logout failed")
+          ? new AggregateError([primaryError, logoutError], "authenticated smoke and logout proof failed")
           : logoutError;
       }
+    }
+    if (!sessionRevocationVerified && !primaryError) {
+      primaryError = new Error("authenticated smoke could not prove current-session revocation");
     }
   }
 
@@ -210,7 +222,8 @@ export async function runAuthenticatedSmoke(rawOrigin, credentials, options = {}
     checkedAt: new Date().toISOString(),
     projectCreated: true,
     projectDeleted: true,
-    sessionLoggedOut: true,
+    sessionLoggedOut: sessionRevocationVerified,
+    sessionRevocationVerified,
     checks: completed,
   };
 }
