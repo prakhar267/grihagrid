@@ -15,10 +15,36 @@ structured inputs and can use a versioned print artifact. This exception does
 not make uploads available and does not waive any money, identity, recovery,
 quality, or operational gate below.
 
-Brief Check, Change Study and immutable project-revision history are a pending
-paid-closed product release. Local implementation or a green unit suite is not
-deployment evidence: until the dedicated gate below is complete, production
-must not advertise the feature or apply migration `0012`.
+Brief Check, Change Study and immutable project-revision history are live as a
+paid-closed product release. They remain concept-stage planning aids rather than
+feasibility, code, design, structural or construction approval. Paid checkout,
+fulfillment, the paid-plan allowlist and private uploads remain closed.
+
+## Brief Check and revision-history release recorded on 2026-08-15
+
+The deployed application source is exact merged-main SHA
+`4bee3e86271794f273d8d401cf30d5737d97d394`. Production Worker version
+`5ec5aeb2-d60b-409e-a7cd-7d7194ca7485` and staging Worker version
+`b3a9b456-4455-4de8-9ec0-6b9451e9a2fb` both carry tag
+`brief-check-v1-4bee3e8`. Migration `0012` is applied in both D1 databases and
+no migration remains pending.
+
+| Evidence | Result | Limitation |
+|---|---|---|
+| Reviewed source and protected checks | [PR `#17`](https://github.com/prakhar267/grihagrid/pull/17) merged as `4bee3e86271794f273d8d401cf30d5737d97d394` from exact head `e865ec17a58558b28681fa2ba1cb677913906877` after [CI `31851674165`](https://github.com/prakhar267/grihagrid/actions/runs/31851674165) and [CodeQL `31851672158`](https://github.com/prakhar267/grihagrid/actions/runs/31851672158) passed. Post-merge [main CI `31851934838`](https://github.com/prakhar267/grihagrid/actions/runs/31851934838) and [CodeQL `31851934701`](https://github.com/prakhar267/grihagrid/actions/runs/31851934701) also passed on the deployed SHA | Automated review does not replace an independent human approval, penetration test or accessibility certification |
+| Local and real-D1 release gates | The exact frozen tree passed the production build, operational checks and **96/96** serialized tests; fresh migrations `0001`–`0012`, production/staging Worker dry-runs, high-severity dependency audit and diff hygiene passed. Real workerd/D1 tests cover zero-write preview, CAS and idempotency races, immutable revision/report history, migrated-v1 truth, rollback compatibility, Gemini supersession, ownership, archive and deletion boundaries | Synthetic and local concurrency does not establish customer comprehension, long-running load behaviour or professional planning correctness |
+| Staging recovery point and schema | Immediately before migration, staging contained users=0, projects=2, reports=0 and orders=0. Mode-0600 export `grihagrid-staging-pre-0012-20260814T235514Z.sql` on the FileVault-encrypted operator volume has SHA-256 `fb31507ecdb694e136d949fd611caa9f8e2a8f27955ce7a8b912a806389e6282`; Time Travel bookmark `00000038-00000000-000050c7-c35fb78b4ab82764865a80b0724c9636` and previous Worker `091268fd-8359-4367-981e-e38d64440b47` were recorded. Migration produced exactly two baselines, zero report snapshots/requests, three tables, three indexes and fourteen readiness-counted triggers, with zero reconciliation or foreign-key violations | The local encrypted recovery copy is not a separately governed off-site backup; staging intentionally has no Gemini, R2, payment secrets or cron |
+| Staging release, canary and rollback | Public smoke and the authenticated report-v2 → zero-write preview → accepted revision → same-key replay → stale conflict → history/detail → historical report → cross-owner `404` → archive fence → deletion journey passed with exact cleanup. The previous Worker was briefly restored at 100%, successfully performed a legacy source update under migration `0012`, produced two null-fingerprint compatibility revisions, and was then replaced by the new version. A 30-minute exact-version observation (`2026-08-15T00:00:51.043Z`–`00:30:53.106Z`) passed 21 samples, 63 endpoint checks and 210 assertions with zero failures and zero error-tail events | This proves the deterministic paid-closed path and short application rollback, not paid-provider or Gemini behaviour in staging |
+| Production recovery point and schema | Immediately before migration, production contained users=1, projects=1, reports=1 (schema v1), AI briefs=1 and orders=0. Mode-0600 export `grihagrid-production-pre-0012-20260815T003128Z.sql` on the FileVault-encrypted operator volume has SHA-256 `e825af2f092d1732b3396d2b0e97e20a758aeefd886ec4b30a3f044ee5856d18`; Time Travel bookmark `0000005e-00000000-000050c8-3c1f7642bb88bb6259e4d304b2944205` and previous Worker `588f0fb0-5973-44fd-9b6f-299e3aad5c51` were recorded. Migration produced one honest current baseline and one immutable historical v1 report, with zero reconciliation/foreign-key violations and exact three-table/three-index/fourteen-trigger readiness shape | The encrypted local copy and D1 Time Travel are immediate recovery evidence, not the required durable off-site backup or a new timed restore drill |
+| Production deployment and authenticated canary | Worker `5ec5aeb2-d60b-409e-a7cd-7d7194ca7485` reached 100% traffic. Readiness reports every schema current, `briefCheck=true`, Gemini configured, `paidCheckout=false`, `privateUploads=false` and an empty paid-plan allowlist; the catalog accepts no order. A secure-session canary passed read-only report `404` → explicit v2 report → zero-write preview → revision save/replay/stale conflict → immutable history → pre-report AI rejection → current v2 report → real sanitized Gemini generation/cache reuse → cross-owner `404` → archive fence → deletion. Exact cleanup restored users/projects/reports/AI briefs to `1/1/1/1`, revisions/report snapshots to `1/1`, and orders/revision requests/synthetic users to zero | The Gemini call validates integration and currentness, not model-output correctness at scale; the existing production user's v1 report remains historical until that owner explicitly generates v2 |
+| Production observation | A 30-minute exact-version observation (`2026-08-15T00:35:22.512Z`–`01:05:24.382Z`) sampled health, readiness and catalog 21 times at roughly 90-second cadence. All 63 HTTP requests and 546 assertions passed; readiness, all seven schema checks and configured AI/rate/abuse controls stayed healthy; paid checkout, private uploads and every catalog order remained closed. The Cloudflare `status=error` tail for exact Worker `5ec5aeb2-d60b-409e-a7cd-7d7194ca7485` emitted zero events. Request latency was 11 ms minimum, 1,985 ms maximum and 658 ms average | This bounded single-region observation is not a load test, long-term SLO record or independent multi-region authenticated synthetic |
+| External public synthetic | Manually dispatched [run `31854021837`](https://github.com/prakhar267/grihagrid/actions/runs/31854021837) passed staging and production liveness, readiness, security-header and fail-closed-commerce jobs on exact deployed SHA `4bee3e86271794f273d8d401cf30d5737d97d394` | One GitHub-hosted source is not independent multi-region monitoring and does not exercise authentication or Gemini |
+
+Paid acceptance remains **NO-GO**. A governed whole-account erasure service,
+Razorpay/KYC/refund/invoice operations, durable off-site backup/restore evidence,
+independent human approval and broader assistive-technology testing remain open
+launch gates. Authorized project deletion is implemented and tested; operators
+must never substitute raw `DELETE FROM users` for account erasure.
 
 ## Evidence recorded on 2026-08-14
 
