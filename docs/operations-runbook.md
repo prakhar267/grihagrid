@@ -157,11 +157,14 @@ npm run check
 npm run check:worker
 npm run check:worker:staging
 npm audit --audit-level=high
+git diff --check
 ```
 
 `npm run check` builds the Vite client and Worker bundle, runs all Node tests,
 and validates fail-closed operational config. `check:migrations` applies the
-full schema history to a fresh temporary local D1 database. Both Worker commands
+full schema history to a fresh temporary local D1 database and runs the
+comment-aware forward-only SQL policy over every migration after the reviewed
+`0012` baseline. Both Worker commands
 validate bundles and environment bindings without deploying. The test runner
 executes test files serially because the two real-D1 suites each own a local
 Wrangler/workerd lifecycle; their adversarial concurrency is driven inside the
@@ -169,6 +172,36 @@ fixtures rather than by competing test processes. Do not deploy from
 a dirty working tree, with skipped tests, or
 after an audit finding has merely been ignored. Document any accepted
 non-critical dependency risk with an owner and expiry.
+
+The normal release path is `.github/workflows/deploy.yml`, triggered only after
+the exact merged `main` SHA passes CI. Its authorization job independently
+requires CodeQL success and an associated squash-merged PR. Staging and
+production use separate protected GitHub environments and separate encrypted
+environment secrets: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`,
+`D1_BACKUP_PASSPHRASE`, `GRIHAGRID_CANARY_EMAIL`, and
+`GRIHAGRID_CANARY_PASSWORD`. The Cloudflare token must be scoped to this account
+and only the Worker-script, D1, KV-read/binding, and Worker-tail permissions
+needed by the workflow. The environments admit protected `main` only;
+production adds a five-minute hold. Secrets are step-scoped and must not reach
+checkout, dependency installation, build, validation, or artifact actions. Do
+not copy a personal Wrangler OAuth credential into GitHub. The commands below
+remain the inspected break-glass procedure, not the routine path.
+
+The validation build runs on an unprivileged runner. Staging and production
+each start on a fresh runner, restore only that exact build artifact, and
+install the workflow-pinned Wrangler release with package lifecycle scripts
+disabled. Manual dispatch accepts only the current `main` tip; each environment
+also proves that its currently deployed source SHA is an ancestor of the new
+candidate, preventing out-of-order CI completion from causing a downgrade.
+
+Cloudflare Worker, D1, KV, and Tail token permissions are account-scoped. The
+separate staging and production tokens reduce credential reuse, and the
+workflow validates exact configured targets, but they are not a hard IAM wall
+inside one Cloudflare account. Use separate Cloudflare accounts or a
+target-enforcing deployment broker if hard environment isolation becomes a
+requirement. Required CI and CodeQL checks also do not substitute for an
+independent human reviewer; configure one before treating the repository as a
+multi-operator production system.
 
 ### 4.3 Verify target and bindings
 
@@ -287,8 +320,24 @@ readiness reports `revisionSchema=current` and `briefCheck=true`, while
 empty. Do not repair a mismatch by synthesizing earlier revisions; stop and
 restore into an isolated database to diagnose it.
 
-Apply the exact files to staging first and complete its smoke suite. For
-production:
+Apply the exact files to staging first and complete its smoke suite before
+production. Automation rejects deletion, rename, or modification of an
+existing migration between the reviewed base and release SHA. Every CI and
+privileged deployment run scans the entire post-`0012` migration set, not only
+the current diff, and rejects destructive or in-place SQL. This prevents a
+failed release from leaving an unsafe pending migration for the next release.
+When any remote migration is pending, automation
+records aggregate row counts, and checks key tables, columns, indexes,
+triggers, and foreign keys after application. It first creates a mode-0600
+export with Cloudflare credentials, then encrypts it in a separate step that
+has only the environment backup passphrase. Authenticated AES-256-GCM, a
+successful decrypt round trip, raw and encrypted SHA-256 values, the validated
+D1 Time Travel bookmark, current Worker version, and a non-secret key-version
+label are recorded before uploading only ciphertext plus the recovery manifest
+with seven-day retention. Raw SQL is removed before the artifact step. When a
+passphrase rotates, increment `BACKUP_KEY_VERSION` and retain the retiring key
+outside GitHub until every artifact carrying its label has expired. The manual
+equivalent is:
 
 ```sh
 npx wrangler d1 migrations apply DB --remote --env staging
@@ -329,6 +378,24 @@ and previous known-good version ID. Watch errors while the smoke tests run:
 npx wrangler tail grihagrid --format json --status error
 ```
 
+The automated path also checks `readiness.releaseId` against the exact active
+Worker version across three consecutive full smoke samples, runs the
+authenticated create → read → deterministic report → delete → logout canary,
+proves that paid-order creation and private upload both return their expected
+closed errors,
+reconfirms staging after the production hold, and monitors both invocation
+errors and handled `outcome=server_error` completion logs for that version.
+Expected fail-closed payment, fulfillment, plan, and upload responses are
+logged as `outcome=control_closed`, while missing-provider, database, abuse,
+AI, and unexpected failures remain `server_error` and trip the monitor.
+Raw tail events are reduced in memory to counts and byte totals, stop the
+observation on the first matching event, and never enter release artifacts.
+Automation rolls the Worker back only for a confirmed
+application regression when no migration ran. After a migration, any failure
+stops promotion and requires compatibility-checked roll-forward or explicit
+incident handling; it never blindly restores older code against a newer
+schema.
+
 ### 4.7 Production smoke tests
 
 Use only synthetic, non-sensitive data. Every check must record timestamp,
@@ -359,6 +426,8 @@ Then use the dedicated production canary account to verify:
    ownership-safe `404`.
 7. Confirm production catalog accepts no plan before the launch record is
    signed; staging test mode may accept only `decision_compare`.
+   Readiness must also report `paidFulfillment=false`,
+   `privateUploads=false`, and `checks.privateStorage=unavailable`.
 8. Verify mobile and desktop landing, start, auth, dashboard, Brief Check,
    revision history, comparison, print
    and return routes.

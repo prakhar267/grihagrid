@@ -37,19 +37,21 @@ test("read-only smoke verifies health, readiness, estimate and fail-closed catal
       });
     }
     if (url.pathname === "/api/health") {
-      return Response.json({ status: "ok", service: "grihagrid", time: "2026-08-13T00:00:00.000Z" }, { headers: { ...securityHeaders, "cache-control": "no-store" } });
+      return Response.json({ status: "ok", service: "grihagrid", time: new Date().toISOString() }, { headers: { ...securityHeaders, "cache-control": "no-store" } });
     }
     if (url.pathname === "/api/readiness") {
       readinessAttempts += 1;
       if (readinessAttempts === 1) throw new DOMException("synthetic timeout", "TimeoutError");
       return Response.json({
         status: "ready",
-        checks: { familyAlignmentSchema: "current" },
-        capabilities: { freePlanning: true, familyAlignment: true, paidCheckout: false },
+        releaseId: "11111111-1111-4111-8111-111111111111",
+        checks: { familyAlignmentSchema: "current", privateStorage: "unavailable", acceptingPaidPlans: [] },
+        capabilities: { freePlanning: true, familyAlignment: true, privateUploads: false, paidCheckout: false, paidFulfillment: false },
+        time: new Date().toISOString(),
       }, { headers: { ...securityHeaders, "cache-control": "no-store" } });
     }
     if (url.pathname === "/api/estimate") {
-      return Response.json({ estimate: { plotSqft: 1500, builtUpSqft: 1830, lowInr: 3_700_000, highInr: 4_500_000 } }, { headers: { ...securityHeaders, "cache-control": "no-store" } });
+      return Response.json({ estimate: { plotSqft: 1500, builtUpSqft: 1830, lowInr: 3_703_920, highInr: 4_428_600, floors: "G+1", quality: "Signature", city: "Pune" } }, { headers: { ...securityHeaders, "cache-control": "no-store" } });
     }
     if (url.pathname === "/api/commerce/catalog") {
       return Response.json({ plans: [{ id: "decision_compare", amountPaise: 99_900, currency: "INR", acceptingOrders: false }] }, { headers: { ...securityHeaders, "cache-control": "no-store" } });
@@ -58,7 +60,7 @@ test("read-only smoke verifies health, readiness, estimate and fail-closed catal
   };
 
   try {
-    const result = await runSmoke("https://worker.example.test");
+    const result = await runSmoke("https://worker.example.test", { expectedReleaseId: "11111111-1111-4111-8111-111111111111" });
     assert.equal(result.checks.length, 5);
     assert.equal(result.checks.find((check) => check.path === "/api/readiness")?.attempts, 2);
     assert.deepEqual(requested, [

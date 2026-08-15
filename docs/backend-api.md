@@ -110,7 +110,11 @@ Free-product readiness probe. Returns `200 status=ready` only when D1 is
 reachable, the required schema is present, and the KV abuse-control binding
 exists. The response separately reports Gemini planning, private upload, and
 paid-checkout capabilities, including `decisionSchema`, `paymentSchema`, and
-`revisionSchema`. `capabilities.briefCheck` is true only when migration 0012,
+`revisionSchema`. `releaseId` is the non-secret Cloudflare Worker version ID
+used to correlate a deployment with smoke and monitoring evidence.
+`capabilities.paidFulfillment` reports the independent Decision Compare
+fulfillment kill switch, so release checks can prove that both selling and
+fulfillment remain closed. `capabilities.briefCheck` is true only when migration 0012,
 its immutable guards, the pre-existing `projects_input_revision_guard`, and KV
 abuse control are ready;
 unavailable optional capabilities do not

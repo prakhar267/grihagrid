@@ -156,6 +156,14 @@ const FILE_TYPES = new Set([
   "image/webp",
 ]);
 const FILE_KINDS = new Set(["site-plan", "survey", "reference", "inspiration", "document", "other"]);
+const OPERATIONAL_OUTCOME_HEADER = "x-grihagrid-internal-outcome";
+const EXPECTED_CLOSED_CONTROL_CODES = new Set([
+  "fulfillment_paused",
+  "fulfillment_unavailable",
+  "payment_plan_unavailable",
+  "payments_disabled",
+  "storage_unavailable",
+]);
 
 class HttpError extends Error {
   constructor(status, message, code = "request_error") {
@@ -5731,6 +5739,7 @@ async function api(request, env, ctx, url) {
       return publicJson({
         status: freeReady ? "ready" : "not_ready",
         service: "grihagrid",
+        releaseId: String(env.CF_VERSION_METADATA?.id || "unknown").slice(0, 128),
         checks: {
           database,
           schema,
@@ -5750,6 +5759,7 @@ async function api(request, env, ctx, url) {
           freePlanning: freeReady,
           privateUploads: Boolean(env.FILES),
           paidCheckout: freeReady && acceptingPlans.length > 0,
+          paidFulfillment: enabledFlag(env.DECISION_COMPARE_FULFILLMENT_ENABLED),
           aiPlanningBrief: geminiConfigured,
           decisionCompare: freeReady && decisionSchema === "current",
           familyAlignment: freeReady && decisionSchema === "current" && familyAlignmentSchema === "current" && rateLimit === "configured",
@@ -5967,7 +5977,12 @@ async function api(request, env, ctx, url) {
     return json({ error: "not found", code: "not_found" }, 404);
   } catch (error) {
     const respond = ["/api/health", "/api/readiness", "/api/estimate", "/api/commerce/catalog"].includes(url.pathname) ? publicJson : json;
-    if (error instanceof HttpError) return respond({ error: error.message, code: error.code }, error.status);
+    if (error instanceof HttpError) {
+      const headers = EXPECTED_CLOSED_CONTROL_CODES.has(error.code)
+        ? { [OPERATIONAL_OUTCOME_HEADER]: "control_closed" }
+        : {};
+      return respond({ error: error.message, code: error.code }, error.status, headers);
+    }
     if (/archived project is read only/iu.test(String(error?.message || error))) {
       return respond({ error: "restore the project before changing its planning record", code: "project_archived" }, 409);
     }
@@ -6038,6 +6053,7 @@ function operationalOutcome(status) {
 
 function withRequestId(response, requestId) {
   const headers = new Headers(response.headers);
+  headers.delete(OPERATIONAL_OUTCOME_HEADER);
   headers.set("x-request-id", requestId);
   return new Response(response.body, {
     status: response.status,
@@ -6049,13 +6065,14 @@ function withRequestId(response, requestId) {
 function logOperationalRequest(request, env, response, startedAt, requestId) {
   if (!env.APP_ENV) return;
   const url = new URL(request.url);
+  const markedOutcome = response.headers.get(OPERATIONAL_OUTCOME_HEADER);
   console.log(JSON.stringify({
     type: "request_complete",
     environment: String(env.APP_ENV).slice(0, 32),
     method: request.method,
     route: operationalRoute(url.pathname),
     status: response.status,
-    outcome: operationalOutcome(response.status),
+    outcome: markedOutcome === "control_closed" ? markedOutcome : operationalOutcome(response.status),
     requestId,
     releaseId: String(env.CF_VERSION_METADATA?.id || "unknown").slice(0, 128),
     durationMs: Date.now() - startedAt,
@@ -6085,9 +6102,8 @@ export default {
         finalResponse = secure(await env.ASSETS.fetch(new Request(indexUrl, request)));
       }
     }
-    finalResponse = withRequestId(finalResponse, requestId);
     logOperationalRequest(request, env, finalResponse, startedAt, requestId);
-    return finalResponse;
+    return withRequestId(finalResponse, requestId);
   },
   async scheduled(controller, env, ctx) {
     if (!env.DB) return;

@@ -14,6 +14,8 @@
     "check:worker:staging": "wrangler deploy --dry-run --env staging --outdir .wrangler/ci-dry-run-staging",
     "check": "npm run build && npm run test:sites && npm run check:ops",
     "smoke": "node scripts/smoke.mjs",
+    "smoke:auth": "node scripts/authenticated-smoke.mjs",
+    "monitor:release": "node scripts/monitor-release.mjs",
     "deploy": "wrangler deploy"
   },
   "dependencies": {
@@ -26,6 +28,6 @@
     "vite": "^6.4.3"
   },
   "devDependencies": {
-    "wrangler": "^4.122.0"
+    "wrangler": "4.122.0"
   }
 }

@@ -1,0 +1,1246 @@
+name: Deploy merged main
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      release_sha:
+        description: Full merged main SHA to redeploy
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+  checks: read
+  pull-requests: read
+
+concurrency:
+  group: deploy-merged-main
+  queue: max
+
+env:
+  RELEASE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.release_sha || github.event.workflow_run.head_sha }}
+  WRANGLER_VERSION: "4.122.0"
+  BACKUP_KEY_VERSION: "2026-08-15-1"
+
+jobs:
+  authorize:
+    name: Authorize exact merged main release
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') ||
+      (github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      release_sha: ${{ steps.gate.outputs.release_sha }}
+      base_sha: ${{ steps.gate.outputs.base_sha }}
+      pull_request: ${{ steps.gate.outputs.pull_request }}
+      deploy: ${{ steps.scope.outputs.deploy }}
+      migrations: ${{ steps.scope.outputs.migrations }}
+
+    steps:
+      - name: Check out the exact candidate with full history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.RELEASE_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - name: Require a squash-merged PR and exact trusted workflow results
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TRIGGER_CI_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_SHA" =~ ^[a-f0-9]{40}$ ]]; then
+            echo "release_sha must be a full lowercase commit SHA" >&2
+            exit 1
+          fi
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$RELEASE_SHA" origin/main
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            test "$(git rev-parse origin/main)" = "$RELEASE_SHA" || {
+              echo "manual releases must target the current main tip; use the explicit rollback path for recovery" >&2
+              exit 1
+            }
+          fi
+
+          parent_count="$(git rev-list --parents -n 1 "$RELEASE_SHA" | awk '{ print NF - 1 }')"
+          test "$parent_count" -eq 1 || {
+            echo "release commit must be a single-parent squash merge" >&2
+            exit 1
+          }
+          base_sha="$(git rev-parse "$RELEASE_SHA^")"
+
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            "repos/$GITHUB_REPOSITORY/commits/$RELEASE_SHA/pulls" \
+            > "$RUNNER_TEMP/associated-pulls.json"
+          pull_request="$(node --input-type=module - "$RELEASE_SHA" "$RUNNER_TEMP/associated-pulls.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const [sha, filename] = process.argv.slice(2);
+          const pulls = JSON.parse(readFileSync(filename, "utf8"));
+          const pull = pulls.find((candidate) => (
+            candidate.merged_at
+            && candidate.merge_commit_sha === sha
+            && candidate.base?.ref === "main"
+          ));
+          if (!pull) process.exit(1);
+          process.stdout.write(String(pull.number));
+          NODE
+          )" || {
+            echo "release SHA is not the squash result of a merged pull request into main" >&2
+            exit 1
+          }
+
+          if [ "$GITHUB_EVENT_NAME" = "workflow_run" ]; then
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$TRIGGER_CI_RUN_ID" > "$RUNNER_TEMP/ci-run.json"
+          else
+            gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
+              -f head_sha="$RELEASE_SHA" -f branch=main -f event=push -f status=success -F per_page=100 \
+              > "$RUNNER_TEMP/ci-runs.json"
+            node --input-type=module - "$RELEASE_SHA" "$RUNNER_TEMP/ci-runs.json" "$RUNNER_TEMP/ci-run.json" <<'NODE'
+          import { readFileSync, writeFileSync } from "node:fs";
+          const [sha, input, output] = process.argv.slice(2);
+          const runs = JSON.parse(readFileSync(input, "utf8")).workflow_runs || [];
+          const run = runs.find((candidate) => candidate.head_sha === sha && candidate.conclusion === "success");
+          if (!run) process.exit(1);
+          writeFileSync(output, JSON.stringify(run));
+          NODE
+          fi
+
+          CI_SHA="$RELEASE_SHA" CI_REPOSITORY="$GITHUB_REPOSITORY" node --input-type=module - "$RUNNER_TEMP/ci-run.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const run = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          const valid = run.path === ".github/workflows/ci.yml"
+            && run.event === "push"
+            && run.status === "completed"
+            && run.conclusion === "success"
+            && run.head_sha === process.env.CI_SHA
+            && run.head_branch === "main"
+            && run.head_repository?.full_name === process.env.CI_REPOSITORY;
+          if (!valid) process.exit(1);
+          NODE
+
+          gh api "repos/$GITHUB_REPOSITORY/actions/workflows" > "$RUNNER_TEMP/workflows.json"
+          codeql_workflow_id="$(node --input-type=module - "$RUNNER_TEMP/workflows.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const workflows = JSON.parse(readFileSync(process.argv[2], "utf8")).workflows || [];
+          const workflow = workflows.find((candidate) => (
+            candidate.path === "dynamic/github-code-scanning/codeql" && candidate.state === "active"
+          ));
+          if (!workflow) process.exit(1);
+          process.stdout.write(String(workflow.id));
+          NODE
+          )"
+
+          codeql_ready=false
+          for attempt in $(seq 1 40); do
+            gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/$codeql_workflow_id/runs" \
+              -f head_sha="$RELEASE_SHA" -f branch=main -F per_page=100 \
+              > "$RUNNER_TEMP/codeql-runs.json"
+            codeql_state="$(node --input-type=module - "$RELEASE_SHA" "$RUNNER_TEMP/codeql-runs.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const [sha, filename] = process.argv.slice(2);
+          const runs = (JSON.parse(readFileSync(filename, "utf8")).workflow_runs || []).filter((run) => (
+            run.path === "dynamic/github-code-scanning/codeql"
+            && run.head_sha === sha
+            && run.head_branch === "main"
+          ));
+          if (runs.some((run) => run.status === "completed" && run.conclusion === "success")) {
+            process.stdout.write("success");
+          } else if (runs.length > 0 && runs.every((run) => run.status === "completed")) {
+            process.stdout.write("failure");
+          } else {
+            process.stdout.write("wait");
+          }
+          NODE
+            )"
+            case "$codeql_state" in
+              success)
+                codeql_ready=true
+                break
+                ;;
+              failure)
+                echo "CodeQL failed on the exact release SHA" >&2
+                exit 1
+                ;;
+              wait)
+                sleep 15
+                ;;
+              *)
+                echo "unexpected CodeQL state" >&2
+                exit 1
+                ;;
+            esac
+          done
+          test "$codeql_ready" = true || {
+            echo "timed out waiting for exact-SHA CodeQL" >&2
+            exit 1
+          }
+
+          {
+            echo "release_sha=$RELEASE_SHA"
+            echo "base_sha=$base_sha"
+            echo "pull_request=$pull_request"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Classify the release scope
+        id: scope
+        run: node scripts/release-scope.mjs "${{ steps.gate.outputs.base_sha }}" "${{ steps.gate.outputs.release_sha }}"
+
+  validate:
+    name: Revalidate and build authorized release
+    needs: authorize
+    if: needs.authorize.outputs.deploy == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
+
+    steps:
+      - name: Check out the authorized SHA
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.RELEASE_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Revalidate release inputs without environment secrets
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+          npm ci
+          npm run check:ops
+          npm run check:migrations
+          npm run build
+          git diff --check
+
+      - name: Store the exact validated build
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-build-${{ env.RELEASE_SHA }}
+          path: dist
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  staging:
+    name: Migrate, deploy, and verify staging
+    needs: [authorize, validate]
+    if: needs.authorize.outputs.deploy == 'true' && needs.validate.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment:
+      name: staging
+      url: https://grihagrid-staging.prakhargupta267.workers.dev
+    outputs:
+      version_id: ${{ steps.version.outputs.version_id }}
+    env:
+      RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
+      BASE_SHA: ${{ needs.authorize.outputs.base_sha }}
+      ORIGIN: https://grihagrid-staging.prakhargupta267.workers.dev
+
+    steps:
+      - name: Check out the authorized SHA
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.RELEASE_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+      - name: Restore the exact validated build
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-build-${{ env.RELEASE_SHA }}
+          path: ${{ runner.temp }}/grihagrid-release-build
+
+      - name: Prepare the fresh privileged runner
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+          test -f "$RUNNER_TEMP/grihagrid-release-build/client/index.html"
+          test -f "$RUNNER_TEMP/grihagrid-release-build/server/index.js"
+          if find "$RUNNER_TEMP/grihagrid-release-build" -type l -print -quit | grep -q .; then
+            echo "validated build artifacts may not contain symbolic links" >&2
+            exit 1
+          fi
+          rm -rf -- "$GITHUB_WORKSPACE/dist"
+          mv -- "$RUNNER_TEMP/grihagrid-release-build" "$GITHUB_WORKSPACE/dist"
+          test -f dist/client/index.html
+          test -f dist/server/index.js
+          mkdir -p release-evidence/staging
+          npm install --global --ignore-scripts --no-audit --no-fund \
+            --registry=https://registry.npmjs.org "wrangler@$WRANGLER_VERSION"
+          test "$(wrangler --version)" = "$WRANGLER_VERSION"
+
+      - name: Enforce immutable, forward-only migrations
+        run: |
+          set -euo pipefail
+          migration_changes="$(git diff --name-status "$BASE_SHA" "$RELEASE_SHA" -- migrations)"
+          if [ -n "$migration_changes" ]; then
+            while IFS=$'\t' read -r status first_path second_path; do
+              if [ "$status" != "A" ]; then
+                echo "existing migrations are immutable; found status $status" >&2
+                exit 1
+              fi
+              filename="${first_path##*/}"
+              [[ "$filename" =~ ^([0-9]{4})_[a-z0-9_]+\.sql$ ]]
+              if (( 10#${BASH_REMATCH[1]} <= 12 )); then
+                echo "new migrations must follow the trusted 0012 baseline" >&2
+                exit 1
+              fi
+            done <<< "$migration_changes"
+          fi
+          policy_migrations=()
+          for migration in migrations/*.sql; do
+            filename="${migration##*/}"
+            sequence="${filename%%_*}"
+            [[ "$sequence" =~ ^[0-9]{4}$ ]]
+            if (( 10#$sequence > 12 )); then policy_migrations+=("$migration"); fi
+          done
+          if (( ${#policy_migrations[@]} > 0 )); then
+            node scripts/check-migration-policy.mjs "${policy_migrations[@]}"
+          fi
+
+      - name: Record current staging Worker
+        id: previous
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          wrangler deployments status --env staging --json > "$RUNNER_TEMP/staging-pre-deploy.json"
+          previous_version="$(node --input-type=module - "$RUNNER_TEMP/staging-pre-deploy.json" <<'NODE'
+          import { readFileSync, writeFileSync } from "node:fs";
+          const input = process.argv[2];
+          const status = JSON.parse(readFileSync(input, "utf8"));
+          const active = status.versions?.filter((version) => version.percentage === 100) || [];
+          if (active.length !== 1 || !/^[0-9a-f-]{36}$/u.test(active[0].version_id || "")) process.exit(1);
+          writeFileSync("release-evidence/staging/pre-deploy-status.json", `${JSON.stringify({
+            activeVersion: active[0].version_id,
+            trafficPercentage: 100,
+          }, null, 2)}\n`);
+          process.stdout.write(active[0].version_id);
+          NODE
+          )"
+          wrangler versions view "$previous_version" --env staging --json > "$RUNNER_TEMP/staging-previous-version.json"
+          previous_release_sha="$(node --input-type=module - "$RUNNER_TEMP/staging-previous-version.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const version = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          const matches = String(version.annotations?.["workers/message"] || "").match(/\b[a-f0-9]{40}\b/gu) || [];
+          if (matches.length !== 1) process.exit(1);
+          process.stdout.write(matches[0]);
+          NODE
+          )"
+          git merge-base --is-ancestor "$previous_release_sha" "$RELEASE_SHA" || {
+            echo "release would move staging behind its currently deployed source history" >&2
+            exit 1
+          }
+          {
+            echo "previous_version=$previous_version"
+            echo "previous_release_sha=$previous_release_sha"
+          } >> "$GITHUB_OUTPUT"
+      - name: Inspect pending staging migrations and aggregate data state
+        id: migrations
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          wrangler d1 migrations list DB --remote --env staging \
+            | tee release-evidence/staging/pre-migration-list.txt
+          wrangler d1 execute DB --remote --env staging --json --command \
+            "SELECT 'users' AS entity,COUNT(*) AS row_count FROM users UNION ALL SELECT 'projects',COUNT(*) FROM projects UNION ALL SELECT 'orders',COUNT(*) FROM orders UNION ALL SELECT 'payment_webhook_events',COUNT(*) FROM payment_webhook_events;" \
+            > "$RUNNER_TEMP/staging-pre-migration-counts.json"
+          node --input-type=module - "$RUNNER_TEMP/staging-pre-migration-counts.json" <<'NODE'
+          import { readFileSync, writeFileSync } from "node:fs";
+          const batches = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          if (!batches.every((batch) => batch.success === true)) process.exit(1);
+          const rows = batches.flatMap((batch) => batch.results || []);
+          const expected = ["orders", "payment_webhook_events", "projects", "users"];
+          const counts = Object.fromEntries(rows.map((row) => [String(row.entity), Number(row.row_count)]));
+          if (rows.length !== expected.length
+            || !expected.every((entity) => Number.isSafeInteger(counts[entity]) && counts[entity] >= 0)) process.exit(1);
+          writeFileSync("release-evidence/staging/pre-migration-counts.json", `${JSON.stringify({ counts }, null, 2)}\n`);
+          NODE
+          if grep -Fq "No migrations to apply!" release-evidence/staging/pre-migration-list.txt; then
+            echo "pending=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "pending=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create protected staging export and recovery point
+        id: raw_backup
+        if: steps.migrations.outputs.pending == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          umask 077
+          backup_directory="$RUNNER_TEMP/grihagrid-staging-pre-migration"
+          mkdir -m 700 "$backup_directory"
+          raw_backup="$backup_directory/d1-pre-migration.sql"
+          wrangler d1 export DB --remote --env staging --skip-confirmation --output "$raw_backup"
+          chmod 600 "$raw_backup"
+          raw_sha256="$(sha256sum "$raw_backup" | awk '{ print $1 }')"
+          raw_permissions="$(stat -c '%a' "$raw_backup")"
+          test "$raw_permissions" = "600"
+          wrangler d1 time-travel info DB --env staging --json > "$backup_directory/time-travel.json"
+          bookmark="$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).bookmark' "$backup_directory/time-travel.json")"
+          [[ "$bookmark" =~ ^[A-Za-z0-9._:-]{16,256}$ ]]
+          {
+            echo "backup_directory=$backup_directory"
+            echo "raw_sha256=$raw_sha256"
+            echo "raw_permissions=$raw_permissions"
+            echo "bookmark=$bookmark"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Encrypt and verify protected staging export
+        id: backup
+        if: steps.migrations.outputs.pending == 'true'
+        env:
+          D1_BACKUP_PASSPHRASE: ${{ secrets.D1_BACKUP_PASSPHRASE }}
+          BACKUP_DIRECTORY: ${{ steps.raw_backup.outputs.backup_directory }}
+          RAW_SHA256: ${{ steps.raw_backup.outputs.raw_sha256 }}
+          RAW_PERMISSIONS: ${{ steps.raw_backup.outputs.raw_permissions }}
+          BOOKMARK: ${{ steps.raw_backup.outputs.bookmark }}
+          PREVIOUS_VERSION: ${{ steps.previous.outputs.previous_version }}
+        run: |
+          set -euo pipefail
+          test "${#D1_BACKUP_PASSPHRASE}" -ge 20
+          umask 077
+          raw_backup="$BACKUP_DIRECTORY/d1-pre-migration.sql"
+          encrypted_backup="$BACKUP_DIRECTORY/d1-pre-migration.sql.ggrid"
+          verified_backup="$BACKUP_DIRECTORY/d1-verified.sql"
+          node scripts/backup-crypto.mjs encrypt "$raw_backup" "$encrypted_backup"
+          node scripts/backup-crypto.mjs decrypt "$encrypted_backup" "$verified_backup"
+          test "$(sha256sum "$verified_backup" | awk '{ print $1 }')" = "$RAW_SHA256"
+          encrypted_sha256="$(sha256sum "$encrypted_backup" | awk '{ print $1 }')"
+          rm -f -- "$raw_backup" "$verified_backup" "$BACKUP_DIRECTORY/time-travel.json"
+          ENCRYPTED_SHA256="$encrypted_sha256" node --input-type=module - "$BACKUP_DIRECTORY/manifest.json" <<'NODE'
+          import { writeFileSync } from "node:fs";
+          writeFileSync(process.argv[2], `${JSON.stringify({
+            format: "GGRIDBK1-AES-256-GCM",
+            keyVersion: process.env.BACKUP_KEY_VERSION,
+            environment: "staging",
+            releaseSha: process.env.RELEASE_SHA,
+            createdAt: new Date().toISOString(),
+            rawSha256: process.env.RAW_SHA256,
+            rawPermissions: process.env.RAW_PERMISSIONS,
+            encryptedSha256: process.env.ENCRYPTED_SHA256,
+            decryptVerification: "passed",
+            timeTravelBookmark: process.env.BOOKMARK,
+            previousWorkerVersion: process.env.PREVIOUS_VERSION,
+          }, null, 2)}\n`, { mode: 0o600 });
+          NODE
+          cp "$BACKUP_DIRECTORY/manifest.json" release-evidence/staging/pre-migration-backup-manifest.json
+          echo "backup_directory=$BACKUP_DIRECTORY" >> "$GITHUB_OUTPUT"
+
+      - name: Store encrypted staging export
+        if: steps.migrations.outputs.pending == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: staging-d1-pre-migration-${{ env.RELEASE_SHA }}
+          path: ${{ steps.backup.outputs.backup_directory }}
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Apply and verify staging migrations
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          MIGRATIONS_PENDING: ${{ steps.migrations.outputs.pending }}
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.migrations.outputs.pending }}" = "true" ]; then
+            wrangler d1 migrations apply DB --remote --env staging
+          fi
+          wrangler d1 migrations list DB --remote --env staging \
+            | tee release-evidence/staging/post-migration-list.txt
+          grep -Fq "No migrations to apply!" release-evidence/staging/post-migration-list.txt
+          wrangler d1 execute DB --remote --env staging --json --command "PRAGMA foreign_key_check;" \
+            > release-evidence/staging/foreign-key-check.json
+          wrangler d1 execute DB --remote --env staging --json --command \
+            "SELECT type,name FROM sqlite_schema WHERE type IN ('table','index','trigger') AND name NOT LIKE 'sqlite_%' ORDER BY type,name;" \
+            > release-evidence/staging/schema-objects.json
+          wrangler d1 execute DB --remote --env staging --json --command \
+            "SELECT 'users' AS table_name,name FROM pragma_table_info('users') UNION ALL SELECT 'projects',name FROM pragma_table_info('projects') UNION ALL SELECT 'orders',name FROM pragma_table_info('orders') UNION ALL SELECT 'project_revisions',name FROM pragma_table_info('project_revisions') ORDER BY table_name,name;" \
+            > "$RUNNER_TEMP/staging-schema-columns.json"
+          wrangler d1 execute DB --remote --env staging --json --command \
+            "SELECT 'users' AS entity,COUNT(*) AS row_count FROM users UNION ALL SELECT 'projects',COUNT(*) FROM projects UNION ALL SELECT 'orders',COUNT(*) FROM orders UNION ALL SELECT 'payment_webhook_events',COUNT(*) FROM payment_webhook_events;" \
+            > "$RUNNER_TEMP/staging-post-migration-counts.json"
+          node --input-type=module - release-evidence/staging/foreign-key-check.json release-evidence/staging/schema-objects.json "$RUNNER_TEMP/staging-schema-columns.json" release-evidence/staging/pre-migration-counts.json "$RUNNER_TEMP/staging-post-migration-counts.json" <<'NODE'
+          import { readFileSync, writeFileSync } from "node:fs";
+          const [foreignKeysFile, schemaFile, columnsFile, preCountsFile, postCountsFile] = process.argv.slice(2);
+          const rows = (file) => {
+            const batches = JSON.parse(readFileSync(file, "utf8"));
+            if (!batches.every((result) => result.success === true)) process.exit(1);
+            return batches.flatMap((result) => result.results || []);
+          };
+          const foreignKeys = JSON.parse(readFileSync(foreignKeysFile, "utf8"));
+          if (!foreignKeys.every((result) => result.success === true && result.results?.length === 0)) process.exit(1);
+          const names = new Set(rows(schemaFile).map((entry) => `${entry.type}:${entry.name}`));
+          for (const required of [
+            "table:users", "table:projects", "table:orders", "table:project_revisions",
+            "index:idx_project_revisions_owner_created", "trigger:project_revisions_immutable_update",
+            "trigger:archived_project_revision_insert_guard", "trigger:purchased_report_snapshots_immutable_update",
+          ]) if (!names.has(required)) process.exit(1);
+          const columns = new Set(rows(columnsFile).map((entry) => `${entry.table_name}:${entry.name}`));
+          const requiredColumns = [
+            "users:id", "users:email", "users:password_hash", "users:password_salt", "users:password_iterations", "users:password_algorithm",
+            "projects:id", "projects:user_id", "projects:status", "projects:input_json", "projects:input_revision", "projects:input_hash", "projects:brief_check_json",
+            "orders:id", "orders:project_id", "orders:plan", "orders:status", "orders:product_code", "orders:request_hash",
+            "project_revisions:project_id", "project_revisions:revision", "project_revisions:content_hash", "project_revisions:input_json", "project_revisions:brief_check_json",
+          ];
+          if (!requiredColumns.every((column) => columns.has(column))) process.exit(1);
+          const preCounts = JSON.parse(readFileSync(preCountsFile, "utf8")).counts;
+          const postRows = rows(postCountsFile);
+          const postCounts = Object.fromEntries(postRows.map((row) => [String(row.entity), Number(row.row_count)]));
+          if (Object.keys(preCounts).some((entity) => !Number.isSafeInteger(postCounts[entity]) || postCounts[entity] < 0)) process.exit(1);
+          if (process.env.MIGRATIONS_PENDING === "true"
+            && Object.keys(preCounts).some((entity) => postCounts[entity] < preCounts[entity])) process.exit(1);
+          writeFileSync("release-evidence/staging/schema-columns.json", `${JSON.stringify({ requiredColumnsVerified: requiredColumns }, null, 2)}\n`);
+          writeFileSync("release-evidence/staging/post-migration-counts.json", `${JSON.stringify({ counts: postCounts, nondecreasingFromPre: process.env.MIGRATIONS_PENDING === "true" }, null, 2)}\n`);
+          NODE
+
+      - name: Deploy authorized SHA to staging
+        id: deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set +e
+          wrangler deploy --env staging --strict \
+            --tag "main-${RELEASE_SHA:0:12}" \
+            --message "GrihaGrid release $RELEASE_SHA; controls closed" \
+            > "$RUNNER_TEMP/staging-deploy.log" 2>&1
+          command_status=$?
+          set -e
+          echo "command_status=$command_status" >> "$GITHUB_OUTPUT"
+
+      - name: Reconcile exact staging Worker version
+        id: version
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          DEPLOY_COMMAND_STATUS: ${{ steps.deploy.outputs.command_status }}
+        run: |
+          set -euo pipefail
+          wrangler deployments status --env staging --json > "$RUNNER_TEMP/staging-post-deploy.json"
+          version_id="$(node --input-type=module - "$RUNNER_TEMP/staging-post-deploy.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const status = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          const active = status.versions?.filter((version) => version.percentage === 100) || [];
+          if (active.length !== 1) process.exit(1);
+          process.stdout.write(String(active[0].version_id || ""));
+          NODE
+          )"
+          [[ "$version_id" =~ ^[0-9a-f-]{36}$ ]]
+          test "$version_id" != "${{ steps.previous.outputs.previous_version }}"
+          wrangler versions view "$version_id" --env staging --json > "$RUNNER_TEMP/staging-version.json"
+          EXPECTED_MESSAGE="GrihaGrid release $RELEASE_SHA; controls closed" EXPECTED_TAG="main-${RELEASE_SHA:0:12}" \
+            VERSION_ID="$version_id" DEPLOY_COMMAND_STATUS="$DEPLOY_COMMAND_STATUS" \
+            node --input-type=module - "$RUNNER_TEMP/staging-version.json" <<'NODE'
+          import { readFileSync, writeFileSync } from "node:fs";
+          const version = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          if (version.id !== process.env.VERSION_ID
+            || version.annotations?.["workers/message"] !== process.env.EXPECTED_MESSAGE
+            || version.annotations?.["workers/tag"] !== process.env.EXPECTED_TAG) process.exit(1);
+          writeFileSync("release-evidence/staging/post-deploy-status.json", `${JSON.stringify({
+            activeVersion: version.id,
+            trafficPercentage: 100,
+            releaseSha: process.env.RELEASE_SHA,
+            tag: process.env.EXPECTED_TAG,
+            deployCommandExit: Number(process.env.DEPLOY_COMMAND_STATUS),
+          }, null, 2)}\n`);
+          NODE
+          echo "version_id=$version_id" >> "$GITHUB_OUTPUT"
+
+      - name: Roll back an unverified non-migration staging activation
+        id: rollback_unverified
+        if: >-
+          always() && steps.migrations.outputs.pending == 'false' &&
+          steps.version.outcome == 'failure'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          wrangler rollback "${{ steps.previous.outputs.previous_version }}" --env staging --yes \
+            --message "Fail-closed rollback of unverified release $RELEASE_SHA"
+
+      - name: Verify the exact staging version after unverified rollback
+        if: always() && steps.rollback_unverified.outcome == 'success'
+        env:
+          EXPECT_PAID_CHECKOUT: "false"
+          GRIHAGRID_RELEASE_ID: ${{ steps.previous.outputs.previous_version }}
+        run: node scripts/wait-for-release.mjs "$ORIGIN" "$GRIHAGRID_RELEASE_ID" > release-evidence/staging/unverified-deploy-rollback.json
+
+      - name: Wait for three exact staging smoke samples
+        id: propagation
+        continue-on-error: true
+        env:
+          EXPECT_PAID_CHECKOUT: "false"
+          GRIHAGRID_RELEASE_ORIGIN: ${{ env.ORIGIN }}
+          GRIHAGRID_RELEASE_ID: ${{ steps.version.outputs.version_id }}
+        run: node scripts/wait-for-release.mjs "$ORIGIN" "$GRIHAGRID_RELEASE_ID" | tee release-evidence/staging/public-smoke.json
+
+      - name: Run staging authenticated canary
+        id: canary
+        if: steps.propagation.outcome == 'success'
+        continue-on-error: true
+        env:
+          EXPECT_RELEASE_ID: ${{ steps.version.outputs.version_id }}
+          GRIHAGRID_CANARY_EMAIL: ${{ secrets.GRIHAGRID_CANARY_EMAIL }}
+          GRIHAGRID_CANARY_PASSWORD: ${{ secrets.GRIHAGRID_CANARY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$GRIHAGRID_CANARY_EMAIL"
+          test -n "$GRIHAGRID_CANARY_PASSWORD"
+          node scripts/authenticated-smoke.mjs "$ORIGIN" | tee release-evidence/staging/authenticated-smoke.json
+
+      - name: Roll back a confirmed non-migration staging regression
+        id: rollback_regression
+        if: >-
+          always() && steps.migrations.outputs.pending == 'false' &&
+          steps.version.outcome == 'success' &&
+          (steps.propagation.outcome == 'failure' || steps.canary.outcome == 'failure')
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          wrangler rollback "${{ steps.previous.outputs.previous_version }}" --env staging --yes \
+            --message "Automatic rollback of failed release $RELEASE_SHA"
+
+      - name: Verify the exact staging version after regression rollback
+        if: always() && steps.rollback_regression.outcome == 'success'
+        env:
+          EXPECT_PAID_CHECKOUT: "false"
+          GRIHAGRID_RELEASE_ID: ${{ steps.previous.outputs.previous_version }}
+        run: node scripts/wait-for-release.mjs "$ORIGIN" "$GRIHAGRID_RELEASE_ID" > release-evidence/staging/regression-rollback.json
+
+      - name: Fail closed after a staging release regression
+        if: >-
+          always() &&
+          (steps.propagation.outcome == 'failure' || steps.canary.outcome == 'failure')
+        run: exit 1
+
+      - name: Remove staging backup material from the runner
+        if: always()
+        run: rm -rf -- "${RUNNER_TEMP:?}/grihagrid-staging-pre-migration"
+
+      - name: Upload staging release evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: staging-release-evidence-${{ env.RELEASE_SHA }}
+          path: release-evidence/staging
+          if-no-files-found: warn
+          retention-days: 30
+
+  production:
+    name: Migrate, deploy, and observe production
+    needs: [authorize, validate, staging]
+    if: needs.authorize.outputs.deploy == 'true' && needs.validate.result == 'success' && needs.staging.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    environment:
+      name: production
+      url: https://grihagrid.prakhargupta267.workers.dev
+    env:
+      RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
+      BASE_SHA: ${{ needs.authorize.outputs.base_sha }}
+      ORIGIN: https://grihagrid.prakhargupta267.workers.dev
+      STAGING_ORIGIN: https://grihagrid-staging.prakhargupta267.workers.dev
+
+    steps:
+      - name: Check out the authorized SHA
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.RELEASE_SHA }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - name: Restore the exact validated build
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-build-${{ env.RELEASE_SHA }}
+          path: ${{ runner.temp }}/grihagrid-release-build
+
+      - name: Prepare the fresh privileged runner
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+          test -f "$RUNNER_TEMP/grihagrid-release-build/client/index.html"
+          test -f "$RUNNER_TEMP/grihagrid-release-build/server/index.js"
+          if find "$RUNNER_TEMP/grihagrid-release-build" -type l -print -quit | grep -q .; then
+            echo "validated build artifacts may not contain symbolic links" >&2
+            exit 1
+          fi
+          rm -rf -- "$GITHUB_WORKSPACE/dist"
+          mv -- "$RUNNER_TEMP/grihagrid-release-build" "$GITHUB_WORKSPACE/dist"
+          test -f dist/client/index.html
+          test -f dist/server/index.js
+          mkdir -p release-evidence/production
+          npm install --global --ignore-scripts --no-audit --no-fund \
+            --registry=https://registry.npmjs.org "wrangler@$WRANGLER_VERSION"
+          test "$(wrangler --version)" = "$WRANGLER_VERSION"
+
+      - name: Enforce immutable, forward-only migrations
+        run: |
+          set -euo pipefail
+          migration_changes="$(git diff --name-status "$BASE_SHA" "$RELEASE_SHA" -- migrations)"
+          if [ -n "$migration_changes" ]; then
+            while IFS=$'\t' read -r status first_path second_path; do
+              if [ "$status" != "A" ]; then
+                echo "existing migrations are immutable; found status $status" >&2
+                exit 1
+              fi
+              filename="${first_path##*/}"
+              [[ "$filename" =~ ^([0-9]{4})_[a-z0-9_]+\.sql$ ]]
+              if (( 10#${BASH_REMATCH[1]} <= 12 )); then
+                echo "new migrations must follow the trusted 0012 baseline" >&2
+                exit 1
+              fi
+            done <<< "$migration_changes"
+          fi
+          policy_migrations=()
+          for migration in migrations/*.sql; do
+            filename="${migration##*/}"
+            sequence="${filename%%_*}"
+            [[ "$sequence" =~ ^[0-9]{4}$ ]]
+            if (( 10#$sequence > 12 )); then policy_migrations+=("$migration"); fi
+          done
+          if (( ${#policy_migrations[@]} > 0 )); then
+            node scripts/check-migration-policy.mjs "${policy_migrations[@]}"
+          fi
+
+      - name: Reconfirm the exact staging version after the production hold
+        env:
+          EXPECT_PAID_CHECKOUT: "false"
+          GRIHAGRID_RELEASE_ORIGIN: ${{ env.STAGING_ORIGIN }}
+          GRIHAGRID_RELEASE_ID: ${{ needs.staging.outputs.version_id }}
+        run: node scripts/wait-for-release.mjs "$STAGING_ORIGIN" "$GRIHAGRID_RELEASE_ID" > release-evidence/production/staging-reconfirmation.json
+
+      - name: Record current production Worker
+        id: previous
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          test -n "$CLOUDFLARE_API_TOKEN"
+          test -n "$CLOUDFLARE_ACCOUNT_ID"
+          wrangler deployments status --env="" --json > "$RUNNER_TEMP/production-pre-deploy.json"
+          previous_version="$(node --input-type=module - "$RUNNER_TEMP/production-pre-deploy.json" <<'NODE'
+          import { readFileSync, writeFileSync } from "node:fs";
+          const input = process.argv[2];
+          const status = JSON.parse(readFileSync(input, "utf8"));
+          const active = status.versions?.filter((version) => version.percentage === 100) || [];
+          if (active.length !== 1 || !/^[0-9a-f-]{36}$/u.test(active[0].version_id || "")) process.exit(1);
+          writeFileSync("release-evidence/production/pre-deploy-status.json", `${JSON.stringify({
+            activeVersion: active[0].version_id,
+            trafficPercentage: 100,
+          }, null, 2)}\n`);
+          process.stdout.write(active[0].version_id);
+          NODE
+          )"
+          wrangler versions view "$previous_version" --env="" --json > "$RUNNER_TEMP/production-previous-version.json"
+          previous_release_sha="$(node --input-type=module - "$RUNNER_TEMP/production-previous-version.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const version = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          const matches = String(version.annotations?.["workers/message"] || "").match(/\b[a-f0-9]{40}\b/gu) || [];
+          if (matches.length !== 1) process.exit(1);
+          process.stdout.write(matches[0]);
+          NODE
+          )"
+          git merge-base --is-ancestor "$previous_release_sha" "$RELEASE_SHA" || {
+            echo "release would move production behind its currently deployed source history" >&2
+            exit 1
+          }
+          {
+            echo "previous_version=$previous_version"
+            echo "previous_release_sha=$previous_release_sha"
+          } >> "$GITHUB_OUTPUT"
+      - name: Inspect pending production migrations and aggregate data state
+        id: migrations
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          wrangler d1 migrations list DB --remote --env="" \
+            | tee release-evidence/production/pre-migration-list.txt
+          wrangler d1 execute DB --remote --env="" --json --command \
+            "SELECT 'users' AS entity,COUNT(*) AS row_count FROM users UNION ALL SELECT 'projects',COUNT(*) FROM projects UNION ALL SELECT 'orders',COUNT(*) FROM orders UNION ALL SELECT 'payment_webhook_events',COUNT(*) FROM payment_webhook_events;" \
+            > "$RUNNER_TEMP/production-pre-migration-counts.json"
+          node --input-type=module - "$RUNNER_TEMP/production-pre-migration-counts.json" <<'NODE'
+          import { readFileSync, writeFileSync } from "node:fs";
+          const batches = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          if (!batches.every((batch) => batch.success === true)) process.exit(1);
+          const rows = batches.flatMap((batch) => batch.results || []);
+          const expected = ["orders", "payment_webhook_events", "projects", "users"];
+          const counts = Object.fromEntries(rows.map((row) => [String(row.entity), Number(row.row_count)]));
+          if (rows.length !== expected.length
+            || !expected.every((entity) => Number.isSafeInteger(counts[entity]) && counts[entity] >= 0)) process.exit(1);
+          writeFileSync("release-evidence/production/pre-migration-counts.json", `${JSON.stringify({ counts }, null, 2)}\n`);
+          NODE
+          if grep -Fq "No migrations to apply!" release-evidence/production/pre-migration-list.txt; then
+            echo "pending=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "pending=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create protected production export and recovery point
+        id: raw_backup
+        if: steps.migrations.outputs.pending == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          umask 077
+          backup_directory="$RUNNER_TEMP/grihagrid-production-pre-migration"
+          mkdir -m 700 "$backup_directory"
+          raw_backup="$backup_directory/d1-pre-migration.sql"
+          wrangler d1 export DB --remote --env="" --skip-confirmation --output "$raw_backup"
+          chmod 600 "$raw_backup"
+          raw_sha256="$(sha256sum "$raw_backup" | awk '{ print $1 }')"
+          raw_permissions="$(stat -c '%a' "$raw_backup")"
+          test "$raw_permissions" = "600"
+          wrangler d1 time-travel info DB --env="" --json > "$backup_directory/time-travel.json"
+          bookmark="$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).bookmark' "$backup_directory/time-travel.json")"
+          [[ "$bookmark" =~ ^[A-Za-z0-9._:-]{16,256}$ ]]
+          {
+            echo "backup_directory=$backup_directory"
+            echo "raw_sha256=$raw_sha256"
+            echo "raw_permissions=$raw_permissions"
+            echo "bookmark=$bookmark"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Encrypt and verify protected production export
+        id: backup
+        if: steps.migrations.outputs.pending == 'true'
+        env:
+          D1_BACKUP_PASSPHRASE: ${{ secrets.D1_BACKUP_PASSPHRASE }}
+          BACKUP_DIRECTORY: ${{ steps.raw_backup.outputs.backup_directory }}
+          RAW_SHA256: ${{ steps.raw_backup.outputs.raw_sha256 }}
+          RAW_PERMISSIONS: ${{ steps.raw_backup.outputs.raw_permissions }}
+          BOOKMARK: ${{ steps.raw_backup.outputs.bookmark }}
+          PREVIOUS_VERSION: ${{ steps.previous.outputs.previous_version }}
+        run: |
+          set -euo pipefail
+          test "${#D1_BACKUP_PASSPHRASE}" -ge 20
+          umask 077
+          raw_backup="$BACKUP_DIRECTORY/d1-pre-migration.sql"
+          encrypted_backup="$BACKUP_DIRECTORY/d1-pre-migration.sql.ggrid"
+          verified_backup="$BACKUP_DIRECTORY/d1-verified.sql"
+          node scripts/backup-crypto.mjs encrypt "$raw_backup" "$encrypted_backup"
+          node scripts/backup-crypto.mjs decrypt "$encrypted_backup" "$verified_backup"
+          test "$(sha256sum "$verified_backup" | awk '{ print $1 }')" = "$RAW_SHA256"
+          encrypted_sha256="$(sha256sum "$encrypted_backup" | awk '{ print $1 }')"
+          rm -f -- "$raw_backup" "$verified_backup" "$BACKUP_DIRECTORY/time-travel.json"
+          ENCRYPTED_SHA256="$encrypted_sha256" node --input-type=module - "$BACKUP_DIRECTORY/manifest.json" <<'NODE'
+          import { writeFileSync } from "node:fs";
+          writeFileSync(process.argv[2], `${JSON.stringify({
+            format: "GGRIDBK1-AES-256-GCM",
+            keyVersion: process.env.BACKUP_KEY_VERSION,
+            environment: "production",
+            releaseSha: process.env.RELEASE_SHA,
+            createdAt: new Date().toISOString(),
+            rawSha256: process.env.RAW_SHA256,
+            rawPermissions: process.env.RAW_PERMISSIONS,
+            encryptedSha256: process.env.ENCRYPTED_SHA256,
+            decryptVerification: "passed",
+            timeTravelBookmark: process.env.BOOKMARK,
+            previousWorkerVersion: process.env.PREVIOUS_VERSION,
+          }, null, 2)}\n`, { mode: 0o600 });
+          NODE
+          cp "$BACKUP_DIRECTORY/manifest.json" release-evidence/production/pre-migration-backup-manifest.json
+          echo "backup_directory=$BACKUP_DIRECTORY" >> "$GITHUB_OUTPUT"
+
+      - name: Store encrypted production export
+        if: steps.migrations.outputs.pending == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: production-d1-pre-migration-${{ env.RELEASE_SHA }}
+          path: ${{ steps.backup.outputs.backup_directory }}
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Apply and verify production migrations
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          MIGRATIONS_PENDING: ${{ steps.migrations.outputs.pending }}
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.migrations.outputs.pending }}" = "true" ]; then
+            wrangler d1 migrations apply DB --remote --env=""
+          fi
+          wrangler d1 migrations list DB --remote --env="" \
+            | tee release-evidence/production/post-migration-list.txt
+          grep -Fq "No migrations to apply!" release-evidence/production/post-migration-list.txt
+          wrangler d1 execute DB --remote --env="" --json --command "PRAGMA foreign_key_check;" \
+            > release-evidence/production/foreign-key-check.json
+          wrangler d1 execute DB --remote --env="" --json --command \
+            "SELECT type,name FROM sqlite_schema WHERE type IN ('table','index','trigger') AND name NOT LIKE 'sqlite_%' ORDER BY type,name;" \
+            > release-evidence/production/schema-objects.json
+          wrangler d1 execute DB --remote --env="" --json --command \
+            "SELECT 'users' AS table_name,name FROM pragma_table_info('users') UNION ALL SELECT 'projects',name FROM pragma_table_info('projects') UNION ALL SELECT 'orders',name FROM pragma_table_info('orders') UNION ALL SELECT 'project_revisions',name FROM pragma_table_info('project_revisions') ORDER BY table_name,name;" \
+            > "$RUNNER_TEMP/production-schema-columns.json"
+          wrangler d1 execute DB --remote --env="" --json --command \
+            "SELECT 'users' AS entity,COUNT(*) AS row_count FROM users UNION ALL SELECT 'projects',COUNT(*) FROM projects UNION ALL SELECT 'orders',COUNT(*) FROM orders UNION ALL SELECT 'payment_webhook_events',COUNT(*) FROM payment_webhook_events;" \
+            > "$RUNNER_TEMP/production-post-migration-counts.json"
+          node --input-type=module - release-evidence/production/foreign-key-check.json release-evidence/production/schema-objects.json "$RUNNER_TEMP/production-schema-columns.json" release-evidence/production/pre-migration-counts.json "$RUNNER_TEMP/production-post-migration-counts.json" <<'NODE'
+          import { readFileSync, writeFileSync } from "node:fs";
+          const [foreignKeysFile, schemaFile, columnsFile, preCountsFile, postCountsFile] = process.argv.slice(2);
+          const rows = (file) => {
+            const batches = JSON.parse(readFileSync(file, "utf8"));
+            if (!batches.every((result) => result.success === true)) process.exit(1);
+            return batches.flatMap((result) => result.results || []);
+          };
+          const foreignKeys = JSON.parse(readFileSync(foreignKeysFile, "utf8"));
+          if (!foreignKeys.every((result) => result.success === true && result.results?.length === 0)) process.exit(1);
+          const names = new Set(rows(schemaFile).map((entry) => `${entry.type}:${entry.name}`));
+          for (const required of [
+            "table:users", "table:projects", "table:orders", "table:project_revisions",
+            "index:idx_project_revisions_owner_created", "trigger:project_revisions_immutable_update",
+            "trigger:archived_project_revision_insert_guard", "trigger:purchased_report_snapshots_immutable_update",
+          ]) if (!names.has(required)) process.exit(1);
+          const columns = new Set(rows(columnsFile).map((entry) => `${entry.table_name}:${entry.name}`));
+          const requiredColumns = [
+            "users:id", "users:email", "users:password_hash", "users:password_salt", "users:password_iterations", "users:password_algorithm",
+            "projects:id", "projects:user_id", "projects:status", "projects:input_json", "projects:input_revision", "projects:input_hash", "projects:brief_check_json",
+            "orders:id", "orders:project_id", "orders:plan", "orders:status", "orders:product_code", "orders:request_hash",
+            "project_revisions:project_id", "project_revisions:revision", "project_revisions:content_hash", "project_revisions:input_json", "project_revisions:brief_check_json",
+          ];
+          if (!requiredColumns.every((column) => columns.has(column))) process.exit(1);
+          const preCounts = JSON.parse(readFileSync(preCountsFile, "utf8")).counts;
+          const postRows = rows(postCountsFile);
+          const postCounts = Object.fromEntries(postRows.map((row) => [String(row.entity), Number(row.row_count)]));
+          if (Object.keys(preCounts).some((entity) => !Number.isSafeInteger(postCounts[entity]) || postCounts[entity] < 0)) process.exit(1);
+          if (process.env.MIGRATIONS_PENDING === "true"
+            && Object.keys(preCounts).some((entity) => postCounts[entity] < preCounts[entity])) process.exit(1);
+          writeFileSync("release-evidence/production/schema-columns.json", `${JSON.stringify({ requiredColumnsVerified: requiredColumns }, null, 2)}\n`);
+          writeFileSync("release-evidence/production/post-migration-counts.json", `${JSON.stringify({ counts: postCounts, nondecreasingFromPre: process.env.MIGRATIONS_PENDING === "true" }, null, 2)}\n`);
+          NODE
+
+      - name: Deploy authorized SHA to production
+        id: deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set +e
+          wrangler deploy --env="" --strict \
+            --tag "main-${RELEASE_SHA:0:12}" \
+            --message "GrihaGrid release $RELEASE_SHA; controls closed" \
+            > "$RUNNER_TEMP/production-deploy.log" 2>&1
+          command_status=$?
+          set -e
+          echo "command_status=$command_status" >> "$GITHUB_OUTPUT"
+
+      - name: Reconcile exact production Worker version
+        id: version
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          DEPLOY_COMMAND_STATUS: ${{ steps.deploy.outputs.command_status }}
+        run: |
+          set -euo pipefail
+          wrangler deployments status --env="" --json > "$RUNNER_TEMP/production-post-deploy.json"
+          version_id="$(node --input-type=module - "$RUNNER_TEMP/production-post-deploy.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const status = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          const active = status.versions?.filter((version) => version.percentage === 100) || [];
+          if (active.length !== 1) process.exit(1);
+          process.stdout.write(String(active[0].version_id || ""));
+          NODE
+          )"
+          [[ "$version_id" =~ ^[0-9a-f-]{36}$ ]]
+          test "$version_id" != "${{ steps.previous.outputs.previous_version }}"
+          wrangler versions view "$version_id" --env="" --json > "$RUNNER_TEMP/production-version.json"
+          EXPECTED_MESSAGE="GrihaGrid release $RELEASE_SHA; controls closed" EXPECTED_TAG="main-${RELEASE_SHA:0:12}" \
+            VERSION_ID="$version_id" DEPLOY_COMMAND_STATUS="$DEPLOY_COMMAND_STATUS" \
+            node --input-type=module - "$RUNNER_TEMP/production-version.json" <<'NODE'
+          import { readFileSync, writeFileSync } from "node:fs";
+          const version = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          if (version.id !== process.env.VERSION_ID
+            || version.annotations?.["workers/message"] !== process.env.EXPECTED_MESSAGE
+            || version.annotations?.["workers/tag"] !== process.env.EXPECTED_TAG) process.exit(1);
+          writeFileSync("release-evidence/production/post-deploy-status.json", `${JSON.stringify({
+            activeVersion: version.id,
+            trafficPercentage: 100,
+            releaseSha: process.env.RELEASE_SHA,
+            tag: process.env.EXPECTED_TAG,
+            deployCommandExit: Number(process.env.DEPLOY_COMMAND_STATUS),
+          }, null, 2)}\n`);
+          NODE
+          echo "version_id=$version_id" >> "$GITHUB_OUTPUT"
+
+      - name: Roll back an unverified non-migration production activation
+        id: rollback_unverified
+        if: >-
+          always() && steps.migrations.outputs.pending == 'false' &&
+          steps.version.outcome == 'failure'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          wrangler rollback "${{ steps.previous.outputs.previous_version }}" --env="" --yes \
+            --message "Fail-closed rollback of unverified release $RELEASE_SHA"
+
+      - name: Verify the exact production version after unverified rollback
+        if: always() && steps.rollback_unverified.outcome == 'success'
+        env:
+          EXPECT_PAID_CHECKOUT: "false"
+          GRIHAGRID_RELEASE_ID: ${{ steps.previous.outputs.previous_version }}
+        run: node scripts/wait-for-release.mjs "$ORIGIN" "$GRIHAGRID_RELEASE_ID" > release-evidence/production/unverified-deploy-rollback.json
+
+      - name: Wait for three exact production smoke samples
+        id: propagation
+        continue-on-error: true
+        env:
+          EXPECT_PAID_CHECKOUT: "false"
+          GRIHAGRID_RELEASE_ORIGIN: ${{ env.ORIGIN }}
+          GRIHAGRID_RELEASE_ID: ${{ steps.version.outputs.version_id }}
+        run: node scripts/wait-for-release.mjs "$ORIGIN" "$GRIHAGRID_RELEASE_ID" | tee release-evidence/production/public-smoke.json
+
+      - name: Run production authenticated canary
+        id: canary
+        if: steps.propagation.outcome == 'success'
+        continue-on-error: true
+        env:
+          EXPECT_RELEASE_ID: ${{ steps.version.outputs.version_id }}
+          GRIHAGRID_CANARY_EMAIL: ${{ secrets.GRIHAGRID_CANARY_EMAIL }}
+          GRIHAGRID_CANARY_PASSWORD: ${{ secrets.GRIHAGRID_CANARY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$GRIHAGRID_CANARY_EMAIL"
+          test -n "$GRIHAGRID_CANARY_PASSWORD"
+          node scripts/authenticated-smoke.mjs "$ORIGIN" | tee release-evidence/production/authenticated-smoke.json
+
+      - name: Observe the exact production version for 30 minutes
+        id: observe
+        if: steps.canary.outcome == 'success'
+        continue-on-error: true
+        env:
+          CF_DEPLOY_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_DEPLOY_ACCOUNT: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          GRIHAGRID_MONITOR_ORIGIN: ${{ env.ORIGIN }}
+          GRIHAGRID_RELEASE_ID: ${{ steps.version.outputs.version_id }}
+          GRIHAGRID_MONITOR_DURATION_MS: "1800000"
+          GRIHAGRID_MONITOR_INTERVAL_MS: "90000"
+        run: |
+          set -euo pipefail
+          invocation_summary="release-evidence/production/invocation-tail-aggregate.json"
+          server_summary="release-evidence/production/server-tail-aggregate.json"
+          invocation_stderr="$RUNNER_TEMP/invocation-tail.stderr"
+          server_stderr="$RUNNER_TEMP/server-tail.stderr"
+
+          command -v setsid >/dev/null
+          INVOCATION_SUMMARY="$invocation_summary" setsid bash -c '
+            set -o pipefail
+            CLOUDFLARE_API_TOKEN="$CF_DEPLOY_TOKEN" CLOUDFLARE_ACCOUNT_ID="$CF_DEPLOY_ACCOUNT" \
+              timeout --signal=INT --kill-after=10s 2100s \
+              wrangler tail --env="" --format json --status error \
+                --version-id "$GRIHAGRID_RELEASE_ID" \
+              | env -u CF_DEPLOY_TOKEN -u CF_DEPLOY_ACCOUNT -u CLOUDFLARE_API_TOKEN -u CLOUDFLARE_ACCOUNT_ID \
+                TAIL_STOP_ON_EVENT=true TAIL_PROCESS_GROUP="$$" \
+                node scripts/tail-aggregate.mjs "$INVOCATION_SUMMARY"
+          ' 2> "$invocation_stderr" &
+          invocation_pid=$!
+          SERVER_SUMMARY="$server_summary" setsid bash -c '
+            set -o pipefail
+            CLOUDFLARE_API_TOKEN="$CF_DEPLOY_TOKEN" CLOUDFLARE_ACCOUNT_ID="$CF_DEPLOY_ACCOUNT" \
+              timeout --signal=INT --kill-after=10s 2100s \
+              wrangler tail --env="" --format json \
+                --search "\"outcome\":\"server_error\"" --version-id "$GRIHAGRID_RELEASE_ID" \
+              | env -u CF_DEPLOY_TOKEN -u CF_DEPLOY_ACCOUNT -u CLOUDFLARE_API_TOKEN -u CLOUDFLARE_ACCOUNT_ID \
+                TAIL_STOP_ON_EVENT=true TAIL_PROCESS_GROUP="$$" \
+                node scripts/tail-aggregate.mjs "$SERVER_SUMMARY"
+          ' 2> "$server_stderr" &
+          server_pid=$!
+          unset CF_DEPLOY_TOKEN CF_DEPLOY_ACCOUNT
+          sleep 5
+
+          tails_alive=true
+          kill -0 "$invocation_pid" 2>/dev/null || tails_alive=false
+          kill -0 "$server_pid" 2>/dev/null || tails_alive=false
+
+          set +e
+          GRIHAGRID_MONITOR_WATCH_PIDS="$invocation_pid,$server_pid" \
+            node scripts/monitor-release.mjs "$ORIGIN" "$GRIHAGRID_RELEASE_ID" \
+            | tee release-evidence/production/monitor.json
+          monitor_status=${PIPESTATUS[0]}
+          kill -0 "$invocation_pid" 2>/dev/null || tails_alive=false
+          kill -0 "$server_pid" 2>/dev/null || tails_alive=false
+          invocation_stderr_bytes="$(wc -c < "$invocation_stderr")"
+          server_stderr_bytes="$(wc -c < "$server_stderr")"
+          public_regression=false
+          monitor_infrastructure_failure=false
+          case "$monitor_status" in
+            0) ;;
+            1) public_regression=true ;;
+            2) monitor_infrastructure_failure=true ;;
+            *) monitor_infrastructure_failure=true ;;
+          esac
+          {
+            echo "public_regression=$public_regression"
+            echo "monitor_infrastructure_failure=$monitor_infrastructure_failure"
+          } >> "$GITHUB_OUTPUT"
+          kill -TERM -- "-$invocation_pid" 2>/dev/null || true
+          kill -TERM -- "-$server_pid" 2>/dev/null || true
+          wait "$invocation_pid"
+          invocation_status=$?
+          wait "$server_pid"
+          server_status=$?
+          set -e
+
+          for attempt in $(seq 1 50); do
+            if [ -s "$invocation_summary" ] && [ -s "$server_summary" ]; then
+              break
+            fi
+            sleep 0.1
+          done
+
+          tail_regression="$(node --input-type=module - "$invocation_summary" "$server_summary" <<'NODE'
+          import { readFileSync } from "node:fs";
+          let regression = false;
+          for (const file of process.argv.slice(2)) {
+            try {
+              const aggregate = JSON.parse(readFileSync(file, "utf8"));
+              if (Number(aggregate.eventCount) > 0) regression = true;
+            } catch {
+              // Combined validation below treats missing or malformed evidence as infrastructure failure.
+            }
+          }
+          process.stdout.write(String(regression));
+          NODE
+          )"
+          echo "tail_regression=$tail_regression" >> "$GITHUB_OUTPUT"
+
+          rm -f -- "$invocation_stderr" "$server_stderr"
+
+          MONITOR_STATUS="$monitor_status" PUBLIC_REGRESSION="$public_regression" \
+            TAIL_REGRESSION="$tail_regression" MONITOR_INFRASTRUCTURE_FAILURE="$monitor_infrastructure_failure" TAILS_ALIVE="$tails_alive" \
+            INVOCATION_STATUS="$invocation_status" SERVER_STATUS="$server_status" \
+            INVOCATION_STDERR_BYTES="$invocation_stderr_bytes" SERVER_STDERR_BYTES="$server_stderr_bytes" \
+            node --input-type=module - "$invocation_summary" "$server_summary" "$GITHUB_OUTPUT" <<'NODE'
+          import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+          const [invocationFile, serverFile, output] = process.argv.slice(2);
+          const invocation = JSON.parse(readFileSync(invocationFile, "utf8"));
+          const server = JSON.parse(readFileSync(serverFile, "utf8"));
+          const monitorStatus = Number(process.env.MONITOR_STATUS);
+          const invocationStatus = Number(process.env.INVOCATION_STATUS);
+          const serverStatus = Number(process.env.SERVER_STATUS);
+          const publicRegression = process.env.PUBLIC_REGRESSION === "true";
+          const tailRegression = process.env.TAIL_REGRESSION === "true";
+          const stoppedEarly = monitorStatus !== 0;
+          const regression = publicRegression || tailRegression || invocation.eventCount > 0 || server.eventCount > 0;
+          const infrastructureFailure = process.env.MONITOR_INFRASTRUCTURE_FAILURE === "true"
+            || process.env.TAILS_ALIVE !== "true"
+            || Number(process.env.INVOCATION_STDERR_BYTES) !== 0
+            || Number(process.env.SERVER_STDERR_BYTES) !== 0;
+          writeFileSync("release-evidence/production/tail-health.json", `${JSON.stringify({
+            exactVersion: process.env.GRIHAGRID_RELEASE_ID,
+            configuredDurationMs: 1_800_000,
+            completedFullDuration: !stoppedEarly,
+            publicRegression,
+            tailRegression,
+            invocationEvents: invocation.eventCount,
+            invocationBytes: invocation.byteCount,
+            handledServerErrorEvents: server.eventCount,
+            handledServerErrorBytes: server.byteCount,
+            tailsAliveThroughPublicMonitor: process.env.TAILS_ALIVE === "true",
+            invocationProcessExit: invocationStatus,
+            serverProcessExit: serverStatus,
+            invocationStderrBytes: Number(process.env.INVOCATION_STDERR_BYTES),
+            serverStderrBytes: Number(process.env.SERVER_STDERR_BYTES),
+            regression,
+            infrastructureFailure,
+          }, null, 2)}\n`);
+          appendFileSync(output, `regression=${regression}\ninfrastructure_failure=${infrastructureFailure}\n`);
+          if (regression || infrastructureFailure) process.exit(1);
+          NODE
+
+      - name: Roll back a confirmed non-migration production regression
+        id: rollback_regression
+        if: >-
+          always() && steps.migrations.outputs.pending == 'false' &&
+          steps.version.outcome == 'success' &&
+          (steps.propagation.outcome == 'failure' ||
+           steps.canary.outcome == 'failure' ||
+           steps.observe.outputs.public_regression == 'true' ||
+           steps.observe.outputs.tail_regression == 'true' ||
+           steps.observe.outputs.regression == 'true')
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          wrangler rollback "${{ steps.previous.outputs.previous_version }}" --env="" --yes \
+            --message "Automatic rollback of failed release $RELEASE_SHA"
+
+      - name: Verify the exact production version after regression rollback
+        if: always() && steps.rollback_regression.outcome == 'success'
+        env:
+          EXPECT_PAID_CHECKOUT: "false"
+          GRIHAGRID_RELEASE_ID: ${{ steps.previous.outputs.previous_version }}
+        run: node scripts/wait-for-release.mjs "$ORIGIN" "$GRIHAGRID_RELEASE_ID" > release-evidence/production/regression-rollback.json
+
+      - name: Fail closed after a production release or monitoring failure
+        if: >-
+          always() &&
+          (steps.propagation.outcome == 'failure' ||
+           steps.canary.outcome == 'failure' ||
+           steps.observe.outcome == 'failure')
+        run: exit 1
+
+      - name: Remove production backup material from the runner
+        if: always()
+        run: rm -rf -- "${RUNNER_TEMP:?}/grihagrid-production-pre-migration"
+
+      - name: Upload production release evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: production-release-evidence-${{ env.RELEASE_SHA }}
+          path: release-evidence/production
+          if-no-files-found: warn
+          retention-days: 30

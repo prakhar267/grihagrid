@@ -475,7 +475,8 @@ test("Brief Check revisions are truthful, immutable, owner-scoped, and race safe
     server = await startWorker(stateDirectory, assetsDirectory, port);
     const readiness = await call(server.origin, "/api/readiness");
     assert.equal(readiness.response.status, 200, JSON.stringify(readiness.payload));
-    assertExactKeys(readiness.payload, ["status", "service", "checks", "capabilities", "time"], "readiness");
+    assertExactKeys(readiness.payload, ["status", "service", "releaseId", "checks", "capabilities", "time"], "readiness");
+    assert.match(readiness.payload.releaseId, /^(?:unknown|[0-9a-f-]{36})$/u);
     assertExactKeys(
       readiness.payload.checks,
       [
@@ -487,12 +488,13 @@ test("Brief Check revisions are truthful, immutable, owner-scoped, and race safe
     );
     assertExactKeys(
       readiness.payload.capabilities,
-      ["freePlanning", "privateUploads", "paidCheckout", "aiPlanningBrief", "decisionCompare", "familyAlignment", "briefCheck"],
+      ["freePlanning", "privateUploads", "paidCheckout", "paidFulfillment", "aiPlanningBrief", "decisionCompare", "familyAlignment", "briefCheck"],
       "readiness.capabilities",
     );
     assert.equal(readiness.payload.checks.revisionSchema, "current");
     assert.equal(readiness.payload.capabilities.briefCheck, true);
     assert.equal(readiness.payload.capabilities.paidCheckout, false);
+    assert.equal(readiness.payload.capabilities.paidFulfillment, false);
     assert.equal(readiness.payload.capabilities.privateUploads, false);
     assert.equal(readiness.payload.capabilities.aiPlanningBrief, false);
 
