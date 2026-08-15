@@ -131,6 +131,29 @@ class MemoryStatement {
       return project ? { ...project, report_available: Number(this.db.revisionReports.some((report) => report.project_id === project.id
         && report.project_revision === project.input_revision && report.report_schema_version === 2)) } : null;
     }
+    if (this.sql.startsWith("SELECT p.id AS project_id,p.name AS project_name,p.status AS project_status")
+      && this.sql.includes("FROM project_revisions r JOIN projects p")) {
+      const project = this.db.projects.find((candidate) => candidate.id === this.values[0] && candidate.user_id === this.values[1]);
+      const revision = project && this.db.revisions.find((candidate) => candidate.project_id === project.id
+        && candidate.revision === project.input_revision);
+      const report = revision && this.db.revisionReports.find((candidate) => candidate.project_id === project.id
+        && candidate.project_revision === revision.revision && candidate.report_schema_version === this.values[2]);
+      return project && revision && report ? {
+        project_id: project.id,
+        project_name: project.name,
+        project_status: project.status,
+        current_input_revision: project.input_revision,
+        project_created_at: project.created_at,
+        project_updated_at: project.updated_at,
+        ...revision,
+        report_available: 1,
+        source_report_id: report.source_report_id,
+        report_input_hash: report.input_hash,
+        content_json: report.content_json,
+        report_schema_version: report.report_schema_version,
+        report_generated_at: report.generated_at,
+      } : null;
+    }
     if (this.sql.startsWith("SELECT source_report_id,content_json FROM project_revision_reports")) {
       return this.db.revisionReports.find((candidate) => candidate.project_id === this.values[0]
         && candidate.project_revision === this.values[1] && candidate.report_schema_version === this.values[2]) || null;
@@ -206,7 +229,19 @@ class MemoryStatement {
         id, user_id, name, status, input_json, estimate_json, input_hash, input_schema_version,
         estimate_rule_version, brief_check_version, brief_check_json, input_revision: 1, created_at, updated_at,
       });
-      this.db.revisions.push({ project_id: id, revision: 1, content_hash: input_hash });
+      this.db.revisions.push({
+        project_id: id,
+        revision: 1,
+        provenance: "created",
+        input_schema_version,
+        estimate_rule_version,
+        brief_check_version,
+        content_hash: input_hash,
+        input_json,
+        estimate_json,
+        brief_check_json,
+        created_at,
+      });
       return { success: true };
     }
     if (this.sql.startsWith("INSERT INTO reports")) {
@@ -253,7 +288,19 @@ class MemoryStatement {
         updated_at,
       });
       if (revisionIncrement) {
-        this.db.revisions.push({ project_id: projectId, revision: project.input_revision, content_hash: input_hash });
+        this.db.revisions.push({
+          project_id: projectId,
+          revision: project.input_revision,
+          provenance: "updated",
+          input_schema_version,
+          estimate_rule_version,
+          brief_check_version,
+          content_hash: input_hash,
+          input_json,
+          estimate_json,
+          brief_check_json,
+          created_at: updated_at,
+        });
         this.db.reports = this.db.reports.filter((candidate) => candidate.project_id !== projectId);
       }
       return { success: true, results: [{ id: projectId }] };
@@ -374,8 +421,7 @@ async function registerAndCreateProject(env, email = "owner@example.test") {
         floors: "G+1",
         city: "Pune",
         quality: "Signature",
-        address: "42 Private Street",
-        notes: "Account reference SECRET-CUSTOMER-NOTE",
+        style: "42 Private Street · SECRET-CUSTOMER-NOTE",
       },
     }),
   }), env);
@@ -683,6 +729,7 @@ test("real D1 rejects a Gemini result when a legitimate brief revision wins duri
     "0010_family_alignment.sql",
     "0011_archived_project_write_fence.sql",
     "0012_brief_check_revision_history.sql",
+    "0013_report_feedback_and_intake_hardening.sql",
   ];
   for (const migration of migrations) {
     const source = await readFile(new URL(`../migrations/${migration}`, import.meta.url), "utf8");
@@ -894,13 +941,14 @@ test("AI provider configuration fails closed while model fallback is stable", as
 
 test("readiness reports AI capability without exposing the configured secret", async () => {
   const readinessDb = (counts = {
-    count: 22,
+    count: 23,
     ai_brief_count: 1,
     ai_abuse_count: 2,
     decision_table_count: 6,
     payment_hardening_count: 2,
     family_alignment_count: 2,
     revision_table_count: 3,
+    report_feedback_count: 1,
   }, withBatch = true, staleDecisionColumns = false, stalePaymentColumns = false, staleFamilyColumns = false, staleFamilyObjects = false, staleArchiveSafety = false, staleRevisionObjects = false) => ({
     ...(withBatch ? { batch: async () => [] } : {}),
     prepare(sql) {
@@ -916,6 +964,9 @@ test("readiness reports AI capability without exposing the configured secret", a
           }
           if (sql.includes("AS trigger_count") && sql.includes("project_revision_capture_insert")) {
             return staleRevisionObjects ? { trigger_count: 13, index_count: 2 } : { trigger_count: 14, index_count: 3 };
+          }
+          if (sql.includes("AS trigger_count") && sql.includes("report_feedback_insert_guard")) {
+            return { trigger_count: 5, index_count: 2 };
           }
           if (sql.includes("FROM sqlite_master")) return counts;
           if (staleFamilyColumns && sql.includes("FROM family_alignment_rooms")) throw new Error("no such column: request_hash");
@@ -941,9 +992,11 @@ test("readiness reports AI capability without exposing the configured secret", a
   assert.equal(body.checks.familyAlignmentSchema, "current");
   assert.equal(body.checks.archiveSafetySchema, "current");
   assert.equal(body.checks.revisionSchema, "current");
+  assert.equal(body.checks.reportFeedbackSchema, "current");
   assert.equal(body.capabilities.aiPlanningBrief, true);
   assert.equal(body.capabilities.familyAlignment, true);
   assert.equal(body.capabilities.briefCheck, true);
+  assert.equal(body.capabilities.reportFeedback, true);
   assert.equal(JSON.stringify(body).includes(API_KEY), false);
 
   const staleDecision = await worker.fetch(request("/api/readiness"), {
@@ -1015,7 +1068,7 @@ test("readiness reports AI capability without exposing the configured secret", a
 
   for (const [label, overrides] of [
     ["invalid model", { DB: readinessDb(), GEMINI_API_KEY: API_KEY, GEMINI_MODEL: "bad/model" }],
-    ["missing AI table", { DB: readinessDb({ count: 18, ai_brief_count: 0, ai_abuse_count: 2, decision_table_count: 6, payment_hardening_count: 2, family_alignment_count: 2 }), GEMINI_API_KEY: API_KEY }],
+    ["missing AI table", { DB: readinessDb({ count: 22, ai_brief_count: 0, ai_abuse_count: 2, decision_table_count: 6, payment_hardening_count: 2, family_alignment_count: 2, revision_table_count: 3, report_feedback_count: 1 }), GEMINI_API_KEY: API_KEY }],
     ["missing atomic batch", { DB: readinessDb(undefined, false), GEMINI_API_KEY: API_KEY }],
     ["invalid key", { DB: readinessDb(), GEMINI_API_KEY: "short" }],
   ]) {

@@ -1,6 +1,6 @@
 # GrihaGrid
 
-India-first concept-stage home-planning SaaS. GrihaGrid turns a plot brief into a city-adjusted construction range, a private saved project, a deterministic feasibility report, an optional Gemini-assisted planning brief, and Decision Compare: a versioned side-by-side choice between exactly two home briefs.
+India-first concept-stage home-planning SaaS. GrihaGrid turns a plot brief into a city-adjusted construction range, a private saved project, a deterministic planning report with version-bound structured feedback, an optional Gemini-assisted planning brief, and Decision Compare: a versioned side-by-side choice between exactly two home briefs.
 
 Production: <https://grihagrid.prakhargupta267.workers.dev>
 
@@ -71,7 +71,7 @@ release cannot leave an unsafe migration queued for a later release.
 
 The deployment target is a Cloudflare Worker with static assets, D1 for application and immutable purchase records, KV for abuse controls, version metadata for release correlation, and a daily cleanup cron. Production and staging use separate Workers, D1 databases, KV namespaces, origins, and paid kill switches. Configure the bindings and secrets documented in `docs/backend-api.md` and `docs/payments.md`; normal releases then flow through the protected GitHub deployment workflow, with the runbook commands retained for verified break-glass recovery.
 
-The public calculator, authentication, private projects, deterministic report, working Decision Compare, and dashboard work without payment-provider secrets. The optional AI brief uses a server-only `GEMINI_API_KEY`, sends only an allowlisted sanitized planning record, and fails closed behind atomic D1 spend limits and a per-project generation lease; see `docs/gemini-ai.md`. Decision Compare needs no upload storage. R2-backed uploads remain unavailable until R2 is activated. Live checkout remains closed until Razorpay live-mode/KYC and webhook reconciliation, receipts/tax/refund operations, customer recovery/deletion, monitoring, and rollback evidence are all proven.
+The public calculator, authentication, private projects, deterministic report, structured Brief Check feedback, working Decision Compare, and dashboard work without payment-provider secrets. Feedback is a separate owner-scoped record on one immutable report revision, contains no free text, and never rewrites report bytes; see `docs/report-feedback.md`. The optional AI brief uses a server-only `GEMINI_API_KEY`, sends only an allowlisted sanitized planning record, and fails closed behind atomic D1 spend limits and a per-project generation lease; see `docs/gemini-ai.md`. Decision Compare needs no upload storage. R2-backed uploads remain unavailable until R2 is activated. Live checkout remains closed until Razorpay live-mode/KYC and webhook reconciliation, receipts/tax/refund operations, customer recovery/deletion, monitoring, and rollback evidence are all proven.
 
 See `docs/product-blueprint.md` for the product specification and `docs/operations-runbook.md` for the launch/rollback checklist.
 

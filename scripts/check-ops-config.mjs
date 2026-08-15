@@ -8,6 +8,8 @@ const files = Object.freeze({
   ci: new URL("../.github/workflows/ci.yml", import.meta.url),
   smokeWorkflow: new URL("../.github/workflows/production-smoke.yml", import.meta.url),
   deployWorkflow: new URL("../.github/workflows/deploy.yml", import.meta.url),
+  authenticatedSmoke: new URL("./authenticated-smoke.mjs", import.meta.url),
+  releaseDbEvidence: new URL("./release-db-evidence.mjs", import.meta.url),
 });
 
 function environmentBlock(source, name) {
@@ -30,8 +32,16 @@ function quotedVariable(source, name) {
   return match[1];
 }
 
+function workflowStep(source, name) {
+  const marker = `      - name: ${name}`;
+  const start = source.indexOf(marker);
+  assert.notEqual(start, -1, `deployment workflow must define step: ${name}`);
+  const next = source.indexOf("\n      - name:", start + marker.length);
+  return next === -1 ? source.slice(start) : source.slice(start, next);
+}
+
 export async function checkOpsConfig() {
-  const [wrangler, packageText, gitignore, ci, smokeWorkflow, deployWorkflow] = await Promise.all(
+  const [wrangler, packageText, gitignore, ci, smokeWorkflow, deployWorkflow, authenticatedSmoke, releaseDbEvidence] = await Promise.all(
     Object.values(files).map((file) => readFile(file, "utf8")),
   );
   const packageJson = JSON.parse(packageText);
@@ -159,6 +169,34 @@ export async function checkOpsConfig() {
   assert.match(deployWorkflow, /Create protected staging export and recovery point/u, "Cloudflare export credentials must be isolated from encryption");
   assert.match(deployWorkflow, /Encrypt and verify protected staging export/u, "backup encryption must be a separate least-privilege step");
   assert.match(deployWorkflow, /authenticated-smoke\.mjs/u, "each environment must run an authenticated canary");
+  assert.match(authenticatedSmoke, /const legacyWorker = options\.legacyWorker === true/u, "the current authenticated harness must support previous-Worker compatibility mode");
+  assert.match(authenticatedSmoke, /LEGACY_WORKER_COMPAT === "true"/u, "the authenticated CLI must expose reviewed legacy-Worker mode");
+  assert.match(authenticatedSmoke, /canaryProjectIds: \[\.\.\.cleanupIds\]\.sort\(\)/u, "authenticated smoke evidence must identify every synthetic project");
+  assert.match(authenticatedSmoke, /primaryError\.releaseEvidence = result/u, "failed authenticated canaries must still expose cleanup evidence");
+  assert.match(releaseDbEvidence, /buildCanaryResidueSql/u, "release evidence must build an exact canary-ID residue query");
+  for (const table of ["projects", "project_revisions", "reports", "project_revision_reports", "report_feedback"]) {
+    assert.match(
+      releaseDbEvidence,
+      new RegExp(`FROM ${table} WHERE (?:id|project_id) IN \\(\\$\\{ids\\}\\)`, "u"),
+      `canary residue proof must query exact IDs in ${table}`,
+    );
+  }
+  assert.match(releaseDbEvidence, /\["projects", "project_revisions", "reports", "revision_reports", "feedback"\]/u, "canary residue verification must fail closed on every project-owned report and revision table");
+  assert.match(releaseDbEvidence, /projectIdsSha256/u, "release artifacts must retain only a digest of canary project IDs");
+  for (const field of [
+    "invalid_input_rows",
+    "unknown_input_rows",
+    "soil_report_keys",
+    "unsafe_revision_reports",
+    "unsafe_current_reports",
+  ]) {
+    assert.match(deployWorkflow, new RegExp(`AS ${field}\\b`, "u"), `pre-migration safety audit must include ${field}`);
+    assert.match(releaseDbEvidence, new RegExp(`"${field}"`, "u"), `release evidence must fail closed on ${field}`);
+  }
+  assert.equal((deployWorkflow.match(/release-db-evidence\.mjs pre /gu) || []).length, 2, "staging and production must record strict pre-migration evidence");
+  assert.equal((deployWorkflow.match(/release-db-evidence\.mjs post /gu) || []).length, 2, "staging and production must prove migration invariance");
+  assert.equal((deployWorkflow.match(/LEGACY_WORKER_COMPAT:\s*"true"/gu) || []).length, 2, "both environments must rehearse the previous Worker with the current harness");
+  assert.doesNotMatch(deployWorkflow, /git show[^\n]*authenticated-smoke\.mjs/u, "rollback rehearsal must not execute the previous commit's harness");
   assert.match(deployWorkflow, /wait-for-release\.mjs/u, "releases must wait for consecutive exact-version smoke samples");
   assert.match(deployWorkflow, /Reconfirm the exact staging version/u, "production must reject staging drift after its hold");
   assert.match(deployWorkflow, /monitor-release\.mjs/u, "production must run exact-version monitoring");
@@ -168,7 +206,48 @@ export async function checkOpsConfig() {
   assert.match(deployWorkflow, /--version-id/u, "production error tail must be scoped to the deployed Worker version");
   assert.match(deployWorkflow, /tail-aggregate\.mjs/u, "tail payloads must be reduced to bounded aggregates");
   assert.doesNotMatch(deployWorkflow, /(?:invocation|server)-errors\.ndjson/u, "raw Worker tail payloads must never enter artifacts");
-  assert.match(deployWorkflow, /steps\.migrations\.outputs\.pending == 'false'/u, "automatic Worker rollback must be migration-safe");
+  assert.ok(
+    (deployWorkflow.match(/\(steps\.migrations\.outputs\.pending == 'false' \|\|\s*\(steps\.rollback_compat\.outcome == 'success' && steps\.rollback_residue\.outcome == 'success'\)\)/gu) || []).length >= 4,
+    "every automatic Worker rollback must require no migration or a successful compatibility rehearsal with zero residue",
+  );
+  assert.ok((deployWorkflow.match(/umask 077/gu) || []).length >= 8, "raw release evidence must be created with private permissions");
+  assert.equal((deployWorkflow.match(/release-db-evidence\.mjs residue-sql /gu) || []).length, 4, "old-Worker and candidate canaries need exact-ID residue SQL in both environments");
+  assert.equal((deployWorkflow.match(/release-db-evidence\.mjs residue /gu) || []).length, 4, "old-Worker and candidate canaries need verified zero-residue evidence in both environments");
+  assert.equal((deployWorkflow.match(/if: always\(\) && steps\.rollback_compat\.outcome != 'skipped'/gu) || []).length, 2, "rollback rehearsal residue must run after success or failure in both environments");
+  assert.equal((deployWorkflow.match(/if: always\(\) && steps\.canary\.outcome != 'skipped'/gu) || []).length, 2, "candidate residue must run after success or failure in both environments");
+  for (const environment of ["staging", "production"]) {
+    for (const stepName of [
+      `Inspect pending ${environment} migrations and aggregate data state`,
+      `Apply and verify ${environment} migrations`,
+      `Prove ${environment} rollback rehearsal left zero database residue`,
+      `Prove ${environment} canary left zero database residue`,
+    ]) {
+      assert.match(workflowStep(deployWorkflow, stepName), /umask 077/u, `${stepName} must protect raw evidence with umask 077`);
+    }
+    const cleanup = workflowStep(deployWorkflow, `Remove ${environment} backup material from the runner`);
+    assert.match(cleanup, /if: always\(\)/u, `${environment} raw-evidence cleanup must be unconditional`);
+    assert.match(cleanup, /rm -f --/u, `${environment} raw-evidence cleanup must remove temporary files`);
+    for (const artifact of [
+      "pre-migration-counts.json",
+      "pre-migration-audit.json",
+      "pre-migration-projects.json",
+      "pre-migration-reports.json",
+      "post-migration-counts.json",
+      "post-migration-projects.json",
+      "post-migration-reports.json",
+      "post-migration-feedback-count.json",
+      "rollback-residue.sql",
+      "rollback-residue.json",
+      "canary-residue.sql",
+      "canary-residue.json",
+    ]) {
+      assert.match(
+        cleanup,
+        new RegExp(`\\$RUNNER_TEMP/${environment}-${artifact.replaceAll(".", "\\.")}`, "u"),
+        `${environment} raw release evidence must be removed unconditionally: ${artifact}`,
+      );
+    }
+  }
   assert.match(deployWorkflow, /unverified-deploy-rollback\.json/u, "ambiguous deployments must roll back and persist exact-version evidence");
   assert.match(deployWorkflow, /regression-rollback\.json/u, "regression rollbacks must persist exact-version evidence");
   assert.match(deployWorkflow, /npm run check:ops/u, "deployment must revalidate fail-closed configuration");

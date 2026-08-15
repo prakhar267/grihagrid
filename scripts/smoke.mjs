@@ -89,10 +89,12 @@ export async function runSmoke(rawOrigin, options = {}) {
   checks.push(await jsonCheck(origin, "/api/readiness", {}, (body) => {
     assert.equal(body.status, "ready");
     assert.equal(body.checks?.familyAlignmentSchema, "current");
+    assert.equal(body.checks?.reportFeedbackSchema, "current");
     assert.equal(body.checks?.privateStorage, "unavailable");
     assert.deepEqual(body.checks?.acceptingPaidPlans, expectCheckout ? ["decision_compare"] : []);
     assert.equal(body.capabilities?.freePlanning, true);
     assert.equal(body.capabilities?.familyAlignment, true);
+    assert.equal(body.capabilities?.reportFeedback, true);
     assert.equal(body.capabilities?.privateUploads, false);
     assert.equal(body.capabilities?.paidCheckout, expectCheckout);
     assert.notEqual(body.capabilities?.paidFulfillment, true, "fulfillment is unexpectedly open");

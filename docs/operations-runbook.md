@@ -280,11 +280,15 @@ Migrations currently run in this order:
     project; immutable revision, idempotency and report-snapshot ledgers; source
     change/Family closure, archive, CAS and report-generation race fences; and
     nullable compatibility fields for a short rollback to the previous Worker.
+13. `0013_report_feedback_and_intake_hardening.sql`: one structured feedback
+    record per immutable report revision/schema; owner/archive and vocabulary
+    guards; database project-input allowlisting; and a 50-project account cap.
 
-Migration `0012` and the new Worker are one ordered change: back up, migrate D1,
-verify the schema, then deploy the Worker. Never deploy the new Worker before
-the migration. Before staging or production migration, record these counts and
-retain them with the release ticket:
+Each schema-and-Worker release is one ordered change: audit and back up D1,
+apply the migration, verify the expanded schema and its compatibility with the
+currently deployed Worker, then deploy the candidate. Never deploy code that
+depends on a pending migration. Before staging or production migration, record
+these counts and retain them with the release ticket:
 
 ```sql
 SELECT COUNT(*) AS projects, COALESCE(MAX(input_revision),0) AS max_revision FROM projects;
@@ -319,6 +323,50 @@ readiness reports `revisionSchema=current` and `briefCheck=true`, while
 `paidCheckout=false`, `privateUploads=false`, and the paid-plan allowlist stays
 empty. Do not repair a mismatch by synthesizing earlier revisions; stop and
 restore into an isolated database to diagnose it.
+
+Before migration `0013`, the release workflow runs a strict safety audit. All
+five named counts must be zero: invalid/non-object project input,
+`unknown_input_rows` outside the 15-field contract, any stored `soilReport`
+key, schema-v2 revision reports without the exact geotechnical-investigation
+warning, and schema-v2 current reports without that warning. A non-zero,
+missing, malformed, or truncated result blocks migration and rollback
+eligibility; do not silently delete or rewrite customer history to make the
+audit pass.
+
+With `umask 077`, capture canonical ordered `projects` and `reports` query
+results outside the repository and require their row counts and SHA-256 values
+to be identical after applying `0013`. These remote reads are deliberately
+fail-closed but are not one transactional snapshot: a legitimate concurrent
+write may trip the invariance gate. In that case, stop promotion and rerun the
+audit/evidence in a controlled quiet window from fresh queries; never waive a
+hash mismatch or interpret it as permission to reverse the applied migration.
+Raw query results remain mode 0600, are used only to compute bounded evidence,
+are removed from the runner in the unconditional cleanup step, and never enter
+release artifacts.
+
+After migration, require `report_feedback` to be empty when `0013` was newly
+applied, `PRAGMA foreign_key_check` to return no rows, the feedback table, both
+feedback indexes, all five `0013` triggers, the protected baseline objects and
+the required columns to exist. Readiness must report
+`reportFeedbackSchema=current` and `reportFeedback=true` while every paid and
+upload control remains closed.
+
+Before deploying the candidate, run the reviewed **current** authenticated
+smoke harness against the still-active previous Worker with legacy-Worker mode
+enabled and its exact version ID required. Do not execute a smoke script from
+the previous commit: the current harness is the reviewed definition of
+compatibility. It must prove the old Worker can authenticate, create/read an
+allowed project, generate/read its legacy report shape, exercise closed paid
+and upload controls, delete the project, revoke the session, and report every
+synthetic project ID it may have created. Query D1 directly for only those IDs
+and require zero rows in `projects`, `project_revisions`, `reports`,
+`project_revision_reports`, and `report_feedback` before candidate deployment.
+
+Run the same exact-ID residue proof after the candidate canary, including when
+the canary itself fails. Missing or malformed canary-ID evidence, a skipped
+cleanup proof after a canary attempt, or any matching row is a failed release.
+This marker-specific proof is unaffected by unrelated legitimate customer
+writes and must not be replaced with global before/after row-count equality.
 
 Apply the exact files to staging first and complete its smoke suite before
 production. Automation rejects deletion, rename, or modification of an
@@ -380,7 +428,8 @@ npx wrangler tail grihagrid --format json --status error
 
 The automated path also checks `readiness.releaseId` against the exact active
 Worker version across three consecutive full smoke samples, runs the
-authenticated create → read → deterministic report → delete → logout canary,
+authenticated create → read → deterministic report → feedback → delete →
+logout canary,
 proves that paid-order creation and private upload both return their expected
 closed errors,
 reconfirms staging after the production hold, and monitors both invocation
@@ -390,11 +439,12 @@ logged as `outcome=control_closed`, while missing-provider, database, abuse,
 AI, and unexpected failures remain `server_error` and trip the monitor.
 Raw tail events are reduced in memory to counts and byte totals, stop the
 observation on the first matching event, and never enter release artifacts.
-Automation rolls the Worker back only for a confirmed
-application regression when no migration ran. After a migration, any failure
-stops promotion and requires compatibility-checked roll-forward or explicit
-incident handling; it never blindly restores older code against a newer
-schema.
+Automation may roll the Worker back after a confirmed application regression
+when no migration ran. When a migration did run, rollback is eligible only if
+the pre-deploy old-Worker rehearsal completed against the expanded schema and
+its exact-ID cleanup proof passed. Otherwise the release stops for an explicit
+compatibility fix or incident response; it never blindly restores older code
+against a newer schema.
 
 ### 4.7 Production smoke tests
 
@@ -416,19 +466,25 @@ Then use the dedicated production canary account to verify:
    generate current report v2 and read the prior report through revision
    history. Confirm readiness says `revisionSchema=current` and
    `briefCheck=true` and delete every canary row.
-4. Generate one sanitized AI brief, read the cached copy, and delete the project;
+4. When `0013` is in the release, read null feedback for the exact generated
+   schema-v2 revision, save one structured response, read it back, replay it,
+   change it, and prove the report JSON is byte-identical. Check foreign-owner
+   `404`, archived read/blocked-write, aggregate-only metrics, and exact cascade
+   cleanup. Confirm a saved schema-v1 artifact renders only its persisted legacy
+   bytes and exposes no feedback UI or API write path.
+5. Generate one sanitized AI brief, read the cached copy, and delete the project;
    confirm the provider is called only once and no synthetic rows remain.
-5. Create exactly two canary scenarios, issue/read a comparison under a test
+6. Create exactly two canary scenarios, issue/read a comparison under a test
    entitlement in staging, record a choice and confirm the frozen versions.
-6. Confirm one user cannot fetch another canary user's project, revision/history,
+7. Confirm one user cannot fetch another canary user's project, revision/history,
    AI brief,
    comparison, artifact, choice, order or share; expect
    ownership-safe `404`.
-7. Confirm production catalog accepts no plan before the launch record is
+8. Confirm production catalog accepts no plan before the launch record is
    signed; staging test mode may accept only `decision_compare`.
    Readiness must also report `paidFulfillment=false`,
    `privateUploads=false`, and `checks.privateStorage=unavailable`.
-8. Verify mobile and desktop landing, start, auth, dashboard, Brief Check,
+9. Verify mobile and desktop landing, start, auth, dashboard, Brief Check,
    revision history, comparison, print
    and return routes.
 
@@ -927,7 +983,11 @@ npx wrangler deployments status --env=""
 ```
 
 Before rollback, confirm the chosen version predates the regression and remains
-compatible with the **current** D1 schema and bindings. For payment-semantic
+compatible with the **current** D1 schema and bindings. When a migration ran in
+the release, automatic rollback additionally requires the reviewed current
+authenticated harness to have passed against that exact old Worker after the
+migration, including its exact-ID zero-residue proof. A failed, skipped, or
+unverifiable compatibility rehearsal makes rollback ineligible. For payment-semantic
 changes, close checkout first while keeping webhook verification alive. After
 rollback, run health, estimate, auth/project, report, and relevant R2 synthetics;
 reconcile all orders created during the incident window.
@@ -941,8 +1001,12 @@ updates. That compatibility is containment, not a normal operating mode:
 - expect legacy source updates to create a truthful revision with nullable
   content hash/Brief Check, invalidate the mutable report cache and close active
   Family rooms; after roll-forward the new Worker recomputes the derived view;
-- verify the old Worker can perform health, auth, project read and one synthetic
-  legacy source update in isolated staging before selecting it for rollback;
+- use the current smoke harness in legacy-Worker mode to verify the old Worker
+  can perform health, auth, project/report CRUD and cleanup in isolated staging
+  before selecting it for rollback; do not execute the old commit's harness;
+- query only the harness-reported synthetic project IDs and require no matching
+  project, project revision, current report, revision report or feedback row,
+  even when the rehearsal fails;
 - after roll-forward, require `revisionSchema=current`, regenerate v2 explicitly,
   and reconcile `projects.input_revision` to the maximum stored revision for
   every project before reopening edits.

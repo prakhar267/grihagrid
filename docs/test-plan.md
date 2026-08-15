@@ -59,7 +59,13 @@ interleaved within their own real-D1 fixtures.
   response is lost after deletion, client reconciliation may complete logout only
   after `/api/auth/me` proves `401`; `200` or an unavailable check keeps the private
   UI open with an accessible retry.
-- `POST /api/projects`: valid project, normalized estimate, length-limited name and invalid dimensions.
+- `POST /api/projects`: valid project, normalized estimate, length-limited name
+  and invalid dimensions. Require exact root/nested allowlists and typed
+  categorical bounds; reject hidden `soilReport`/metadata claims, fail closed
+  on KV read **or** write failure, enforce isolated 20/hour account limits and
+  the SQL-time 50-project ceiling. Seed exactly 50 active/archived projects,
+  require create 51 to fail without a partial row, and always retain the
+  geotechnical-verification risk.
 - Unknown `/api/*`: JSON 404. Unknown browser route: SPA fallback.
 - Project Decision Home: `GET /api/projects/:projectId/home` is authenticated,
   owner-scoped, `no-store`, bounded to the documented `{ project, lifecycle,
@@ -105,15 +111,32 @@ interleaved within their own real-D1 fixtures.
   (or documented bounded conflict), no `500`, and no cache corruption. Migrated
   v1 bytes remain available only through explicit revision history and never
   satisfy the truthful current-v2 read.
+- Report feedback: exact owner/revision/schema GET starts null; PUT requires
+  origin, CSRF, KV, active status and exactly one approved outcome plus one to
+  three unique approved sections. Test idempotent replay, updates, historical
+  binding, byte-identical report content, archived read/blocked write,
+  cross-owner `404`, deletion cascade, SQL trigger bypasses, aggregate-only
+  metrics and templated operational routes. Schema v1 must be rejected by GET,
+  PUT and D1, remain absent from the UI, and print no feedback component.
 - Revision side effects: saving a revision permanently closes active Family
   rooms, while old comparisons, choices, orders and purchased snapshots remain
   byte-for-byte unchanged and are not presented as current. Paid, upload,
   checkout and fulfillment controls remain closed throughout the suite.
-- Rollback compatibility: after migration `0012`, emulate the previous Worker by
-  inserting a project and changing its source through the legacy projection.
-  Triggers must capture an honest revision with nullable derived facts, close
-  stale Family/report cache state, and let the new Worker recompute/read history.
-  A legacy schema-v1 report is preserved as history but cannot become current v2.
+- Populated upgrade: apply migrations through `0011` to a fixture containing a
+  real owner, non-first input revision and saved schema-v1 report, then apply
+  `0012` and `0013`. Require exact preservation of the v1 bytes and honest
+  baseline, zero fabricated revisions/feedback, canonical removal of unsupported
+  keys only on the next real source revision, and enforcement of the 50→51
+  project ceiling.
+- Rollback compatibility: run the reviewed current authenticated harness in
+  legacy-Worker mode against the previous Worker after migration, not a harness
+  copied from the previous commit. Triggers must capture an honest revision with
+  nullable derived facts, close stale Family/report cache state, and let the new
+  Worker recompute/read current schema-v2 history without mutating the preserved
+  v1 artifact. Automatic rollback is eligible only after this rehearsal and its
+  exact canary-ID query prove zero `projects`, `project_revisions`, `reports`,
+  `project_revision_reports`, and `report_feedback` residue, including after a
+  failed rehearsal.
 - Gemini brief: owner isolation; explicit 18+ consent; CSRF/origin enforcement;
   sanitized allowlisted prompt; structured validation; advisory-policy
   rejection; cached replay; refresh; atomic user/platform limits; one-project
@@ -239,6 +262,10 @@ interleaved within their own real-D1 fixtures.
 - Reduced-motion preference disables transition/scroll animation.
 - Generated hero remains sharp and cropped intentionally at desktop/mobile.
 - API responses never echo raw secrets or entire personal-data payloads.
+- Report print output excludes the complete feedback component, including its
+  explanatory boundary and status text. Historical schema-v1 print/UI output is
+  composed only from persisted v1 fields and never inherits recomputed Brief
+  Check, current inputs, fallback costs, risks, or actions.
 - Family review controls use semantic fieldsets/legends or equivalent native
   groups, minimum 48 px targets, associated error text and announced
   recorded/updated/full/expired/revoked states. Keyboard-only and screen-reader
@@ -315,7 +342,20 @@ interleaved within their own real-D1 fixtures.
 | Side effects | Save with an active Family room, old comparison/choice and purchased snapshot | Family link closes; old decision/payment evidence is unchanged and clearly historical, never current |
 | Archive and ownership | Read archived history, attempt every write, and repeat as another account | Archived owner can read history only; all writes fail closed; foreign/missing resources share safe `404` behavior |
 | Accessibility | Keyboard, screen reader, 200% zoom, text spacing, reduced motion, high contrast and 390 px | Logical edit/review/history order, announced errors/status, non-colour change cues, stable focus and no overflow |
-| Operations | Inspect readiness, templated logs, fresh/legacy migration, backup and old-Worker rollback rehearsal | `revisionSchema=current`, `briefCheck=true`; no ID/input/key in logs; additive rollback stays serviceable |
+| Operations | Inspect readiness, populated `0011`→`0013` migration, backup and current-harness old-Worker rehearsal | `revisionSchema=current`, `briefCheck=true`; v1 bytes remain immutable; no ID/input/key in logs; rollback is gated on compatibility and exact-ID cleanup |
+
+## Report feedback manual acceptance matrix
+
+| Area | Test | Required result |
+|---|---|---|
+| Exact binding | Save on current revision, create a new revision/report, then reopen both | Each report has its own response; neither response follows the mutable project pointer |
+| Immutability | Capture report JSON/checksum before save, update and replay | Report bytes/checksum never change; only feedback timestamps/outcome/sections may change |
+| Vocabulary | Try unknown, duplicate, empty and four-section payloads plus `overall` with another section | Every invalid shape is rejected by API and D1; no free text can persist |
+| Ownership and lifecycle | Repeat GET/PUT as another owner, archive, restore and delete | Foreign resources are safe `404`; archived GET remains readable and PUT is `409`; deletion cascades |
+| Legacy boundary | Open and print a populated saved schema-v1 report; call feedback GET/PUT and bypass the API in D1 | Only persisted v1 fields render; no modern facts or feedback UI print; API and SQL reject feedback |
+| Accessibility | Keyboard, screen reader, 200% zoom, text spacing, reduced motion and 390 px | Native fieldsets announce labels/status/errors, the three-section limit is understandable, and print excludes the complete feedback component |
+| Measurement | Query the protected window after multiple synthetic outcomes/sections | Only bounded aggregate counts appear; no identity, project, revision or report key is returned |
+| Operations | Inspect strict preflight, mode-0600 evidence cleanup, readiness, failed/successful canary cleanup and old-Worker rehearsal | `reportFeedbackSchema=current`, capability true, exact canary IDs have zero residue, templated logs, and rollback is compatibility-gated |
 
 ## Required release evidence
 
@@ -340,6 +380,11 @@ Attach to the release record, without secrets or customer data:
   save and report-generation race evidence, immutable-history/legacy-baseline
   reconciliation, rollback-trigger rehearsal, log canary, and
   keyboard/screen-reader/reflow results;
+- Report feedback outcome/section fixtures, exact-version immutability hashes,
+  schema-v1 API/UI/D1 rejection, archived/ownership/CSRF/KV-failure/rate-limit
+  evidence, the exact 50→51 cap, D1 guard bypasses, aggregate redaction,
+  populated `0011`→`0013` upgrade, failed/successful exact-ID canary cleanup,
+  print exclusion and keyboard/screen-reader/reflow results;
 - encrypted D1 backup checksum, isolated restore counts and measured RTO; and
 - go/no-go sign-off from founder/product, engineering on-call, payment owner,
   and quality/professional owner.
