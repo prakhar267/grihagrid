@@ -4958,13 +4958,14 @@ function reportFeedbackMetricsFromRow(row) {
       byOutcomeSection.filter((entry) => entry.outcome === outcome),
       `outcome-section ${outcome}`,
     );
-    if (matrixTotal < outcomeCount || (outcomeCount > 0 && matrixTotal / outcomeCount > 3)) {
+    if (matrixTotal < outcomeCount || matrixTotal > 3 * outcomeCount) {
       throw new Error("report feedback outcome totals did not reconcile to the outcome-section matrix");
     }
   }
-  const breakdownsSuppressed = eligibleReports < REPORT_FEEDBACK_METRICS_MINIMUM_COHORT
-    || totalResponses < REPORT_FEEDBACK_METRICS_MINIMUM_COHORT
-    || breakdownCells.some((entry) => entry.count < REPORT_FEEDBACK_METRICS_MINIMUM_COHORT);
+  // Exact categorical counts remain withheld until they can be released from
+  // fixed, non-overlapping snapshots. Per-query thresholds alone are not
+  // sufficient because two individually safe rolling windows can be differenced.
+  const breakdownsSuppressed = true;
   return {
     eligibleReports,
     totalResponses,
