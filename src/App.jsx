@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   ArrowClockwise, ArrowLeft, ArrowRight, ArrowSquareOut, ArrowsLeftRight, Blueprint, Buildings,
   Check, CheckCircle, Compass, Copy, CurrencyInr, DownloadSimple, Eye, FileText, FloppyDisk,
@@ -7,6 +7,10 @@ import {
   WarningCircle, X, XCircle,
 } from "@phosphor-icons/react";
 import { api, ApiError, copyText, formatDate, formatDateTime, formatLakh, idempotencyKey, trackEvent } from "./api.js";
+import {
+  LOGOUT_CHANNEL_NAME, LOGOUT_FAILURE_MESSAGE, broadcastLogout, clearLocalLogoutState, confirmLogout,
+  isLogoutBroadcast, isLogoutChannelMessage,
+} from "./logout.js";
 
 const cityFactors = { Pune: 1, Bengaluru: 1.08, Mumbai: 1.18, Delhi: 1.1, Hyderabad: .98, Chennai: 1.02, Jaipur: .88, Other: .95 };
 const qualityRates = { Essential: 1750, Signature: 2200, Premium: 2850, Luxury: 3900 };
@@ -66,6 +70,15 @@ function route(path) {
   if (hash) window.requestAnimationFrame(() => document.getElementById(safeDecodePathSegment(hash))?.scrollIntoView({ behavior: "smooth", block: "start" }));
 }
 
+function replaceRoute(path, state = {}) {
+  window.history.replaceState(state, "", path);
+  window.dispatchEvent(new PopStateEvent("popstate"));
+}
+
+function isPrivateAccountPath(pathname) {
+  return /^\/(?:dashboard|orders(?:\/|$)|projects\/|report\/|checkout\/return)/u.test(pathname);
+}
+
 function safeDecodePathSegment(value) {
   try { return decodeURIComponent(value); } catch { return value; }
 }
@@ -98,6 +111,31 @@ function Header({ user }) {
       <button className="menu-trigger" aria-label={open ? "Close menu" : "Open menu"} aria-expanded={open} aria-controls="primary-navigation" onClick={() => setOpen(!open)}>{open ? <X/> : <List/>}</button>
     </div>
   </div></header>;
+}
+
+function WorkspaceAccount({ user, onLogout }) {
+  const [phase,setPhase]=useState("idle");
+  const inFlight=useRef(false);
+  const buttonRef=useRef(null);
+  const errorId=useId();
+  const failed=phase==="error";
+  const pending=phase==="pending";
+  async function logout(){
+    if(inFlight.current)return;
+    inFlight.current=true;setPhase("pending");
+    try{
+      await confirmLogout();
+    }catch{
+      inFlight.current=false;setPhase("error");
+      window.requestAnimationFrame(()=>buttonRef.current?.focus({preventScroll:true}));
+      return;
+    }
+    clearLocalLogoutState();
+    broadcastLogout();
+    onLogout();
+    replaceRoute("/", { logoutConfirmed: true });
+  }
+  return <div className="workspace-account"><p>{user?.name||user?.email}</p><button ref={buttonRef} type="button" disabled={pending} aria-busy={pending} aria-describedby={failed?errorId:undefined} onClick={logout}><SignOut/> {pending?'Logging out…':failed?'Retry logout':'Log out'}</button><span className="workspace-account__status" role="status" aria-live="polite">{pending?'Logging out…':''}</span>{failed&&<p className="workspace-account__error" id={errorId} role="alert">{LOGOUT_FAILURE_MESSAGE}</p>}</div>;
 }
 
 function Footer() {
@@ -136,9 +174,11 @@ function EstimateInstrument({ condensed = false, initial }) {
   </div>;
 }
 
-function HomePage() {
+function HomePage({ user }) {
   const availability=useCommerceCatalog();
+  const loggedOut=user===null&&window.history.state?.logoutConfirmed===true;
   return <main>
+    {loggedOut&&<p className="logout-confirmation" role="status"><CheckCircle/> You’re logged out. Private workspace data was cleared from this tab.</p>}
     <section className="monograph-hero">
       <div className="monograph-copy">
         <span className="kicker">AI home planning for Indian plots</span>
@@ -278,8 +318,7 @@ function AuthPage({ mode, onAuthenticated }) {
 function Dashboard({ user, onLogout }) {
   const [projects,setProjects]=useState([]);const [loading,setLoading]=useState(true);const [error,setError]=useState("");
   useEffect(()=>{api('/api/projects').then(x=>setProjects(x.projects||[])).catch(e=>{if(e instanceof ApiError&&e.status===401)route('/login');else setError(e.message)}).finally(()=>setLoading(false));},[]);
-  async function logout(){await api('/api/auth/logout',{method:'POST',body:{}}).catch(()=>{});onLogout();route('/');}
-  return <main className="workspace"><aside><Brand/><nav><button className="active"><Blueprint/> Projects</button><button onClick={()=>route('/orders')}><Receipt/> Orders</button><button onClick={()=>route('/start')}><Plus/> New brief</button><button onClick={()=>route('/plans')}><FileText/> Sample plan</button></nav><div><p>{user?.name||user?.email}</p><button onClick={logout}><SignOut/> Log out</button></div></aside><section className="workspace-main"><header><div><span className="kicker">Your private workspace</span><h1>Home plans, in one place.</h1></div><button className="copper-button" onClick={()=>route('/start')}><Plus/> New project</button></header>{loading&&<p className="loading-line" role="status">Loading your projects…</p>}{error&&<p className="form-error" role="alert">{error}</p>}{!loading&&!error&&projects.length===0&&<div className="empty-state"><Blueprint/><h2>Your first plot is still blank paper.</h2><p>Create a Brief Check and planning range before commissioning drawings.</p><button className="copper-button" onClick={()=>route('/start')}>Plan my home <ArrowRight/></button></div>}<div className="project-list">{projects.map((project,i)=><article key={project.id}><span className="project-number">{String(i+1).padStart(2,'0')}</span><div><small>{project.status?.replaceAll('_',' ')}</small><h2>{project.name}</h2><p>{project.input?.width||project.width||30} × {project.input?.length||project.length||50} ft · {project.input?.city||project.city||'India'} · {project.input?.floors||project.floors||'G+1'}</p></div><div><span>Planning range</span><strong>{formatLakh(project.estimate?.lowInr||project.low_inr)} – {formatLakh(project.estimate?.highInr||project.high_inr)}</strong></div><div className="project-actions"><button onClick={()=>route(`/projects/${project.id}`)}>{project.status==='archived'?'Open project':'Resume'} <ArrowRight/></button></div></article>)}</div></section></main>;
+  return <main className="workspace"><aside><Brand/><nav><button className="active"><Blueprint/> Projects</button><button onClick={()=>route('/orders')}><Receipt/> Orders</button><button onClick={()=>route('/start')}><Plus/> New brief</button><button onClick={()=>route('/plans')}><FileText/> Sample plan</button></nav><WorkspaceAccount user={user} onLogout={onLogout}/></aside><section className="workspace-main"><header><div><span className="kicker">Your private workspace</span><h1>Home plans, in one place.</h1></div><button className="copper-button" onClick={()=>route('/start')}><Plus/> New project</button></header>{loading&&<p className="loading-line" role="status">Loading your projects…</p>}{error&&<p className="form-error" role="alert">{error}</p>}{!loading&&!error&&projects.length===0&&<div className="empty-state"><Blueprint/><h2>Your first plot is still blank paper.</h2><p>Create a Brief Check and planning range before commissioning drawings.</p><button className="copper-button" onClick={()=>route('/start')}>Plan my home <ArrowRight/></button></div>}<div className="project-list">{projects.map((project,i)=><article key={project.id}><span className="project-number">{String(i+1).padStart(2,'0')}</span><div><small>{project.status?.replaceAll('_',' ')}</small><h2>{project.name}</h2><p>{project.input?.width||project.width||30} × {project.input?.length||project.length||50} ft · {project.input?.city||project.city||'India'} · {project.input?.floors||project.floors||'G+1'}</p></div><div><span>Planning range</span><strong>{formatLakh(project.estimate?.lowInr||project.low_inr)} – {formatLakh(project.estimate?.highInr||project.high_inr)}</strong></div><div className="project-actions"><button onClick={()=>route(`/projects/${project.id}`)}>{project.status==='archived'?'Open project':'Resume'} <ArrowRight/></button></div></article>)}</div></section></main>;
 }
 
 const projectHomeSteps = {
@@ -1574,8 +1613,7 @@ function orderStatusCopy(order) {
 function OrderHistoryPage({ user, onLogout }) {
   const [orders,setOrders]=useState([]);const [phase,setPhase]=useState('loading');const [error,setError]=useState("");
   useEffect(()=>{const controller=new AbortController();api('/api/orders',{signal:controller.signal}).then(result=>{setOrders(result.orders||[]);setPhase('ready')}).catch(err=>{if(controller.signal.aborted)return;if(err instanceof ApiError&&err.status===401){route('/login');return}setError(err.message);setPhase('error')});return()=>controller.abort()},[]);
-  async function logout(){await api('/api/auth/logout',{method:'POST',body:{}}).catch(()=>{});onLogout();route('/')}
-  return <main className="workspace orders-workspace"><aside><Brand/><nav><button onClick={()=>route('/dashboard')}><Blueprint/> Projects</button><button className="active"><Receipt/> Orders</button><button onClick={()=>route('/start')}><Plus/> New brief</button></nav><div><p>{user?.name||user?.email}</p><button onClick={logout}><SignOut/> Log out</button></div></aside><section className="workspace-main order-history"><header><div><span className="kicker">Receipts & deliverables</span><h1>Every purchase, traceable.</h1></div><button className="outline-button" onClick={()=>route('/dashboard')}><ArrowLeft/> Projects</button></header>
+  return <main className="workspace orders-workspace"><aside><Brand/><nav><button onClick={()=>route('/dashboard')}><Blueprint/> Projects</button><button className="active"><Receipt/> Orders</button><button onClick={()=>route('/start')}><Plus/> New brief</button></nav><WorkspaceAccount user={user} onLogout={onLogout}/></aside><section className="workspace-main order-history"><header><div><span className="kicker">Receipts & deliverables</span><h1>Every purchase, traceable.</h1></div><button className="outline-button" onClick={()=>route('/dashboard')}><ArrowLeft/> Projects</button></header>
     {phase==='loading'&&<p className="loading-line" role="status">Loading your order history…</p>}
     {phase==='error'&&<div className="orders-error"><p className="form-error" role="alert">{error}</p><button className="outline-button" onClick={()=>window.location.reload()}>Try again <ArrowClockwise/></button></div>}
     {phase==='ready'&&orders.length===0&&<div className="empty-state"><Receipt/><h2>No purchases yet.</h2><p>Your free Brief Checks and saved planning reports remain available. When you buy Decision Compare, its receipt and immutable artifact will live here.</p><button className="copper-button" onClick={()=>route('/dashboard')}>Open my projects <ArrowRight/></button></div>}
@@ -1841,8 +1879,31 @@ function AppShell({ user, children }) { return <><a className="skip-link" href="
 export function App() {
   const [path,setPath]=useState(window.location.pathname);const [user,setUser]=useState(undefined);
   const focusedPath=useRef(path);
+  const authRevision=useRef(0);
   useEffect(()=>{const onPop=()=>setPath(window.location.pathname);window.addEventListener('popstate',onPop);return()=>window.removeEventListener('popstate',onPop)},[]);
-  useEffect(()=>{api('/api/auth/me').then(x=>setUser(x.user||null)).catch(()=>setUser(null));},[]);
+  useEffect(()=>{
+    const applyRemoteLogout=()=>{authRevision.current+=1;clearLocalLogoutState();setUser(null);if(isPrivateAccountPath(window.location.pathname))replaceRoute('/',{logoutConfirmed:true})};
+    const onStorage=event=>{if(isLogoutBroadcast(event))applyRemoteLogout()};
+    const onChannel=event=>{if(isLogoutChannelMessage(event))applyRemoteLogout()};
+    let channel=null;
+    try{channel=new window.BroadcastChannel(LOGOUT_CHANNEL_NAME);channel.addEventListener('message',onChannel)}catch{/* Storage event and resume validation remain available. */}
+    window.addEventListener('storage',onStorage);
+    return()=>{window.removeEventListener('storage',onStorage);if(channel){channel.removeEventListener('message',onChannel);channel.close()}};
+  },[]);
+  useEffect(()=>{const revision=authRevision.current;api('/api/auth/me').then(x=>{if(authRevision.current===revision)setUser(x.user||null)}).catch(()=>{if(authRevision.current===revision)setUser(null)});},[]);
+  useEffect(()=>{
+    let checking=false;
+    const revalidate=async()=>{
+      if(checking||!isPrivateAccountPath(window.location.pathname))return;
+      checking=true;const revision=authRevision.current;
+      try{const result=await api('/api/auth/me');if(authRevision.current===revision)setUser(result.user||null)}
+      catch(error){if(authRevision.current===revision&&error instanceof ApiError&&error.status===401&&error.payload?.code==='unauthenticated'){authRevision.current+=1;clearLocalLogoutState();setUser(null);replaceRoute('/',{logoutConfirmed:true})}}
+      finally{checking=false}
+    };
+    const onVisibility=()=>{if(document.visibilityState==='visible')revalidate()};
+    window.addEventListener('focus',revalidate);window.addEventListener('pageshow',revalidate);document.addEventListener('visibilitychange',onVisibility);
+    return()=>{window.removeEventListener('focus',revalidate);window.removeEventListener('pageshow',revalidate);document.removeEventListener('visibilitychange',onVisibility)};
+  },[]);
   useEffect(()=>{const titles={'/':'GrihaGrid — Know what fits. Know what it costs.','/pricing':'Pricing — GrihaGrid','/about':'About — GrihaGrid','/plans':'Sample plan — GrihaGrid','/compare/sample':'Sample Decision Compare — GrihaGrid','/start':'Plan my home — GrihaGrid','/login':'Log in — GrihaGrid','/register':'Create account — GrihaGrid','/dashboard':'My projects — GrihaGrid','/orders':'Orders — GrihaGrid','/privacy':'Privacy — GrihaGrid','/terms':'Terms — GrihaGrid','/refund':'Refunds — GrihaGrid'};document.title=path.startsWith('/report/')?'Decision book — GrihaGrid':path.startsWith('/projects/')&&path.endsWith('/brief')?'Brief Check — GrihaGrid':path.startsWith('/projects/')&&path.endsWith('/compare')?'Decision Compare — GrihaGrid':path.startsWith('/projects/')?'Project home — GrihaGrid':path.startsWith('/orders/')?'Purchased artifact — GrihaGrid':path.startsWith('/share/decision/')?'Shared decision — GrihaGrid':path.startsWith('/align/')?'Family review — GrihaGrid':(titles[path]||'Page not found — GrihaGrid')},[path]);
   useEffect(()=>{
     if(focusedPath.current===path)return undefined;
@@ -1896,9 +1957,9 @@ export function App() {
   const alignmentMatch=path.match(/^\/align\/([^/]+)$/);
   const checkoutOrder=path==='/checkout/return'?new URLSearchParams(window.location.search).get('order'):null;
   if(path==='/start')return <StartPage user={user}/>;
-  if(path==='/login'||path==='/register')return <AuthPage key={path} mode={path.slice(1)} onAuthenticated={setUser}/>;
-  if(path==='/dashboard')return <Dashboard user={user} onLogout={()=>setUser(null)}/>;
-  if(path==='/orders')return <OrderHistoryPage user={user} onLogout={()=>setUser(null)}/>;
+  if(path==='/login'||path==='/register')return <AuthPage key={path} mode={path.slice(1)} onAuthenticated={authenticated=>{authRevision.current+=1;setUser(authenticated)}}/>;
+  if(path==='/dashboard')return <Dashboard user={user} onLogout={()=>{authRevision.current+=1;setUser(null)}}/>;
+  if(path==='/orders')return <OrderHistoryPage user={user} onLogout={()=>{authRevision.current+=1;setUser(null)}}/>;
   if(briefMatch)return <BriefPage projectId={safeDecodePathSegment(briefMatch[1])}/>;
   if(decisionMatch)return <DecisionComparePage projectId={safeDecodePathSegment(decisionMatch[1])}/>;
   if(projectHomeMatch)return <ProjectHomePage projectId={safeDecodePathSegment(projectHomeMatch[1])}/>;
@@ -1908,7 +1969,7 @@ export function App() {
   if(shareMatch)return <SharedDecisionPage token={safeDecodePathSegment(shareMatch[1])}/>;
   if(alignmentMatch)return <FamilyAlignmentReviewPage token={alignmentMatch[1]}/>;
   if(path==='/checkout/return')return <CheckoutReturnPage orderId={checkoutOrder}/>;
-  let page=path==='/'?<HomePage/>:<NotFoundPage/>;
+  let page=path==='/'?<HomePage user={user}/>:<NotFoundPage/>;
   if(path==='/pricing')page=<PricingPage/>;else if(path==='/about')page=<AboutPage/>;else if(path==='/plans')page=<SamplePlanPage/>;else if(path==='/compare/sample')page=<SampleDecisionComparePage/>;else if(path==='/privacy'||path==='/terms'||path==='/refund')page=<LegalPage type={path.slice(1)}/>;
   return <AppShell user={user}>{page}</AppShell>;
 }

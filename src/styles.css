@@ -1744,6 +1744,28 @@ blockquote {
   line-height: 1.45;
 }
 
+.logout-confirmation {
+  margin: 0;
+  padding: 0.85rem clamp(1.15rem, 4vw, 4rem);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.55rem;
+  border-bottom: 1px solid rgba(54, 112, 77, 0.22);
+  background: rgba(54, 112, 77, 0.08);
+  color: #2f6948;
+  font-size: 0.82rem;
+  font-weight: 600;
+  line-height: 1.4;
+  text-align: center;
+}
+
+.logout-confirmation svg {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+}
+
 /* Authentication */
 .auth-page {
   min-height: 100svh;
@@ -1878,8 +1900,8 @@ blockquote {
 }
 
 .workspace aside nav button,
-.workspace aside > div:last-child button {
-  min-height: 44px;
+.workspace-account button {
+  min-height: 48px;
   padding: 0 0.7rem;
   display: flex;
   align-items: center;
@@ -1900,18 +1922,19 @@ blockquote {
 }
 
 .workspace aside nav svg,
-.workspace aside > div:last-child svg {
+.workspace-account svg {
   width: 18px;
   height: 18px;
 }
 
-.workspace aside > div:last-child {
+.workspace-account {
   margin-top: auto;
   padding-top: 1rem;
+  position: relative;
   border-top: 1px solid var(--rule);
 }
 
-.workspace aside > div:last-child p {
+.workspace-account > p:first-child {
   margin: 0 0 0.5rem 0.7rem;
   overflow: hidden;
   color: var(--ink-soft);
@@ -1919,6 +1942,32 @@ blockquote {
   font-size: 0.9rem;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.workspace-account__status {
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  position: absolute;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.workspace-account .workspace-account__error {
+  margin: 0.65rem 0.7rem 0;
+  padding: 0.7rem 0.8rem;
+  overflow: visible;
+  border-left: 3px solid var(--danger);
+  background: rgba(159, 62, 49, 0.07);
+  color: var(--danger);
+  font-family: var(--sans);
+  font-size: 0.72rem;
+  line-height: 1.45;
+  text-overflow: clip;
+  white-space: normal;
 }
 
 .workspace-main {
@@ -3213,14 +3262,27 @@ blockquote {
     display: flex;
   }
 
-  .workspace aside > div:last-child {
+  .workspace-account {
     margin: 0 0 0 0.5rem;
     padding: 0;
     border-top: 0;
   }
 
-  .workspace aside > div:last-child p {
+  .workspace-account > p:first-child {
     display: none;
+  }
+
+  .workspace-account .workspace-account__error {
+    width: min(21rem, calc(100vw - 2rem));
+    margin: 0.7rem 0 0;
+    position: absolute;
+    z-index: 6;
+    top: 100%;
+    right: 0;
+    border: 1px solid rgba(159, 62, 49, 0.3);
+    border-left: 3px solid var(--danger);
+    background: var(--paper);
+    box-shadow: 0 14px 30px rgba(39, 35, 30, 0.14);
   }
 
   .report-copy {
@@ -3727,8 +3789,7 @@ blockquote {
     padding: 1rem 1.15rem;
   }
 
-  .workspace aside nav button:not(.active),
-  .workspace aside > div:last-child {
+  .workspace aside nav button:not(.active) {
     display: none;
   }
 
@@ -3877,6 +3938,18 @@ blockquote {
 
   .legal-page > h1 {
     font-size: 4rem;
+  }
+}
+
+@media (max-width: 360px) {
+  .workspace-account button {
+    min-width: 0;
+    padding-inline: 0.35rem;
+    gap: 0.3rem;
+  }
+
+  .workspace-account button svg {
+    display: none;
   }
 }
 

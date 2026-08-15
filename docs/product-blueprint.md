@@ -175,7 +175,7 @@ Priority definitions: **P0** is required to sell responsibly; **P1** improves co
 | ID | Pri | Actor and use case | Required outcome / acceptance condition |
 |---|---:|---|---|
 | ID-01 | P0 | Customer registers | Unique normalized email, strong password handling, generic error messages, rate limiting, and a secure session are created. |
-| ID-02 | P0 | Customer signs in/out | Session rotates on authentication; logout revokes server state; cookies are HttpOnly, Secure, and appropriately SameSite. |
+| ID-02 | P0 | Customer signs in/out | Session rotates on authentication; logout revokes or proves absent the current server session before the private UI is cleared; ambiguous failures remain visibly signed in with an accessible retry; the control remains available on mobile; cookies are HttpOnly, Secure, and appropriately SameSite. |
 | ID-03 | P0 | Customer recovers account access | One-time, expiring reset flow avoids account enumeration and revokes old sessions after password reset. |
 | ID-04 | P0 | System protects mutating requests | CSRF defence, origin validation, request-size limits, and per-account/IP abuse controls are enforced. |
 | ID-05 | P1 | Customer verifies email | Verification status is visible and required before paid fulfillment or external sharing. |

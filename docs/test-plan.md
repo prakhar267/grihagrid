@@ -34,6 +34,13 @@ interleaved within their own real-D1 fixtures.
     revision → generate its report → inspect both immutable revisions. Repeat
     with a stale tab, idempotent replay, archived project, and a migrated project
     whose honest history begins above revision one.
+11. Register → open Dashboard and Orders → log out from each surface. Require a
+    disabled pending state, exact current-session revocation, cleared cookies and
+    private browser state, sibling-tab propagation, and a public destination that
+    cannot reveal cached account content through Back. Repeat offline, response-loss,
+    stale-session, CSRF rejection, D1 failure, rapid repeat activation, keyboard-only,
+    390 px mobile, and 200% zoom cases; never claim success while session state is
+    unknown.
 
 ## API cases
 
@@ -43,6 +50,15 @@ interleaved within their own real-D1 fixtures.
   upload and checkout capability.
 - `POST /api/estimate`: valid result; defaults; malformed JSON; wrong content type; dimensions below/above bounds.
 - `POST /api/leads`: valid email; invalid email; duplicate email; unavailable database.
+- `POST /api/auth/logout`: trusted-origin live session requires matching CSRF,
+  deletes only the current D1 session, clears both cookies and returns empty `204`;
+  replay and stale/expired session are idempotent `204`. Replaying the original
+  session cookie makes `/api/auth/me` return `401`, while a second session remains
+  valid. Cross-origin, missing/mismatched CSRF, SELECT/DELETE failure and unavailable
+  D1 preserve the session and emit no false cookie-clearing success. If the POST
+  response is lost after deletion, client reconciliation may complete logout only
+  after `/api/auth/me` proves `401`; `200` or an unavailable check keeps the private
+  UI open with an accessible retry.
 - `POST /api/projects`: valid project, normalized estimate, length-limited name and invalid dimensions.
 - Unknown `/api/*`: JSON 404. Unknown browser route: SPA fallback.
 - Project Decision Home: `GET /api/projects/:projectId/home` is authenticated,

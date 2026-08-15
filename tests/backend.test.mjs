@@ -14,6 +14,7 @@ class MemoryD1 {
     this.users = [];
     this.sessions = [];
     this.projects = [];
+    this.failSessionDelete = false;
   }
 
   prepare(sql) {
@@ -34,14 +35,21 @@ class MemoryStatement {
   }
 
   async first() {
+    if (this.sql.startsWith("SELECT id,email,name,created_at,password_hash,password_salt,password_iterations,password_algorithm FROM users WHERE email=")) {
+      const user = this.db.users.find((candidate) => candidate.email === this.values[0] && !candidate.deleted_at);
+      return user ? { ...user } : null;
+    }
     if (this.sql.startsWith("SELECT id FROM users WHERE email=")) {
       const user = this.db.users.find((candidate) => candidate.email === this.values[0]);
       return user ? { id: user.id } : null;
     }
     if (this.sql.includes("FROM sessions s JOIN users u")) {
-      const session = this.db.sessions.find((candidate) => candidate.token_hash === this.values[0]);
+      const now = new Date().toISOString().slice(0, 19).replace("T", " ");
+      const session = this.db.sessions.find((candidate) => (
+        candidate.token_hash === this.values[0] && candidate.expires_at > now
+      ));
       const user = session && this.db.users.find((candidate) => candidate.id === session.user_id);
-      return user ? {
+      return user && !user.deleted_at ? {
         session_id: session.id,
         user_id: user.id,
         csrf_hash: session.csrf_hash,
@@ -69,6 +77,13 @@ class MemoryStatement {
       this.db.sessions.push({ id, user_id, token_hash, csrf_hash, expires_at, created_at, last_seen_at });
       return { success: true };
     }
+    if (this.sql.startsWith("DELETE FROM sessions WHERE id=? AND user_id=?")) {
+      if (this.db.failSessionDelete) throw new Error("simulated session deletion failure");
+      const [id, userId] = this.values;
+      const before = this.db.sessions.length;
+      this.db.sessions = this.db.sessions.filter((session) => session.id !== id || session.user_id !== userId);
+      return { success: true, meta: { changes: before - this.db.sessions.length } };
+    }
     if (this.sql.startsWith("INSERT INTO projects")) {
       const [id, user_id, name, status, input_json, estimate_json, created_at, updated_at] = this.values;
       this.db.projects.push({ id, user_id, name, status, input_json, estimate_json, created_at, updated_at });
@@ -80,6 +95,34 @@ class MemoryStatement {
 
 function cookieHeader(response) {
   return response.headers.getSetCookie().map((value) => value.split(";", 1)[0]).join("; ");
+}
+
+function assertClearsSessionCookies(response) {
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  assert.deepEqual(response.headers.getSetCookie(), [
+    "__Host-grihagrid_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax",
+    "grihagrid_csrf=; Path=/; Max-Age=0; Secure; SameSite=Strict",
+  ]);
+}
+
+async function registerAuth(DB, email = "logout-owner@example.test") {
+  const response = await worker.fetch(request("/api/auth/register", {
+    method: "POST",
+    headers: { origin: ORIGIN, "content-type": "application/json" },
+    body: JSON.stringify({ email, password: "correct horse battery staple" }),
+  }), { ASSETS: assets, DB });
+  assert.equal(response.status, 201);
+  return { body: await response.json(), cookies: cookieHeader(response) };
+}
+
+async function loginAuth(DB, email = "logout-owner@example.test") {
+  const response = await worker.fetch(request("/api/auth/login", {
+    method: "POST",
+    headers: { origin: ORIGIN, "content-type": "application/json" },
+    body: JSON.stringify({ email, password: "correct horse battery staple" }),
+  }), { ASSETS: assets, DB });
+  assert.equal(response.status, 200);
+  return { body: await response.json(), cookies: cookieHeader(response) };
 }
 
 test("password records use salted PBKDF2 and verify without storing plaintext", async () => {
@@ -187,6 +230,134 @@ test("CSRF protection requires matching cookie, header, and server-side hash", a
     method: "POST",
     headers: { cookie: `grihagrid_csrf=${token}`, "x-csrf-token": "attacker-token" },
   }), session), /valid CSRF token/u);
+});
+
+test("logout revokes the active D1 session, clears both cookies, and is safe to replay", async () => {
+  const DB = new MemoryD1();
+  const env = { ASSETS: assets, DB };
+  const auth = await registerAuth(DB);
+  const otherDevice = await loginAuth(DB);
+  assert.equal(DB.sessions.length, 2);
+
+  const response = await worker.fetch(request("/api/auth/logout", {
+    method: "POST",
+    headers: { origin: ORIGIN, cookie: auth.cookies, "x-csrf-token": auth.body.csrfToken },
+  }), env);
+  assert.equal(response.status, 204);
+  assert.equal(await response.text(), "");
+  assertClearsSessionCookies(response);
+  assert.equal(DB.sessions.length, 1);
+
+  const revoked = await worker.fetch(request("/api/auth/me", {
+    headers: { cookie: auth.cookies },
+  }), env);
+  assert.equal(revoked.status, 401);
+  assert.equal((await revoked.json()).code, "unauthenticated");
+
+  const otherDeviceStillActive = await worker.fetch(request("/api/auth/me", {
+    headers: { cookie: otherDevice.cookies },
+  }), env);
+  assert.equal(otherDeviceStillActive.status, 200);
+  assert.equal((await otherDeviceStillActive.json()).user.email, "logout-owner@example.test");
+
+  const replay = await worker.fetch(request("/api/auth/logout", {
+    method: "POST",
+    headers: { origin: ORIGIN, cookie: auth.cookies, "x-csrf-token": auth.body.csrfToken },
+  }), env);
+  assert.equal(replay.status, 204);
+  assertClearsSessionCookies(replay);
+  assert.equal(DB.sessions.length, 1, "logout replay must not revoke another device session");
+});
+
+test("logout clears stale cookies when no active session exists", async () => {
+  const DB = new MemoryD1();
+  const env = { ASSETS: assets, DB };
+
+  const noSession = await worker.fetch(request("/api/auth/logout", {
+    method: "POST",
+    headers: { origin: ORIGIN },
+  }), env);
+  assert.equal(noSession.status, 204);
+  assertClearsSessionCookies(noSession);
+
+  const auth = await registerAuth(DB, "expired-logout@example.test");
+  DB.sessions[0].expires_at = "2000-01-01 00:00:00";
+  const expired = await worker.fetch(request("/api/auth/logout", {
+    method: "POST",
+    headers: { origin: ORIGIN, cookie: auth.cookies, "x-csrf-token": auth.body.csrfToken },
+  }), env);
+  assert.equal(expired.status, 204);
+  assertClearsSessionCookies(expired);
+  assert.equal(DB.sessions.length, 1, "expired rows remain for scheduled retention cleanup");
+});
+
+test("logout still requires the database before clearing unauthenticated cookies", async () => {
+  const response = await worker.fetch(request("/api/auth/logout", {
+    method: "POST",
+    headers: { origin: ORIGIN, cookie: "__Host-grihagrid_session=stale-session" },
+  }), { ASSETS: assets });
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).code, "database_unavailable");
+  assert.deepEqual(response.headers.getSetCookie(), []);
+});
+
+test("logout rejects CSRF and untrusted origins without revoking or clearing an active session", async () => {
+  const DB = new MemoryD1();
+  const env = { ASSETS: assets, DB };
+  const auth = await registerAuth(DB, "protected-logout@example.test");
+
+  const badCsrf = await worker.fetch(request("/api/auth/logout", {
+    method: "POST",
+    headers: { origin: ORIGIN, cookie: auth.cookies, "x-csrf-token": "attacker-token" },
+  }), env);
+  assert.equal(badCsrf.status, 403);
+  assert.equal((await badCsrf.json()).code, "csrf_rejected");
+  assert.deepEqual(badCsrf.headers.getSetCookie(), []);
+  assert.equal(DB.sessions.length, 1);
+
+  const badOrigin = await worker.fetch(request("/api/auth/logout", {
+    method: "POST",
+    headers: { origin: "https://evil.example", cookie: auth.cookies, "x-csrf-token": auth.body.csrfToken },
+  }), env);
+  assert.equal(badOrigin.status, 403);
+  assert.equal((await badOrigin.json()).code, "origin_rejected");
+  assert.deepEqual(badOrigin.headers.getSetCookie(), []);
+  assert.equal(DB.sessions.length, 1);
+
+  const stillActive = await worker.fetch(request("/api/auth/me", {
+    headers: { cookie: auth.cookies },
+  }), env);
+  assert.equal(stillActive.status, 200);
+});
+
+test("logout deletion failure returns 500 without clearing or pretending to revoke the session", async () => {
+  const DB = new MemoryD1();
+  const env = { ASSETS: assets, DB };
+  const auth = await registerAuth(DB, "failed-logout@example.test");
+  DB.failSessionDelete = true;
+
+  const failed = await worker.fetch(request("/api/auth/logout", {
+    method: "POST",
+    headers: { origin: ORIGIN, cookie: auth.cookies, "x-csrf-token": auth.body.csrfToken },
+  }), env);
+  assert.equal(failed.status, 500);
+  assert.equal((await failed.json()).code, "internal_error");
+  assert.deepEqual(failed.headers.getSetCookie(), []);
+  assert.equal(DB.sessions.length, 1);
+
+  const stillActive = await worker.fetch(request("/api/auth/me", {
+    headers: { cookie: auth.cookies },
+  }), env);
+  assert.equal(stillActive.status, 200);
+
+  DB.failSessionDelete = false;
+  const retry = await worker.fetch(request("/api/auth/logout", {
+    method: "POST",
+    headers: { origin: ORIGIN, cookie: auth.cookies, "x-csrf-token": auth.body.csrfToken },
+  }), env);
+  assert.equal(retry.status, 204);
+  assertClearsSessionCookies(retry);
+  assert.equal(DB.sessions.length, 0);
 });
 
 test("project ownership lookup is always scoped to both project and user", async () => {
