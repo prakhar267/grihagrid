@@ -36,13 +36,40 @@ the real local workerd/D1 Decision Compare journey.
 
 GitHub Actions runs the locked install, fresh-database migration check,
 production build, complete Node test suite, Worker dry run, and dependency
-audit for every pull request and every push to `main`. The workflow is
-read-only and contains no production credentials or deployment step. Protect
-`main` by requiring the `Build, test, and validate` check before merging.
+audit for every pull request and every push to `main`. CI remains read-only.
+After an in-repository `main` push passes CI, `.github/workflows/deploy.yml`
+independently requires successful exact-SHA CodeQL and a merged squash PR,
+then uses protected `staging` and `production` environments to migrate, deploy,
+smoke, run an authenticated canary, and record the serving Worker version.
+Production follows staging and includes a 30-minute exact-version observation.
+Documentation-only merges are classified and skipped. Deployment runs queue in
+full, staging is restricted to protected branches, and production adds a
+five-minute environment hold before it reconfirms the exact staging version.
+Build and test work runs without environment secrets; the resulting exact-SHA
+bundle is transferred to fresh privileged runners, which install the pinned
+Wrangler version without executing candidate install hooks. The artifact is
+restored outside the checkout, then replaces any candidate-controlled `dist`
+tree before deploy.
+
+Each deployment environment stores its own `CLOUDFLARE_API_TOKEN`,
+`CLOUDFLARE_ACCOUNT_ID`, `D1_BACKUP_PASSPHRASE`,
+`GRIHAGRID_CANARY_EMAIL`, and `GRIHAGRID_CANARY_PASSWORD` as encrypted GitHub
+environment secrets. Cloudflare tokens are account-scoped service credentials
+limited to Worker scripts, D1, KV reads needed for bindings, and Worker tailing;
+they never include R2, payment-provider, or Gemini credentials. A future
+pending migration cannot run until the workflow has made and encrypted a
+mode-0600 export, authenticated AES-256-GCM encryption, a successful decrypt
+check, and recorded checksums, Time Travel bookmark, and prior Worker version.
+Only ciphertext and its recovery manifest enter the short-retention backup
+artifact; the manifest also records a non-secret recovery-key version. Raw SQL
+and raw Worker-tail events never enter an artifact.
+Every migration after the reviewed `0012` baseline is also checked on every CI
+and deploy run by a comment-aware forward-only SQL policy, so an earlier failed
+release cannot leave an unsafe migration queued for a later release.
 
 ## Cloudflare and commerce
 
-The deployment target is a Cloudflare Worker with static assets, D1 for application and immutable purchase records, KV for abuse controls, version metadata for release correlation, and a daily cleanup cron. Production and staging use separate Workers, D1 databases, KV namespaces, origins, and paid kill switches. Apply all D1 migrations, configure the bindings and secrets documented in `docs/backend-api.md` and `docs/payments.md`, run the release gates, then deploy through the runbook.
+The deployment target is a Cloudflare Worker with static assets, D1 for application and immutable purchase records, KV for abuse controls, version metadata for release correlation, and a daily cleanup cron. Production and staging use separate Workers, D1 databases, KV namespaces, origins, and paid kill switches. Configure the bindings and secrets documented in `docs/backend-api.md` and `docs/payments.md`; normal releases then flow through the protected GitHub deployment workflow, with the runbook commands retained for verified break-glass recovery.
 
 The public calculator, authentication, private projects, deterministic report, working Decision Compare, and dashboard work without payment-provider secrets. The optional AI brief uses a server-only `GEMINI_API_KEY`, sends only an allowlisted sanitized planning record, and fails closed behind atomic D1 spend limits and a per-project generation lease; see `docs/gemini-ai.md`. Decision Compare needs no upload storage. R2-backed uploads remain unavailable until R2 is activated. Live checkout remains closed until Razorpay live-mode/KYC and webhook reconciliation, receipts/tax/refund operations, customer recovery/deletion, monitoring, and rollback evidence are all proven.
 

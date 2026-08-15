@@ -920,6 +920,57 @@ test("a late capture after a sibling was paid opens a finance case and grants no
   assert.ok(DB.reconciliationCases[0].resolved_at);
 });
 
+test("intentional closed controls do not masquerade as production regressions", async () => {
+  const { env, decisionComparisonId } = await fixture();
+  const originalLog = console.log;
+  const lines = [];
+  console.log = (...values) => { lines.push(values.join(" ")); };
+
+  try {
+    const checkout = (targetEnv, key) => worker.fetch(appRequest("/api/projects/project-a/orders", {
+      method: "POST",
+      headers: authHeaders({ "idempotency-key": key }),
+      body: JSON.stringify(decisionCheckoutBody(decisionComparisonId)),
+    }), targetEnv);
+
+    const paidClosed = await checkout({ ...env, PAID_CHECKOUT_ENABLED: "false" }, "telemetry-paid-closed-0001");
+    const storageClosed = await worker.fetch(appRequest("/api/projects/project-a/files", {
+      method: "POST",
+      headers: authHeaders({ "content-type": "application/pdf" }),
+      body: "%PDF-1.7\n",
+    }), { ...env, FILES: undefined });
+    const providerBroken = await checkout({ ...env, RAZORPAY_KEY_SECRET: "" }, "telemetry-provider-broken-0001");
+
+    assert.deepEqual(
+      await Promise.all([paidClosed.clone().json(), storageClosed.clone().json(), providerBroken.clone().json()]),
+      [
+        { error: "paid checkout is temporarily unavailable", code: "payments_disabled" },
+        { error: "file storage is not configured", code: "storage_unavailable" },
+        { error: "payments are not configured", code: "payments_unavailable" },
+      ],
+    );
+    for (const response of [paidClosed, storageClosed, providerBroken]) {
+      assert.equal(response.status, 503);
+      assert.equal(response.headers.has("x-grihagrid-internal-outcome"), false);
+      assert.match(response.headers.get("x-request-id") || "", /^[0-9a-f-]{36}$/u);
+    }
+
+    const completions = lines.map((line) => JSON.parse(line));
+    assert.deepEqual(completions.map((completion) => completion.outcome), [
+      "control_closed",
+      "control_closed",
+      "server_error",
+    ]);
+    assert.deepEqual(completions.map((completion) => completion.requestId), [
+      paidClosed.headers.get("x-request-id"),
+      storageClosed.headers.get("x-request-id"),
+      providerBroken.headers.get("x-request-id"),
+    ]);
+  } finally {
+    console.log = originalLog;
+  }
+});
+
 test("checkout is owner-scoped and every launch dependency fails closed", async () => {
   const { env, DB, providerCalls, decisionComparisonId } = await fixture();
   const checkout = (targetEnv, key = "checkout-scope-0001", projectId = "project-a") => worker.fetch(appRequest(`/api/projects/${projectId}/orders`, {

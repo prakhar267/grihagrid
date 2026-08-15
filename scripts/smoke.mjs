@@ -49,6 +49,12 @@ function assertSecurityHeaders(response, path) {
   assert.match(response.headers.get("content-security-policy") || "", /frame-ancestors 'none'/u, `${path} is missing frame CSP`);
 }
 
+function assertFreshTime(value, label) {
+  const timestamp = Date.parse(value);
+  assert.ok(!Number.isNaN(timestamp), `${label} timestamp must be parseable`);
+  assert.ok(Math.abs(Date.now() - timestamp) < 5 * 60 * 1000, `${label} timestamp must be fresh`);
+}
+
 async function jsonCheck(origin, path, init, validate) {
   const { response, latencyMs, attempts } = await timedFetch(new URL(path, origin), init);
   assert.equal(response.status, 200, `${path} returned ${response.status}`);
@@ -63,6 +69,7 @@ async function jsonCheck(origin, path, init, validate) {
 export async function runSmoke(rawOrigin, options = {}) {
   const origin = canonicalOrigin(rawOrigin);
   const expectCheckout = options.expectCheckout === true;
+  const expectedReleaseId = options.expectedReleaseId ? String(options.expectedReleaseId) : "";
   const checks = [];
 
   const home = await timedFetch(origin);
@@ -76,15 +83,24 @@ export async function runSmoke(rawOrigin, options = {}) {
   checks.push(await jsonCheck(origin, "/api/health", {}, (body) => {
     assert.equal(body.status, "ok");
     assert.equal(body.service, "grihagrid");
-    assert.ok(!Number.isNaN(Date.parse(body.time)), "health timestamp must be parseable");
+    assertFreshTime(body.time, "health");
   }));
 
   checks.push(await jsonCheck(origin, "/api/readiness", {}, (body) => {
     assert.equal(body.status, "ready");
     assert.equal(body.checks?.familyAlignmentSchema, "current");
+    assert.equal(body.checks?.privateStorage, "unavailable");
+    assert.deepEqual(body.checks?.acceptingPaidPlans, expectCheckout ? ["decision_compare"] : []);
     assert.equal(body.capabilities?.freePlanning, true);
     assert.equal(body.capabilities?.familyAlignment, true);
+    assert.equal(body.capabilities?.privateUploads, false);
     assert.equal(body.capabilities?.paidCheckout, expectCheckout);
+    assert.notEqual(body.capabilities?.paidFulfillment, true, "fulfillment is unexpectedly open");
+    if (expectedReleaseId) {
+      assert.equal(body.releaseId, expectedReleaseId, "readiness is not serving the expected Worker version");
+      assert.equal(body.capabilities?.paidFulfillment, false, "versioned readiness must expose closed fulfillment");
+    }
+    assertFreshTime(body.time, "readiness");
     assert.ok(!JSON.stringify(body).match(/(?:secret|api[_-]?key|authorization|cookie)/iu), "readiness may not expose secret-shaped fields");
   }));
 
@@ -93,12 +109,21 @@ export async function runSmoke(rawOrigin, options = {}) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ width: 30, length: 50, floors: "G+1", quality: "Signature", city: "Pune" }),
   }, (body) => {
-    assert.ok(body.estimate && typeof body.estimate === "object", "estimate payload is missing");
-    assert.ok(Number.isFinite(body.estimate.plotSqft), "estimate plotSqft must be numeric");
+    assert.equal(body.estimate?.plotSqft, 1500);
+    assert.equal(body.estimate?.builtUpSqft, 1830);
+    assert.equal(body.estimate?.lowInr, 3_703_920);
+    assert.equal(body.estimate?.highInr, 4_428_600);
+    assert.equal(body.estimate?.floors, "G+1");
+    assert.equal(body.estimate?.quality, "Signature");
+    assert.equal(body.estimate?.city, "Pune");
   }));
 
   checks.push(await jsonCheck(origin, "/api/commerce/catalog", {}, (body) => {
     assert.ok(Array.isArray(body.plans), "commerce catalog plans must be an array");
+    assert.equal(body.plans.length, 1, "catalog must expose exactly one pilot plan");
+    assert.equal(body.plans[0]?.id, "decision_compare");
+    assert.equal(body.plans[0]?.amountPaise, 99_900);
+    assert.equal(body.plans[0]?.currency, "INR");
     const accepting = body.plans.filter((plan) => plan.acceptingOrders);
     if (!expectCheckout) assert.equal(accepting.length, 0, "checkout is unexpectedly open");
     if (expectCheckout) {
@@ -114,6 +139,9 @@ export async function runSmoke(rawOrigin, options = {}) {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const origin = process.argv[2] || process.env.GRIHAGRID_SMOKE_ORIGIN;
   assert.ok(origin, "usage: npm run smoke -- https://worker.example or set GRIHAGRID_SMOKE_ORIGIN");
-  const result = await runSmoke(origin, { expectCheckout: process.env.EXPECT_PAID_CHECKOUT === "true" });
+  const result = await runSmoke(origin, {
+    expectCheckout: process.env.EXPECT_PAID_CHECKOUT === "true",
+    expectedReleaseId: process.env.EXPECT_RELEASE_ID,
+  });
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
