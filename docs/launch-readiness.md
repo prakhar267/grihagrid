@@ -20,6 +20,30 @@ paid-closed product release. They remain concept-stage planning aids rather than
 feasibility, code, design, structural or construction approval. Paid checkout,
 fulfillment, the paid-plan allowlist and private uploads remain closed.
 
+## Report feedback release recorded on 2026-08-16
+
+Version-bound report feedback is live as a free, paid-closed learning loop for
+immutable schema-v2 reports. The exact deployed application source is merged-main
+SHA `a3f4547720399ababc354ef2a84142eea85bde54`. Production Worker version
+`2191fb91-efab-48e8-8d27-ca4e80e79a89` and staging Worker version
+`408d2f43-b14e-41e0-81c6-a8db7c265bc5` both carry tag
+`main-a3f454772039`. Migration `0013_report_feedback_and_intake_hardening.sql`
+is applied in both D1 databases and no migration remains pending.
+
+| Evidence | Result | Limitation |
+|---|---|---|
+| Reviewed source and protected checks | [PR `#23`](https://github.com/prakhar267/grihagrid/pull/23) introduced version-bound report feedback and strict intake validation as `fe2213a621fb0aad7e72fbce021ef8eb1c6470cc`; [PR `#24`](https://github.com/prakhar267/grihagrid/pull/24) closed archive/delete races, atomic-upsert, KV-rate-limit and small-cell gaps as `60e9e342676814bedb78da67f446b25e9ed5ea99`; [PR `#25`](https://github.com/prakhar267/grihagrid/pull/25) withheld differencable categorical metrics and merged as the deployed SHA. Exact final-main [CI `31909219428`](https://github.com/prakhar267/grihagrid/actions/runs/31909219428) and [CodeQL `31909219065`](https://github.com/prakhar267/grihagrid/actions/runs/31909219065) passed | Automated review and CodeQL do not replace an independent penetration test, privacy review or human approval |
+| Local and adversarial release gates | The final tree passed the production build, operational fail-closed checks and **202/202** serialized tests; all 13 migrations, production/staging Worker dry-runs, high-severity dependency audit and diff hygiene passed. Real workerd/D1 coverage includes identical and conflicting concurrent saves, immutable report bytes, archive-versus-delete races and above-threshold aggregate reconciliation. Deterministic security tests cover missing/failing KV and the 61st-write rate-limit boundary | Synthetic concurrency is not sustained multi-process load. Categorical metrics are intentionally withheld; this release does not claim formal differential privacy |
+| Product and interaction boundary | The report card uses the existing design system and places one structured control at the report decision boundary. `needs_review` stops reliance and points to licensed local review; archive races reload the authoritative saved response, lock the form read-only and preserve focus/safety copy. DOM/state tests cover continuity, focus and failure copy | The in-app browser was unavailable for this release, so no new deployed screenshot comparison, assistive-technology run, 200% zoom or device-matrix certification is claimed |
+| Staging release and canary | Worker `408d2f43-b14e-41e0-81c6-a8db7c265bc5` reached 100% traffic. Three consecutive public samples passed all 15 checks on first attempts. The authenticated 18-route report → feedback save/read → immutable report re-read → closed order/upload → delete → logout journey passed, and residue proof found zero canary projects, revisions, reports, revision reports or feedback rows | Staging intentionally has no Gemini, R2 or payment secrets; it proves the deterministic paid-closed path, not provider behavior |
+| Production recovery and migration | Before migration, production contained users=2, projects=1, reports=1 and orders=0. The mode-0600 AES-256-GCM export has raw SHA-256 `d655c34a9b52911f8b189f0f88d8c39b287feffba1761524957853f3ae4fbd78`, encrypted SHA-256 `1a36f96cef58b5aafa2912c5b05fcf190f805219106f4fd5909a371f366e2262`, passed decrypt verification, and records Time Travel bookmark `000000b7-00000000-000050c8-f4adc97ae1b569a9cb42c8e54944c95a` plus previous Worker `3b4c6d22-d86e-4b7f-ba60-e8be87ea5c36`. Migration `0013` preserved the canonical project/report hashes, produced zero foreign-key violations and left no migration pending | The encrypted workflow artifact is a time-bounded recovery copy, not a separately governed off-site backup or timed remote restore drill |
+| Production rollback, release and cleanup | The previous Worker completed a 14-route compatibility journey against the migrated schema and left zero residue. Worker `2191fb91-efab-48e8-8d27-ca4e80e79a89` then reached 100% traffic. Public smoke passed three consecutive first-attempt samples; the authenticated 18-route feedback journey passed; exact cleanup again found zero canary projects, revisions, reports, revision reports or feedback. Readiness reports every schema current, `reportFeedback=true`, `paidCheckout=false`, `paidFulfillment=false`, `privateUploads=false` and an empty paid-plan allowlist | This validates the technical free journey, not customer comprehension, professional planning correctness, paid-provider operations or upload storage |
+| Production observation | [Deploy run `31909465954`](https://github.com/prakhar267/grihagrid/actions/runs/31909465954) observed the exact Worker from `2026-08-15T21:36:55.807Z` through `22:06:55.826Z`. All 19 samples and 95/95 health, readiness, estimate, homepage and catalog checks passed; request latency was 9 ms minimum, 5,332 ms maximum and 1,050 ms average. Both exact-version error tails stayed live for the full interval and recorded zero events/bytes, with no public regression, tail regression or monitoring-infrastructure failure | This bounded single-origin observation is not a load test, long-term SLO record or independent multi-region authenticated synthetic |
+
+Report feedback is **GO for a controlled free cohort**. It is not a support
+ticket, professional approval or report mutation. Paid acceptance, fulfillment
+and private uploads remain **NO-GO**.
+
 ## Brief Check and revision-history release recorded on 2026-08-15
 
 The deployed application source is exact merged-main SHA
@@ -374,22 +398,22 @@ schema-v2 report. It must remain discoverable at the report decision boundary
 without becoming a support ticket, professional approval, report mutation, or
 new paid capability.
 
-- [ ] Exact primitive request validation rejects arrays, booleans and numeric
+- [x] Exact primitive request validation rejects arrays, booleans and numeric
   strings that could otherwise coerce into valid project, revision or feedback
   fields; legacy canonical stored records remain readable.
-- [ ] The protected aggregate reconciles eligible schema-v2 reports, total
+- [x] The protected aggregate reconciles eligible schema-v2 reports, total
   responses, response rate, outcome totals, section totals and the outcome ×
   section matrix from one report-generated cohort without returning any resource
   or account identifier. Exact categorical breakdowns remain suppressed even
   above five until fixed, non-overlapping snapshots prevent rolling-window
   differencing.
-- [ ] `needs_review` visibly stops reliance, points to licensed local review and
+- [x] `needs_review` visibly stops reliance, points to licensed local review and
   explains that structured feedback does not alert support. Concurrent archive
   changes the mounted control to read-only.
-- [ ] Staging and production apply migration `0013` under encrypted backup,
+- [x] Staging and production apply migration `0013` under encrypted backup,
   old-Worker compatibility and exact synthetic-residue gates before candidate
   promotion; paid checkout, fulfillment, plan allowlist and uploads stay closed.
-- [ ] The exact merged SHA passes protected CI and CodeQL, authenticated
+- [x] The exact merged SHA passes protected CI and CodeQL, authenticated
   report/feedback canaries, public smoke, production cleanup and a 30-minute
   exact-version error-tail observation. Record the final evidence above before
   marking this gate complete.
