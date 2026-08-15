@@ -213,10 +213,10 @@ test("report feedback metrics suppress small categorical cohorts and reject drif
     totalResponses: 5,
     responseRate: 0.625,
     minimumCohortSize: 5,
-    breakdownsSuppressed: false,
-    byOutcome: [{ outcome: "helpful", count: 5 }],
-    bySection: [{ section: "overall", count: 5 }],
-    byOutcomeSection: [{ outcome: "helpful", section: "overall", count: 5 }],
+    breakdownsSuppressed: true,
+    byOutcome: [],
+    bySection: [],
+    byOutcomeSection: [],
   });
   const smallCohort = {
     ...row,
@@ -242,7 +242,7 @@ test("report feedback metrics suppress small categorical cohorts and reject drif
   );
 });
 
-test("report feedback metrics use all-or-nothing small-cell protection", () => {
+test("report feedback metrics withhold categorical cells until snapshot protection exists", () => {
   const rareMatrixCell = {
     eligible_reports: 12,
     total_responses: 10,
@@ -295,21 +295,10 @@ test("report feedback metrics use all-or-nothing small-cell protection", () => {
     totalResponses: 10,
     responseRate: 2 / 3,
     minimumCohortSize: 5,
-    breakdownsSuppressed: false,
-    byOutcome: [
-      { outcome: "helpful", count: 5 },
-      { outcome: "unclear", count: 5 },
-    ],
-    bySection: [
-      { section: "overall", count: 5 },
-      { section: "brief_check", count: 5 },
-      { section: "programme", count: 5 },
-    ],
-    byOutcomeSection: [
-      { outcome: "helpful", section: "overall", count: 5 },
-      { outcome: "unclear", section: "brief_check", count: 5 },
-      { outcome: "unclear", section: "programme", count: 5 },
-    ],
+    breakdownsSuppressed: true,
+    byOutcome: [],
+    bySection: [],
+    byOutcomeSection: [],
   });
 });
 
@@ -334,6 +323,17 @@ test("report feedback metrics reject malformed vocabulary, counts, duplicates, a
     [{ ...valid, by_outcome_json: JSON.stringify([{ outcome: "helpful", count: 4 }]) }, /outcome totals did not reconcile/iu],
     [{ ...valid, by_section_json: JSON.stringify([{ section: "overall", count: 4 }]) }, /section totals did not reconcile/iu],
     [{ ...valid, by_outcome_section_json: JSON.stringify([{ outcome: "helpful", section: "overall", count: 4 }]) }, /section totals did not reconcile/iu],
+    [{
+      ...valid,
+      by_section_json: JSON.stringify([
+        { section: "overall", count: 5 },
+        { section: "brief_check", count: 5 },
+      ]),
+      by_outcome_section_json: JSON.stringify([
+        { outcome: "helpful", section: "overall", count: 5 },
+        { outcome: "unclear", section: "brief_check", count: 5 },
+      ]),
+    }, /outcome totals did not reconcile/iu],
   ];
   for (const [row, pattern] of malformed) {
     assert.throws(() => __test.reportFeedbackMetricsFromRow(row), pattern);
@@ -390,36 +390,46 @@ test("report feedback metrics suppress every breakdown when any nonzero cell is 
   assert.deepEqual(suppressed.byOutcomeSection, []);
 });
 
-test("adjacent feedback windows cannot expose a one-response difference", () => {
+test("two above-threshold adjacent feedback windows cannot expose a one-response difference", () => {
   const widerWindow = {
-    eligible_reports: 10,
+    eligible_reports: 12,
+    total_responses: 11,
+    by_outcome_json: JSON.stringify([
+      { outcome: "helpful", count: 6 },
+      { outcome: "unclear", count: 5 },
+    ]),
+    by_section_json: JSON.stringify([
+      { section: "overall", count: 6 },
+      { section: "brief_check", count: 5 },
+    ]),
+    by_outcome_section_json: JSON.stringify([
+      { outcome: "helpful", section: "overall", count: 6 },
+      { outcome: "unclear", section: "brief_check", count: 5 },
+    ]),
+  };
+  const adjacentWindow = {
+    ...widerWindow,
+    eligible_reports: 11,
     total_responses: 10,
     by_outcome_json: JSON.stringify([
       { outcome: "helpful", count: 5 },
       { outcome: "unclear", count: 5 },
     ]),
-    by_section_json: JSON.stringify([{ section: "overall", count: 10 }]),
+    by_section_json: JSON.stringify([
+      { section: "overall", count: 5 },
+      { section: "brief_check", count: 5 },
+    ]),
     by_outcome_section_json: JSON.stringify([
       { outcome: "helpful", section: "overall", count: 5 },
-      { outcome: "unclear", section: "overall", count: 5 },
-    ]),
-  };
-  const adjacentWindow = {
-    ...widerWindow,
-    eligible_reports: 9,
-    total_responses: 9,
-    by_outcome_json: JSON.stringify([
-      { outcome: "helpful", count: 4 },
-      { outcome: "unclear", count: 5 },
-    ]),
-    by_section_json: JSON.stringify([{ section: "overall", count: 9 }]),
-    by_outcome_section_json: JSON.stringify([
-      { outcome: "helpful", section: "overall", count: 4 },
-      { outcome: "unclear", section: "overall", count: 5 },
+      { outcome: "unclear", section: "brief_check", count: 5 },
     ]),
   };
 
-  assert.equal(__test.reportFeedbackMetricsFromRow(widerWindow).breakdownsSuppressed, false);
+  const wider = __test.reportFeedbackMetricsFromRow(widerWindow);
+  assert.equal(wider.breakdownsSuppressed, true);
+  assert.deepEqual(wider.byOutcome, []);
+  assert.deepEqual(wider.bySection, []);
+  assert.deepEqual(wider.byOutcomeSection, []);
   const adjacent = __test.reportFeedbackMetricsFromRow(adjacentWindow);
   assert.equal(adjacent.breakdownsSuppressed, true);
   assert.deepEqual(adjacent.byOutcome, []);
