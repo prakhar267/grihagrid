@@ -9,7 +9,8 @@ import {
 import { api, ApiError, copyText, formatDate, formatDateTime, formatLakh, idempotencyKey, trackEvent } from "./api.js";
 import {
   LOGOUT_CHANNEL_NAME, LOGOUT_FAILURE_MESSAGE, broadcastLogout, clearLocalLogoutState, confirmLogout,
-  isLogoutBroadcast, isLogoutChannelMessage, privateRouteAfterUnauthenticated,
+  isApplicationUnauthenticated, isLogoutBroadcast, isLogoutChannelMessage,
+  privateRouteAfterUnauthenticated, shouldRevalidateSession,
 } from "./logout.js";
 
 const cityFactors = { Pune: 1, Bengaluru: 1.08, Mumbai: 1.18, Delhi: 1.1, Hyderabad: .98, Chennai: 1.02, Jaipur: .88, Other: .95 };
@@ -1891,14 +1892,24 @@ export function App() {
     window.addEventListener('storage',onStorage);
     return()=>{window.removeEventListener('storage',onStorage);if(channel){channel.removeEventListener('message',onChannel);channel.close()}};
   },[]);
-  useEffect(()=>{const revision=authRevision.current;api('/api/auth/me').then(x=>{if(authRevision.current===revision){authenticatedSession.current=Boolean(x.user);setUser(x.user||null)}}).catch(()=>{if(authRevision.current===revision){authenticatedSession.current=false;setUser(null)}});},[]);
+  useEffect(()=>{const revision=authRevision.current;api('/api/auth/me').then(x=>{if(authRevision.current===revision){authenticatedSession.current=Boolean(x.user);setUser(x.user||null);if(x.user&&window.history.state?.logoutConfirmed===true)replaceRoute(window.location.pathname,{})}}).catch(error=>{if(authRevision.current===revision&&isApplicationUnauthenticated(error)){authenticatedSession.current=false;setUser(null)}});},[]);
   useEffect(()=>{
     let checking=false;
     const revalidate=async()=>{
-      if(checking||!isPrivateAccountPath(window.location.pathname))return;
+      const pathname=window.location.pathname;
+      const privatePath=isPrivateAccountPath(pathname);
+      const confirmationVisible=window.history.state?.logoutConfirmed===true;
+      if(checking||!shouldRevalidateSession(privatePath,window.history.state))return;
       checking=true;const revision=authRevision.current;
-      try{const result=await api('/api/auth/me');if(authRevision.current===revision){authenticatedSession.current=Boolean(result.user);setUser(result.user||null)}}
-      catch(error){if(authRevision.current===revision&&error instanceof ApiError&&error.status===401&&error.payload?.code==='unauthenticated'){const destination=privateRouteAfterUnauthenticated(authenticatedSession.current);authRevision.current+=1;authenticatedSession.current=false;clearLocalLogoutState();setUser(null);replaceRoute(destination.path,destination.state)}}
+      try{const result=await api('/api/auth/me');if(authRevision.current===revision){authenticatedSession.current=Boolean(result.user);setUser(result.user||null);if(result.user&&confirmationVisible)replaceRoute(pathname,{})}}
+      catch(error){
+        if(authRevision.current!==revision)return;
+        if(isApplicationUnauthenticated(error)){
+          const wasAuthenticated=authenticatedSession.current;
+          authenticatedSession.current=false;clearLocalLogoutState();setUser(null);
+          if(privatePath){const destination=privateRouteAfterUnauthenticated(wasAuthenticated);authRevision.current+=1;replaceRoute(destination.path,destination.state)}
+        }else if(confirmationVisible){replaceRoute(pathname,{})}
+      }
       finally{checking=false}
     };
     const onVisibility=()=>{if(document.visibilityState==='visible')revalidate()};

@@ -5,7 +5,7 @@ export const LOGOUT_SYNC_KEY = "grihagrid.auth.logout";
 export const LOGOUT_CHANNEL_NAME = "grihagrid-auth";
 let logoutSequence = 0;
 
-function isUnauthenticated(error) {
+export function isApplicationUnauthenticated(error) {
   return error instanceof ApiError && error.status === 401 && error.payload?.code === "unauthenticated";
 }
 
@@ -25,7 +25,7 @@ export async function confirmLogout(request = apiResponse) {
   try {
     await request("/api/auth/me");
   } catch (error) {
-    if (isUnauthenticated(error)) {
+    if (isApplicationUnauthenticated(error)) {
       clearCsrfToken();
       return { confirmedBy: "reconciliation" };
     }
@@ -87,4 +87,8 @@ export function privateRouteAfterUnauthenticated(wasAuthenticated) {
   return wasAuthenticated === true
     ? { path: "/", state: { logoutConfirmed: true } }
     : { path: "/login", state: {} };
+}
+
+export function shouldRevalidateSession(isPrivatePath, historyState) {
+  return isPrivatePath === true || historyState?.logoutConfirmed === true;
 }

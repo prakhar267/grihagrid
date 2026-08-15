@@ -10,9 +10,11 @@ import {
   broadcastLogout,
   clearPrivateSessionStorage,
   confirmLogout,
+  isApplicationUnauthenticated,
   isLogoutBroadcast,
   isLogoutChannelMessage,
   privateRouteAfterUnauthenticated,
+  shouldRevalidateSession,
 } from "../src/logout.js";
 
 class MemoryStorage {
@@ -174,6 +176,21 @@ test("private-route 401 confirmation requires prior authenticated-session eviden
     privateRouteAfterUnauthenticated(true),
     { path: "/", state: { logoutConfirmed: true } },
   );
+});
+
+test("logout confirmation revalidates on resume and only exact app 401 proves absence", () => {
+  assert.equal(shouldRevalidateSession(false, { logoutConfirmed: true }), true);
+  assert.equal(shouldRevalidateSession(true, {}), true);
+  assert.equal(shouldRevalidateSession(false, {}), false);
+  assert.equal(
+    isApplicationUnauthenticated(new ApiError("authentication required", 401, { code: "unauthenticated" })),
+    true,
+  );
+  assert.equal(
+    isApplicationUnauthenticated(new ApiError("edge authentication required", 401, { code: "edge_denied" })),
+    false,
+  );
+  assert.equal(isApplicationUnauthenticated(new TypeError("offline")), false);
 });
 
 test("Dashboard and Orders share one accessible, retry-safe mobile logout control", () => {
