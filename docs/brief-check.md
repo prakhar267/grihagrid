@@ -178,8 +178,10 @@ bytes returns `409 idempotency_conflict`.
   `{ project, revision, previousRevision, changeStudy }`. `previousRevision`
   and `changeStudy` are `null` at the honest beginning of retained history.
 - `GET /api/projects/:projectId/revisions/:revision/report` returns the highest
-  available report schema version as `{ revision: { revision, createdAt },
-  report }`.
+  available report schema version as `{ project, revision, report,
+  cached: true }`. `project`, the full `revision` facts, and `report` are read
+  from one owner-scoped immutable envelope so the UI cannot combine facts from
+  one revision with report bytes or feedback identity from another.
 
 A revision detail contains
 `revision,current,provenance,createdAt,inputSchemaVersion,estimateRuleVersion,input,estimate,briefCheck,report`.
@@ -195,13 +197,19 @@ revision commit. Rename and status-only PATCHes do not require the revision.
 
 `GET /api/projects/:projectId/report` is strictly read-only and returns
 `404 report_not_found` until the current revision has an explicit v2 report.
-`POST` generates it. The report is staged in the mutable `reports` cache and
-captured into immutable `project_revision_reports` in one D1 batch. A concurrent
-edit returns `409 project_revision_conflict`; a concurrent identical report
-generation reads and returns the winning immutable bytes.
+`POST` generates it. Both return the atomic
+`{ project, revision, report, cached }` envelope. The report is staged in the
+mutable `reports` cache and captured into immutable
+`project_revision_reports` in one D1 batch. A concurrent edit returns
+`409 project_revision_conflict`; a concurrent identical report generation
+reads and returns the winning immutable bytes.
 
 Report schema v2 includes `briefCheck` and a verdict derived from its status.
 Migrated report v1 bytes remain available only through historical-report APIs.
+The historical UI labels them as legacy and renders only fields persisted in
+those v1 bytes; it does not recompute Brief Check, planning facts, risks, next
+actions, cost categories, or feedback from the revision snapshot. Report
+feedback is schema-v2-only.
 AI generation requires an explicit current v2 report and returns
 `409 report_required` otherwise; it never silently generates a report.
 
@@ -265,3 +273,12 @@ capture/invalidation triggers keep history honest while the old Worker runs.
 Do not down-migrate or drop the append-only tables. Re-deploy the current Worker
 to recover; it will recompute current Brief Check and generate a v2 report only
 after an explicit POST.
+
+Migration `0013_report_feedback_and_intake_hardening.sql` adds a mutable,
+structured owner annotation beside—but never inside—one immutable revision
+report. The six bounded sections and three outcomes contain no free text. D1
+guards reject foreign ownership, archived writes, duplicate/unknown sections,
+and changes to report identity or creation time. The same migration adds a
+database allowlist for persisted project input and a 50-project account ceiling;
+the Worker adds strict typed creation validation and per-account abuse control.
+See [report-feedback.md](report-feedback.md) for the full contract.

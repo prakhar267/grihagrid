@@ -147,6 +147,16 @@ const FAMILY_ALIGNMENT_RESPONSE_LIMIT = 5;
 const FAMILY_ALIGNMENT_HISTORY_LIMIT = 20;
 const PROJECT_REVISION_HISTORY_LIMIT = 50;
 const PROJECT_REVISION_DEFAULT_LIMIT = 20;
+const REPORT_FEEDBACK_OUTCOMES = new Set(["helpful", "unclear", "needs_review"]);
+const REPORT_FEEDBACK_SECTIONS = Object.freeze([
+  "overall",
+  "brief_check",
+  "programme",
+  "cost_range",
+  "assumptions",
+  "next_actions",
+]);
+const REPORT_FEEDBACK_SECTION_SET = new Set(REPORT_FEEDBACK_SECTIONS);
 const RAZORPAY_PAYMENT_LINKS_URL = "https://api.razorpay.com/v1/payment_links/";
 
 const FILE_TYPES = new Set([
@@ -163,6 +173,7 @@ const EXPECTED_CLOSED_CONTROL_CODES = new Set([
   "payment_plan_unavailable",
   "payments_disabled",
   "storage_unavailable",
+  "abuse_control_unavailable",
 ]);
 
 class HttpError extends Error {
@@ -435,8 +446,28 @@ async function rateLimit(request, env, scope, limit, windowSeconds) {
   const window = Math.floor(Date.now() / (windowSeconds * 1000));
   const identity = await digestBase64(`${scope}:${requestIp(request)}`);
   const key = `rate:${scope}:${window}:${identity}`;
-  const attempts = Number(await env.GRIHAGRID_CACHE.get(key) || 0) + 1;
-  await env.GRIHAGRID_CACHE.put(key, String(attempts), { expirationTtl: windowSeconds * 2 });
+  let attempts;
+  try {
+    attempts = Number(await env.GRIHAGRID_CACHE.get(key) || 0) + 1;
+    await env.GRIHAGRID_CACHE.put(key, String(attempts), { expirationTtl: windowSeconds * 2 });
+  } catch {
+    throw new HttpError(503, "abuse controls are temporarily unavailable", "abuse_control_unavailable");
+  }
+  if (attempts > limit) throw new HttpError(429, "too many attempts; please try again later", "rate_limited");
+}
+
+async function accountRateLimit(env, scope, limit, windowSeconds) {
+  if (!env.GRIHAGRID_CACHE) return;
+  const window = Math.floor(Date.now() / (windowSeconds * 1000));
+  const identity = await digestBase64(scope);
+  const key = `rate:${scope}:${window}:${identity}`;
+  let attempts;
+  try {
+    attempts = Number(await env.GRIHAGRID_CACHE.get(key) || 0) + 1;
+    await env.GRIHAGRID_CACHE.put(key, String(attempts), { expirationTtl: windowSeconds * 2 });
+  } catch {
+    throw new HttpError(503, "abuse controls are temporarily unavailable", "abuse_control_unavailable");
+  }
   if (attempts > limit) throw new HttpError(429, "too many attempts; please try again later", "rate_limited");
 }
 
@@ -1882,7 +1913,11 @@ function normalizeProjectInput(value) {
     throw new HttpError(400, "project input must be an object", "invalid_project_input");
   }
   validateJsonValue(value);
-  const input = JSON.parse(JSON.stringify(value));
+  const input = Object.fromEntries(
+    REVISION_INPUT_FIELDS
+      .filter((field) => Object.hasOwn(value, field))
+      .map((field) => [field, JSON.parse(JSON.stringify(value[field]))]),
+  );
   const estimate = computeEstimate(input);
   input.width = Number(input.width);
   input.length = Number(input.length);
@@ -2001,12 +2036,81 @@ function normalizeRevisionPatch(value) {
   return patch;
 }
 
+function normalizeCreateProjectBody(body) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new HttpError(400, "project request must be an object", "invalid_project_input");
+  }
+  const nested = Object.hasOwn(body, "input");
+  const allowedOuter = nested
+    ? new Set(["name", "input"])
+    : new Set(["name", ...REVISION_INPUT_FIELDS]);
+  const unsupportedOuter = Object.keys(body).find((field) => !allowedOuter.has(field));
+  if (unsupportedOuter) {
+    throw new HttpError(400, `unsupported project field: ${unsupportedOuter}`, "invalid_project_input");
+  }
+  const source = nested ? body.input : Object.fromEntries(
+    Object.entries(body).filter(([field]) => REVISION_INPUT_FIELD_SET.has(field)),
+  );
+  if (!source || typeof source !== "object" || Array.isArray(source)) {
+    throw new HttpError(400, "project input must be an object", "invalid_project_input");
+  }
+  const unsupportedInput = Object.keys(source).find((field) => !REVISION_INPUT_FIELD_SET.has(field));
+  if (unsupportedInput) {
+    throw new HttpError(400, `unsupported project input field: ${unsupportedInput}`, "invalid_project_input");
+  }
+  const normalizedFields = {};
+  try {
+    for (const [field, value] of Object.entries(source)) {
+      normalizedFields[field] = normalizeRevisionField(field, value);
+    }
+  } catch (error) {
+    if (error instanceof HttpError) {
+      throw new HttpError(error.status, error.message, "invalid_project_input");
+    }
+    throw error;
+  }
+  return { name: body.name, ...normalizeProjectInput(normalizedFields) };
+}
+
+function normalizeReportFeedback(body) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new HttpError(400, "feedback must be an object", "invalid_report_feedback");
+  }
+  if (Object.keys(body).length !== 2 || !Object.hasOwn(body, "outcome") || !Object.hasOwn(body, "sections")) {
+    throw new HttpError(400, "feedback must include only outcome and sections", "invalid_report_feedback");
+  }
+  const outcome = String(body.outcome || "");
+  if (!REPORT_FEEDBACK_OUTCOMES.has(outcome)) {
+    throw new HttpError(400, "feedback outcome is invalid", "invalid_report_feedback");
+  }
+  if (!Array.isArray(body.sections) || body.sections.length < 1 || body.sections.length > 3) {
+    throw new HttpError(400, "feedback must identify one to three sections", "invalid_report_feedback");
+  }
+  const supplied = body.sections.map((section) => String(section || ""));
+  if (supplied.some((section) => !REPORT_FEEDBACK_SECTION_SET.has(section)) || new Set(supplied).size !== supplied.length) {
+    throw new HttpError(400, "feedback sections are invalid", "invalid_report_feedback");
+  }
+  if (supplied.includes("overall") && supplied.length !== 1) {
+    throw new HttpError(400, "overall feedback cannot be combined with report sections", "invalid_report_feedback");
+  }
+  const sections = REPORT_FEEDBACK_SECTIONS.filter((section) => supplied.includes(section));
+  return { outcome, sections };
+}
+
 function positiveRevision(value) {
   const revision = Number(value);
   if (!Number.isInteger(revision) || revision < 1) {
     throw new HttpError(400, "expectedInputRevision must be a positive integer", "invalid_revision_request");
   }
   return revision;
+}
+
+function positiveReportSchemaVersion(value) {
+  const version = Number(value);
+  if (!Number.isInteger(version) || version < 1 || version > 1_000) {
+    throw new HttpError(400, "report schema version must be a positive integer", "invalid_report_feedback");
+  }
+  return version;
 }
 
 function parkingRequested(value) {
@@ -2210,23 +2314,36 @@ async function createProject(request, env) {
   const db = requireDatabase(env);
   const session = await getSession(request, env);
   await requireCsrf(request, session);
+  requireAbuseControl(env);
+  const userScope = await digestBase64(`project-create:${session.user_id}`);
+  await accountRateLimit(env, `project-create-user:${userScope}`, 20, 60 * 60);
   const body = await readJson(request);
-  const sourceInput = body.input == null ? directInput(body) : body.input;
-  const { input, estimate } = normalizeProjectInput(sourceInput);
+  const { name: suppliedName, input, estimate } = normalizeCreateProjectBody(body);
   const assessment = briefCheck(input, estimate);
   const inputHash = await digestHex(revisionBasis(input, estimate));
   const id = crypto.randomUUID();
-  const name = normalizeProjectName(body.name);
+  const name = normalizeProjectName(suppliedName);
   const now = sqliteTimestamp();
-  await db.prepare(
-    `INSERT INTO projects
-       (id,user_id,name,status,input_json,estimate_json,input_hash,input_schema_version,
-        estimate_rule_version,brief_check_version,brief_check_json,created_at,updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-  ).bind(
-    id, session.user_id, name, "feasibility_ready", JSON.stringify(input), JSON.stringify(estimate), inputHash,
-    PROJECT_INPUT_SCHEMA_VERSION, ESTIMATE_RULE_VERSION, BRIEF_CHECK_VERSION, JSON.stringify(assessment), now, now,
-  ).run();
+  try {
+    await db.prepare(
+      `INSERT INTO projects
+         (id,user_id,name,status,input_json,estimate_json,input_hash,input_schema_version,
+          estimate_rule_version,brief_check_version,brief_check_json,created_at,updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    ).bind(
+      id, session.user_id, name, "feasibility_ready", JSON.stringify(input), JSON.stringify(estimate), inputHash,
+      PROJECT_INPUT_SCHEMA_VERSION, ESTIMATE_RULE_VERSION, BRIEF_CHECK_VERSION, JSON.stringify(assessment), now, now,
+    ).run();
+  } catch (error) {
+    const message = String(error?.message || error);
+    if (/project account limit reached/iu.test(message)) {
+      throw new HttpError(429, "this account has reached the project limit", "project_limit_reached");
+    }
+    if (/project input contains unsupported field/iu.test(message)) {
+      throw new HttpError(400, "project input contains an unsupported field", "invalid_project_input");
+    }
+    throw error;
+  }
   return json({ project: {
     id,
     name,
@@ -2966,27 +3083,191 @@ async function getProjectRevision(request, env, projectId, revision) {
 async function getProjectRevisionReport(request, env, projectId, revision) {
   const db = requireDatabase(env);
   const session = await getSession(request, env);
-  await ownedProject(db, projectId, session.user_id);
   const revisionRecord = await db.prepare(
-    `SELECT r.revision,r.created_at,rr.content_json,rr.report_schema_version,rr.generated_at
-       FROM project_revisions r
+    `SELECT p.id AS project_id,p.name AS project_name,p.status AS project_status,
+            p.input_revision AS current_input_revision,p.created_at AS project_created_at,
+            p.updated_at AS project_updated_at,
+            r.revision,r.provenance,r.input_json,r.estimate_json,r.brief_check_json,
+            r.input_schema_version,r.estimate_rule_version,r.created_at,
+            1 AS report_available,rr.source_report_id,rr.input_hash AS report_input_hash,
+            rr.content_json,rr.report_schema_version,
+            rr.generated_at AS report_generated_at
+       FROM projects p
+       JOIN project_revisions r ON r.project_id=p.id
        JOIN project_revision_reports rr
          ON rr.project_id=r.project_id AND rr.project_revision=r.revision
-      WHERE r.project_id=? AND r.revision=?
+      WHERE p.id=? AND p.user_id=? AND r.revision=?
       ORDER BY rr.report_schema_version DESC LIMIT 1`,
-  ).bind(projectId, revision).first();
+  ).bind(projectId, session.user_id, revision).first();
   if (!revisionRecord) {
+    await ownedProject(db, projectId, session.user_id);
     const exists = await db.prepare("SELECT 1 AS present FROM project_revisions WHERE project_id=? AND revision=?")
       .bind(projectId, revision).first();
     if (!exists) throw new HttpError(404, "project revision not found", "project_revision_not_found");
     throw new HttpError(404, "no report was generated for this project revision", "revision_report_not_found");
   }
-  const report = parseStoredJson(revisionRecord.content_json, null);
-  if (!report) throw new HttpError(500, "stored revision report is invalid", "report_invalid");
-  return json({
-    revision: { revision: Number(revisionRecord.revision), createdAt: revisionRecord.created_at },
+  return json(reportEnvelopeFromRow(revisionRecord, true));
+}
+
+function reportEnvelopeFromRow(row, cached) {
+  const report = parseStoredJson(row.content_json, null);
+  if (!report
+      || report.id !== row.source_report_id
+      || report.projectId !== row.project_id
+      || Number(report.version) !== Number(row.report_schema_version)
+      || report.inputHash !== row.report_input_hash
+      || report.generatedAt !== row.report_generated_at) {
+    throw new HttpError(500, "stored revision report identity is invalid", "report_invalid");
+  }
+  const revision = revisionFromRow(row, row.current_input_revision, true);
+  return {
+    project: {
+      id: row.project_id,
+      name: row.project_name,
+      status: row.project_status,
+      input: revision.input,
+      estimate: revision.estimate,
+      briefCheck: revision.briefCheck,
+      inputRevision: revision.revision,
+      reportAvailable: true,
+      createdAt: row.project_created_at,
+      updatedAt: row.project_updated_at,
+    },
+    revision,
     report,
-  });
+    cached,
+  };
+}
+
+async function currentReportEnvelopeRow(db, projectId, userId) {
+  return db.prepare(
+    `SELECT p.id AS project_id,p.name AS project_name,p.status AS project_status,
+            p.input_revision AS current_input_revision,p.created_at AS project_created_at,
+            p.updated_at AS project_updated_at,
+            r.revision,r.provenance,r.input_json,r.estimate_json,r.brief_check_json,
+            r.input_schema_version,r.estimate_rule_version,r.created_at,
+            1 AS report_available,rr.source_report_id,rr.input_hash AS report_input_hash,
+            rr.content_json,rr.report_schema_version,
+            rr.generated_at AS report_generated_at
+       FROM project_revisions r
+       JOIN projects p ON p.id=r.project_id AND p.input_revision=r.revision
+       JOIN project_revision_reports rr
+         ON rr.project_id=r.project_id AND rr.project_revision=r.revision
+      WHERE p.id=? AND p.user_id=? AND rr.report_schema_version=?
+      LIMIT 1`,
+  ).bind(projectId, userId, REPORT_VERSION).first();
+}
+
+function reportFeedbackFromRow(row) {
+  if (!row?.outcome) return null;
+  const sections = parseStoredJson(row.sections_json, null);
+  if (!REPORT_FEEDBACK_OUTCOMES.has(row.outcome)
+      || !Array.isArray(sections)
+      || sections.length < 1
+      || sections.length > 3
+      || sections.some((section) => !REPORT_FEEDBACK_SECTION_SET.has(section))
+      || new Set(sections).size !== sections.length
+      || (sections.includes("overall") && sections.length !== 1)) {
+    throw new HttpError(500, "stored report feedback is invalid", "report_feedback_invalid");
+  }
+  return {
+    projectRevision: Number(row.project_revision),
+    reportSchemaVersion: Number(row.report_schema_version),
+    outcome: row.outcome,
+    sections,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+async function exactOwnedRevisionReport(db, projectId, userId, revision, reportSchemaVersion) {
+  if (reportSchemaVersion !== REPORT_VERSION) {
+    throw new HttpError(404, "report not found", "report_not_found");
+  }
+  const project = await ownedProject(db, projectId, userId);
+  const report = await db.prepare(
+    `SELECT project_id,project_revision,report_schema_version
+       FROM project_revision_reports
+      WHERE project_id=? AND project_revision=? AND report_schema_version=?`,
+  ).bind(projectId, revision, reportSchemaVersion).first();
+  if (!report) throw new HttpError(404, "report not found", "report_not_found");
+  return project;
+}
+
+async function getReportFeedback(request, env, projectId, revision, reportSchemaVersion) {
+  const db = requireDatabase(env);
+  const session = await getSession(request, env);
+  if (reportSchemaVersion !== REPORT_VERSION) {
+    throw new HttpError(404, "report not found", "report_not_found");
+  }
+  const row = await db.prepare(
+    `SELECT rr.project_id,rr.project_revision,rr.report_schema_version,
+            feedback.outcome,feedback.sections_json,feedback.created_at,feedback.updated_at
+       FROM project_revision_reports rr
+       JOIN projects p ON p.id=rr.project_id AND p.user_id=?
+       LEFT JOIN report_feedback feedback
+         ON feedback.project_id=rr.project_id
+        AND feedback.project_revision=rr.project_revision
+        AND feedback.report_schema_version=rr.report_schema_version
+        AND feedback.user_id=p.user_id
+      WHERE rr.project_id=? AND rr.project_revision=? AND rr.report_schema_version=?`,
+  ).bind(session.user_id, projectId, revision, reportSchemaVersion).first();
+  if (!row) {
+    await ownedProject(db, projectId, session.user_id);
+    throw new HttpError(404, "report not found", "report_not_found");
+  }
+  return json({ feedback: reportFeedbackFromRow(row) });
+}
+
+async function putReportFeedback(request, env, projectId, revision, reportSchemaVersion) {
+  requireTrustedOrigin(request, env);
+  const db = requireDatabase(env);
+  const session = await getSession(request, env);
+  await requireCsrf(request, session);
+  requireAbuseControl(env);
+  const userScope = await digestBase64(`report-feedback:${session.user_id}`);
+  await accountRateLimit(env, `report-feedback-user:${userScope}`, 60, 60 * 60);
+  const project = await exactOwnedRevisionReport(db, projectId, session.user_id, revision, reportSchemaVersion);
+  requireActiveProject(project, "restore the project before changing its report feedback");
+  const feedback = normalizeReportFeedback(await readJson(request));
+  const sectionsJson = JSON.stringify(feedback.sections);
+  const now = new Date().toISOString();
+  try {
+    await db.prepare(
+      `INSERT INTO report_feedback
+         (project_id,project_revision,report_schema_version,user_id,outcome,sections_json,created_at,updated_at)
+       VALUES (?,?,?,?,?,?,?,?)
+       ON CONFLICT(project_id,project_revision,report_schema_version)
+       DO UPDATE SET
+         outcome=excluded.outcome,
+         sections_json=excluded.sections_json,
+         updated_at=CASE
+           WHEN report_feedback.outcome=excluded.outcome
+            AND report_feedback.sections_json=excluded.sections_json
+           THEN report_feedback.updated_at
+           ELSE excluded.updated_at
+         END`,
+    ).bind(
+      projectId, revision, reportSchemaVersion, session.user_id,
+      feedback.outcome, sectionsJson, now, now,
+    ).run();
+  } catch (error) {
+    if (/invalid report feedback/iu.test(String(error?.message || error))) {
+      throw new HttpError(409, "restore the project before changing its report feedback", "project_archived");
+    }
+    if (/FOREIGN KEY constraint failed/iu.test(String(error?.message || error))) {
+      throw new HttpError(409, "the report changed while feedback was saving", "report_feedback_conflict");
+    }
+    throw error;
+  }
+  const row = await db.prepare(
+    `SELECT project_id,project_revision,report_schema_version,outcome,sections_json,created_at,updated_at
+       FROM report_feedback
+      WHERE project_id=? AND project_revision=? AND report_schema_version=? AND user_id=?`,
+  ).bind(projectId, revision, reportSchemaVersion, session.user_id).first();
+  const saved = reportFeedbackFromRow(row);
+  if (!saved) throw new HttpError(409, "the report changed while feedback was saving", "report_feedback_conflict");
+  return json({ feedback: saved });
 }
 
 async function updateProject(request, env, projectId) {
@@ -4504,6 +4785,26 @@ async function getProductEventAggregates(request, env, url) {
   ).bind(`-${days - 1} days`).first();
   const paidOrders = Number(cohort?.paid_orders || 0);
   const completedWithin7Days = Number(cohort?.completed_within_7_days || 0);
+  const feedbackOutcomes = await db.prepare(
+    `SELECT outcome,COUNT(*) AS feedback_count
+       FROM report_feedback
+      WHERE created_at>=date('now',?)
+      GROUP BY outcome ORDER BY outcome`,
+  ).bind(`-${days - 1} days`).all();
+  const feedbackSections = await db.prepare(
+    `SELECT section.value AS section,COUNT(*) AS feedback_count
+       FROM report_feedback feedback,json_each(feedback.sections_json) section
+      WHERE feedback.created_at>=date('now',?)
+      GROUP BY section.value ORDER BY section.value`,
+  ).bind(`-${days - 1} days`).all();
+  const byOutcome = (feedbackOutcomes.results || []).map((row) => ({
+    outcome: row.outcome,
+    count: Number(row.feedback_count || 0),
+  }));
+  const bySection = (feedbackSections.results || []).map((row) => ({
+    section: row.section,
+    count: Number(row.feedback_count || 0),
+  }));
   return json({
     aggregates: result.results || [],
     windowDays: days,
@@ -4511,6 +4812,11 @@ async function getProductEventAggregates(request, env, url) {
       paidOrders,
       completedWithin7Days,
       completionRate: paidOrders ? completedWithin7Days / paidOrders : null,
+    },
+    reportFeedback: {
+      totalResponses: byOutcome.reduce((total, row) => total + row.count, 0),
+      byOutcome,
+      bySection,
     },
   });
 }
@@ -5108,7 +5414,7 @@ function buildReport(project, inputHash, reportId, generatedAt) {
   if (Number(input.width) < 25) risks.push("Narrow frontage may constrain parking, daylight, and stair placement.");
   if (floorCount > 2) risks.push("Confirm local height, FAR/FSI, and structural requirements before freezing the third level.");
   if (estimate.quality === "Luxury") risks.push("Imported or custom finishes can materially extend procurement lead times.");
-  if (!input.soilReport) risks.push("Foundation assumptions must be validated through a geotechnical investigation.");
+  risks.push("Foundation assumptions must be validated through a geotechnical investigation.");
   risks.push("Municipal setbacks, FAR/FSI, fire, and parking rules require verification by a locally licensed architect.");
   const assessment = validStoredBriefCheck(project.brief_check_json) || briefCheck(input, estimate);
   const verdict = {
@@ -5189,7 +5495,7 @@ async function ensureReport(db, session, project) {
       WHERE project_id=? AND project_revision=? AND report_schema_version=?`,
   ).bind(projectId, revision, REPORT_VERSION).first();
   const historicalContent = historical ? parseStoredJson(historical.content_json, null) : null;
-  if (historicalContent) return { report: historicalContent, cached: true, created: false };
+  if (historicalContent) return { report: historicalContent, revision, cached: true, created: false };
   if (project.status === "archived") throw new HttpError(409, "restore the project before generating a report", "project_archived");
 
   const existing = await db.prepare("SELECT * FROM reports WHERE project_id=? AND user_id=?")
@@ -5242,7 +5548,7 @@ async function ensureReport(db, session, project) {
         ).bind(projectId, revision, REPORT_VERSION).first();
         const winnerReport = winner ? parseStoredJson(winner.content_json, null) : null;
         if (winnerReport && Number(winnerReport.version) === REPORT_VERSION && winnerReport.projectId === projectId) {
-          return { report: winnerReport, cached: true, created: false };
+          return { report: winnerReport, revision, cached: true, created: false };
         }
       }
       throw new HttpError(409, "the project brief changed while its report was generating", "project_revision_conflict");
@@ -5256,7 +5562,7 @@ async function ensureReport(db, session, project) {
     }
     throw error;
   }
-  return { report, cached: false, created: true };
+  return { report, revision, cached: false, created: true };
 }
 
 async function generateReport(request, env, projectId) {
@@ -5265,20 +5571,22 @@ async function generateReport(request, env, projectId) {
   const session = await getSession(request, env);
   await requireCsrf(request, session);
   const result = await ensureReport(db, session, await ownedProject(db, projectId, session.user_id));
-  return json({ report: result.report, cached: result.cached }, result.created ? 201 : 200);
+  const row = await currentReportEnvelopeRow(db, projectId, session.user_id);
+  if (!row || Number(row.revision) !== result.revision || Number(row.report_schema_version) !== REPORT_VERSION) {
+    throw new HttpError(409, "the project brief changed while its report was generating", "project_revision_conflict");
+  }
+  return json(reportEnvelopeFromRow(row, result.cached), result.created ? 201 : 200);
 }
 
 async function getReport(request, env, projectId) {
   const db = requireDatabase(env);
   const session = await getSession(request, env);
-  const project = await ownedProject(db, projectId, session.user_id);
-  const row = await db.prepare(
-    `SELECT content_json FROM project_revision_reports
-      WHERE project_id=? AND project_revision=? AND report_schema_version=?`,
-  ).bind(projectId, Number(project.input_revision || 1), REPORT_VERSION).first();
-  const report = row ? parseStoredJson(row.content_json, null) : null;
-  if (!report) throw new HttpError(404, "report has not been generated for the current project brief", "report_not_found");
-  return json({ report, cached: true });
+  const row = await currentReportEnvelopeRow(db, projectId, session.user_id);
+  if (!row) {
+    await ownedProject(db, projectId, session.user_id);
+    throw new HttpError(404, "report has not been generated for the current project brief", "report_not_found");
+  }
+  return json(reportEnvelopeFromRow(row, true));
 }
 
 function normalizeFileName(value) {
@@ -5481,6 +5789,7 @@ async function api(request, env, ctx, url) {
       let familyAlignmentSchema = "unknown";
       let archiveSafetySchema = "unknown";
       let revisionSchema = "unknown";
+      let reportFeedbackSchema = "unknown";
       if (env.DB) {
         try {
           const result = await env.DB.prepare(
@@ -5490,6 +5799,7 @@ async function api(request, env, ctx, url) {
                     SUM(CASE WHEN name IN ('payment_terminal_records','payment_reconciliation_cases') THEN 1 ELSE 0 END) AS payment_hardening_count,
                     SUM(CASE WHEN name IN ('family_alignment_rooms','family_alignment_responses') THEN 1 ELSE 0 END) AS family_alignment_count,
                     SUM(CASE WHEN name IN ('project_revisions','project_revision_requests','project_revision_reports') THEN 1 ELSE 0 END) AS revision_table_count,
+                    SUM(CASE WHEN name='report_feedback' THEN 1 ELSE 0 END) AS report_feedback_count,
                     SUM(CASE WHEN name IN
                       ('decision_comparisons','decision_selections','purchased_decision_snapshots',
                        'decision_shares','product_event_aggregates','decision_progress') THEN 1 ELSE 0 END) AS decision_table_count
@@ -5500,10 +5810,10 @@ async function api(request, env, ctx, url) {
                  'decision_selections','purchased_decision_snapshots','decision_shares','product_event_aggregates',
                  'decision_progress','payment_terminal_records','payment_reconciliation_cases',
                  'family_alignment_rooms','family_alignment_responses','project_revisions',
-                 'project_revision_requests','project_revision_reports')`,
+                 'project_revision_requests','project_revision_reports','report_feedback')`,
           ).first();
           database = "ok";
-          const requiredTablesPresent = Number(result?.count) === 22;
+          const requiredTablesPresent = Number(result?.count) === 23;
           if (Number(result?.revision_table_count) === 3) {
             try {
               await env.DB.prepare(
@@ -5554,6 +5864,36 @@ async function api(request, env, ctx, url) {
             }
           } else {
             revisionSchema = "outdated";
+          }
+          if (Number(result?.report_feedback_count) === 1) {
+            try {
+              await env.DB.prepare(
+                `SELECT project_id,project_revision,report_schema_version,user_id,
+                        outcome,sections_json,created_at,updated_at
+                   FROM report_feedback LIMIT 0`,
+              ).first();
+              const feedbackObjects = await env.DB.prepare(
+                `SELECT
+                   SUM(CASE WHEN type='trigger' AND name IN (
+                     'report_feedback_insert_guard','report_feedback_update_guard',
+                     'project_input_allowlist_insert_guard','project_input_allowlist_update_guard',
+                     'project_account_limit_insert_guard'
+                   ) THEN 1 ELSE 0 END) AS trigger_count,
+                   SUM(CASE WHEN type='index' AND name IN (
+                     'idx_report_feedback_updated','idx_report_feedback_outcome'
+                   ) THEN 1 ELSE 0 END) AS index_count
+                 FROM sqlite_master
+                WHERE type IN ('trigger','index')`,
+              ).first();
+              reportFeedbackSchema = Number(feedbackObjects?.trigger_count) === 5
+                && Number(feedbackObjects?.index_count) === 2
+                ? "current"
+                : "outdated";
+            } catch {
+              reportFeedbackSchema = "outdated";
+            }
+          } else {
+            reportFeedbackSchema = "outdated";
           }
           if (Number(result?.family_alignment_count) === 2) {
             try {
@@ -5711,6 +6051,7 @@ async function api(request, env, ctx, url) {
           schema = requiredTablesPresent && aiSchema === "current" && aiAbuseControl === "configured"
             && decisionSchema === "current" && paymentSchema === "current" && familyAlignmentSchema === "current"
             && archiveSafetySchema === "current" && revisionSchema === "current"
+            && reportFeedbackSchema === "current"
             ? "current"
             : "outdated";
         } catch {
@@ -5723,6 +6064,7 @@ async function api(request, env, ctx, url) {
           familyAlignmentSchema = "unknown";
           archiveSafetySchema = "unknown";
           revisionSchema = "unknown";
+          reportFeedbackSchema = "unknown";
         }
       }
       const rateLimit = env.GRIHAGRID_CACHE ? "configured" : "missing";
@@ -5753,6 +6095,7 @@ async function api(request, env, ctx, url) {
           familyAlignmentSchema,
           archiveSafetySchema,
           revisionSchema,
+          reportFeedbackSchema,
           ai: geminiConfigured ? "configured" : "unavailable",
           privateStorage: env.FILES ? "configured" : "unavailable",
           acceptingPaidPlans: acceptingPlans,
@@ -5766,6 +6109,7 @@ async function api(request, env, ctx, url) {
           decisionCompare: freeReady && decisionSchema === "current",
           familyAlignment: freeReady && decisionSchema === "current" && familyAlignmentSchema === "current" && rateLimit === "configured",
           briefCheck: freeReady && revisionSchema === "current" && rateLimit === "configured",
+          reportFeedback: freeReady && reportFeedbackSchema === "current" && rateLimit === "configured",
         },
         time: new Date().toISOString(),
       }, freeReady ? 200 : 503);
@@ -5869,6 +6213,21 @@ async function api(request, env, ctx, url) {
       return request.method === "POST"
         ? await previewProjectRevision(request, env, projectId)
         : methodNotAllowed(["POST"]);
+    }
+    const reportFeedbackMatch = url.pathname.match(
+      /^\/api\/projects\/([^/]+)\/revisions\/(\d+)\/reports\/(\d+)\/feedback$/u,
+    );
+    if (reportFeedbackMatch) {
+      const projectId = decodeProjectPathSegment(reportFeedbackMatch[1]);
+      const revision = positiveRevision(reportFeedbackMatch[2]);
+      const reportSchemaVersion = positiveReportSchemaVersion(reportFeedbackMatch[3]);
+      if (request.method === "GET") {
+        return await getReportFeedback(request, env, projectId, revision, reportSchemaVersion);
+      }
+      if (request.method === "PUT") {
+        return await putReportFeedback(request, env, projectId, revision, reportSchemaVersion);
+      }
+      return methodNotAllowed(["GET", "PUT"]);
     }
     const revisionReportMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/revisions\/(\d+)\/report$/u);
     if (revisionReportMatch) {
@@ -5988,6 +6347,12 @@ async function api(request, env, ctx, url) {
     if (/archived project is read only/iu.test(String(error?.message || error))) {
       return respond({ error: "restore the project before changing its planning record", code: "project_archived" }, 409);
     }
+    if (/project input contains unsupported field/iu.test(String(error?.message || error))) {
+      return respond({ error: "project input contains an unsupported field", code: "invalid_project_input" }, 400);
+    }
+    if (/project account limit reached/iu.test(String(error?.message || error))) {
+      return respond({ error: "this account has reached the project limit", code: "project_limit_reached" }, 429);
+    }
     console.error("Unhandled API error");
     return respond({ error: "internal server error", code: "internal_error" }, 500);
   }
@@ -6013,7 +6378,7 @@ function isApiRoute(pathname) {
     || /^\/api\/orders\/[^/]+(?:\/(?:fulfillment|artifact|progress))?$/u.test(pathname)
     || /^\/api\/shared\/decision-compare\/[^/]+$/u.test(pathname)
     || /^\/api\/family-alignment\/[^/]+(?:\/response)?$/u.test(pathname)
-    || /^\/api\/projects\/[^/]+(?:\/home|\/report|\/ai-brief|\/orders|\/revisions(?:\/preview|\/\d+(?:\/report)?)?|\/family-alignment(?:\/[^/]+)?|\/decision-compare(?:\/choice|\/shares(?:\/[^/]+)?)?|\/files(?:\/[^/]+)?)?$/u.test(pathname);
+    || /^\/api\/projects\/[^/]+(?:\/home|\/report|\/ai-brief|\/orders|\/revisions(?:\/preview|\/\d+(?:\/report|\/reports\/\d+\/feedback)?)?|\/family-alignment(?:\/[^/]+)?|\/decision-compare(?:\/choice|\/shares(?:\/[^/]+)?)?|\/files(?:\/[^/]+)?)?$/u.test(pathname);
 }
 
 function isAppNavigation(request, url) {
@@ -6037,6 +6402,7 @@ function operationalRoute(pathname) {
       .replace(/^\/api\/projects\/[^/]+/u, "/api/projects/:projectId")
       .replace(/^\/api\/orders\/[^/]+/u, "/api/orders/:orderId")
       .replace(/\/revisions\/\d+(?=\/|$)/u, "/revisions/:revision")
+      .replace(/\/reports\/\d+(?=\/|$)/u, "/reports/:schemaVersion")
       .replace(/\/family-alignment\/[^/]+$/u, "/family-alignment/:roomId")
       .replace(/\/files\/[^/]+$/u, "/files/:fileId")
       .replace(/\/shares\/[^/]+$/u, "/shares/:shareId");

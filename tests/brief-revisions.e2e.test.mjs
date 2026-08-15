@@ -427,6 +427,17 @@ function assertRevisionDetail(value, { list = false } = {}) {
   assert.equal(Number.isSafeInteger(value.revision) && value.revision > 0, true);
 }
 
+function assertReportEnvelope(value, label = "report envelope") {
+  assertExactKeys(value, ["project", "revision", "report", "cached"], label);
+  assertRevisionDetail(value.revision);
+  assert.equal(value.project.inputRevision, value.revision.revision, `${label} project snapshot must match its revision`);
+  assert.deepEqual(value.project.input, value.revision.input, `${label} project input must come from the same revision snapshot`);
+  assert.deepEqual(value.project.estimate, value.revision.estimate, `${label} project estimate must come from the same revision snapshot`);
+  assert.deepEqual(value.project.briefCheck, value.revision.briefCheck, `${label} Brief Check must come from the same revision snapshot`);
+  assert.equal(value.report.version, value.revision.report.schemaVersion, `${label} schema metadata must match report bytes`);
+  assert.equal(typeof value.cached, "boolean");
+}
+
 function assertNoInternalRevisionKeys(value, { allowReportInputHash = false } = {}) {
   const forbidden = new Set([
     "user_id", "input_json", "estimate_json", "brief_check_json", "request_hash",
@@ -467,10 +478,10 @@ test("Brief Check revisions are truthful, immutable, owner-scoped, and race safe
   let server = null;
   const capturedLogs = [];
   try {
-    requireD1Success(d1(stateDirectory, "migrate"), "fresh 0001-0012 migration chain failed");
+    requireD1Success(d1(stateDirectory, "migrate"), "fresh 0001-0013 migration chain failed");
     const applied = rowsFor(stateDirectory, "SELECT name FROM d1_migrations ORDER BY id", "migration ledger query failed");
-    assert.equal(applied.length, 12, JSON.stringify(applied));
-    assert.equal(applied.at(-1)?.name, "0012_brief_check_revision_history.sql");
+    assert.equal(applied.length, 13, JSON.stringify(applied));
+    assert.equal(applied.at(-1)?.name, "0013_report_feedback_and_intake_hardening.sql");
 
     server = await startWorker(stateDirectory, assetsDirectory, port);
     const readiness = await call(server.origin, "/api/readiness");
@@ -481,18 +492,20 @@ test("Brief Check revisions are truthful, immutable, owner-scoped, and race safe
       readiness.payload.checks,
       [
         "database", "schema", "rateLimit", "aiSchema", "aiAbuseControl", "decisionSchema",
-        "paymentSchema", "familyAlignmentSchema", "archiveSafetySchema", "revisionSchema", "ai",
+        "paymentSchema", "familyAlignmentSchema", "archiveSafetySchema", "revisionSchema", "reportFeedbackSchema", "ai",
         "privateStorage", "acceptingPaidPlans",
       ],
       "readiness.checks",
     );
     assertExactKeys(
       readiness.payload.capabilities,
-      ["freePlanning", "privateUploads", "paidCheckout", "paidFulfillment", "aiPlanningBrief", "decisionCompare", "familyAlignment", "briefCheck"],
+      ["freePlanning", "privateUploads", "paidCheckout", "paidFulfillment", "aiPlanningBrief", "decisionCompare", "familyAlignment", "briefCheck", "reportFeedback"],
       "readiness.capabilities",
     );
     assert.equal(readiness.payload.checks.revisionSchema, "current");
+    assert.equal(readiness.payload.checks.reportFeedbackSchema, "current");
     assert.equal(readiness.payload.capabilities.briefCheck, true);
+    assert.equal(readiness.payload.capabilities.reportFeedback, true);
     assert.equal(readiness.payload.capabilities.paidCheckout, false);
     assert.equal(readiness.payload.capabilities.paidFulfillment, false);
     assert.equal(readiness.payload.capabilities.privateUploads, false);
@@ -519,6 +532,8 @@ test("Brief Check revisions are truthful, immutable, owner-scoped, and race safe
       body: {},
     });
     assert.equal(generatedInitial.response.status, 201, JSON.stringify(generatedInitial.payload));
+    assertReportEnvelope(generatedInitial.payload, "generated current report");
+    assert.equal(generatedInitial.payload.revision.revision, 1);
     const initialReport = generatedInitial.payload.report;
     const serializedInitialReport = JSON.stringify(initialReport);
     assert.equal(serializedInitialReport.includes("Conceptually feasible"), false);
@@ -745,8 +760,10 @@ test("Brief Check revisions are truthful, immutable, owner-scoped, and race safe
 
     const historicalReport = await call(server.origin, revisionPath(project.id, "/1/report"), { auth: owner });
     assert.equal(historicalReport.response.status, 200, JSON.stringify(historicalReport.payload));
-    assertExactKeys(historicalReport.payload, ["revision", "report"], "historical revision report");
-    assertExactKeys(historicalReport.payload.revision, ["revision", "createdAt"], "historical report revision identity");
+    assertReportEnvelope(historicalReport.payload, "historical revision report");
+    assert.equal(historicalReport.payload.revision.revision, 1);
+    assert.equal(historicalReport.payload.revision.current, false);
+    assert.equal(historicalReport.payload.project.input.quality, completeInput.quality);
     assert.deepEqual(historicalReport.payload.report, initialReport);
     assertNoInternalRevisionKeys(historicalReport.payload, { allowReportInputHash: true });
 
@@ -759,10 +776,16 @@ test("Brief Check revisions are truthful, immutable, owner-scoped, and race safe
       body: {},
     });
     assert.equal(regenerated.response.status, 201, JSON.stringify(regenerated.payload));
+    assertReportEnvelope(regenerated.payload, "regenerated current report");
+    assert.equal(regenerated.payload.revision.revision, 3);
+    assert.equal(regenerated.payload.revision.current, true);
     assert.equal(JSON.stringify(regenerated.payload.report).includes("Conceptually feasible"), false);
     assertNoInternalRevisionKeys(regenerated.payload, { allowReportInputHash: true });
     const currentHistoricalReport = await call(server.origin, revisionPath(project.id, "/3/report"), { auth: owner });
     assert.equal(currentHistoricalReport.response.status, 200, JSON.stringify(currentHistoricalReport.payload));
+    assertReportEnvelope(currentHistoricalReport.payload, "current historical-route report");
+    assert.equal(currentHistoricalReport.payload.revision.revision, 3);
+    assert.equal(currentHistoricalReport.payload.revision.current, true);
     assertNoInternalRevisionKeys(currentHistoricalReport.payload, { allowReportInputHash: true });
 
     const closedFamily = await call(server.origin, `/api/family-alignment/${family.token}`);

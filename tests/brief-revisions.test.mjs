@@ -107,10 +107,10 @@ test("Change Study is deterministic, consequence-complete, and rejects no-op com
   assert.equal(__test.changeStudy(completeInput, beforeEstimate, completeInput, beforeEstimate).hasChanges, false);
 });
 
-test("legacy input survives candidate preparation but never leaves revision projections", () => {
+test("legacy input remains historical but is removed from every prepared revision", () => {
   const stored = { ...completeInput, legacyPrivateNote: "PRIVATE_CANARY" };
   const candidate = __test.prepareRevisionCandidate(projectRow(stored), { bathrooms: 4 });
-  assert.equal(candidate.input.legacyPrivateNote, "PRIVATE_CANARY", "unknown legacy bytes remain in the stored candidate");
+  assert.equal(Object.hasOwn(candidate.input, "legacyPrivateNote"), false, "new revision candidates must be canonical");
 
   const projected = __test.revisionFromRow({
     project_id: "project-brief-1",

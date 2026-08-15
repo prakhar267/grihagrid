@@ -22,6 +22,20 @@ class MemoryD1 {
   }
 }
 
+class MemoryKv {
+  constructor() {
+    this.values = new Map();
+  }
+
+  async get(key) {
+    return this.values.get(key) || null;
+  }
+
+  async put(key, value) {
+    this.values.set(key, value);
+  }
+}
+
 class MemoryStatement {
   constructor(db, sql) {
     this.db = db;
@@ -379,7 +393,7 @@ test("project ownership lookup is always scoped to both project and user", async
 
 test("end-to-end sessions isolate projects between registered users", async () => {
   const DB = new MemoryD1();
-  const env = { ASSETS: assets, DB };
+  const env = { ASSETS: assets, DB, GRIHAGRID_CACHE: new MemoryKv() };
   const register = async (email) => {
     const response = await worker.fetch(request("/api/auth/register", {
       method: "POST",

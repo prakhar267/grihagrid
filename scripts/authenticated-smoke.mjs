@@ -52,6 +52,12 @@ async function responsePayload(response) {
   return null;
 }
 
+async function reportSha256(report) {
+  const bytes = new TextEncoder().encode(JSON.stringify(report));
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, "0")).join("");
+}
+
 export async function runAuthenticatedSmoke(rawOrigin, credentials, options = {}) {
   const origin = canonicalOrigin(rawOrigin);
   const email = String(credentials?.email || "").trim();
@@ -63,8 +69,13 @@ export async function runAuthenticatedSmoke(rawOrigin, credentials, options = {}
   let csrfToken = "";
   let projectId = "";
   let releaseId = "";
+  let immutableReportSha256 = "";
   let sessionRevocationVerified = false;
+  let projectCreateAttempted = false;
+  const cleanupIds = new Set();
+  const deletedIds = new Set();
   let primaryError = null;
+  const legacyWorker = options.legacyWorker === true;
   const marker = `Release canary ${crypto.randomUUID()}`;
 
   function safeRoute(path) {
@@ -115,6 +126,9 @@ export async function runAuthenticatedSmoke(rawOrigin, credentials, options = {}
     assert.equal(readiness?.capabilities?.paidCheckout, false, "authenticated canary requires checkout to remain closed");
     assert.equal(readiness?.capabilities?.paidFulfillment, false, "authenticated canary requires fulfillment to remain closed");
     assert.equal(readiness?.capabilities?.privateUploads, false, "authenticated canary requires uploads to remain closed");
+    if (!legacyWorker) {
+      assert.equal(readiness?.capabilities?.reportFeedback, true, "authenticated canary requires report feedback to be ready");
+    }
 
     const me = await call("/api/auth/me");
     assert.ok(
@@ -122,6 +136,7 @@ export async function runAuthenticatedSmoke(rawOrigin, credentials, options = {}
       "canary session belongs to the wrong account",
     );
 
+    projectCreateAttempted = true;
     const created = await call("/api/projects", {
       method: "POST",
       body: JSON.stringify({
@@ -140,6 +155,7 @@ export async function runAuthenticatedSmoke(rawOrigin, credentials, options = {}
     }, [201]);
     projectId = String(created?.project?.id || "");
     assert.match(projectId, /^[0-9a-f-]{36}$/u, "canary project did not return a valid identifier");
+    cleanupIds.add(projectId);
 
     const encodedProjectId = encodeURIComponent(projectId);
     const project = await call(`/api/projects/${encodedProjectId}`);
@@ -149,6 +165,44 @@ export async function runAuthenticatedSmoke(rawOrigin, credentials, options = {}
     assert.ok(generated?.report, "canary report generation did not return a report");
     const cached = await call(`/api/projects/${encodedProjectId}/report`);
     assert.ok(cached?.report, "canary report read did not return the generated report");
+    const projectRevision = legacyWorker
+      ? Number(created?.project?.inputRevision || 0)
+      : Number(generated?.revision?.revision || 0);
+    const reportSchemaVersion = legacyWorker
+      ? Number(generated?.report?.version || 0)
+      : Number(generated?.revision?.report?.schemaVersion || 0);
+    assert.ok(Number.isInteger(projectRevision) && projectRevision > 0, "canary project revision is invalid");
+    assert.ok(Number.isInteger(reportSchemaVersion) && reportSchemaVersion > 0, "canary report schema version is invalid");
+    if (!legacyWorker) {
+      assert.equal(generated?.project?.id, projectId, "canary report envelope belongs to the wrong project");
+      assert.equal(generated?.project?.inputRevision, projectRevision, "canary report project snapshot is revision-mismatched");
+      assert.equal(generated?.report?.version, reportSchemaVersion, "canary report schema metadata is mismatched");
+      assert.equal(cached?.revision?.revision, projectRevision, "cached report revision changed");
+      assert.equal(cached?.revision?.report?.schemaVersion, reportSchemaVersion, "cached report schema changed");
+    } else {
+      assert.equal(generated?.report?.projectId, projectId, "legacy canary report belongs to the wrong project");
+      assert.equal(cached?.report?.projectId, projectId, "legacy cached report belongs to the wrong project");
+    }
+    const immutableReportJson = JSON.stringify(generated.report);
+    immutableReportSha256 = await reportSha256(generated.report);
+    assert.equal(JSON.stringify(cached.report), immutableReportJson, "cached report bytes changed after generation");
+    assert.equal(await reportSha256(cached.report), immutableReportSha256, "cached report checksum changed after generation");
+    if (!legacyWorker) {
+      const feedbackPath = `/api/projects/${encodedProjectId}/revisions/${projectRevision}/reports/${reportSchemaVersion}/feedback`;
+      const emptyFeedback = await call(feedbackPath);
+      assert.equal(emptyFeedback?.feedback, null, "new canary report unexpectedly has feedback");
+      const savedFeedback = await call(feedbackPath, {
+        method: "PUT",
+        body: JSON.stringify({ outcome: "helpful", sections: ["brief_check", "next_actions"] }),
+      });
+      assert.equal(savedFeedback?.feedback?.outcome, "helpful", "canary feedback outcome was not saved");
+      assert.deepEqual(savedFeedback?.feedback?.sections, ["brief_check", "next_actions"], "canary feedback sections changed");
+      const readFeedback = await call(feedbackPath);
+      assert.deepEqual(readFeedback?.feedback, savedFeedback?.feedback, "canary feedback did not survive an exact-version read");
+      const reportAfterFeedback = await call(`/api/projects/${encodedProjectId}/report`);
+      assert.equal(JSON.stringify(reportAfterFeedback?.report), immutableReportJson, "canary feedback mutated the immutable report bytes");
+      assert.equal(await reportSha256(reportAfterFeedback?.report), immutableReportSha256, "canary feedback changed the immutable report checksum");
+    }
 
     const closedOrder = await call(`/api/projects/${encodedProjectId}/orders`, {
       method: "POST",
@@ -170,7 +224,6 @@ export async function runAuthenticatedSmoke(rawOrigin, credentials, options = {}
   } catch (error) {
     primaryError = error;
   } finally {
-    const cleanupIds = new Set(projectId ? [projectId] : []);
     if (jar.has(SESSION_COOKIE)) {
       try {
         for (let offset = 0; offset < 10_000; offset += 100) {
@@ -186,6 +239,7 @@ export async function runAuthenticatedSmoke(rawOrigin, credentials, options = {}
           const encodedProjectId = encodeURIComponent(cleanupId);
           await call(`/api/projects/${encodedProjectId}`, { method: "DELETE" }, [204]);
           await call(`/api/projects/${encodedProjectId}`, {}, [404]);
+          deletedIds.add(cleanupId);
         }
       } catch (cleanupError) {
         primaryError = primaryError
@@ -215,25 +269,41 @@ export async function runAuthenticatedSmoke(rawOrigin, credentials, options = {}
     }
   }
 
-  if (primaryError) throw primaryError;
-  return {
+  const result = {
     origin: origin.origin,
     releaseId,
     checkedAt: new Date().toISOString(),
-    projectCreated: true,
-    projectDeleted: true,
+    legacyWorker,
+    projectCreateAttempted,
+    projectCreated: cleanupIds.size > 0,
+    projectDeleted: cleanupIds.size > 0 && deletedIds.size === cleanupIds.size,
+    canaryProjectIds: [...cleanupIds].sort(),
     sessionLoggedOut: sessionRevocationVerified,
     sessionRevocationVerified,
+    reportSha256: immutableReportSha256,
     checks: completed,
   };
+  if (primaryError) {
+    primaryError.releaseEvidence = result;
+    throw primaryError;
+  }
+  return result;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const origin = process.argv[2] || process.env.GRIHAGRID_CANARY_ORIGIN;
   assert.ok(origin, "usage: node scripts/authenticated-smoke.mjs https://worker.example");
-  const result = await runAuthenticatedSmoke(origin, {
-    email: process.env.GRIHAGRID_CANARY_EMAIL,
-    password: process.env.GRIHAGRID_CANARY_PASSWORD,
-  }, { expectedReleaseId: process.env.EXPECT_RELEASE_ID });
-  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  try {
+    const result = await runAuthenticatedSmoke(origin, {
+      email: process.env.GRIHAGRID_CANARY_EMAIL,
+      password: process.env.GRIHAGRID_CANARY_PASSWORD,
+    }, {
+      expectedReleaseId: process.env.EXPECT_RELEASE_ID,
+      legacyWorker: process.env.LEGACY_WORKER_COMPAT === "true",
+    });
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  } catch (error) {
+    if (error?.releaseEvidence) process.stdout.write(`${JSON.stringify(error.releaseEvidence, null, 2)}\n`);
+    throw error;
+  }
 }

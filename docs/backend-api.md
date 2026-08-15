@@ -109,14 +109,16 @@ ready.
 Free-product readiness probe. Returns `200 status=ready` only when D1 is
 reachable, the required schema is present, and the KV abuse-control binding
 exists. The response separately reports Gemini planning, private upload, and
-paid-checkout capabilities, including `decisionSchema`, `paymentSchema`, and
-`revisionSchema`. `releaseId` is the non-secret Cloudflare Worker version ID
+paid-checkout capabilities, including `decisionSchema`, `paymentSchema`,
+`revisionSchema`, and `reportFeedbackSchema`. `releaseId` is the non-secret Cloudflare Worker version ID
 used to correlate a deployment with smoke and monitoring evidence.
 `capabilities.paidFulfillment` reports the independent Decision Compare
 fulfillment kill switch, so release checks can prove that both selling and
 fulfillment remain closed. `capabilities.briefCheck` is true only when migration 0012,
 its immutable guards, the pre-existing `projects_input_revision_guard`, and KV
-abuse control are ready;
+abuse control are ready; `capabilities.reportFeedback` is true only when the
+separate feedback table, its owner/archive guards, the project-input
+allowlist/account ceiling, and KV abuse control are ready;
 unavailable optional capabilities do not
 make the free product unready. Returns `503 status=not_ready` if a required
 free-product dependency is absent or unhealthy.
@@ -234,6 +236,14 @@ Requires CSRF. Preferred body:
 For backward compatibility, estimate fields may be at the body root. Returns
 `201 { project }` with normalized input, estimate, timestamps, status
 `feasibility_ready`, `inputRevision: 1`, and `reportAvailable: false`.
+Both request shapes are exact allowlists: unknown root or nested input fields,
+mistyped categories, non-finite/out-of-range values, and hidden claims such as
+an unverified soil report return `400 invalid_project_input`. Creation requires
+healthy KV and uses a best-effort 20-attempt-per-account hourly edge throttle.
+KV absence or read/write failure returns fail-closed
+`503 abuse_control_unavailable` with the internal `control_closed` outcome. D1
+independently enforces the exact concurrency-safe ceiling of 50 projects per
+account and returns `429 project_limit_reached`.
 
 ### `GET /api/projects?limit=50&offset=0`
 
@@ -644,6 +654,9 @@ event rows it returns `paidDecisionCohort` with `paidOrders`,
 `completedWithin7Days`, and `completionRate`. A paid order is complete when its
 first print, share, or explicit professional handoff occurs no later than seven
 days after payment. No order/snapshot key or individual milestone is returned.
+The same response contains `reportFeedback` with aggregate-only
+`totalResponses`, `byOutcome`, and `bySection` counts for the requested window.
+It contains no account, project, revision, report, or free-text value.
 
 ## Brief Check and revision endpoints
 
@@ -665,7 +678,8 @@ are in [brief-check.md](brief-check.md).
 - `GET /api/projects/:projectId/revisions/:revision` returns one revision, its
   nearest retained predecessor, and their Change Study.
 - `GET /api/projects/:projectId/revisions/:revision/report` reads the highest
-  retained report schema for that revision.
+  retained report schema for that revision in the atomic report envelope
+  `{ project, revision, report, cached: true }`.
 
 Unknown proposed input keys return `400 invalid_revision_request`. Missing
 impact acknowledgement returns `400 impact_acceptance_required`; stale writers
@@ -678,18 +692,24 @@ return `503 abuse_control_unavailable`.
 
 ### `GET /api/projects/:projectId/report`
 
-Strictly read-only. Returns `{ report, cached: true }` only for an explicitly
-generated schema-v2 report attached to the project's exact current input
-revision. Missing current material returns `404 report_not_found`; GET never
-generates, changes status, or updates a timestamp. Historical v1 reports are
-available only through the revision-report endpoint.
+Strictly read-only. Returns `{ project, revision, report, cached: true }` only
+for an explicitly generated schema-v2 report attached to the project's exact
+current input revision. The project facts, full revision snapshot, report
+schema metadata, and report bytes come from one owner-scoped joined row; the
+Worker verifies report id, project id, schema, input hash, and generation time
+before responding. Missing current material returns `404 report_not_found`;
+GET never generates, changes status, or updates a timestamp. Historical v1
+reports are available only through the revision-report endpoint, using the same
+envelope with the requested immutable revision snapshot.
 
 ### `POST /api/projects/:projectId/report`
 
 Requires CSRF and explicitly generates the current report. An unchanged exact
 revision returns its immutable persisted bytes with `cached: true`; a missing
 v2 report is generated, fenced to the current revision, copied into immutable
-history, and sets project status to `report_ready`. A concurrent edit returns
+history, and sets project status to `report_ready`. Success uses the same
+`{ project, revision, report, cached }` envelope as GET. If the project advances
+before that exact envelope can be read, POST returns
 `409 project_revision_conflict`; concurrent identical POSTs converge on the
 same winning bytes without a 5xx.
 
@@ -698,6 +718,30 @@ assessment state. Report contents include an area program, itemized cost range,
 delivery phases, project-sensitive risks, next actions, an input hash, and the
 concept-stage disclaimer. It is intentionally deterministic product logic, not
 a statutory drawing, engineering design, contractor quote, or permit approval.
+
+### `GET|PUT /api/projects/:projectId/revisions/:revision/reports/:schemaVersion/feedback`
+
+The owner-scoped GET returns `{ feedback: null }` or the one response bound to
+that exact immutable schema-v2 report. Legacy schema-v1 artifacts return the
+same owner-safe `404 report_not_found` because they predate the Brief Check
+vocabulary. PUT requires trusted origin, CSRF, KV and an active project, and
+accepts exactly:
+
+```json
+{
+  "outcome": "helpful",
+  "sections": ["brief_check", "next_actions"]
+}
+```
+
+`outcome` is one of `helpful`, `unclear`, or `needs_review`. `sections` contains
+one to three unique values from `overall`, `brief_check`, `programme`,
+`cost_range`, `assumptions`, and `next_actions`; `overall` must be the only
+value. An exact replay preserves `updatedAt`; a changed response updates only
+the separate feedback row. Archived owners may read existing feedback but
+cannot create or change it. Missing and foreign projects/reports use the same
+owner-safe `404`; project deletion cascades the response. The complete product,
+privacy, migration, and rollback contract is in [report-feedback.md](report-feedback.md).
 
 ## Gemini planning-brief endpoints
 

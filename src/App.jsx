@@ -1781,8 +1781,145 @@ function CheckoutReturnPage({ orderId }) {
   return <main className="checkout-return"><Brand/><section>{state.loading&&<><span className="kicker">Confirming with Razorpay</span><h1>Checking your payment.</h1><p role="status">This usually takes a few seconds. You can safely keep this page open.</p></>}{state.error&&<><WarningCircle/><span className="kicker">Payment status unavailable</span><h1>Your project is safe.</h1><p role="alert">{state.error} No fulfillment has started from this browser return alone.</p><button className="copper-button" onClick={()=>route('/dashboard')}>Open my projects <ArrowRight/></button></>}{state.order&&<><span className="kicker">Order · {state.order.id.slice(0,8)}</span><h1>{revoked?'Artifact access revoked.':status==='paid'?'Payment confirmed.':status==='failed'?'Checkout was not completed.':'Still confirming payment.'}</h1><p>{revoked?'A verified refund or payment dispute disabled the artifact and every share link. Contact support if this is unexpected.':status==='paid'?paidMessage:status==='failed'?'No entitlement was created. You may safely return to the project and try again.':'We have not received a verified payment event yet. This page will continue checking.'}</p><dl><div><dt>Plan</dt><dd>{state.order.planLabel}</dd></div><div><dt>Amount</dt><dd>₹{(state.order.amountPaise/100).toLocaleString('en-IN')}</dd></div><div><dt>Payment</dt><dd>{status}</dd></div>{fulfillment&&<div><dt>Fulfillment</dt><dd>{fulfillment.status.replaceAll('_',' ')}</dd></div>}</dl><button className="copper-button" onClick={()=>route('/dashboard')}>Open my projects <ArrowRight/></button></>}</section></main>;
 }
 
+const reportFeedbackOutcomes = [
+  ["helpful", "Useful", "This gave me a clearer next step."],
+  ["unclear", "Still unclear", "I need a clearer explanation before acting."],
+  ["needs_review", "Needs checking", "A part of this report seems wrong or concerning."],
+];
+
+const reportFeedbackSections = [
+  ["overall", "Whole report"],
+  ["brief_check", "Brief Check"],
+  ["programme", "Room programme"],
+  ["cost_range", "Cost range"],
+  ["assumptions", "Assumptions"],
+  ["next_actions", "Next actions"],
+];
+
+function normalizeReportFeedback(value, projectRevision, reportSchemaVersion) {
+  if(value===null)return null;
+  if(!value||typeof value!=="object"||Array.isArray(value))throw new Error("Saved feedback identity is invalid. Reload this report before trying again.");
+  const outcomes=new Set(reportFeedbackOutcomes.map(([key])=>key));
+  const allowedSections=new Set(reportFeedbackSections.map(([key])=>key));
+  const sections=Array.isArray(value.sections)?[...value.sections]:[];
+  const valid=outcomes.has(value.outcome)
+    &&sections.length>=1&&sections.length<=3
+    &&sections.every(section=>typeof section==="string"&&allowedSections.has(section))
+    &&new Set(sections).size===sections.length
+    &&(!sections.includes("overall")||sections.length===1)
+    &&value.projectRevision===projectRevision
+    &&value.reportSchemaVersion===reportSchemaVersion
+    &&typeof value.createdAt==="string"&&value.createdAt.length>0
+    &&typeof value.updatedAt==="string"&&value.updatedAt.length>0;
+  if(!valid)throw new Error("Saved feedback does not match this exact report. Reload the report before trying again.");
+  return {...value,sections};
+}
+
+function normalizeReportEnvelope(value, projectId, expectedRevision=null) {
+  if(!value||typeof value!=="object"||Array.isArray(value))throw new Error("The saved report identity is incomplete. Reload before continuing.");
+  const project=homeObject(value.project);
+  const snapshot=homeObject(value.revision);
+  const report=homeObject(value.report);
+  const projectRevision=snapshot.revision;
+  const reportSchemaVersion=snapshot.report?.schemaVersion;
+  const valid=project.id===projectId
+    &&report.projectId===projectId
+    &&Number.isInteger(projectRevision)&&projectRevision>0
+    &&Number.isInteger(reportSchemaVersion)&&reportSchemaVersion>0
+    &&Number.isInteger(project.inputRevision)&&project.inputRevision===projectRevision
+    &&snapshot.report?.available===true
+    &&Number.isInteger(report.version)&&report.version===reportSchemaVersion
+    &&typeof value.cached==="boolean"
+    &&(expectedRevision!==null||snapshot.current===true)
+    &&(expectedRevision===null||projectRevision===Number(expectedRevision));
+  if(!valid)throw new Error("The saved report does not match its revision record. Reload before continuing.");
+  return {project,snapshot,report,projectRevision,reportSchemaVersion};
+}
+
+function ReportFeedback({ projectId, projectRevision, reportSchemaVersion, readonly=false }) {
+  const [phase,setPhase]=useState("loading");
+  const [feedback,setFeedback]=useState(null);
+  const [outcome,setOutcome]=useState("");
+  const [sections,setSections]=useState([]);
+  const [error,setError]=useState("");
+  const [message,setMessage]=useState("");
+  const groupId=useId();
+  const boundaryId=`${groupId}-boundary`;
+  const errorId=`${groupId}-error`;
+  const sectionGuidanceId=`${groupId}-section-guidance`;
+  const endpoint=`/api/projects/${encodeURIComponent(projectId)}/revisions/${projectRevision}/reports/${reportSchemaVersion}/feedback`;
+
+  async function load(signal) {
+    setPhase("loading");setError("");setMessage("");
+    try{
+      const result=await api(endpoint,{signal});
+      if(signal?.aborted)return;
+      const saved=normalizeReportFeedback(result.feedback,projectRevision,reportSchemaVersion);
+      setFeedback(saved);setOutcome(saved?.outcome||"");setSections(saved?.sections||[]);setPhase("ready");
+    }catch(err){
+      if(signal?.aborted)return;
+      if(err instanceof ApiError&&err.status===401){route("/login");return}
+      setError(err?.message||"Feedback could not be opened.");setPhase("error");
+    }
+  }
+
+  useEffect(()=>{const controller=new AbortController();load(controller.signal);return()=>controller.abort()},[endpoint]);
+
+  function toggleSection(section) {
+    setMessage("");setError("");
+    setSections(current=>{
+      if(section==="overall")return current.includes("overall")?[]:["overall"];
+      const withoutOverall=current.filter(item=>item!=="overall");
+      if(withoutOverall.includes(section))return withoutOverall.filter(item=>item!==section);
+      if(withoutOverall.length>=3)return withoutOverall;
+      return [...withoutOverall,section];
+    });
+  }
+
+  async function save(event) {
+    event.preventDefault();setError("");setMessage("");
+    if(!outcome){setError("Choose how this report helped before saving.");return}
+    if(sections.length<1){setError("Choose at least one part of the report.");return}
+    const updating=Boolean(feedback);
+    setPhase("saving");
+    try{
+      const result=await api(endpoint,{method:"PUT",body:{outcome,sections}});
+      const saved=normalizeReportFeedback(result.feedback,projectRevision,reportSchemaVersion);
+      if(!saved)throw new Error("The server did not return the saved feedback record.");
+      setFeedback(saved);setOutcome(saved.outcome);setSections(saved.sections);setPhase("ready");
+      setMessage(updating?"Feedback updated. The saved report remains unchanged.":"Feedback saved. The saved report remains unchanged.");
+    }catch(err){
+      if(err instanceof ApiError&&err.status===401){route("/login");return}
+      setError(err?.message||"Feedback could not be saved. Your report remains unchanged.");setPhase("ready");
+    }
+  }
+
+  const outcomeLabel=reportFeedbackOutcomes.find(([key])=>key===feedback?.outcome)?.[1];
+  const sectionLabels=(feedback?.sections||[]).map(section=>reportFeedbackSections.find(([key])=>key===section)?.[1]).filter(Boolean);
+  const busy=phase==="saving";
+  const sectionGuidance=sections.includes("overall")
+    ? "Whole report selected. Clear it to choose individual parts."
+    : sections.length>=3
+      ? "3 of 3 parts selected. Clear a selected part before choosing another."
+      : `${sections.length} of 3 parts selected. Choose one to three; Whole report cannot be combined with another part.`;
+
+  return <section className={`report-feedback ${readonly?"report-feedback--readonly":""}`} aria-labelledby={`${groupId}-title`} aria-busy={phase==="loading"||busy}>
+    <header className="report-feedback__heading"><div><span className="kicker">Report feedback · separate record</span><h2 id={`${groupId}-title`}>Did this make the next decision clearer?</h2></div><p>Rate this exact revision so GrihaGrid can learn where its planning evidence helps—and where it needs more care.</p></header>
+    <div className="report-feedback__boundary" id={boundaryId}><LockKey/><p><strong>Your report stays immutable.</strong> Feedback is stored separately against revision {projectRevision}, report schema v{reportSchemaVersion}. It never changes the saved report and is not a request for, or a substitute for, professional review.</p></div>
+    {phase==="loading"&&<div className="report-feedback__loading" role="status"><ArrowClockwise/> Opening saved feedback…</div>}
+    {phase==="error"&&<div className="report-feedback__message"><p className="form-error" id={errorId} role="alert">{error}</p><button type="button" className="outline-button report-feedback__retry" onClick={()=>load()}>Try again <ArrowClockwise/></button></div>}
+    {phase!=="loading"&&phase!=="error"&&readonly&&<div className="report-feedback__readonly" role="status">{feedback?<><CheckCircle/><div><span>Feedback recorded</span><strong>{outcomeLabel}</strong><p>{sectionLabels.join(" · ")}{feedback.updatedAt?` · Updated ${formatDate(feedback.updatedAt)}`:""}</p></div></>:<><LockKey/><div><span>Archived feedback</span><strong>No feedback was recorded.</strong><p>This report is read only, so a new response cannot be added.</p></div></>}</div>}
+    {phase!=="loading"&&phase!=="error"&&!readonly&&<form className="report-feedback__form" onSubmit={save} aria-describedby={`${boundaryId}${error?` ${errorId}`:""}`}>
+      <fieldset className="report-feedback__outcomes" disabled={busy}><legend>How did this report land?</legend><div>{reportFeedbackOutcomes.map(([key,label,copy])=><label key={key}><input type="radio" name={`${groupId}-outcome`} value={key} checked={outcome===key} onChange={()=>{setOutcome(key);setError("");setMessage("")}}/><span><strong>{label}</strong><small>{copy}</small></span></label>)}</div></fieldset>
+      <fieldset className="report-feedback__sections" disabled={busy} aria-describedby={sectionGuidanceId}><legend>Which part shaped that answer?</legend><p id={sectionGuidanceId} aria-live="polite" aria-atomic="true">{sectionGuidance}</p><div>{reportFeedbackSections.map(([key,label])=>{const checked=sections.includes(key);const atLimit=!checked&&key!=="overall"&&!sections.includes("overall")&&sections.length>=3;return <label key={key}><input type="checkbox" value={key} checked={checked} disabled={busy||atLimit} onChange={()=>toggleSection(key)}/><span>{label}</span></label>})}</div></fieldset>
+      <div className="report-feedback__actions"><button type="submit" className="outline-button" disabled={busy}>{busy?"Saving feedback…":feedback?"Update feedback":"Save feedback"}</button>{feedback?.updatedAt&&<small>Last saved {formatDate(feedback.updatedAt)}</small>}</div>
+      <div className="report-feedback__message" aria-live="polite">{message&&<p className="success-message" role="status"><CheckCircle/>{message}</p>}{error&&<p className="form-error" id={errorId} role="alert">{error}</p>}</div>
+    </form>}
+  </section>;
+}
+
 function ReportPage({ id, revision=null }) {
-  const [state,setState]=useState({phase:"loading",project:null,report:null,input:null,estimate:null,briefCheck:null,reportSchemaVersion:null,error:"",historical:false});
+  const [state,setState]=useState({phase:"loading",project:null,report:null,input:null,estimate:null,briefCheck:null,projectRevision:null,reportSchemaVersion:null,error:"",historical:false});
   const [generating,setGenerating]=useState(false);
   const [uploadWarning,setUploadWarning]=useState(()=>sessionStorage.getItem(`grihagrid.uploadWarning.${id}`)||"");
 
@@ -1790,36 +1927,33 @@ function ReportPage({ id, revision=null }) {
     setState(current=>({...current,phase:"loading",error:""}));
     try {
       if(revision){
-        const [detailResult,reportResult]=await Promise.all([
-          api(`/api/projects/${encodeURIComponent(id)}/revisions/${revision}`,{signal}),
-          api(`/api/projects/${encodeURIComponent(id)}/revisions/${revision}/report`,{signal}),
-        ]);
+        const reportResult=await api(`/api/projects/${encodeURIComponent(id)}/revisions/${revision}/report`,{signal});
         if(signal?.aborted)return;
-        const snapshot=homeObject(detailResult.revision);
-        const savedReport=homeObject(reportResult.report);
-        setState({phase:"ready",project:homeObject(detailResult.project),report:savedReport,input:homeObject(snapshot.input),estimate:homeObject(snapshot.estimate),briefCheck:snapshot.briefCheck||null,reportSchemaVersion:Number(snapshot.report?.schemaVersion||savedReport.version||1),error:"",historical:true});
+        const envelope=normalizeReportEnvelope(reportResult,id,revision);
+        setState({phase:"ready",project:envelope.project,report:envelope.report,input:homeObject(envelope.snapshot.input),estimate:homeObject(envelope.snapshot.estimate),briefCheck:envelope.snapshot.briefCheck||null,projectRevision:envelope.projectRevision,reportSchemaVersion:envelope.reportSchemaVersion,error:"",historical:true});
         return;
       }
-      const projectResult=await api(`/api/projects/${encodeURIComponent(id)}`,{signal});
-      if(signal?.aborted)return;
-      const project=homeObject(projectResult.project);
       try{
         const reportResult=await api(`/api/projects/${encodeURIComponent(id)}/report`,{signal});
         if(signal?.aborted)return;
-        const report=homeObject(reportResult.report);
-        if(!report.id&&!report.generatedAt){setState({phase:"missing",project,report:null,input:project.input,estimate:project.estimate,briefCheck:project.briefCheck||null,reportSchemaVersion:null,error:"",historical:false});return}
-        setState({phase:"ready",project,report,input:project.input,estimate:project.estimate,briefCheck:project.briefCheck||null,reportSchemaVersion:Number(report.version||1),error:"",historical:false});
+        const envelope=normalizeReportEnvelope(reportResult,id);
+        setState({phase:"ready",project:envelope.project,report:envelope.report,input:homeObject(envelope.snapshot.input),estimate:homeObject(envelope.snapshot.estimate),briefCheck:envelope.snapshot.briefCheck||null,projectRevision:envelope.projectRevision,reportSchemaVersion:envelope.reportSchemaVersion,error:"",historical:false});
       }catch(err){
         if(signal?.aborted)return;
-        if(err instanceof ApiError&&err.status===404){setState({phase:"missing",project,report:null,input:project.input,estimate:project.estimate,briefCheck:project.briefCheck||null,reportSchemaVersion:null,error:"",historical:false});return}
+        if(err instanceof ApiError&&err.status===404&&err.payload?.code==="report_not_found"){
+          const projectResult=await api(`/api/projects/${encodeURIComponent(id)}`,{signal});
+          if(signal?.aborted)return;
+          const project=homeObject(projectResult.project);
+          setState({phase:"missing",project,report:null,input:project.input,estimate:project.estimate,briefCheck:project.briefCheck||null,projectRevision:null,reportSchemaVersion:null,error:"",historical:false});return
+        }
         throw err;
       }
     }catch(err){
       if(signal?.aborted)return;
       if(err instanceof ApiError&&err.status===401){route("/login");return}
-      if(revision&&err instanceof ApiError&&err.status===404&&err.payload?.code==="revision_report_not_found"){setState({phase:"historical_report_missing",project:null,report:null,input:null,estimate:null,briefCheck:null,reportSchemaVersion:null,error:"",historical:true});return}
-      if(revision&&err instanceof ApiError&&err.status===404&&err.payload?.code==="project_revision_not_found"){setState({phase:"historical_revision_missing",project:null,report:null,input:null,estimate:null,briefCheck:null,reportSchemaVersion:null,error:"",historical:true});return}
-      setState({phase:"error",project:null,report:null,input:null,estimate:null,briefCheck:null,reportSchemaVersion:null,error:err?.message||"The report could not be opened.",historical:Boolean(revision)});
+      if(revision&&err instanceof ApiError&&err.status===404&&err.payload?.code==="revision_report_not_found"){setState({phase:"historical_report_missing",project:null,report:null,input:null,estimate:null,briefCheck:null,projectRevision:null,reportSchemaVersion:null,error:"",historical:true});return}
+      if(revision&&err instanceof ApiError&&err.status===404&&err.payload?.code==="project_revision_not_found"){setState({phase:"historical_revision_missing",project:null,report:null,input:null,estimate:null,briefCheck:null,projectRevision:null,reportSchemaVersion:null,error:"",historical:true});return}
+      setState({phase:"error",project:null,report:null,input:null,estimate:null,briefCheck:null,projectRevision:null,reportSchemaVersion:null,error:err?.message||"The report could not be opened.",historical:Boolean(revision)});
     }
   }
 
@@ -1828,7 +1962,7 @@ function ReportPage({ id, revision=null }) {
   async function generateReport() {
     if(state.project?.status==="archived"||revision)return;
     setGenerating(true);setState(current=>({...current,error:""}));
-    try{const result=await api(`/api/projects/${encodeURIComponent(id)}/report`,{method:"POST",body:{}});setState(current=>({...current,phase:"ready",report:homeObject(result.report),input:current.project.input,estimate:current.project.estimate,briefCheck:current.project.briefCheck||null,reportSchemaVersion:Number(result.report?.version||1),error:""}));}
+    try{const result=await api(`/api/projects/${encodeURIComponent(id)}/report`,{method:"POST",body:{}});const envelope=normalizeReportEnvelope(result,id);setState(current=>({...current,phase:"ready",project:envelope.project,report:envelope.report,input:homeObject(envelope.snapshot.input),estimate:homeObject(envelope.snapshot.estimate),briefCheck:envelope.snapshot.briefCheck||null,projectRevision:envelope.projectRevision,reportSchemaVersion:envelope.reportSchemaVersion,error:""}));}
     catch(err){if(err instanceof ApiError&&err.status===401)route("/login");else setState(current=>({...current,error:err?.message||"The current report could not be generated."}));}
     finally{setGenerating(false)}
   }
@@ -1848,29 +1982,32 @@ function ReportPage({ id, revision=null }) {
   const report=state.report||{};
   const historical=state.historical;
   const archived=project.status==="archived";
-  const check=briefCheckRecord(state.briefCheck||report.briefCheck||project.briefCheck);
   const reportSchemaVersion=Number(state.reportSchemaVersion||report.version||1);
+  const legacyArtifact=historical&&reportSchemaVersion<2;
+  const check=legacyArtifact?null:briefCheckRecord(state.briefCheck||report.briefCheck||project.briefCheck);
+  const projectRevision=Number(state.projectRevision);
   const savedReportTitle=String(report.title||"").replace(/\s+[—-]\s+(?:feasibility|planning) report$/iu,"").trim();
   const reportTitle=historical?savedReportTitle||"Historical project":project.name||savedReportTitle||"My family home";
-  const firstRisk=report.risks?.[0]||"Local setbacks, access and site conditions require professional validation.";
-  const costCategories=report.costPlan?.categories||[["Civil and structure",38],["Finishes",26],["Electrical and plumbing",14],["Doors and windows",9],["Approvals and setup",5],["Contingency",8]].map(([name,percent])=>({name,percent,amountInr:Math.round(((estimate.lowInr+estimate.highInr)/2||4000000)*percent/100)}));
+  const firstRisk=legacyArtifact?null:report.risks?.[0]||"Local setbacks, access and site conditions require professional validation.";
+  const costCategories=legacyArtifact?(Array.isArray(report.costPlan?.categories)?report.costPlan.categories:[]):report.costPlan?.categories||[["Civil and structure",38],["Finishes",26],["Electrical and plumbing",14],["Doors and windows",9],["Approvals and setup",5],["Contingency",8]].map(([name,percent])=>({name,percent,amountInr:Math.round(((estimate.lowInr+estimate.highInr)/2||4000000)*percent/100)}));
+  const legacyFacts=[report.summary?.city,report.summary?.plotSqft?`${Number(report.summary.plotSqft).toLocaleString("en-IN")} sq ft plot`:null,report.summary?.floorCount?`${report.summary.floorCount} floor${Number(report.summary.floorCount)===1?"":"s"}`:null].filter(Boolean);
   return <main className={`report-page ${archived?"report-page--archived":""} ${historical?"report-page--historical":""}`}><header><button onClick={()=>route(historical?`/projects/${id}/brief`:`/projects/${id}`)}><ArrowLeft/> {historical?"Brief history":"Project home"}</button><Brand/><button onClick={()=>window.print()}><DownloadSimple/> Download / print</button></header><div className="report-document">
     {uploadWarning&&!historical&&<div className="report-upload-warning" role="alert"><WarningCircle/><span>{uploadWarning}</span><button onClick={()=>{sessionStorage.removeItem(`grihagrid.uploadWarning.${id}`);setUploadWarning("")}}>Dismiss</button></div>}
     {historical&&<section className="report-archived-notice report-historical-notice" role="status"><LockKey/><div><strong>Immutable revision evidence · Revision {revision}</strong><p>{reportSchemaVersion<2?`Legacy saved report · schema v${reportSchemaVersion}. `:`Saved report schema v${reportSchemaVersion}. `}This is the artifact actually saved with this revision. It is read only, never regenerated, and does not represent the current project unless the history identifies it as current.</p></div></section>}
     {!historical&&archived&&<section className="report-archived-notice" role="status"><LockKey/><div><strong>Archived report · read only</strong><p>This saved report remains readable. AI generation, comparison changes, checkout, link creation, copying and uploads are unavailable. Existing file records remain listed below; opening or permanently deleting them requires private storage to be available, and the file section shows its current state.</p></div></section>}
-    <section className="report-cover"><span className="kicker">GrihaGrid decision book · {historical?`revision ${revision} · schema v${reportSchemaVersion}`:`report v${reportSchemaVersion}`}</span><h1>{reportTitle}</h1><p>{input.width} × {input.length} ft · {input.facing||"Facing not stated"}{input.facing?"-facing":""} · {input.city||"City not stated"}</p><div><span>{historical?"Immutable historical evidence":archived?"Archived concept":"Concept stage"}</span><span>{formatDate(report.generatedAt||project.createdAt)}</span></div></section>
-    <section className="report-hero"><img loading="lazy" width="1536" height="1024" src="/assets/grihagrid-hero.jpg" alt="Warm modern home direction"/><div><span>Exterior direction</span><strong>{input.style||"Not stated"}</strong></div></section>
-    <section className="report-facts"><div><span>Brief Check</span><strong>{check.label}</strong><small>Evidence status, not professional approval</small></div><div><span>Likely built-up</span><strong>{Number(estimate.builtUpSqft||report.summary?.targetBuiltUpSqft||0).toLocaleString("en-IN")} sq ft</strong><small>{input.floors||"Floor count not stated"} concept</small></div><div><span>Planning range</span><strong>{formatLakh(estimate.lowInr||report.costPlan?.lowInr)}–{formatLakh(estimate.highInr||report.costPlan?.highInr)}</strong><small>{input.quality||"Unstated"} finish</small></div></section>
-    <section className="report-copy"><div><span className="kicker">Brief Check reading</span><h2>{check.headline}</h2></div><div><p>{check.summary}</p><p>{firstRisk}</p><p>{report.nextActions?.slice(0,2).join(" ")||"Commission a measured survey and validate the brief with every decision-maker before detailed design."}</p></div></section>
-    <section className="report-budget"><h2>Indicative cost allocation</h2>{costCategories.map(category=><div key={category.name}><span>{category.name}</span><i><b style={{width:`${category.percent}%`}}/></i><strong>{formatLakh(category.amountInr)}</strong></div>)}</section>
+    <section className="report-cover"><span className="kicker">GrihaGrid decision book · {historical?`revision ${revision} · schema v${reportSchemaVersion}`:`report v${reportSchemaVersion}`}</span><h1>{reportTitle}</h1><p>{legacyArtifact?(legacyFacts.join(" · ")||"Legacy saved report"):<>{input.width} × {input.length} ft · {input.facing||"Facing not stated"}{input.facing?"-facing":""} · {input.city||"City not stated"}</>}</p><div><span>{historical?"Immutable historical evidence":archived?"Archived concept":"Concept stage"}</span><span>{formatDate(report.generatedAt)}</span></div></section>
+    {!legacyArtifact&&<section className="report-hero"><img loading="lazy" width="1536" height="1024" src="/assets/grihagrid-hero.jpg" alt="Warm modern home direction"/><div><span>Exterior direction</span><strong>{input.style||"Not stated"}</strong></div></section>}
+    {legacyArtifact?<>{(report.summary?.targetBuiltUpSqft||report.costPlan?.lowInr||report.costPlan?.highInr)&&<section className="report-facts">{report.summary?.targetBuiltUpSqft&&<div><span>Saved built-up</span><strong>{Number(report.summary.targetBuiltUpSqft).toLocaleString("en-IN")} sq ft</strong></div>}{report.costPlan?.lowInr&&report.costPlan?.highInr&&<div><span>Saved planning range</span><strong>{formatLakh(report.costPlan.lowInr)}–{formatLakh(report.costPlan.highInr)}</strong></div>}{report.summary?.quality&&<div><span>Saved finish</span><strong>{report.summary.quality}</strong></div>}</section>}<section className="report-copy"><div><span className="kicker">Saved legacy reading</span><h2>{report.summary?.verdict||"Legacy report"}</h2></div><div>{Array.isArray(report.risks)&&report.risks.map((risk,index)=><p key={`legacy-risk-${index}`}>{risk}</p>)}{Array.isArray(report.nextActions)&&report.nextActions.length>0&&<p>{report.nextActions.join(" ")}</p>}</div></section></>:<><section className="report-facts"><div><span>Brief Check</span><strong>{check.label}</strong><small>Evidence status, not professional approval</small></div><div><span>Likely built-up</span><strong>{Number(estimate.builtUpSqft||report.summary?.targetBuiltUpSqft||0).toLocaleString("en-IN")} sq ft</strong><small>{input.floors||"Floor count not stated"} concept</small></div><div><span>Planning range</span><strong>{formatLakh(estimate.lowInr||report.costPlan?.lowInr)}–{formatLakh(estimate.highInr||report.costPlan?.highInr)}</strong><small>{input.quality||"Unstated"} finish</small></div></section><section className="report-copy"><div><span className="kicker">Brief Check reading</span><h2>{check.headline}</h2></div><div><p>{check.summary}</p><p>{firstRisk}</p><p>{report.nextActions?.slice(0,2).join(" ")||"Commission a measured survey and validate the brief with every decision-maker before detailed design."}</p></div></section></>}
+    {costCategories.length>0&&<section className="report-budget"><h2>Indicative cost allocation</h2>{costCategories.map(category=><div key={category.name}><span>{category.name}</span><i><b style={{width:`${category.percent}%`}}/></i><strong>{formatLakh(category.amountInr)}</strong></div>)}</section>}
     <section className="report-boundary"><ShieldCheck/><p><strong>Use this report to explore—not as professional site validation or construction instruction.</strong> A licensed local architect and structural engineer must validate measurements, access, site conditions, bylaws, drawings and specifications.</p></section>
     {!historical&&<><section className={`report-compare-bridge ${archived?"report-compare-bridge--archived":""}`}><div><span className="kicker">Decision Compare · two alternatives</span><h2>{archived?"Open the saved comparison record.":"What changes if the brief changes?"}</h2><p>{archived?"If a versioned comparison exists, it opens as read-only evidence. No browser draft will be treated as a saved project record.":"Hold the plot constant. Compare exactly two ways to trade area, programme and planning cost—then record one direction for the family and architect."}</p></div><div><ArrowsLeftRight/><button className={archived?"outline-button":"copper-button"} onClick={()=>route(`/projects/${id}/compare`)}>{archived?"Open comparison record":"Compare two options"} <ArrowRight/></button>{!archived&&<button className="underlined-action" onClick={()=>route("/compare/sample")}>See a sample first</button>}</div></section><AiPlanningBrief projectId={id} readonly={archived}/>{!archived&&<PurchasePanel projectId={id}/>}<ProjectFiles projectId={id} readonly={archived}/></>}
+    {Number.isInteger(projectRevision)&&projectRevision>0&&reportSchemaVersion===2&&<ReportFeedback key={`${id}:${projectRevision}:${reportSchemaVersion}`} projectId={id} projectRevision={projectRevision} reportSchemaVersion={reportSchemaVersion} readonly={archived}/>}
   </div></main>;
 }
 
 function LegalPage({ type }) {
   const title={privacy:'Privacy policy',terms:'Terms of use',refund:'Refund & cancellation'}[type];
-  return <main className="legal-page"><span className="kicker">Legal · Plain language</span><h1>{title}</h1><p className="legal-date">Effective 14 August 2026</p><section><h2>The short version</h2><p>GrihaGrid is a concept-stage planning service. We collect the minimum information needed to operate your account, save projects, generate reports and support purchases. Project information is private by default.</p><h2>Your files and account</h2><p>Account sessions use secure, HTTP-only cookies. Private uploads are optional and may not be enabled in every release; the product checks availability before accepting a file. When enabled, uploaded site material is account-scoped, served only through authenticated requests, and can be deleted by the project owner. The Brief Check and concept-planning range remain available without uploads.</p>{type==='privacy'&&<><h2>Gemini-assisted briefs</h2><p>AI briefs are for users aged 18 or older and require consent before generation. We send sanitized planning facts—not account details, precise addresses or uploaded files—to Google Gemini. On Google’s Free tier, inputs and outputs may be reviewed or used to improve its products. Gemini output is advisory and is saved with your project.</p></>}{type!=='refund'&&<><h2>Family Alignment</h2><p>A project owner may create a seven-day bearer link showing two redacted options. Anyone holding that link can access the review until it expires or is revoked, so owners should share it carefully. Reviewers provide only a role category, preference, confidence and one to three structured reasons; GrihaGrid does not collect their name, contact details or free-text comments.</p><p>The owner sees aggregate response counts and reasons, not reviewer profiles or contact identity. A random response receipt and the reviewer’s own structured choices are cached locally in that browser so the response can be amended while the room remains open. GrihaGrid sends neither value to analytics. Clearing this site’s browser data removes the local copy and update capability. Family responses are advisory and never constitute professional approval.</p><p>Expired or revoked rooms and their structured responses may be retained for up to 90 days for bounded support, abuse review and audit, then the room and its responses are deleted together. An unpaid project deletion removes its Family Alignment rooms and responses through the same project deletion workflow.</p></>}<h2>Professional boundary</h2><p>Generated concepts, estimates and compliance cues are indicative. They do not replace licensed architectural, structural, geotechnical, legal, tax or municipal advice.</p><h2>Payments and refunds</h2><p>The free Brief Check requires no payment. Digital reports may be cancelled before generation begins. Expert reviews may be cancelled before a professional accepts the assignment. Final policy is subject to applicable Indian consumer law.</p><h2>Contact</h2><p>Email <a href="mailto:hello@grihagrid.in">hello@grihagrid.in</a>. These policies must receive final counsel review before live payment activation.</p></section></main>;
+  return <main className="legal-page"><span className="kicker">Legal · Plain language</span><h1>{title}</h1><p className="legal-date">Effective 15 August 2026</p><section><h2>The short version</h2><p>GrihaGrid is a concept-stage planning service. We collect the minimum information needed to operate your account, save projects, generate reports and support purchases. Project information is private by default.</p><h2>Your files and account</h2><p>Account sessions use secure, HTTP-only cookies. Private uploads are optional and may not be enabled in every release; the product checks availability before accepting a file. When enabled, uploaded site material is account-scoped, served only through authenticated requests, and can be deleted by the project owner. The Brief Check and concept-planning range remain available without uploads.</p>{type==='privacy'&&<><h2>Gemini-assisted briefs</h2><p>AI briefs are for users aged 18 or older and require consent before generation. We send sanitized planning facts—not account details, precise addresses or uploaded files—to Google Gemini. On Google’s Free tier, inputs and outputs may be reviewed or used to improve its products. Gemini output is advisory and is saved with your project.</p><h2>Report feedback</h2><p>If you choose to rate a saved report, we store one outcome and one to three fixed section labels—never free text—against your account-owned project, exact project revision and report schema version. We use this to understand which planning evidence is useful, unclear or needs checking; it does not alter the report or request professional review.</p><p>Feedback remains with the private project, including while it is archived read-only, until the project is deleted. Project deletion removes the linked feedback. Product metrics expose only aggregate outcome and section counts, without account, project, revision or report identity.</p></>}{type!=='refund'&&<><h2>Family Alignment</h2><p>A project owner may create a seven-day bearer link showing two redacted options. Anyone holding that link can access the review until it expires or is revoked, so owners should share it carefully. Reviewers provide only a role category, preference, confidence and one to three structured reasons; GrihaGrid does not collect their name, contact details or free-text comments.</p><p>The owner sees aggregate response counts and reasons, not reviewer profiles or contact identity. A random response receipt and the reviewer’s own structured choices are cached locally in that browser so the response can be amended while the room remains open. GrihaGrid sends neither value to analytics. Clearing this site’s browser data removes the local copy and update capability. Family responses are advisory and never constitute professional approval.</p><p>Expired or revoked rooms and their structured responses may be retained for up to 90 days for bounded support, abuse review and audit, then the room and its responses are deleted together. An unpaid project deletion removes its Family Alignment rooms and responses through the same project deletion workflow.</p></>}<h2>Professional boundary</h2><p>Generated concepts, estimates and compliance cues are indicative. They do not replace licensed architectural, structural, geotechnical, legal, tax or municipal advice.</p><h2>Payments and refunds</h2><p>The free Brief Check requires no payment. Digital reports may be cancelled before generation begins. Expert reviews may be cancelled before a professional accepts the assignment. Final policy is subject to applicable Indian consumer law.</p><h2>Contact</h2><p>Email <a href="mailto:hello@grihagrid.in">hello@grihagrid.in</a>. These policies must receive final counsel review before live payment activation.</p></section></main>;
 }
 
 function NotFoundPage() { return <main className="error-page"><Compass/><span className="kicker">404 · Outside the plot</span><h1>This page is not in the plan.</h1><p>The address may have changed, or the page may never have existed.</p><button className="copper-button" onClick={()=>route('/')}>Return home <ArrowRight/></button></main>; }

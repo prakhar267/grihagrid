@@ -373,26 +373,34 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           set -euo pipefail
+          umask 077
           wrangler d1 migrations list DB --remote --env staging \
             | tee release-evidence/staging/pre-migration-list.txt
           wrangler d1 execute DB --remote --env staging --json --command \
-            "SELECT 'users' AS entity,COUNT(*) AS row_count FROM users UNION ALL SELECT 'projects',COUNT(*) FROM projects UNION ALL SELECT 'orders',COUNT(*) FROM orders UNION ALL SELECT 'payment_webhook_events',COUNT(*) FROM payment_webhook_events;" \
+            "SELECT 'users' AS entity,COUNT(*) AS row_count FROM users UNION ALL SELECT 'projects',COUNT(*) FROM projects UNION ALL SELECT 'reports',COUNT(*) FROM reports UNION ALL SELECT 'orders',COUNT(*) FROM orders UNION ALL SELECT 'payment_webhook_events',COUNT(*) FROM payment_webhook_events;" \
             > "$RUNNER_TEMP/staging-pre-migration-counts.json"
-          node --input-type=module - "$RUNNER_TEMP/staging-pre-migration-counts.json" <<'NODE'
-          import { readFileSync, writeFileSync } from "node:fs";
-          const batches = JSON.parse(readFileSync(process.argv[2], "utf8"));
-          if (!batches.every((batch) => batch.success === true)) process.exit(1);
-          const rows = batches.flatMap((batch) => batch.results || []);
-          const expected = ["orders", "payment_webhook_events", "projects", "users"];
-          const counts = Object.fromEntries(rows.map((row) => [String(row.entity), Number(row.row_count)]));
-          if (rows.length !== expected.length
-            || !expected.every((entity) => Number.isSafeInteger(counts[entity]) && counts[entity] >= 0)) process.exit(1);
-          writeFileSync("release-evidence/staging/pre-migration-counts.json", `${JSON.stringify({ counts }, null, 2)}\n`);
-          NODE
+          wrangler d1 execute DB --remote --env staging --json --command \
+            "SELECT (SELECT COUNT(*) FROM projects WHERE NOT json_valid(input_json) OR json_type(input_json)!='object') AS invalid_input_rows,(SELECT COUNT(DISTINCT p.id) FROM projects p,json_each(p.input_json) field WHERE field.key NOT IN ('width','length','city','facing','floors','bedrooms','bathrooms','parking','style','quality','roadWidthFt','plotShape','accessibility','futureUse','budgetLakh')) AS unknown_input_rows,(SELECT COUNT(*) FROM projects p,json_each(p.input_json) field WHERE field.key='soilReport') AS soil_report_keys,(SELECT COUNT(*) FROM project_revision_reports rr WHERE rr.report_schema_version=2 AND (NOT json_valid(rr.content_json) OR json_type(rr.content_json,'$.risks')!='array' OR NOT EXISTS (SELECT 1 FROM json_each(rr.content_json,'$.risks') risk WHERE risk.type='text' AND risk.value='Foundation assumptions must be validated through a geotechnical investigation.'))) AS unsafe_revision_reports,(SELECT COUNT(*) FROM reports report WHERE report.version=2 AND (NOT json_valid(report.content_json) OR json_type(report.content_json,'$.risks')!='array' OR NOT EXISTS (SELECT 1 FROM json_each(report.content_json,'$.risks') risk WHERE risk.type='text' AND risk.value='Foundation assumptions must be validated through a geotechnical investigation.'))) AS unsafe_current_reports;" \
+            > "$RUNNER_TEMP/staging-pre-migration-audit.json"
+          wrangler d1 execute DB --remote --env staging --json --command \
+            "SELECT * FROM projects ORDER BY id;" > "$RUNNER_TEMP/staging-pre-migration-projects.json"
+          wrangler d1 execute DB --remote --env staging --json --command \
+            "SELECT * FROM reports ORDER BY id;" > "$RUNNER_TEMP/staging-pre-migration-reports.json"
+          node scripts/release-db-evidence.mjs pre staging \
+            "$RUNNER_TEMP/staging-pre-migration-counts.json" \
+            "$RUNNER_TEMP/staging-pre-migration-audit.json" \
+            "$RUNNER_TEMP/staging-pre-migration-projects.json" \
+            "$RUNNER_TEMP/staging-pre-migration-reports.json" \
+            release-evidence/staging/pre-migration-proof.json
           if grep -Fq "No migrations to apply!" release-evidence/staging/pre-migration-list.txt; then
             echo "pending=false" >> "$GITHUB_OUTPUT"
           else
             echo "pending=true" >> "$GITHUB_OUTPUT"
+          fi
+          if grep -Fq "0013_report_feedback_and_intake_hardening.sql" release-evidence/staging/pre-migration-list.txt; then
+            echo "feedback_pending=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "feedback_pending=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Create protected staging export and recovery point
@@ -479,6 +487,7 @@ jobs:
           MIGRATIONS_PENDING: ${{ steps.migrations.outputs.pending }}
         run: |
           set -euo pipefail
+          umask 077
           if [ "${{ steps.migrations.outputs.pending }}" = "true" ]; then
             wrangler d1 migrations apply DB --remote --env staging
           fi
@@ -491,44 +500,66 @@ jobs:
             "SELECT type,name FROM sqlite_schema WHERE type IN ('table','index','trigger') AND name NOT LIKE 'sqlite_%' ORDER BY type,name;" \
             > release-evidence/staging/schema-objects.json
           wrangler d1 execute DB --remote --env staging --json --command \
-            "SELECT 'users' AS table_name,name FROM pragma_table_info('users') UNION ALL SELECT 'projects',name FROM pragma_table_info('projects') UNION ALL SELECT 'orders',name FROM pragma_table_info('orders') UNION ALL SELECT 'project_revisions',name FROM pragma_table_info('project_revisions') ORDER BY table_name,name;" \
+            "SELECT 'users' AS table_name,name FROM pragma_table_info('users') UNION ALL SELECT 'projects',name FROM pragma_table_info('projects') UNION ALL SELECT 'orders',name FROM pragma_table_info('orders') UNION ALL SELECT 'project_revisions',name FROM pragma_table_info('project_revisions') UNION ALL SELECT 'report_feedback',name FROM pragma_table_info('report_feedback') ORDER BY table_name,name;" \
             > "$RUNNER_TEMP/staging-schema-columns.json"
           wrangler d1 execute DB --remote --env staging --json --command \
-            "SELECT 'users' AS entity,COUNT(*) AS row_count FROM users UNION ALL SELECT 'projects',COUNT(*) FROM projects UNION ALL SELECT 'orders',COUNT(*) FROM orders UNION ALL SELECT 'payment_webhook_events',COUNT(*) FROM payment_webhook_events;" \
+            "SELECT 'users' AS entity,COUNT(*) AS row_count FROM users UNION ALL SELECT 'projects',COUNT(*) FROM projects UNION ALL SELECT 'reports',COUNT(*) FROM reports UNION ALL SELECT 'orders',COUNT(*) FROM orders UNION ALL SELECT 'payment_webhook_events',COUNT(*) FROM payment_webhook_events;" \
             > "$RUNNER_TEMP/staging-post-migration-counts.json"
-          node --input-type=module - release-evidence/staging/foreign-key-check.json release-evidence/staging/schema-objects.json "$RUNNER_TEMP/staging-schema-columns.json" release-evidence/staging/pre-migration-counts.json "$RUNNER_TEMP/staging-post-migration-counts.json" <<'NODE'
-          import { readFileSync, writeFileSync } from "node:fs";
-          const [foreignKeysFile, schemaFile, columnsFile, preCountsFile, postCountsFile] = process.argv.slice(2);
-          const rows = (file) => {
-            const batches = JSON.parse(readFileSync(file, "utf8"));
-            if (!batches.every((result) => result.success === true)) process.exit(1);
-            return batches.flatMap((result) => result.results || []);
-          };
-          const foreignKeys = JSON.parse(readFileSync(foreignKeysFile, "utf8"));
-          if (!foreignKeys.every((result) => result.success === true && result.results?.length === 0)) process.exit(1);
-          const names = new Set(rows(schemaFile).map((entry) => `${entry.type}:${entry.name}`));
-          for (const required of [
-            "table:users", "table:projects", "table:orders", "table:project_revisions",
-            "index:idx_project_revisions_owner_created", "trigger:project_revisions_immutable_update",
-            "trigger:archived_project_revision_insert_guard", "trigger:purchased_report_snapshots_immutable_update",
-          ]) if (!names.has(required)) process.exit(1);
-          const columns = new Set(rows(columnsFile).map((entry) => `${entry.table_name}:${entry.name}`));
-          const requiredColumns = [
-            "users:id", "users:email", "users:password_hash", "users:password_salt", "users:password_iterations", "users:password_algorithm",
-            "projects:id", "projects:user_id", "projects:status", "projects:input_json", "projects:input_revision", "projects:input_hash", "projects:brief_check_json",
-            "orders:id", "orders:project_id", "orders:plan", "orders:status", "orders:product_code", "orders:request_hash",
-            "project_revisions:project_id", "project_revisions:revision", "project_revisions:content_hash", "project_revisions:input_json", "project_revisions:brief_check_json",
-          ];
-          if (!requiredColumns.every((column) => columns.has(column))) process.exit(1);
-          const preCounts = JSON.parse(readFileSync(preCountsFile, "utf8")).counts;
-          const postRows = rows(postCountsFile);
-          const postCounts = Object.fromEntries(postRows.map((row) => [String(row.entity), Number(row.row_count)]));
-          if (Object.keys(preCounts).some((entity) => !Number.isSafeInteger(postCounts[entity]) || postCounts[entity] < 0)) process.exit(1);
-          if (process.env.MIGRATIONS_PENDING === "true"
-            && Object.keys(preCounts).some((entity) => postCounts[entity] < preCounts[entity])) process.exit(1);
-          writeFileSync("release-evidence/staging/schema-columns.json", `${JSON.stringify({ requiredColumnsVerified: requiredColumns }, null, 2)}\n`);
-          writeFileSync("release-evidence/staging/post-migration-counts.json", `${JSON.stringify({ counts: postCounts, nondecreasingFromPre: process.env.MIGRATIONS_PENDING === "true" }, null, 2)}\n`);
-          NODE
+          wrangler d1 execute DB --remote --env staging --json --command \
+            "SELECT * FROM projects ORDER BY id;" > "$RUNNER_TEMP/staging-post-migration-projects.json"
+          wrangler d1 execute DB --remote --env staging --json --command \
+            "SELECT * FROM reports ORDER BY id;" > "$RUNNER_TEMP/staging-post-migration-reports.json"
+          wrangler d1 execute DB --remote --env staging --json --command \
+            "SELECT COUNT(*) AS row_count FROM report_feedback;" > "$RUNNER_TEMP/staging-post-migration-feedback-count.json"
+          FEEDBACK_MIGRATION_PENDING="${{ steps.migrations.outputs.feedback_pending }}" \
+            node scripts/release-db-evidence.mjs post staging \
+              release-evidence/staging/pre-migration-proof.json \
+              release-evidence/staging/foreign-key-check.json \
+              release-evidence/staging/schema-objects.json \
+              "$RUNNER_TEMP/staging-schema-columns.json" \
+              "$RUNNER_TEMP/staging-post-migration-counts.json" \
+              "$RUNNER_TEMP/staging-post-migration-projects.json" \
+              "$RUNNER_TEMP/staging-post-migration-reports.json" \
+              "$RUNNER_TEMP/staging-post-migration-feedback-count.json" \
+              release-evidence/staging/post-migration-proof.json
+
+      - name: Rehearse rollback Worker against migrated staging schema
+        id: rollback_compat
+        if: steps.migrations.outputs.pending == 'true'
+        env:
+          EXPECT_RELEASE_ID: ${{ steps.previous.outputs.previous_version }}
+          LEGACY_WORKER_COMPAT: "true"
+          GRIHAGRID_CANARY_EMAIL: ${{ secrets.GRIHAGRID_CANARY_EMAIL }}
+          GRIHAGRID_CANARY_PASSWORD: ${{ secrets.GRIHAGRID_CANARY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "$GRIHAGRID_CANARY_EMAIL"
+          test -n "$GRIHAGRID_CANARY_PASSWORD"
+          sha256sum scripts/authenticated-smoke.mjs \
+            > release-evidence/staging/rollback-smoke-source.sha256
+          node scripts/authenticated-smoke.mjs "$ORIGIN" \
+            | tee release-evidence/staging/rollback-compatibility-smoke.json
+
+      - name: Prove staging rollback rehearsal left zero database residue
+        id: rollback_residue
+        if: always() && steps.rollback_compat.outcome != 'skipped'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          umask 077
+          node scripts/release-db-evidence.mjs residue-sql staging \
+            release-evidence/staging/rollback-compatibility-smoke.json \
+            "$RUNNER_TEMP/staging-rollback-residue.sql"
+          wrangler d1 execute DB --remote --env staging --json \
+            --file "$RUNNER_TEMP/staging-rollback-residue.sql" \
+            > "$RUNNER_TEMP/staging-rollback-residue.json"
+          node scripts/release-db-evidence.mjs residue staging \
+            release-evidence/staging/rollback-compatibility-smoke.json \
+            "$RUNNER_TEMP/staging-rollback-residue.json" \
+            release-evidence/staging/rollback-residue-proof.json
 
       - name: Deploy authorized SHA to staging
         id: deploy
@@ -583,10 +614,12 @@ jobs:
           NODE
           echo "version_id=$version_id" >> "$GITHUB_OUTPUT"
 
-      - name: Roll back an unverified non-migration staging activation
+      - name: Roll back an unverified compatible staging activation
         id: rollback_unverified
         if: >-
-          always() && steps.migrations.outputs.pending == 'false' &&
+          always() &&
+          (steps.migrations.outputs.pending == 'false' ||
+           (steps.rollback_compat.outcome == 'success' && steps.rollback_residue.outcome == 'success')) &&
           steps.version.outcome == 'failure'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -626,12 +659,37 @@ jobs:
           test -n "$GRIHAGRID_CANARY_PASSWORD"
           node scripts/authenticated-smoke.mjs "$ORIGIN" | tee release-evidence/staging/authenticated-smoke.json
 
-      - name: Roll back a confirmed non-migration staging regression
+      - name: Prove staging canary left zero database residue
+        id: residue
+        if: always() && steps.canary.outcome != 'skipped'
+        continue-on-error: true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          umask 077
+          node scripts/release-db-evidence.mjs residue-sql staging \
+            release-evidence/staging/authenticated-smoke.json \
+            "$RUNNER_TEMP/staging-canary-residue.sql"
+          wrangler d1 execute DB --remote --env staging --json \
+            --file "$RUNNER_TEMP/staging-canary-residue.sql" \
+            > "$RUNNER_TEMP/staging-canary-residue.json"
+          node scripts/release-db-evidence.mjs residue staging \
+            release-evidence/staging/authenticated-smoke.json \
+            "$RUNNER_TEMP/staging-canary-residue.json" \
+            release-evidence/staging/post-canary-residue-proof.json
+
+      - name: Roll back a confirmed compatible staging regression
         id: rollback_regression
         if: >-
-          always() && steps.migrations.outputs.pending == 'false' &&
+          always() &&
+          (steps.migrations.outputs.pending == 'false' ||
+           (steps.rollback_compat.outcome == 'success' && steps.rollback_residue.outcome == 'success')) &&
           steps.version.outcome == 'success' &&
-          (steps.propagation.outcome == 'failure' || steps.canary.outcome == 'failure')
+          (steps.propagation.outcome == 'failure' ||
+           steps.canary.outcome == 'failure' ||
+           steps.residue.outcome == 'failure')
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -650,12 +708,29 @@ jobs:
       - name: Fail closed after a staging release regression
         if: >-
           always() &&
-          (steps.propagation.outcome == 'failure' || steps.canary.outcome == 'failure')
+          (steps.propagation.outcome == 'failure' ||
+           steps.canary.outcome == 'failure' ||
+           steps.residue.outcome == 'failure')
         run: exit 1
 
       - name: Remove staging backup material from the runner
         if: always()
-        run: rm -rf -- "${RUNNER_TEMP:?}/grihagrid-staging-pre-migration"
+        run: |
+          set -euo pipefail
+          rm -rf -- "${RUNNER_TEMP:?}/grihagrid-staging-pre-migration"
+          rm -f -- \
+            "$RUNNER_TEMP/staging-pre-migration-counts.json" \
+            "$RUNNER_TEMP/staging-pre-migration-audit.json" \
+            "$RUNNER_TEMP/staging-pre-migration-projects.json" \
+            "$RUNNER_TEMP/staging-pre-migration-reports.json" \
+            "$RUNNER_TEMP/staging-post-migration-counts.json" \
+            "$RUNNER_TEMP/staging-post-migration-projects.json" \
+            "$RUNNER_TEMP/staging-post-migration-reports.json" \
+            "$RUNNER_TEMP/staging-post-migration-feedback-count.json" \
+            "$RUNNER_TEMP/staging-rollback-residue.sql" \
+            "$RUNNER_TEMP/staging-rollback-residue.json" \
+            "$RUNNER_TEMP/staging-canary-residue.sql" \
+            "$RUNNER_TEMP/staging-canary-residue.json"
 
       - name: Upload staging release evidence
         if: always()
@@ -802,26 +877,34 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           set -euo pipefail
+          umask 077
           wrangler d1 migrations list DB --remote --env="" \
             | tee release-evidence/production/pre-migration-list.txt
           wrangler d1 execute DB --remote --env="" --json --command \
-            "SELECT 'users' AS entity,COUNT(*) AS row_count FROM users UNION ALL SELECT 'projects',COUNT(*) FROM projects UNION ALL SELECT 'orders',COUNT(*) FROM orders UNION ALL SELECT 'payment_webhook_events',COUNT(*) FROM payment_webhook_events;" \
+            "SELECT 'users' AS entity,COUNT(*) AS row_count FROM users UNION ALL SELECT 'projects',COUNT(*) FROM projects UNION ALL SELECT 'reports',COUNT(*) FROM reports UNION ALL SELECT 'orders',COUNT(*) FROM orders UNION ALL SELECT 'payment_webhook_events',COUNT(*) FROM payment_webhook_events;" \
             > "$RUNNER_TEMP/production-pre-migration-counts.json"
-          node --input-type=module - "$RUNNER_TEMP/production-pre-migration-counts.json" <<'NODE'
-          import { readFileSync, writeFileSync } from "node:fs";
-          const batches = JSON.parse(readFileSync(process.argv[2], "utf8"));
-          if (!batches.every((batch) => batch.success === true)) process.exit(1);
-          const rows = batches.flatMap((batch) => batch.results || []);
-          const expected = ["orders", "payment_webhook_events", "projects", "users"];
-          const counts = Object.fromEntries(rows.map((row) => [String(row.entity), Number(row.row_count)]));
-          if (rows.length !== expected.length
-            || !expected.every((entity) => Number.isSafeInteger(counts[entity]) && counts[entity] >= 0)) process.exit(1);
-          writeFileSync("release-evidence/production/pre-migration-counts.json", `${JSON.stringify({ counts }, null, 2)}\n`);
-          NODE
+          wrangler d1 execute DB --remote --env="" --json --command \
+            "SELECT (SELECT COUNT(*) FROM projects WHERE NOT json_valid(input_json) OR json_type(input_json)!='object') AS invalid_input_rows,(SELECT COUNT(DISTINCT p.id) FROM projects p,json_each(p.input_json) field WHERE field.key NOT IN ('width','length','city','facing','floors','bedrooms','bathrooms','parking','style','quality','roadWidthFt','plotShape','accessibility','futureUse','budgetLakh')) AS unknown_input_rows,(SELECT COUNT(*) FROM projects p,json_each(p.input_json) field WHERE field.key='soilReport') AS soil_report_keys,(SELECT COUNT(*) FROM project_revision_reports rr WHERE rr.report_schema_version=2 AND (NOT json_valid(rr.content_json) OR json_type(rr.content_json,'$.risks')!='array' OR NOT EXISTS (SELECT 1 FROM json_each(rr.content_json,'$.risks') risk WHERE risk.type='text' AND risk.value='Foundation assumptions must be validated through a geotechnical investigation.'))) AS unsafe_revision_reports,(SELECT COUNT(*) FROM reports report WHERE report.version=2 AND (NOT json_valid(report.content_json) OR json_type(report.content_json,'$.risks')!='array' OR NOT EXISTS (SELECT 1 FROM json_each(report.content_json,'$.risks') risk WHERE risk.type='text' AND risk.value='Foundation assumptions must be validated through a geotechnical investigation.'))) AS unsafe_current_reports;" \
+            > "$RUNNER_TEMP/production-pre-migration-audit.json"
+          wrangler d1 execute DB --remote --env="" --json --command \
+            "SELECT * FROM projects ORDER BY id;" > "$RUNNER_TEMP/production-pre-migration-projects.json"
+          wrangler d1 execute DB --remote --env="" --json --command \
+            "SELECT * FROM reports ORDER BY id;" > "$RUNNER_TEMP/production-pre-migration-reports.json"
+          node scripts/release-db-evidence.mjs pre production \
+            "$RUNNER_TEMP/production-pre-migration-counts.json" \
+            "$RUNNER_TEMP/production-pre-migration-audit.json" \
+            "$RUNNER_TEMP/production-pre-migration-projects.json" \
+            "$RUNNER_TEMP/production-pre-migration-reports.json" \
+            release-evidence/production/pre-migration-proof.json
           if grep -Fq "No migrations to apply!" release-evidence/production/pre-migration-list.txt; then
             echo "pending=false" >> "$GITHUB_OUTPUT"
           else
             echo "pending=true" >> "$GITHUB_OUTPUT"
+          fi
+          if grep -Fq "0013_report_feedback_and_intake_hardening.sql" release-evidence/production/pre-migration-list.txt; then
+            echo "feedback_pending=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "feedback_pending=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Create protected production export and recovery point
@@ -908,6 +991,7 @@ jobs:
           MIGRATIONS_PENDING: ${{ steps.migrations.outputs.pending }}
         run: |
           set -euo pipefail
+          umask 077
           if [ "${{ steps.migrations.outputs.pending }}" = "true" ]; then
             wrangler d1 migrations apply DB --remote --env=""
           fi
@@ -920,44 +1004,66 @@ jobs:
             "SELECT type,name FROM sqlite_schema WHERE type IN ('table','index','trigger') AND name NOT LIKE 'sqlite_%' ORDER BY type,name;" \
             > release-evidence/production/schema-objects.json
           wrangler d1 execute DB --remote --env="" --json --command \
-            "SELECT 'users' AS table_name,name FROM pragma_table_info('users') UNION ALL SELECT 'projects',name FROM pragma_table_info('projects') UNION ALL SELECT 'orders',name FROM pragma_table_info('orders') UNION ALL SELECT 'project_revisions',name FROM pragma_table_info('project_revisions') ORDER BY table_name,name;" \
+            "SELECT 'users' AS table_name,name FROM pragma_table_info('users') UNION ALL SELECT 'projects',name FROM pragma_table_info('projects') UNION ALL SELECT 'orders',name FROM pragma_table_info('orders') UNION ALL SELECT 'project_revisions',name FROM pragma_table_info('project_revisions') UNION ALL SELECT 'report_feedback',name FROM pragma_table_info('report_feedback') ORDER BY table_name,name;" \
             > "$RUNNER_TEMP/production-schema-columns.json"
           wrangler d1 execute DB --remote --env="" --json --command \
-            "SELECT 'users' AS entity,COUNT(*) AS row_count FROM users UNION ALL SELECT 'projects',COUNT(*) FROM projects UNION ALL SELECT 'orders',COUNT(*) FROM orders UNION ALL SELECT 'payment_webhook_events',COUNT(*) FROM payment_webhook_events;" \
+            "SELECT 'users' AS entity,COUNT(*) AS row_count FROM users UNION ALL SELECT 'projects',COUNT(*) FROM projects UNION ALL SELECT 'reports',COUNT(*) FROM reports UNION ALL SELECT 'orders',COUNT(*) FROM orders UNION ALL SELECT 'payment_webhook_events',COUNT(*) FROM payment_webhook_events;" \
             > "$RUNNER_TEMP/production-post-migration-counts.json"
-          node --input-type=module - release-evidence/production/foreign-key-check.json release-evidence/production/schema-objects.json "$RUNNER_TEMP/production-schema-columns.json" release-evidence/production/pre-migration-counts.json "$RUNNER_TEMP/production-post-migration-counts.json" <<'NODE'
-          import { readFileSync, writeFileSync } from "node:fs";
-          const [foreignKeysFile, schemaFile, columnsFile, preCountsFile, postCountsFile] = process.argv.slice(2);
-          const rows = (file) => {
-            const batches = JSON.parse(readFileSync(file, "utf8"));
-            if (!batches.every((result) => result.success === true)) process.exit(1);
-            return batches.flatMap((result) => result.results || []);
-          };
-          const foreignKeys = JSON.parse(readFileSync(foreignKeysFile, "utf8"));
-          if (!foreignKeys.every((result) => result.success === true && result.results?.length === 0)) process.exit(1);
-          const names = new Set(rows(schemaFile).map((entry) => `${entry.type}:${entry.name}`));
-          for (const required of [
-            "table:users", "table:projects", "table:orders", "table:project_revisions",
-            "index:idx_project_revisions_owner_created", "trigger:project_revisions_immutable_update",
-            "trigger:archived_project_revision_insert_guard", "trigger:purchased_report_snapshots_immutable_update",
-          ]) if (!names.has(required)) process.exit(1);
-          const columns = new Set(rows(columnsFile).map((entry) => `${entry.table_name}:${entry.name}`));
-          const requiredColumns = [
-            "users:id", "users:email", "users:password_hash", "users:password_salt", "users:password_iterations", "users:password_algorithm",
-            "projects:id", "projects:user_id", "projects:status", "projects:input_json", "projects:input_revision", "projects:input_hash", "projects:brief_check_json",
-            "orders:id", "orders:project_id", "orders:plan", "orders:status", "orders:product_code", "orders:request_hash",
-            "project_revisions:project_id", "project_revisions:revision", "project_revisions:content_hash", "project_revisions:input_json", "project_revisions:brief_check_json",
-          ];
-          if (!requiredColumns.every((column) => columns.has(column))) process.exit(1);
-          const preCounts = JSON.parse(readFileSync(preCountsFile, "utf8")).counts;
-          const postRows = rows(postCountsFile);
-          const postCounts = Object.fromEntries(postRows.map((row) => [String(row.entity), Number(row.row_count)]));
-          if (Object.keys(preCounts).some((entity) => !Number.isSafeInteger(postCounts[entity]) || postCounts[entity] < 0)) process.exit(1);
-          if (process.env.MIGRATIONS_PENDING === "true"
-            && Object.keys(preCounts).some((entity) => postCounts[entity] < preCounts[entity])) process.exit(1);
-          writeFileSync("release-evidence/production/schema-columns.json", `${JSON.stringify({ requiredColumnsVerified: requiredColumns }, null, 2)}\n`);
-          writeFileSync("release-evidence/production/post-migration-counts.json", `${JSON.stringify({ counts: postCounts, nondecreasingFromPre: process.env.MIGRATIONS_PENDING === "true" }, null, 2)}\n`);
-          NODE
+          wrangler d1 execute DB --remote --env="" --json --command \
+            "SELECT * FROM projects ORDER BY id;" > "$RUNNER_TEMP/production-post-migration-projects.json"
+          wrangler d1 execute DB --remote --env="" --json --command \
+            "SELECT * FROM reports ORDER BY id;" > "$RUNNER_TEMP/production-post-migration-reports.json"
+          wrangler d1 execute DB --remote --env="" --json --command \
+            "SELECT COUNT(*) AS row_count FROM report_feedback;" > "$RUNNER_TEMP/production-post-migration-feedback-count.json"
+          FEEDBACK_MIGRATION_PENDING="${{ steps.migrations.outputs.feedback_pending }}" \
+            node scripts/release-db-evidence.mjs post production \
+              release-evidence/production/pre-migration-proof.json \
+              release-evidence/production/foreign-key-check.json \
+              release-evidence/production/schema-objects.json \
+              "$RUNNER_TEMP/production-schema-columns.json" \
+              "$RUNNER_TEMP/production-post-migration-counts.json" \
+              "$RUNNER_TEMP/production-post-migration-projects.json" \
+              "$RUNNER_TEMP/production-post-migration-reports.json" \
+              "$RUNNER_TEMP/production-post-migration-feedback-count.json" \
+              release-evidence/production/post-migration-proof.json
+
+      - name: Rehearse rollback Worker against migrated production schema
+        id: rollback_compat
+        if: steps.migrations.outputs.pending == 'true'
+        env:
+          EXPECT_RELEASE_ID: ${{ steps.previous.outputs.previous_version }}
+          LEGACY_WORKER_COMPAT: "true"
+          GRIHAGRID_CANARY_EMAIL: ${{ secrets.GRIHAGRID_CANARY_EMAIL }}
+          GRIHAGRID_CANARY_PASSWORD: ${{ secrets.GRIHAGRID_CANARY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+          test -n "$GRIHAGRID_CANARY_EMAIL"
+          test -n "$GRIHAGRID_CANARY_PASSWORD"
+          sha256sum scripts/authenticated-smoke.mjs \
+            > release-evidence/production/rollback-smoke-source.sha256
+          node scripts/authenticated-smoke.mjs "$ORIGIN" \
+            | tee release-evidence/production/rollback-compatibility-smoke.json
+
+      - name: Prove production rollback rehearsal left zero database residue
+        id: rollback_residue
+        if: always() && steps.rollback_compat.outcome != 'skipped'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          umask 077
+          node scripts/release-db-evidence.mjs residue-sql production \
+            release-evidence/production/rollback-compatibility-smoke.json \
+            "$RUNNER_TEMP/production-rollback-residue.sql"
+          wrangler d1 execute DB --remote --env="" --json \
+            --file "$RUNNER_TEMP/production-rollback-residue.sql" \
+            > "$RUNNER_TEMP/production-rollback-residue.json"
+          node scripts/release-db-evidence.mjs residue production \
+            release-evidence/production/rollback-compatibility-smoke.json \
+            "$RUNNER_TEMP/production-rollback-residue.json" \
+            release-evidence/production/rollback-residue-proof.json
 
       - name: Deploy authorized SHA to production
         id: deploy
@@ -1012,10 +1118,12 @@ jobs:
           NODE
           echo "version_id=$version_id" >> "$GITHUB_OUTPUT"
 
-      - name: Roll back an unverified non-migration production activation
+      - name: Roll back an unverified compatible production activation
         id: rollback_unverified
         if: >-
-          always() && steps.migrations.outputs.pending == 'false' &&
+          always() &&
+          (steps.migrations.outputs.pending == 'false' ||
+           (steps.rollback_compat.outcome == 'success' && steps.rollback_residue.outcome == 'success')) &&
           steps.version.outcome == 'failure'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -1055,9 +1163,30 @@ jobs:
           test -n "$GRIHAGRID_CANARY_PASSWORD"
           node scripts/authenticated-smoke.mjs "$ORIGIN" | tee release-evidence/production/authenticated-smoke.json
 
+      - name: Prove production canary left zero database residue
+        id: residue
+        if: always() && steps.canary.outcome != 'skipped'
+        continue-on-error: true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          umask 077
+          node scripts/release-db-evidence.mjs residue-sql production \
+            release-evidence/production/authenticated-smoke.json \
+            "$RUNNER_TEMP/production-canary-residue.sql"
+          wrangler d1 execute DB --remote --env="" --json \
+            --file "$RUNNER_TEMP/production-canary-residue.sql" \
+            > "$RUNNER_TEMP/production-canary-residue.json"
+          node scripts/release-db-evidence.mjs residue production \
+            release-evidence/production/authenticated-smoke.json \
+            "$RUNNER_TEMP/production-canary-residue.json" \
+            release-evidence/production/post-canary-residue-proof.json
+
       - name: Observe the exact production version for 30 minutes
         id: observe
-        if: steps.canary.outcome == 'success'
+        if: steps.residue.outcome == 'success'
         continue-on-error: true
         env:
           CF_DEPLOY_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -1199,13 +1328,16 @@ jobs:
           if (regression || infrastructureFailure) process.exit(1);
           NODE
 
-      - name: Roll back a confirmed non-migration production regression
+      - name: Roll back a confirmed compatible production regression
         id: rollback_regression
         if: >-
-          always() && steps.migrations.outputs.pending == 'false' &&
+          always() &&
+          (steps.migrations.outputs.pending == 'false' ||
+           (steps.rollback_compat.outcome == 'success' && steps.rollback_residue.outcome == 'success')) &&
           steps.version.outcome == 'success' &&
           (steps.propagation.outcome == 'failure' ||
            steps.canary.outcome == 'failure' ||
+           steps.residue.outcome == 'failure' ||
            steps.observe.outputs.public_regression == 'true' ||
            steps.observe.outputs.tail_regression == 'true' ||
            steps.observe.outputs.regression == 'true')
@@ -1229,12 +1361,28 @@ jobs:
           always() &&
           (steps.propagation.outcome == 'failure' ||
            steps.canary.outcome == 'failure' ||
+           steps.residue.outcome == 'failure' ||
            steps.observe.outcome == 'failure')
         run: exit 1
 
       - name: Remove production backup material from the runner
         if: always()
-        run: rm -rf -- "${RUNNER_TEMP:?}/grihagrid-production-pre-migration"
+        run: |
+          set -euo pipefail
+          rm -rf -- "${RUNNER_TEMP:?}/grihagrid-production-pre-migration"
+          rm -f -- \
+            "$RUNNER_TEMP/production-pre-migration-counts.json" \
+            "$RUNNER_TEMP/production-pre-migration-audit.json" \
+            "$RUNNER_TEMP/production-pre-migration-projects.json" \
+            "$RUNNER_TEMP/production-pre-migration-reports.json" \
+            "$RUNNER_TEMP/production-post-migration-counts.json" \
+            "$RUNNER_TEMP/production-post-migration-projects.json" \
+            "$RUNNER_TEMP/production-post-migration-reports.json" \
+            "$RUNNER_TEMP/production-post-migration-feedback-count.json" \
+            "$RUNNER_TEMP/production-rollback-residue.sql" \
+            "$RUNNER_TEMP/production-rollback-residue.json" \
+            "$RUNNER_TEMP/production-canary-residue.sql" \
+            "$RUNNER_TEMP/production-canary-residue.json"
 
       - name: Upload production release evidence
         if: always()
