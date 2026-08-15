@@ -11,6 +11,7 @@ import {
   clearPrivateSessionStorage,
   confirmLogout,
   isApplicationUnauthenticated,
+  isCurrentSessionRevalidationTarget,
   isLogoutBroadcast,
   isLogoutChannelMessage,
   privateRouteAfterUnauthenticated,
@@ -193,6 +194,14 @@ test("logout confirmation revalidates on resume and only exact app 401 proves ab
   assert.equal(isApplicationUnauthenticated(new TypeError("offline")), false);
 });
 
+test("resume results mutate navigation only for the exact captured target", () => {
+  assert.equal(isCurrentSessionRevalidationTarget("/", "/", true, { logoutConfirmed: true }), true);
+  assert.equal(isCurrentSessionRevalidationTarget("/", "/pricing", true, { logoutConfirmed: true }), false);
+  assert.equal(isCurrentSessionRevalidationTarget("/", "/", true, {}), false);
+  assert.equal(isCurrentSessionRevalidationTarget("/dashboard", "/dashboard", false, {}), true);
+  assert.equal(isCurrentSessionRevalidationTarget("/dashboard", "/orders", false, {}), false);
+});
+
 test("Dashboard and Orders share one accessible, retry-safe mobile logout control", () => {
   const root = fileURLToPath(new URL("..", import.meta.url));
   const source = readFileSync(`${root}/src/App.jsx`, "utf8");
@@ -204,6 +213,7 @@ test("Dashboard and Orders share one accessible, retry-safe mobile logout contro
   assert.match(source, /inFlight\.current/u);
   assert.match(source, /new window\.BroadcastChannel\(LOGOUT_CHANNEL_NAME\)/u);
   assert.match(source, /window\.addEventListener\('pageshow',revalidate\)/u);
+  assert.match(source, /setUser\(undefined\);\s*replaceRoute\(requestedLocation,\{\}\)/u);
   assert.match(source, /replaceRoute\("\/", \{ logoutConfirmed: true \}\)/u);
   assert.match(source, /user===null&&window\.history\.state\?\.logoutConfirmed===true/u);
   assert.doesNotMatch(source, /logged_out/u);

@@ -9,8 +9,8 @@ import {
 import { api, ApiError, copyText, formatDate, formatDateTime, formatLakh, idempotencyKey, trackEvent } from "./api.js";
 import {
   LOGOUT_CHANNEL_NAME, LOGOUT_FAILURE_MESSAGE, broadcastLogout, clearLocalLogoutState, confirmLogout,
-  isApplicationUnauthenticated, isLogoutBroadcast, isLogoutChannelMessage,
-  privateRouteAfterUnauthenticated, shouldRevalidateSession,
+  isApplicationUnauthenticated, isCurrentSessionRevalidationTarget, isLogoutBroadcast,
+  isLogoutChannelMessage, privateRouteAfterUnauthenticated, shouldRevalidateSession,
 } from "./logout.js";
 
 const cityFactors = { Pune: 1, Bengaluru: 1.08, Mumbai: 1.18, Delhi: 1.1, Hyderabad: .98, Chennai: 1.02, Jaipur: .88, Other: .95 };
@@ -1897,18 +1897,28 @@ export function App() {
     let checking=false;
     const revalidate=async()=>{
       const pathname=window.location.pathname;
+      const requestedLocation=`${pathname}${window.location.search}${window.location.hash}`;
       const privatePath=isPrivateAccountPath(pathname);
       const confirmationVisible=window.history.state?.logoutConfirmed===true;
       if(checking||!shouldRevalidateSession(privatePath,window.history.state))return;
       checking=true;const revision=authRevision.current;
-      try{const result=await api('/api/auth/me');if(authRevision.current===revision){authenticatedSession.current=Boolean(result.user);setUser(result.user||null);if(result.user&&confirmationVisible)replaceRoute(pathname,{})}}
+      const targetIsCurrent=()=>isCurrentSessionRevalidationTarget(
+        requestedLocation,
+        `${window.location.pathname}${window.location.search}${window.location.hash}`,
+        confirmationVisible,
+        window.history.state,
+      );
+      try{const result=await api('/api/auth/me');if(authRevision.current===revision){authenticatedSession.current=Boolean(result.user);setUser(result.user||null);if(result.user&&confirmationVisible&&targetIsCurrent())replaceRoute(requestedLocation,{})}}
       catch(error){
         if(authRevision.current!==revision)return;
         if(isApplicationUnauthenticated(error)){
           const wasAuthenticated=authenticatedSession.current;
           authenticatedSession.current=false;clearLocalLogoutState();setUser(null);
-          if(privatePath){const destination=privateRouteAfterUnauthenticated(wasAuthenticated);authRevision.current+=1;replaceRoute(destination.path,destination.state)}
-        }else if(confirmationVisible){replaceRoute(pathname,{})}
+          if(privatePath&&targetIsCurrent()){const destination=privateRouteAfterUnauthenticated(wasAuthenticated);authRevision.current+=1;replaceRoute(destination.path,destination.state)}
+        }else if(confirmationVisible&&targetIsCurrent()){
+          setUser(undefined);
+          replaceRoute(requestedLocation,{});
+        }
       }
       finally{checking=false}
     };

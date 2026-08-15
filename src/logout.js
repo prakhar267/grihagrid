@@ -92,3 +92,8 @@ export function privateRouteAfterUnauthenticated(wasAuthenticated) {
 export function shouldRevalidateSession(isPrivatePath, historyState) {
   return isPrivatePath === true || historyState?.logoutConfirmed === true;
 }
+
+export function isCurrentSessionRevalidationTarget(requestedLocation, currentLocation, expectedConfirmation, historyState) {
+  return requestedLocation === currentLocation
+    && (expectedConfirmation !== true || historyState?.logoutConfirmed === true);
+}
