@@ -36,6 +36,11 @@ const MAX_WEBHOOK_BYTES = 256 * 1024;
 const REPORT_VERSION = 2;
 const PROJECT_INPUT_SCHEMA_VERSION = 1;
 const ESTIMATE_RULE_VERSION = 1;
+const ESTIMATE_RULE_PUBLISHED_DATE = "2026-08-16";
+const ESTIMATE_FLOOR_FACTORS = Object.freeze({ G: 0.72, "G+1": 1.22, "G+2": 1.65 });
+const ESTIMATE_FINISH_RATES = Object.freeze({ Essential: 1750, Signature: 2200, Premium: 2850, Luxury: 3900 });
+const ESTIMATE_CITY_FACTORS = Object.freeze({ Pune: 1, Bengaluru: 1.08, Mumbai: 1.18, Delhi: 1.1, Hyderabad: 0.98, Chennai: 1.02, Jaipur: 0.88, Other: 0.95 });
+const ESTIMATE_PUBLIC_FIELDS = new Set(["width", "length", "floors", "quality", "city"]);
 const BRIEF_CHECK_VERSION = 1;
 const PURCHASE_SNAPSHOT_VERSION = 1;
 const DECISION_COMPARE_SCHEMA_VERSION = 1;
@@ -307,17 +312,14 @@ function requireFileStore(env) {
 function computeEstimate(input) {
   const width = Number(input.width);
   const length = Number(input.length);
-  const floorFactors = { G: 0.72, "G+1": 1.22, "G+2": 1.65 };
-  const rates = { Essential: 1750, Signature: 2200, Premium: 2850, Luxury: 3900 };
-  const cityFactors = { Pune: 1, Bengaluru: 1.08, Mumbai: 1.18, Delhi: 1.1, Hyderabad: 0.98, Chennai: 1.02, Jaipur: 0.88, Other: 0.95 };
   if (!Number.isFinite(width) || !Number.isFinite(length) || width < 10 || length < 10 || width > 500 || length > 500) {
     throw new HttpError(400, "plot dimensions must be between 10 and 500 feet", "invalid_dimensions");
   }
-  const floors = floorFactors[input.floors] ? input.floors : "G+1";
-  const quality = rates[input.quality] ? input.quality : "Signature";
-  const city = cityFactors[input.city] ? input.city : "Other";
-  const builtUpSqft = Math.round(width * length * floorFactors[floors]);
-  const midpoint = builtUpSqft * rates[quality] * cityFactors[city];
+  const floors = ESTIMATE_FLOOR_FACTORS[input.floors] ? input.floors : "G+1";
+  const quality = ESTIMATE_FINISH_RATES[input.quality] ? input.quality : "Signature";
+  const city = ESTIMATE_CITY_FACTORS[input.city] ? input.city : "Other";
+  const builtUpSqft = Math.round(width * length * ESTIMATE_FLOOR_FACTORS[floors]);
+  const midpoint = builtUpSqft * ESTIMATE_FINISH_RATES[quality] * ESTIMATE_CITY_FACTORS[city];
   return {
     plotSqft: width * length,
     builtUpSqft,
@@ -327,6 +329,65 @@ function computeEstimate(input) {
     quality,
     city,
     disclaimer: "Indicative concept-stage estimate; not a contractor quote.",
+  };
+}
+
+function publicEstimateInput(input) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new HttpError(400, "estimate request must be an object", "invalid_estimate_request");
+  }
+  if (Object.keys(input).some((field) => !ESTIMATE_PUBLIC_FIELDS.has(field))) {
+    throw new HttpError(400, "estimate request contains unsupported fields", "invalid_estimate_request");
+  }
+  for (const field of ["width", "length"]) {
+    if (typeof input[field] !== "number" || !Number.isFinite(input[field])) {
+      throw new HttpError(400, `${field} must be a finite number`, "invalid_estimate_request");
+    }
+  }
+  const floors = input.floors == null ? "G+1" : input.floors;
+  const quality = input.quality == null ? "Signature" : input.quality;
+  const city = input.city == null ? "Other" : input.city;
+  if (typeof floors !== "string" || !Object.hasOwn(ESTIMATE_FLOOR_FACTORS, floors)) {
+    throw new HttpError(400, "floors is not supported", "invalid_estimate_request");
+  }
+  if (typeof quality !== "string" || !Object.hasOwn(ESTIMATE_FINISH_RATES, quality)) {
+    throw new HttpError(400, "finish is not supported", "invalid_estimate_request");
+  }
+  if (typeof city !== "string" || !Object.hasOwn(ESTIMATE_CITY_FACTORS, city)) {
+    throw new HttpError(400, "city is not supported", "invalid_estimate_request");
+  }
+  return { width: input.width, length: input.length, floors, quality, city };
+}
+
+function publicEstimateEnvelope(value) {
+  const input = publicEstimateInput(value);
+  const estimate = computeEstimate(input);
+  return {
+    input,
+    estimate,
+    basis: {
+      ruleVersion: ESTIMATE_RULE_VERSION,
+      rulePublishedDate: ESTIMATE_RULE_PUBLISHED_DATE,
+      benchmarkStatus: "internal_directional_rule",
+      marketBenchmarkAsOf: null,
+      marketWarning: "Internal planning assumptions are not independently calibrated to current local quotes. Rates vary with specification, contractor, availability, and market conditions; verify current local quotations before decisions.",
+      currency: "INR",
+      confidence: "directional",
+      areaMethod: "Plot area × floor-programme factor",
+      costMethod: "Likely built-up area × internal finish benchmark × city factor",
+      floorFactor: ESTIMATE_FLOOR_FACTORS[input.floors],
+      finishRateInrPerSqft: ESTIMATE_FINISH_RATES[input.quality],
+      cityFactor: ESTIMATE_CITY_FACTORS[input.city],
+      lowFactor: 0.92,
+      highFactor: 1.1,
+      taxesAndStatutoryFees: "excluded",
+      exclusions: [
+        "Land purchase and finance costs",
+        "Taxes, statutory fees, utility connections, and municipal charges",
+        "Abnormal ground, retaining, foundation, demolition, and external works",
+        "Loose furniture, appliances, and owner-specific upgrades",
+      ],
+    },
   };
 }
 
@@ -489,6 +550,23 @@ async function familyAlignmentEvent(db, eventName, surface, outcome = "success")
   }
 }
 
+async function publicEstimatorBriefStarted(db, request) {
+  if (request.headers.get("x-grihagrid-entry-point") !== "public_estimator") return;
+  try {
+    const now = sqliteTimestamp();
+    await db.prepare(
+      `INSERT INTO product_event_aggregates
+         (event_day,event_name,surface,outcome,event_count,updated_at)
+       VALUES (date('now'),'public_estimator_brief_started','public_estimator','success',1,?)
+       ON CONFLICT(event_day,event_name,surface,outcome)
+       DO UPDATE SET event_count=event_count+1,updated_at=excluded.updated_at`,
+    ).bind(now).run();
+  } catch {
+    // Attribution is aggregate-only and ancillary; it must never falsify a successful project creation.
+    console.error("Public estimator aggregate recording failed");
+  }
+}
+
 function requireAbuseControl(env) {
   if (!env.GRIHAGRID_CACHE) {
     throw new HttpError(503, "abuse controls are temporarily unavailable", "abuse_control_unavailable");
@@ -575,6 +653,12 @@ function normalizeIdempotencyKey(request) {
     throw new HttpError(400, "a valid Idempotency-Key header (8-128 characters) is required", "invalid_idempotency_key");
   }
   return key;
+}
+
+function optionalIdempotencyKey(request) {
+  return String(request.headers.get("idempotency-key") || "").trim()
+    ? normalizeIdempotencyKey(request)
+    : null;
 }
 
 async function scopedIdempotencyKey(userId, key) {
@@ -2300,6 +2384,7 @@ function projectFromRow(row) {
     status: row.status,
     input,
     estimate,
+    estimateRuleVersion: Number(row.estimate_rule_version || ESTIMATE_RULE_VERSION),
     briefCheck: validStoredBriefCheck(row.brief_check_json) || briefCheck(input, estimate || computeEstimate(input)),
     inputRevision: Number(row.input_revision || 1),
     reportAvailable: Boolean(row.report_available),
@@ -2332,28 +2417,57 @@ async function createProject(request, env) {
   const session = await getSession(request, env);
   await requireCsrf(request, session);
   requireAbuseControl(env);
-  const userScope = await digestBase64(`project-create:${session.user_id}`);
-  await accountRateLimit(env, `project-create-user:${userScope}`, 20, 60 * 60);
   const body = await readJson(request);
   const { name: suppliedName, input, estimate } = normalizeCreateProjectBody(body);
   const assessment = briefCheck(input, estimate);
   const inputHash = await digestHex(revisionBasis(input, estimate));
-  const id = crypto.randomUUID();
   const name = normalizeProjectName(suppliedName);
+  const idempotencyKey = optionalIdempotencyKey(request);
+  const creationKeyHash = idempotencyKey
+    ? await digestBase64(`project-create:${session.user_id}:${idempotencyKey}`)
+    : null;
+  const creationRequestHash = idempotencyKey
+    ? await digestHex(stableStringify({ version: 1, name, input }))
+    : null;
+  const replayProject = async () => {
+    if (!creationKeyHash) return null;
+    const existing = await db.prepare(
+      `SELECT p.*,0 AS report_available FROM projects p
+        WHERE p.user_id=? AND p.creation_key_hash=?`,
+    ).bind(session.user_id, creationKeyHash).first();
+    if (!existing) return null;
+    if (existing.creation_request_hash !== creationRequestHash) {
+      throw new HttpError(409, "this Idempotency-Key was already used for a different project", "idempotency_conflict");
+    }
+    return json({ project: projectFromRow(existing) }, 200);
+  };
+  const replay = await replayProject();
+  if (replay) return replay;
+  const userScope = await digestBase64(`project-create:${session.user_id}`);
+  await accountRateLimit(env, `project-create-user:${userScope}`, 20, 60 * 60);
+  const id = crypto.randomUUID();
   const now = sqliteTimestamp();
   try {
     await db.prepare(
       `INSERT INTO projects
          (id,user_id,name,status,input_json,estimate_json,input_hash,input_schema_version,
-          estimate_rule_version,brief_check_version,brief_check_json,created_at,updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          estimate_rule_version,brief_check_version,brief_check_json,creation_key_hash,
+          creation_request_hash,created_at,updated_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     ).bind(
       id, session.user_id, name, "feasibility_ready", JSON.stringify(input), JSON.stringify(estimate), inputHash,
-      PROJECT_INPUT_SCHEMA_VERSION, ESTIMATE_RULE_VERSION, BRIEF_CHECK_VERSION, JSON.stringify(assessment), now, now,
+      PROJECT_INPUT_SCHEMA_VERSION, ESTIMATE_RULE_VERSION, BRIEF_CHECK_VERSION, JSON.stringify(assessment),
+      creationKeyHash, creationRequestHash, now, now,
     ).run();
   } catch (error) {
     const message = String(error?.message || error);
+    if (creationKeyHash && /creation_key_hash/iu.test(message) && /unique/iu.test(message)) {
+      const concurrentReplay = await replayProject();
+      if (concurrentReplay) return concurrentReplay;
+    }
     if (/project account limit reached/iu.test(message)) {
+      const concurrentReplay = await replayProject();
+      if (concurrentReplay) return concurrentReplay;
       throw new HttpError(429, "this account has reached the project limit", "project_limit_reached");
     }
     if (/project input contains unsupported field/iu.test(message)) {
@@ -2361,12 +2475,14 @@ async function createProject(request, env) {
     }
     throw error;
   }
+  await publicEstimatorBriefStarted(db, request);
   return json({ project: {
     id,
     name,
     status: "feasibility_ready",
     input,
     estimate,
+    estimateRuleVersion: ESTIMATE_RULE_VERSION,
     briefCheck: assessment,
     inputRevision: 1,
     reportAvailable: false,
@@ -5947,6 +6063,7 @@ async function api(request, env, ctx, url) {
       let archiveSafetySchema = "unknown";
       let revisionSchema = "unknown";
       let reportFeedbackSchema = "unknown";
+      let projectCreationSchema = "unknown";
       if (env.DB) {
         try {
           const result = await env.DB.prepare(
@@ -6051,6 +6168,18 @@ async function api(request, env, ctx, url) {
             }
           } else {
             reportFeedbackSchema = "outdated";
+          }
+          try {
+            await env.DB.prepare(
+              "SELECT creation_key_hash,creation_request_hash FROM projects LIMIT 0",
+            ).first();
+            const projectCreationObjects = await env.DB.prepare(
+              `SELECT COUNT(*) AS count FROM sqlite_master
+                WHERE type='index' AND name='idx_projects_user_creation_key'`,
+            ).first();
+            projectCreationSchema = Number(projectCreationObjects?.count) === 1 ? "current" : "outdated";
+          } catch {
+            projectCreationSchema = "outdated";
           }
           if (Number(result?.family_alignment_count) === 2) {
             try {
@@ -6208,7 +6337,7 @@ async function api(request, env, ctx, url) {
           schema = requiredTablesPresent && aiSchema === "current" && aiAbuseControl === "configured"
             && decisionSchema === "current" && paymentSchema === "current" && familyAlignmentSchema === "current"
             && archiveSafetySchema === "current" && revisionSchema === "current"
-            && reportFeedbackSchema === "current"
+            && reportFeedbackSchema === "current" && projectCreationSchema === "current"
             ? "current"
             : "outdated";
         } catch {
@@ -6222,6 +6351,7 @@ async function api(request, env, ctx, url) {
           archiveSafetySchema = "unknown";
           revisionSchema = "unknown";
           reportFeedbackSchema = "unknown";
+          projectCreationSchema = "unknown";
         }
       }
       const rateLimit = env.GRIHAGRID_CACHE ? "configured" : "missing";
@@ -6253,6 +6383,7 @@ async function api(request, env, ctx, url) {
           archiveSafetySchema,
           revisionSchema,
           reportFeedbackSchema,
+          projectCreationSchema,
           ai: geminiConfigured ? "configured" : "unavailable",
           privateStorage: env.FILES ? "configured" : "unavailable",
           acceptingPaidPlans: acceptingPlans,
@@ -6273,7 +6404,7 @@ async function api(request, env, ctx, url) {
     }
     if (url.pathname === "/api/estimate") {
       if (request.method !== "POST") return methodNotAllowed(["POST"]);
-      return publicJson({ estimate: computeEstimate(await readJson(request)) });
+      return publicJson(publicEstimateEnvelope(await readJson(request)));
     }
     if (url.pathname === "/api/commerce/catalog") {
       if (request.method !== "GET") return methodNotAllowed(["GET"]);
@@ -6662,6 +6793,7 @@ export const __test = {
   canonicalAppOrigin,
   commerceCatalog,
   computeEstimate,
+  publicEstimateEnvelope,
   constantTimeEqual,
   derivePassword,
   directInput,

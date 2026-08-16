@@ -418,6 +418,29 @@ new paid capability.
   exact-version error-tail observation. Record the final evidence above before
   marking this gate complete.
 
+## Server-authoritative public estimator release gate
+
+- [ ] Public estimate and authenticated project-create responses reconcile the
+  same normalized five-field tuple, rule version, plot/built-up area, and low/high
+  INR exactly across independent fixtures and deployed canaries.
+- [ ] Migration `0014` is applied under the encrypted backup, canonical-data
+  invariance, old-Worker compatibility, readiness, and exact canary-residue gates;
+  `checks.projectCreationSchema=current` is required before promotion.
+- [ ] Same-key/same-draft retry returns one canonical project, conflicting reuse
+  is `409`, and concurrent unique-index plus 49→50 account-cap races produce one
+  row and at most one estimator KPI increment.
+- [ ] Estimator-to-start state contains only the tuple, source marker, and opaque
+  retry key. Auth continuation accepts only the full-draft allowlist, never uses
+  the URL, survives storage denial, and explicit abandonment prevents a later
+  unrelated login from creating the draft.
+- [ ] Browser QA covers keyboard, assistive announcements, 390 px, 200% zoom/text
+  spacing, reduced motion, request races, timeout/malformed responses, and console
+  cleanliness. The UI labels the benchmark as internal/directional and makes no
+  current-market calibration claim.
+- [ ] The merged SHA passes protected CI and CodeQL, staging then production
+  smoke/authenticated canaries, exact-version cleanup, and the 30-minute
+  production error-tail observation with paid and upload capabilities closed.
+
 ## Project Decision Home release gate
 
 Project Decision Home is a read-only owner command centre over existing source
