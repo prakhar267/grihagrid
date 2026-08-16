@@ -232,6 +232,19 @@ export async function checkOpsConfig() {
   }
   const reportHandoffInventory = releaseDbEvidence.match(/const REQUIRED_0016_OBJECTS = Object\.freeze\(\[([\s\S]*?)\]\);/u)?.[1] || "";
   assert.equal((reportHandoffInventory.match(/"trigger:/gu) || []).length, 5, "release evidence must inventory all five report-handoff D1 triggers");
+  for (const object of [
+    "table:login_attempt_fences",
+    "index:idx_login_attempt_fences_expires",
+  ]) {
+    assert.match(releaseDbEvidence, new RegExp(`"${object}"`, "u"), `release evidence must require ${object}`);
+  }
+  for (const column of ["user_id", "window_started_at", "expires_at", "request_count", "limit_count", "updated_at"]) {
+    assert.match(
+      releaseDbEvidence,
+      new RegExp(`"login_attempt_fences:${column}"`, "u"),
+      `release evidence must require login_attempt_fences:${column}`,
+    );
+  }
   assert.match(releaseDbEvidence, /projectIdsSha256/u, "release artifacts must retain only a digest of canary project IDs");
   for (const field of [
     "invalid_input_rows",
@@ -256,7 +269,7 @@ export async function checkOpsConfig() {
     "protected-count evidence must not exceed D1's compound SELECT term limit",
   );
   assert.equal(
-    (deployWorkflow.match(/WITH target_tables\(table_name\) AS \(VALUES \('users'\),\('sessions'\),\('password_change_attempt_counters'\),\('report_share_read_counters'\),\('report_share_create_counters'\),\('report_handoff_controls'\),\('projects'\),\('orders'\),\('project_revisions'\),\('report_feedback'\),\('report_shares'\)\) SELECT target_tables\.table_name,columns\.name FROM target_tables JOIN pragma_table_info\(target_tables\.table_name\) AS columns/gu) || []).length,
+    (deployWorkflow.match(/WITH target_tables\(table_name\) AS \(VALUES \('users'\),\('sessions'\),\('password_change_attempt_counters'\),\('login_attempt_fences'\),\('report_share_read_counters'\),\('report_share_create_counters'\),\('report_handoff_controls'\),\('projects'\),\('orders'\),\('project_revisions'\),\('report_feedback'\),\('report_shares'\)\) SELECT target_tables\.table_name,columns\.name FROM target_tables JOIN pragma_table_info\(target_tables\.table_name\) AS columns/gu) || []).length,
     2,
     "both schema-column inventories must use one D1-compatible SELECT",
   );
@@ -267,7 +280,9 @@ export async function checkOpsConfig() {
   );
   assert.equal((deployWorkflow.match(/LEGACY_WORKER_COMPAT:\s*"true"/gu) || []).length, 6, "both environments must use legacy mode for rollback rehearsals and all four rollback version checks");
   assert.equal((deployWorkflow.match(/0016_report_handoff_links\.sql/gu) || []).length, 2, "both environments must detect a pending report-handoff migration");
+  assert.equal((deployWorkflow.match(/0017_login_attempt_fence\.sql/gu) || []).length, 2, "both environments must detect a pending login-attempt-fence migration");
   assert.equal((deployWorkflow.match(/REPORT_SHARE_MIGRATION_PENDING=/gu) || []).length, 2, "both environments must prove both new report-share tables start empty");
+  assert.equal((deployWorkflow.match(/LOGIN_ATTEMPT_FENCE_MIGRATION_PENDING=/gu) || []).length, 2, "both environments must distinguish a first login-attempt-fence apply");
   assert.equal(
     (deployWorkflow.match(/SELECT COUNT\(\*\) AS row_count FROM report_share_read_counters;/gu) || []).length,
     2,
@@ -279,6 +294,11 @@ export async function checkOpsConfig() {
     "both environments must count the new create-counter table after migration",
   );
   assert.equal(
+    (deployWorkflow.match(/SELECT COUNT\(\*\) AS row_count FROM login_attempt_fences;/gu) || []).length,
+    2,
+    "both environments must count the login-attempt fence table after migration",
+  );
+  assert.equal(
     (deployWorkflow.match(/SELECT control_key,enabled FROM report_handoff_controls ORDER BY control_key;/gu) || []).length,
     8,
     "post-migration, post-canary-closure, and rollback gates must prove the exact report-handoff control row",
@@ -288,6 +308,8 @@ export async function checkOpsConfig() {
   assert.match(releaseDbEvidence, /new report_share_read_counters table must start empty/u, "the 0016 release gate must reject a pre-populated hashed read-counter table");
   assert.match(releaseDbEvidence, /reportShareCreateCounterRows/u, "post-migration evidence must emit the create-counter count");
   assert.match(releaseDbEvidence, /new report_share_create_counters table must start empty/u, "the 0016 release gate must reject a pre-populated create-counter table");
+  assert.match(releaseDbEvidence, /loginAttemptFenceRows/u, "post-migration evidence must emit the login-attempt fence count");
+  assert.match(releaseDbEvidence, /new login_attempt_fences table must start empty/u, "the 0017 release gate must reject a pre-populated fence table only on first apply");
   assert.match(releaseDbEvidence, /report handoff control must contain exactly one row/u, "release evidence must require exactly one report-handoff control row");
   assert.match(releaseDbEvidence, /expectedEnabled: false/u, "post-migration evidence must require the report-handoff control to start disabled");
   assert.match(releaseDbEvidence, /the report handoff control must be enabled after release checks/u, "post-canary evidence must require the control to finish enabled on success");
@@ -318,9 +340,25 @@ export async function checkOpsConfig() {
   assert.match(deployWorkflow, /--version-id/u, "production error tail must be scoped to the deployed Worker version");
   assert.match(deployWorkflow, /tail-aggregate\.mjs/u, "tail payloads must be reduced to bounded aggregates");
   assert.doesNotMatch(deployWorkflow, /(?:invocation|server)-errors\.ndjson/u, "raw Worker tail payloads must never enter artifacts");
-  assert.ok(
-    (deployWorkflow.match(/\(steps\.migrations\.outputs\.pending == 'false' \|\|\s*\(steps\.rollback_compat\.outcome == 'success' && steps\.rollback_residue\.outcome == 'success'\)\)/gu) || []).length >= 4,
-    "every automatic Worker rollback must require no migration or a successful compatibility rehearsal with zero residue",
+  assert.equal(
+    (deployWorkflow.match(/\(needs\.authorize\.outputs\.migrations == 'false' \|\|\s*\(steps\.rollback_compat\.outcome == 'success' && steps\.rollback_residue\.outcome == 'success'\)\)/gu) || []).length,
+    6,
+    "every migration-bearing rollback path must require explicit compatibility and zero-residue evidence from the authorized release diff",
+  );
+  assert.doesNotMatch(
+    deployWorkflow,
+    /\(steps\.migrations\.outputs\.pending == 'false' \|\|\s*\(steps\.rollback_compat\.outcome == 'success'/u,
+    "an already-applied remote migration must not bypass rollback compatibility evidence",
+  );
+  assert.equal(
+    (deployWorkflow.match(/if: needs\.authorize\.outputs\.migrations == 'true'/gu) || []).length,
+    2,
+    "both migration-bearing environment releases must rehearse the previous Worker even when the remote migration was applied earlier",
+  );
+  assert.equal(
+    (deployWorkflow.match(/if: steps\.migrations\.outputs\.pending == 'true'/gu) || []).length,
+    6,
+    "backup creation, encryption, and storage must remain keyed only to actual pending remote migrations",
   );
   assert.ok((deployWorkflow.match(/umask 077/gu) || []).length >= 8, "raw release evidence must be created with private permissions");
   assert.equal((deployWorkflow.match(/release-db-evidence\.mjs residue-sql /gu) || []).length, 4, "old-Worker and candidate canaries need exact-ID residue SQL in both environments");
@@ -346,6 +384,22 @@ export async function checkOpsConfig() {
     assert.match(applyMigrations, /steps\.migrations\.outputs\.report_share_pending \}\}" != "true"/u, `${environment} later releases must close an already-existing report-handoff control before activation`);
     assert.match(applyMigrations, /UPDATE report_handoff_controls SET enabled=0/u, `${environment} later releases must explicitly start with report handoff closed`);
     assert.match(applyMigrations, /REPORT_HANDOFF_EXPECTED_ENABLED=false/u, `${environment} migration evidence must require a disabled report-handoff control`);
+    assert.match(applyMigrations, /SELECT COUNT\(\*\) AS row_count FROM login_attempt_fences;/u, `${environment} migration evidence must count login-attempt fences`);
+    assert.match(applyMigrations, /LOGIN_ATTEMPT_FENCE_MIGRATION_PENDING/u, `${environment} migration evidence must identify the first 0017 apply`);
+
+    const rollbackCompatibility = workflowStep(deployWorkflow, `Rehearse rollback Worker against migrated ${environment} schema`);
+    assert.match(rollbackCompatibility, /if: needs\.authorize\.outputs\.migrations == 'true'/u, `${environment} rollback compatibility must follow the authorized migration-bearing release diff`);
+    for (const backupStepName of [
+      `Create protected ${environment} export and recovery point`,
+      `Encrypt and verify protected ${environment} export`,
+      `Store encrypted ${environment} export`,
+    ]) {
+      assert.match(
+        workflowStep(deployWorkflow, backupStepName),
+        /if: steps\.migrations\.outputs\.pending == 'true'/u,
+        `${backupStepName} must run only for an actual pending remote migration`,
+      );
+    }
 
     const propagation = workflowStep(deployWorkflow, `Wait for three exact ${environment} smoke samples`);
     assert.match(propagation, /EXPECT_REPORT_HANDOFF:\s*"false"/u, `${environment} exact-version propagation must run while report handoff remains closed`);
@@ -449,6 +503,7 @@ export async function checkOpsConfig() {
       "post-migration-report-share-count.json",
       "post-migration-report-share-read-counter-count.json",
       "post-migration-report-share-create-counter-count.json",
+      "post-migration-login-attempt-fence-count.json",
       "post-migration-report-handoff-control.json",
       "report-handoff-pre-activation-close.json",
       "report-handoff-canary-enable.json",

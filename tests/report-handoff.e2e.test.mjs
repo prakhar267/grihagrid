@@ -73,10 +73,10 @@ async function startWorker(
     try {
       const response = await fetch(`${origin}/api/health`);
       if (response.status === 200) {
-        await response.body?.cancel();
+        await response.arrayBuffer();
         return { child, exited, origin, logs: () => logs };
       }
-      await response.body?.cancel();
+      await response.arrayBuffer();
     } catch {
       // workerd is still starting.
     }
@@ -369,6 +369,7 @@ test("Professional Handoff links preserve one redacted immutable report across o
       body: JSON.stringify({ token: malformedBearer }),
     });
     assert.equal(crossSiteText.status, 403);
+    await crossSiteText.arrayBuffer();
     const sameSiteText = await fetch(`${server.origin}/api/shared/report`, {
       method: "POST",
       headers: { origin: server.origin, "content-type": "text/plain; charset=utf-8" },
@@ -376,29 +377,6 @@ test("Professional Handoff links preserve one redacted immutable report across o
     });
     assert.equal(sameSiteText.status, 404);
     assert.deepEqual(await sameSiteText.json(), {
-      error: "shared report not found",
-      code: "report_share_not_found",
-    });
-    const oversizedChunks = [
-      new TextEncoder().encode(`{"token":"${malformedBearer}","padding":"`),
-      new TextEncoder().encode("x".repeat(600)),
-      new TextEncoder().encode('"}'),
-    ];
-    const oversizedStream = new ReadableStream({
-      pull(controller) {
-        const chunk = oversizedChunks.shift();
-        if (chunk) controller.enqueue(chunk);
-        else controller.close();
-      },
-    });
-    const oversizedPublic = await fetch(`${server.origin}/api/shared/report`, {
-      method: "POST",
-      headers: { origin: server.origin, "content-type": "application/json" },
-      body: oversizedStream,
-      duplex: "half",
-    });
-    assert.equal(oversizedPublic.status, 404);
-    assert.deepEqual(await oversizedPublic.json(), {
       error: "shared report not found",
       code: "report_share_not_found",
     });
@@ -963,6 +941,7 @@ test("Professional Handoff links preserve one redacted immutable report across o
     `), "retention fixture insert failed");
     const scheduled = await fetch(`${server.origin}/__scheduled?cron=17+2+*+*+*`);
     assert.equal(scheduled.status, 200);
+    await scheduled.arrayBuffer();
     const deadline = Date.now() + 10_000;
     let retentionStatus = 410;
     while (Date.now() < deadline && retentionStatus !== 404) {
@@ -999,6 +978,33 @@ test("Professional Handoff links preserve one redacted immutable report across o
     assert.equal(deleted.response.status, 204, JSON.stringify(deleted.payload));
     assert.equal(Number(query(stateDirectory, `SELECT COUNT(*) AS count FROM report_shares WHERE project_id='${source.project.id}';`)[0].count), 0);
     assert.equal((await openShare(server.origin, historicalToken)).response.status, 404);
+
+    // Run the deliberate stream cancellation last. Miniflare can tear down an
+    // internal HTTP/1 connection after the Worker rejects the unread remainder;
+    // no later product assertion should depend on that test-harness socket.
+    const oversizedChunks = [
+      new TextEncoder().encode(`{"token":"${malformedBearer}","padding":"`),
+      new TextEncoder().encode("x".repeat(600)),
+      new TextEncoder().encode('"}'),
+    ];
+    const oversizedStream = new ReadableStream({
+      pull(controller) {
+        const chunk = oversizedChunks.shift();
+        if (chunk) controller.enqueue(chunk);
+        else controller.close();
+      },
+    });
+    const oversizedPublic = await fetch(`${server.origin}/api/shared/report`, {
+      method: "POST",
+      headers: { origin: server.origin, "content-type": "application/json", connection: "close" },
+      body: oversizedStream,
+      duplex: "half",
+    });
+    assert.equal(oversizedPublic.status, 404);
+    assert.deepEqual(await oversizedPublic.json(), {
+      error: "shared report not found",
+      code: "report_share_not_found",
+    });
 
     const applicationLogs = server.logs()
       .split(/\r?\n/u)

@@ -18,8 +18,9 @@ Cloudflare Worker API
       │        │        │
       ▼        ▼        ▼
      D1       R2       KV
- records +  uploads   best-effort auth and
- AI quotas             checkout abuse limits
+ records +  deferred  fail-closed login IP
+ strict       uploads  perimeter + abuse brakes
+ fences
       │
       ▼
  Cloudflare Queue → report-generation worker → R2 PDF + D1 state
@@ -30,7 +31,10 @@ External boundaries: Google Gemini, email provider, Razorpay, and architect oper
 ## Design decisions
 
 - A single Worker keeps the first deployment cheap and removes cross-service network hops. Split generation into a queue consumer once AI/PDF work exceeds request CPU limits.
-- D1 is the source of truth for users, projects, orders and state transitions. KV is never the source of truth for money or entitlements.
+- D1 is the source of truth for users, projects, orders and state transitions.
+  It provides strongly consistent per-account login admission; KV provides the
+  fail-closed per-IP login perimeter but is never the source of truth for money
+  or entitlements.
 - R2 holds private site photos and report artifacts. Object keys use opaque project IDs; the public bucket URL stays disabled.
 - The frontend can calculate estimates optimistically, but the server recomputes and persists every paid/reportable result.
 - Purchase creation uses idempotency keys. AI generation uses an atomic D1
@@ -49,11 +53,28 @@ External boundaries: Google Gemini, email provider, Razorpay, and architect oper
   generation plus opaque revision, and replace every earlier session atomically.
   A login verified against stale authentication state cannot insert a surviving
   session.
-- Per-IP and per-account rate limits on login, project creation, uploads and checkout.
+- Registration accepts only email/password/optional-name primitive fields;
+  login accepts exactly primitive email/password fields. Unsupported or
+  confused-type fields fail before account lookup.
+- Login requires healthy KV for a fixed 12-attempt per-IP window, then reserves
+  one of 12 fixed, non-sliding 15-minute D1 slots for a real `user_id` before
+  PBKDF2. Unknown, wrong-password, deleted, malformed-record, invalid-password-
+  length and account-fenced requests each perform one real-or-dummy derivation
+  and return the same `401 invalid_credentials`.
+- The D1 login fence stores only `user_id`, timestamps, count and limit—never an
+  email, IP, password-derived value or free text. A generation/opaque-revision-
+  fenced session insert and its fence clear commit in one batch; password
+  rotation clears the fence through its exact replacement-session batch.
+- Per-account D1 controls supplement per-IP abuse controls on password change,
+  project creation, public shares and provider spend. Checkout abuse KV remains
+  a brake rather than a money or entitlement ledger.
 - File type is verified by signature, not extension; size/count limits are applied before R2 persistence.
 - Strict CSP, HSTS, `X-Content-Type-Options`, `Referrer-Policy` and frame protections at the edge.
 - Webhook signatures use constant-time comparison and a bounded replay window.
 - Logs exclude request bodies, tokens, addresses, photos and provider payload secrets.
+- Authentication logs also exclude email, IP, account/fence identifiers,
+  password shape and every password-derived value; monitoring is aggregate by
+  templated route, bounded outcome/status, release and latency.
 - Gemini requests use a Worker secret, `store: false`, provider core-harm protection,
   adult consent, and sanitized inputs that exclude identity, project names,
   precise addresses, coordinates, payments, and uploads.
@@ -61,6 +82,10 @@ External boundaries: Google Gemini, email provider, Razorpay, and architect oper
   enforces per-user and platform spend ceilings, while KV remains a best-effort
   brake for authentication and checkout abuse.
 - User deletion is a workflow: revoke sessions, tombstone identity, delete R2 objects, retain only legally required financial records.
+- Registration's `email_in_use` response remains an enumeration surface. A
+  known email can be deliberately fenced for the remainder of one fixed window,
+  and an attacker can repeat that denial in later windows. The login fence does
+  not claim to solve either risk.
 - Quarterly dependency review, secret rotation and restore exercise.
 
 ## Environments

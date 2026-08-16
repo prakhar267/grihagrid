@@ -481,10 +481,10 @@ test("Brief Check revisions are truthful, immutable, owner-scoped, and race safe
   let server = null;
   const capturedLogs = [];
   try {
-    requireD1Success(d1(stateDirectory, "migrate"), "fresh 0001-0016 migration chain failed");
+    requireD1Success(d1(stateDirectory, "migrate"), "fresh 0001-0017 migration chain failed");
     const applied = rowsFor(stateDirectory, "SELECT name FROM d1_migrations ORDER BY id", "migration ledger query failed");
-    assert.equal(applied.length, 16, JSON.stringify(applied));
-    assert.equal(applied.at(-1)?.name, "0016_report_handoff_links.sql");
+    assert.equal(applied.length, 17, JSON.stringify(applied));
+    assert.equal(applied.at(-1)?.name, "0017_login_attempt_fence.sql");
 
     server = await startWorker(stateDirectory, assetsDirectory, port);
     const readiness = await call(server.origin, "/api/readiness");

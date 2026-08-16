@@ -658,25 +658,39 @@ function StartPage({ user }) {
 
 function Choice({label,value,choices,onChange}) { return <fieldset className="choice-field"><legend>{label}</legend><div>{choices.map(choice=><button type="button" aria-pressed={choice===value} className={choice===value?"selected":""} key={choice} onClick={()=>onChange(choice)}>{choice}</button>)}</div></fieldset>; }
 
+function authFailureMessage(error,isLogin){
+  const code=error?.payload?.code;
+  if(code==="rate_limited")return isLogin?"Too many sign-in attempts came from this connection. Wait a little, then try again.":"Too many account-creation attempts came from this connection. Wait a little, then try again.";
+  if(code==="abuse_control_unavailable")return isLogin?"Sign-in is temporarily unavailable while account protection recovers. Try again shortly.":"Account creation is temporarily unavailable while account protection recovers. Try again shortly.";
+  if(code==="invalid_credentials")return "Email or password is incorrect.";
+  if(code==="invalid_login")return "Enter your email address and password, then try again.";
+  if(code==="invalid_registration")return "Enter your name, email address and password, then try again.";
+  if(code==="invalid_email")return "Enter a valid email address.";
+  if(code==="invalid_password")return "Use a password between 10 and 128 characters.";
+  if(code==="email_in_use")return "An account already exists for this email. Log in instead.";
+  return isLogin?"We could not sign you in. Try again.":"We could not create the account. Try again.";
+}
+
 function AuthPage({ mode, onAuthenticated }) {
   const isLogin=mode==="login";
   const [form,setForm]=useState({name:"",email:"",password:""});
   const [busy,setBusy]=useState(false);const [error,setError]=useState("");
   const [authenticated,setAuthenticated]=useState(false);
   const projectCreationKey=useProjectCreationKey(true);
-  const active=useRef(true);
+  const active=useRef(true);const errorRef=useRef(null);
   useEffect(()=>{active.current=true;return()=>{active.current=false}},[]);
+  useEffect(()=>{if(error)errorRef.current?.focus({preventScroll:true})},[error]);
   const abandon=()=>{abandonPendingProjectHandoff();route('/')};
   async function submit(e){
-    e.preventDefault();setBusy(true);setError("");
+    e.preventDefault();setBusy(true);setError("");let authenticating=!authenticated;
     try{
-      if(!authenticated){const result=await api(`/api/auth/${isLogin?'login':'register'}`,{method:'POST',body:form});if(!active.current)return;onAuthenticated(result.user);setAuthenticated(true)}
+      if(authenticating){const authBody=isLogin?{email:form.email,password:form.password}:{name:form.name,email:form.email,password:form.password};const result=await api(`/api/auth/${isLogin?'login':'register'}`,{method:'POST',body:authBody});if(!active.current)return;onAuthenticated(result.user);setAuthenticated(true);setForm({name:"",email:"",password:""});authenticating=false}
       const pending=pendingProjectValue();
       if(pending){const project=await api('/api/projects',{method:'POST',headers:{...publicEstimatorAttributionHeaders(safeSessionStorage(),window.history.state,projectCreationKey),'idempotency-key':projectCreationKey},body:projectRequestBody(pending)});if(!active.current)return;removeSessionValue('grihagrid.pendingProject');completePublicEstimatorHandoff();replaceRoute(`/projects/${project.project.id}`)}
       else {if(window.history.state?.projectContinuation===true)abandonPendingProjectHandoff();route('/dashboard')}
-    }catch(err){if(active.current)setError(err.message)}finally{if(active.current)setBusy(false)}
+    }catch(err){if(active.current)setError(authenticating?authFailureMessage(err,isLogin):"Your account is secure, but the project could not be saved. Retry saving it.")}finally{if(active.current)setBusy(false)}
   }
-  return <main className="auth-page"><div className="auth-architecture"><img width="1536" height="1024" src="/assets/v2/monograph-house-v2.jpg" onError={e=>{e.currentTarget.src='/assets/grihagrid-hero.jpg'}} alt="Contemporary Indian home"/><div><Brand inverted disabled={busy} onHome={abandon}/><blockquote>Start with clarity.<br/>Build with confidence.</blockquote></div></div><section className="auth-form"><button className="back-action" disabled={busy} onClick={abandon}><ArrowLeft/> Home</button><span className="kicker">Private project workspace</span><h1>{isLogin?'Welcome back.':'Create your account.'}</h1><p>{isLogin?'Return to your saved home plans.':'Save the brief you just created and keep every decision together.'}</p><form onSubmit={submit}>{!isLogin&&<label>Full name<input required autoComplete="name" value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label>}<label>Email address<input required type="email" autoComplete="email" value={form.email} onChange={e=>setForm({...form,email:e.target.value})}/></label><label>Password<input required type="password" minLength="10" autoComplete={isLogin?'current-password':'new-password'} value={form.password} onChange={e=>setForm({...form,password:e.target.value})}/><small>At least 10 characters</small></label>{error&&<p className="form-error" role="alert">{error}</p>}<button disabled={busy} className="copper-button" type="submit">{busy?'Please wait…':authenticated?'Retry saving project':isLogin?'Log in':'Create account'} <ArrowRight/></button></form><p className="auth-switch">{isLogin?'New to GrihaGrid?':'Already have an account?'} <button disabled={busy} onClick={()=>replaceRoute(isLogin?'/register':'/login',pendingAuthContinuationState())}>{isLogin?'Create account':'Log in'}</button></p></section></main>;
+  return <main className="auth-page"><div className="auth-architecture"><img width="1536" height="1024" src="/assets/v2/monograph-house-v2.jpg" onError={e=>{e.currentTarget.src='/assets/grihagrid-hero.jpg'}} alt="Contemporary Indian home"/><div><Brand inverted disabled={busy} onHome={abandon}/><blockquote>Start with clarity.<br/>Build with confidence.</blockquote></div></div><section className="auth-form"><button className="back-action" disabled={busy} onClick={abandon}><ArrowLeft/> Home</button><span className="kicker">Private project workspace</span><h1>{isLogin?'Welcome back.':'Create your account.'}</h1><p>{isLogin?'Return to your saved home plans.':'Save the brief you just created and keep every decision together.'}</p><form onSubmit={submit} aria-busy={busy}>{!isLogin&&<label>Full name<input required disabled={busy} maxLength="80" autoComplete="name" value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label>}<label>Email address<input required disabled={busy} type="email" maxLength="254" autoComplete="email" autoCapitalize="none" spellCheck="false" value={form.email} onChange={e=>setForm({...form,email:e.target.value})}/></label><label>Password<input required disabled={busy} type="password" minLength="10" maxLength="128" autoComplete={isLogin?'current-password':'new-password'} autoCapitalize="none" spellCheck="false" value={form.password} onChange={e=>setForm({...form,password:e.target.value})}/><small>10–128 characters</small></label>{error&&<p ref={errorRef} className="form-error" tabIndex="-1" role="alert">{error}</p>}<button disabled={busy} className="copper-button" type="submit">{busy?'Please wait…':authenticated?'Retry saving project':isLogin?'Log in':'Create account'} <ArrowRight/></button></form><p className="auth-switch">{isLogin?'New to GrihaGrid?':'Already have an account?'} <button disabled={busy} onClick={()=>replaceRoute(isLogin?'/register':'/login',pendingAuthContinuationState())}>{isLogin?'Create account':'Log in'}</button></p></section></main>;
 }
 
 function accountSecurityFailure(error) {

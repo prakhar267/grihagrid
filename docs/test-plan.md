@@ -49,6 +49,13 @@ interleaved within their own real-D1 fixtures.
     public route without account cookies → verify exact section redaction →
     revoke → public `410` → delete the project. Repeat with expiry, replay,
     cross-owner, active-link-cap, archive, source-revision and cleanup races.
+13. Register with the exact optional-name schema → log in successfully → log out
+    → distribute 13 wrong-password attempts across independent IP fixtures →
+    require only 12 real-account reservations in one non-sliding window and the
+    same generic 401 thereafter → advance beyond expiry → log in and prove the
+    exact session transaction clears the fence. Repeat with unknown/deleted
+    accounts, malformed credential records, failed KV/D1, password rotation,
+    concurrent requests, failed batches, cleanup and old-Worker compatibility.
 
 ## API cases
 
@@ -70,6 +77,37 @@ interleaved within their own real-D1 fixtures.
   exact tuple/basis/output arithmetic, explicit tax/fee exclusion, and one to
   eight bounded exclusions. Public browser requests must omit cookies and CSRF.
 - `POST /api/leads`: valid email; invalid email; duplicate email; unavailable database.
+- `POST /api/auth/register`: require only primitive-string `email` and
+  `password` plus optional primitive-string `name`. Exercise every missing,
+  extra, null, array, object, boolean and numeric field, malformed/non-object/
+  oversized JSON, wrong media, email normalization and 254-character boundary,
+  9/10/128/129-character passwords, name normalization and 2/80 boundaries.
+  Structural failures are `400 invalid_registration`; value failures retain
+  `invalid_email`, `invalid_password`, or `invalid_name`. Missing/failing KV is
+  `503 abuse_control_unavailable`. Duplicate normalized email remains
+  `409 email_in_use` and is recorded as residual registration enumeration.
+- `POST /api/auth/login`: require exactly primitive-string `email` and
+  `password`; missing/extra/confused fields are `400 invalid_login`, while an
+  invalid email string is `400 invalid_email`. Short/long primitive passwords,
+  unknown email, soft-deleted account, malformed credential record, wrong
+  password and a closed D1 account fence each perform exactly one real-or-dummy
+  PBKDF2 derivation and return the byte-equivalent generic
+  `401 invalid_credentials` envelope. Verify behavior/call counts rather than
+  treating noisy wall-clock timing as proof.
+- Login admission: missing/failing KV and missing/failing/malformed D1 fence
+  state return `503 abuse_control_unavailable` before PBKDF2/session mutation;
+  the IP's 13th request is the separate `429 rate_limited` perimeter outcome.
+  Across 13 parallel distinct-IP requests for one real account, D1 admits at
+  most 12 reservations, stores only `user_id` plus canonical timestamps/count/
+  limit, and does not slide `expires_at`. Unknown/deleted accounts create no
+  fence row. An expired row resets atomically without waiting for cron.
+- Login commit: a valid credential inserts one generation/revision/auth-state-
+  fenced session and clears its fence in the same D1 batch, with the delete
+  gated by that exact session. Inject batch failures and race password rotation;
+  require no usable stale session and no unrelated fence clear. Successful
+  password rotation clears the fence only with its exact replacement session.
+  No email, IP, password-derived value, fence/account ID or password shape may
+  enter logs, analytics, errors or release artifacts.
 - `POST /api/auth/logout`: trusted-origin live session requires matching CSRF,
   deletes only the current D1 session, clears both cookies and returns empty `204`;
   replay and stale/expired session are idempotent `204`. Replaying the original
@@ -174,11 +212,13 @@ interleaved within their own real-D1 fixtures.
   checkout and fulfillment controls remain closed throughout the suite.
 - Populated upgrade: apply migrations through `0011` to a fixture containing a
   real owner, non-first input revision and saved schema-v1 report, then apply
-  `0012`, `0013`, `0014`, `0015`, and `0016`. Require exact preservation of the v1 bytes and honest
+  `0012`, `0013`, `0014`, `0015`, `0016`, and `0017`. Require exact preservation of the v1 bytes and honest
   baseline, zero fabricated revisions/feedback, canonical removal of unsupported
   keys only on the next real source revision, null creation metadata on existing
-  projects, the unique per-user creation-key index, and enforcement of the
-  50→51 project ceiling.
+  projects, the unique per-user creation-key index, an initially empty
+  `login_attempt_fences` table with its exact six columns/expiry index, and
+  enforcement of the 50→51 project ceiling. Canonical user/session hashes and
+  every protected row count remain unchanged.
 - Rollback compatibility: run the reviewed current authenticated harness in
   legacy-Worker mode against the previous Worker after migration, not a harness
   copied from the previous commit. Triggers must capture an honest revision with
@@ -187,7 +227,11 @@ interleaved within their own real-D1 fixtures.
   v1 artifact. Automatic rollback is eligible only after this rehearsal and its
   exact canary-ID query prove zero `projects`, `project_revisions`, `reports`,
   `project_revision_reports`, and `report_feedback` residue, including after a
-  failed rehearsal.
+  failed rehearsal. After `0017`, explicitly record that the old Worker ignores
+  the additive login-fence table and therefore loses distributed per-account
+  admission and exact login/rotation clearing: compatibility may permit an
+  emergency rollback, but its security downgrade requires a quiet bounded
+  incident window, closed commerce/uploads and prompt roll-forward.
 - Gemini brief: owner isolation; explicit 18+ consent; CSRF/origin enforcement;
   sanitized allowlisted prompt; structured validation; advisory-policy
   rejection; cached replay; refresh; atomic user/platform limits; one-project
@@ -438,17 +482,22 @@ interleaved within their own real-D1 fixtures.
 | Measurement | Query protected adjacent windows after multiple eligible reports, including two windows whose corresponding cells are six and five, plus a recent response on an old report | Old-report response is excluded; one statement reconciles denominator, total and rate; exact categorical arrays stay empty for both individually above-threshold windows until fixed non-overlapping snapshots exist, without returning identity or resource keys |
 | Operations | Inspect strict preflight, mode-0600 evidence cleanup, readiness, failed/successful canary cleanup and old-Worker rehearsal | `reportFeedbackSchema=current`, capability true, exact canary IDs have zero residue, templated logs, and rollback is compatibility-gated |
 
-## Account Security manual acceptance matrix
+## Authentication and Account Security manual acceptance matrix
 
 | Area | Test | Required result |
 |---|---|---|
+| Registration boundary | Submit exact two/three-field bodies, then missing/extra/confused-type/value-boundary variants and duplicate normalized email | Only primitive email/password plus optional primitive name are accepted; structural/value codes stay distinct; duplicate email remains the documented enumeration risk |
+| Login indistinguishability | Exercise short/long password, unknown, deleted, malformed-record, wrong-password and account-fenced fixtures while instrumenting PBKDF2 | Each makes exactly one real-or-dummy derivation and returns the identical generic `401 invalid_credentials` envelope; logs expose no differentiating value |
+| Distributed account fence | Send 13 concurrent requests for one user from distinct IP fixtures, inspect the row, wait/advance past expiry, and repeat | At most 12 are admitted; request 13 is generic 401 with dummy work; one `user_id`-only canonical row exists; expiry never slides and resets atomically |
+| Abuse-control failure | Remove/fail KV; remove/fail/corrupt the D1 fence query/state; exhaust only the IP window | Missing/unhealthy authority is `503` before PBKDF2/session mutation; IP exhaustion is `429`; no fail-open or account-state leak occurs |
+| Exact login commit | Seed a fence, log in correctly, then inject session-batch failure and race password rotation | Only an exact committed session clears its fence; a failure/stale race leaves no usable session and cannot clear another fence; exact rotation clears atomically |
 | Password rotation | Change from a valid current password to a different valid password, then try both credentials | The old password fails, the new password logs in, and the current response carries one working replacement session/CSRF pair |
 | Session revocation | Create two sessions before the change, retain both bearer cookies, then rotate through one | Both retained cookies return `401`; only the returned replacement session works |
 | Strict boundary | Try wrong current password, same password, 9/129-character values, non-string values, missing/extra fields, malformed JSON and oversized bodies | Each returns the documented bounded error with zero user/session mutation and no password material in response/logs |
 | Browser defences | Repeat without origin, from a foreign origin, without matching CSRF and with missing/failing KV or D1 admission | Origin/CSRF/abuse checks fail closed before PBKDF2 or credential mutation |
 | Concurrency | Race 20 password guesses through deliberately non-atomic KV, race two different changes, and pause a login after old-password verification while a change wins | Exactly five guesses reach verification and 15 are D1-limited; one change commits; the loser cannot delete the winner's session; the stale login inserts no usable session |
 | Atomicity | Inject failure at credential update, old-session delete and replacement-session insert | The D1 batch rolls back completely: either old credentials/sessions work or only the new credentials/replacement works |
-| Migration and rollback | Upgrade populated 0014 data, inspect defaults/guards, run the prior Worker, then restore the new Worker | Existing credentials/sessions survive at generation one/null revision; protected counts and canonical user/session/project/report hashes do not change; old Worker remains schema-compatible and a restored current Worker rejects rollback-created legacy sessions for advanced accounts |
+| Migration, cleanup and rollback | Upgrade populated 0014 data through 0017, inspect defaults/guards/fence inventory, run cron and the prior Worker, then restore the new Worker | Existing credentials/sessions survive; the first fence table is empty, expiry cleanup is exact and retention-only, protected hashes/counts do not change; old Worker is schema-compatible but explicitly loses the account fence, and roll-forward restores it |
 | Accessibility | Exercise keyboard, screen reader, 390 px, 200% zoom/text spacing, high contrast, reduced motion and print | Persistent labels/autocomplete, visible focus, announced validation/result states, no overlap/overflow, and no credential form in print |
 | Privacy | Search URL, history, storage, analytics, API response, custom logs and D1 outside credential/session columns | No current/new password, bearer/CSRF token, password hash/salt, generation or session ID is exposed; route logging remains templated |
 | Paid containment | Inspect catalog/readiness and order/upload paths before and after change | Checkout, fulfillment and uploads remain closed; project/report/order/payment bytes are unchanged |
@@ -507,6 +556,12 @@ Attach to the release record, without secrets or customer data:
   pre-change-bearer rejection, concurrent-change and stale-login race evidence,
   D1 rollback injection, populated migration/old-Worker compatibility, bounded
   route logs, and keyboard/screen-reader/reflow/print results;
+- strict registration/login schema matrices; PBKDF2 call-count proof for
+  unknown/wrong/deleted/malformed/short/long/fenced states; 12→13 distributed
+  account admission and fixed-expiry proof; KV/D1 fail-closed injection; exact
+  session/rotation fence clears; `0017` empty-first-apply inventory, expiry cron,
+  additive rollback security-downgrade record, aggregate-only monitoring and
+  registration-enumeration/targeted-lockout residual-risk sign-off;
 - encrypted D1 backup checksum, isolated restore counts and measured RTO; and
 - go/no-go sign-off from founder/product, engineering on-call, payment owner,
   and quality/professional owner.
