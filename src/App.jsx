@@ -2231,16 +2231,18 @@ function FamilyReviewComparison({ scenarios, assumptions, disclaimer }) {
 
 function FamilyAlignmentReviewPage({ token }) {
   const [phase,setPhase]=useState('loading');
+  const [loadAttempt,setLoadAttempt]=useState(0);
   const [room,setRoom]=useState(null);
   const [receipt,setReceipt]=useState(null);
   const [form,setForm]=useState({role:'',preference:'',confidence:'',reasons:[]});
   const [busy,setBusy]=useState(false);
   const [error,setError]=useState('');
   const [savedMessage,setSavedMessage]=useState('');
+  const stateHeadingRef=useRef(null);
 
   useEffect(()=>{
     const controller=new AbortController();
-    setPhase('loading');setError('');
+    setPhase('loading');setError('');setRoom(null);
     api(`/api/family-alignment/${encodeURIComponent(token)}`,{signal:controller.signal}).then(result=>{
       if(controller.signal.aborted)return;
       const publicRoom=result.room||result;
@@ -2254,10 +2256,14 @@ function FamilyAlignmentReviewPage({ token }) {
       if(controller.signal.aborted)return;
       if(err.status===410)setPhase('closed');
       else if(err.status===404)setPhase('unavailable');
-      else{setError('The private review could not be opened. Please ask the project owner for a fresh link.');setPhase('error')}
+      else{setError('The review remains private and nothing was submitted. Try this same link again in a moment.');setPhase('temporary')}
     });
     return()=>controller.abort();
-  },[token]);
+  },[token,loadAttempt]);
+
+  useEffect(()=>{
+    if(['closed','unavailable','temporary'].includes(phase))stateHeadingRef.current?.focus();
+  },[phase]);
 
   function toggleReason(reason) {
     setForm(current=>{
@@ -2296,7 +2302,8 @@ function FamilyAlignmentReviewPage({ token }) {
   if(phase==='loading')return <main className="shared-state family-review-state"><Brand/><div role="status"><UserCircle/><span className="kicker">Private family review</span><h1>Opening the two options…</h1><p>No account is needed. The room is checked before any project facts are shown.</p></div></main>;
   if(phase!=='ready'&&phase!=='full'){
     const closed=phase==='closed';
-    return <main className="shared-state family-review-state"><Brand/><div><XCircle/><span className="kicker">{closed?'Review closed':'Review unavailable'}</span><h1>{closed?'This family review has ended.':'This private link cannot be opened.'}</h1><p>{closed?'The room expired after seven days or was revoked by the project owner. No response can be viewed or submitted from this link.':error||'The link may be incomplete or unavailable. No response was collected on this page.'}</p><button className="copper-button" onClick={()=>route('/start')}>Plan my own home <ArrowRight/></button></div></main>;
+    const temporary=phase==='temporary';
+    return <main className="shared-state family-review-state"><Brand/><div role="alert">{closed?<XCircle/>:temporary?<WarningCircle/>:<Compass/>}<span className="kicker">{closed?'Review closed':temporary?'Private review temporarily unavailable':'Review unavailable'}</span><h1 ref={stateHeadingRef} tabIndex="-1">{closed?'This family review has ended.':temporary?'The review remains private.':'This private link cannot be opened.'}</h1><p>{closed?'The room expired after seven days or was revoked by the project owner. No response can be viewed or submitted from this link.':temporary?error:'The link may be incomplete or unavailable. No response was collected on this page.'}</p>{temporary?<button type="button" className="copper-button" onClick={()=>{setPhase('loading');setLoadAttempt(value=>value+1)}}>Try this link again <ArrowClockwise/></button>:<button type="button" className="copper-button" onClick={()=>route('/start')}>Plan my own home <ArrowRight/></button>}</div></main>;
   }
   const scenarios=Array.isArray(room.scenarios)?room.scenarios:[];
   const maxResponses=Number(room.maxResponses||5);

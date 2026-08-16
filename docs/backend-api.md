@@ -577,12 +577,21 @@ projection is an allowlist of floors, bedrooms, parking, quality, derived
 estimate/programme, constraints and trade-offs. It omits the project/account
 identity, plot/location, comparison/scenario IDs and labels, raw inputs/notes,
 scenario assumptions, hashes, recommendation, owner choice, questions,
-responses, aggregates, orders and entitlement state. Review-open counters and
-aggregate telemetry are best effort and cannot fail an otherwise valid read.
+responses, aggregates, orders and entitlement state. The review-open access
+counter is part of authoritative disclosure admission; only the separate daily
+aggregate telemetry write is best effort after admission succeeds.
 
 Malformed or unknown tokens are `404 family_alignment_not_found`; known
 revoked rooms are `410 family_alignment_unavailable`; expired rooms are `410
-family_alignment_expired`.
+family_alignment_expired`. Immediately before returning the projection, one D1
+transaction conditionally increments the access counter only while the room is
+unrevoked, unexpired by database time, and attached to an active project. That
+transaction is the read's authoritative admission point: a revoke, expiry, or
+archive that wins first returns `410` with no room body or open event. An
+admission dependency failure returns `503 family_alignment_unavailable` and
+also discloses no room body. A malformed stored expiry is treated as the same
+fail-closed dependency state rather than as an active room. The daily aggregate
+open event remains ancillary after a successful admission.
 
 ### `PUT /api/family-alignment/:token/response`
 

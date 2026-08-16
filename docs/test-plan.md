@@ -267,11 +267,19 @@ interleaved within their own real-D1 fixtures.
   version may create a different room; foreign/missing comparison is the same
   ownership-safe `404`.
 - Family Alignment public read: valid active token returns only room
-  ID/expiry/count/max-five and exactly two redacted A/B scenarios. Assert the
-  full serialized response and rendered document contain no recommendation,
+  ID/expiry/count/max-five and exactly two redacted A/B scenarios. Assert one
+  admitted read increments the access counter exactly once and records its
+  access time. The full serialized response contains no recommendation,
   owner selection, project/account identity, raw input, locality/dimensions,
   notes/questions, internal comparison/scenario IDs, files, orders, payment or
-  entitlement fields. Malformed/missing is generic; revoked/expired is `410`.
+  entitlement fields. Malformed/missing is generic; revoked/expired/archived is
+  `410`. Inject a final D1 admission failure and prove it returns `503` with no
+  projection, access increment, private database error, or successful-open
+  event. Impossible calendar dates and non-canonical stored expiry formats must
+  also fail closed without disclosure. Rendered-DOM privacy remains a manual
+  acceptance check below. The client maps admission/dependency failure to an
+  announced temporary-private state and retries the same bearer link without
+  requesting an impossible replacement link.
 - Family Alignment receipts: validate the exact role/preference/confidence and
   one-to-three reason allowlists; reject unknown fields, duplicate reasons,
   HTML/URL/free text, body tokens and oversized/malformed bodies. Create five
@@ -279,11 +287,14 @@ interleaved within their own real-D1 fixtures.
   existing receipt can update without changing the count. Replay/concurrency
   creates no duplicate; missing/wrong/cross-room token cannot read, update, or
   take over a response.
-- Family Alignment closure races: interleave receipt create/update with revoke
-  and with database-time expiry; no response may commit after closure due to a
-  stale application read. Revoke is idempotent, permanently closes public read
-  and write, and does not mutate the comparison, owner selection, or any paid
-  order/fulfillment state.
+- Family Alignment closure races: interleave public read and receipt
+  create/update with revoke, project archive, and database-time expiry. The
+  final read admission and write fence must be authoritative: no comparison
+  may be disclosed and no response may commit after closure wins due to a stale
+  application pre-read. If read admission wins it increments once and may
+  complete, but every later read is closed. Revoke is idempotent, permanently
+  closes public read and write, and does not mutate the comparison, owner
+  selection, or any paid order/fulfillment state.
 - Family Alignment owner summary: counts reconcile from zero through five;
   derived state covers `no_responses`, `split`, `leaning_a`, `leaning_b`,
   `aligned_a`, `aligned_b`, and `not_ready`. Assert no receipt rows, response
@@ -302,8 +313,10 @@ interleaved within their own real-D1 fixtures.
   `family_alignment_room_created`, `family_alignment_review_opened`,
   `family_alignment_response_submitted`, and
   `family_alignment_room_revoked` are allowed after valid auth/token and a
-  successful core action. Inject aggregate write/counter failures and prove
-  room/read/response/revoke results remain truthful with no client duplicate.
+  successful core action. Inject aggregate analytics-write failures and prove
+  room/response/revoke results remain truthful with no client duplicate. Inject
+  an authoritative public-read counter failure separately and require `503`
+  with no projection or successful-open event.
 
 ## Non-functional checks
 
@@ -373,12 +386,12 @@ interleaved within their own real-D1 fixtures.
 | Redaction | Open the public URL and inspect DOM, network, page source and share metadata | Only neutral A/B review facts; no recommendation, selection, owner/project identity, raw input, notes or secret disclosure |
 | Reviewer happy path | Submit with each input method, reload, then update from the same browser | One receipt; recorded then updated announcement; count unchanged; identity is not requested or implied |
 | Capacity | Fill five slots, open from a sixth browser, then update an existing response | Sixth browser is honestly non-submittable; retained receipt can still update; count stays five |
-| Closure | Keep reviewer form open while owner revokes; repeat across expiry | Submit cannot commit; stable accessible expired/revoked state; no stale private content remains |
+| Closure | Keep reviewer form open while owner revokes; repeat across expiry | Submit cannot commit; stable accessible closed state; no stale private content remains |
 | Owner summary | Exercise zero, split, leaning, aligned and not-ready fixtures | Counts/reasons reconcile; copy is advisory; no individual or ordering can be inferred; owner selection is separate |
 | Ownership | Request create/summary/revoke from another account | Same safe `404` as missing; no existence, count, comparison, or identity leak |
 | Accessibility | Keyboard, VoiceOver/NVDA, 200% zoom, increased spacing, reduced motion, high contrast, 390 px | Logical headings/groups/order, visible focus, 48 px targets, announced status/errors, no color-only meaning or overflow |
 | Privacy/logs | Use canary tokens/values while capturing browser requests, Worker logs and D1 rows | Raw tokens/content absent from logs/analytics; only token digests and approved structured data retained |
-| Failure injection | Fail analytics/counter writes after each core action | Core result remains correct and retriable; no false `5xx`, duplicate room/receipt, or client double-count |
+| Failure injection | Fail ancillary analytics after each core action, then fail authoritative public-read admission | Core writes remain correct with no false `5xx` or duplicates; failed read admission returns `503` with no comparison disclosure or double-count |
 | Retention | Seed active, recently revoked/expired and retention-eligible rows; invoke scheduled handler | Only eligible Family Alignment rows are removed; comparison/selection/project/payment evidence is unchanged |
 | Paid isolation | Run the entire flow with paid switches closed and inspect commerce tables | No order, provider ID, entitlement, artifact or paid flag is created or changed |
 

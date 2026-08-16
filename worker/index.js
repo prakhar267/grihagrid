@@ -500,6 +500,13 @@ function sqliteTimestamp(date = new Date()) {
   return date.toISOString().slice(0, 19).replace("T", " ");
 }
 
+function parseCanonicalSqliteTimestamp(value) {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/u.test(value)) return null;
+  const timestamp = Date.parse(`${value.replace(" ", "T")}Z`);
+  if (!Number.isFinite(timestamp) || sqliteTimestamp(new Date(timestamp)) !== value) return null;
+  return timestamp;
+}
+
 function publicUser(row) {
   return {
     id: row.user_id || row.id,
@@ -4340,7 +4347,7 @@ function familyAlignmentSummary(rows) {
 
 function familyAlignmentRoomMetadata(row, summary = null) {
   const now = Date.now();
-  const expiresAt = new Date(`${String(row.expires_at).replace(" ", "T")}Z`).getTime();
+  const expiresAt = parseCanonicalSqliteTimestamp(row.expires_at);
   const room = {
     id: row.id,
     comparisonId: row.comparison_id,
@@ -4350,7 +4357,7 @@ function familyAlignmentRoomMetadata(row, summary = null) {
     revokedAt: row.revoked_at || null,
     responseCount: Number(row.response_count || 0),
     maxResponses: FAMILY_ALIGNMENT_RESPONSE_LIMIT,
-    active: !row.revoked_at && expiresAt > now,
+    active: !row.revoked_at && expiresAt !== null && expiresAt > now,
   };
   return summary ? { ...room, summary } : room;
 }
@@ -4531,7 +4538,12 @@ async function publicFamilyAlignmentRoom(request, env, token) {
   if (room.revoked_at || room.project_status === "archived") {
     throw new HttpError(410, "this review room is no longer available", "family_alignment_unavailable");
   }
-  if (new Date(`${room.expires_at.replace(" ", "T")}Z`) <= new Date()) {
+  const expiresAt = parseCanonicalSqliteTimestamp(room.expires_at);
+  if (expiresAt === null) {
+    console.error("Family Alignment stored expiry is invalid");
+    throw new HttpError(503, "this review room is temporarily unavailable", "family_alignment_unavailable");
+  }
+  if (expiresAt <= Date.now()) {
     throw new HttpError(410, "this review room has expired", "family_alignment_expired");
   }
   return { db, room };
@@ -4540,15 +4552,62 @@ async function publicFamilyAlignmentRoom(request, env, token) {
 async function getPublicFamilyAlignment(request, env, token) {
   const { db, room } = await publicFamilyAlignmentRoom(request, env, token);
   const projection = familyAlignmentPublicProjection(room);
+  let admissionResults;
   try {
-    await db.prepare(
-      `UPDATE family_alignment_rooms
-          SET access_count=access_count+1,last_accessed_at=?
-        WHERE id=? AND revoked_at IS NULL AND expires_at>datetime('now')
-      RETURNING id`,
-    ).bind(sqliteTimestamp(), room.id).first();
+    // The access update is the read's linearization point. D1 executes this
+    // batch in one transaction, so a revoke/archive/expiry that wins first
+    // prevents both the counter increment and disclosure. The second statement
+    // classifies that same serialized state without trusting the stale pre-read.
+    admissionResults = await db.batch([
+      db.prepare(
+        `UPDATE family_alignment_rooms
+            SET access_count=access_count+1,last_accessed_at=?
+          WHERE id=? AND revoked_at IS NULL
+            AND length(expires_at)=19
+            AND strftime('%Y-%m-%d %H:%M:%S',julianday(expires_at))=expires_at
+            AND expires_at>datetime('now')
+            AND EXISTS (
+              SELECT 1 FROM projects p
+               WHERE p.id=family_alignment_rooms.project_id
+                 AND p.user_id=family_alignment_rooms.user_id
+                 AND p.status!='archived'
+            )
+        RETURNING id`,
+      ).bind(sqliteTimestamp(), room.id),
+      db.prepare(
+        `SELECT r.revoked_at,
+                CASE
+                  WHEN length(r.expires_at)!=19
+                    OR strftime('%Y-%m-%d %H:%M:%S',julianday(r.expires_at)) IS NOT r.expires_at
+                    THEN 'invalid'
+                  WHEN r.expires_at<=datetime('now') THEN 'expired'
+                  ELSE 'active'
+                END AS expiry_state,
+                p.status AS project_status
+           FROM family_alignment_rooms r
+           LEFT JOIN projects p ON p.id=r.project_id AND p.user_id=r.user_id
+          WHERE r.id=?`,
+      ).bind(room.id),
+    ]);
   } catch {
-    console.error("Family Alignment access recording failed");
+    console.error("Family Alignment read admission failed");
+    throw new HttpError(503, "this review room is temporarily unavailable", "family_alignment_unavailable");
+  }
+  const admitted = admissionResults?.[0]?.results?.[0];
+  if (!admitted) {
+    const finalState = admissionResults?.[1]?.results?.[0];
+    if (!finalState || finalState.revoked_at || finalState.project_status === "archived") {
+      throw new HttpError(410, "this review room is no longer available", "family_alignment_unavailable");
+    }
+    if (finalState.expiry_state === "expired") {
+      throw new HttpError(410, "this review room has expired", "family_alignment_expired");
+    }
+    if (finalState.expiry_state === "invalid") {
+      console.error("Family Alignment stored expiry is invalid");
+      throw new HttpError(503, "this review room is temporarily unavailable", "family_alignment_unavailable");
+    }
+    console.error("Family Alignment read admission was not recorded");
+    throw new HttpError(503, "this review room is temporarily unavailable", "family_alignment_unavailable");
   }
   await familyAlignmentEvent(db, "family_alignment_review_opened", "family_review");
   return json({ room: projection });

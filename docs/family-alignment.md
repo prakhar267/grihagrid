@@ -87,7 +87,7 @@ It contains only:
 
 - opaque room identifier, creation time and comparison version number;
 - expiry time, current response count, and maximum response count of five;
-- room state needed to render active, full, expired, or revoked behavior; and
+- room state needed to render active, full, or closed behavior; and
 - exactly two redacted scenario presentations with neutral A/B aliases and the
   bounded, server-derived comparison facts explicitly allowlisted by the
   backend contract.
@@ -140,8 +140,10 @@ metadata, or a small-cell drill-down that reconstructs an individual.
   ownership-safe `404` for foreign or missing resources.
 - Public routes are bearer-authorized and rate limited without creating an
   identity profile. Missing or malformed secrets use one generic unavailable
-  response. Known revoked and expired rooms return `410` without exposing
-  owner/project details.
+  response. Known revoked, expired, and archived-project rooms return `410`
+  without exposing owner/project details. A successful public read is admitted
+  by one final D1 transaction immediately before disclosure; a dependency
+  failure returns `503` without any room projection.
 
 ## Concurrency and failure semantics
 
@@ -159,23 +161,36 @@ These are release-blocking invariants:
 4. An update proves possession of the room-scoped response secret and updates
    exactly one receipt. It cannot create a second receipt, take over another
    response, change rooms, or reopen an expired/revoked room.
-5. Expiry/revocation is re-evaluated at the write boundary. A response racing a
+5. Public-read admission re-evaluates revocation, database-time expiry, and the
+   parent project's archive state in the same D1 transaction that increments
+   the access counter. If closure wins, no comparison projection or open event
+   is returned. If admission wins, that read may complete and every later read
+   must observe closure. Missing or malformed stored expiry state and admission
+   errors fail closed rather than treating the view counter as ancillary.
+6. Expiry/revocation is re-evaluated at the write boundary. A response racing a
    revoke or expiry cannot commit after closure because of a stale application
    pre-read.
-6. Summary counts come from committed receipts and always reconcile to a total
+7. Summary counts come from committed receipts and always reconcile to a total
    from zero through five. No cache or analytics write is authoritative.
-7. Room create/revoke and receipt create/update succeed or fail on their core
-   D1 transaction. Best-effort aggregate analytics, counters, or logging may
-   fail without turning a committed core action into a false `5xx`.
-8. Cleanup hard-deletes a room (and cascade-deletes its receipts) only after
+8. Room create/revoke and receipt create/update succeed or fail on their core
+   D1 transaction. Best-effort aggregate analytics or logging may fail without
+   turning a committed core action into a false `5xx`. The public-read access
+   counter is the authoritative admission fence from invariant 5, not ancillary
+   telemetry, so its failure returns `503` without disclosure.
+9. Cleanup hard-deletes a room (and cascade-deletes its receipts) only after
    its expiry boundary or revocation time is more than 90 days old. It must not
    delete a project, comparison, selection, order, payment ledger, purchased
    snapshot, or public Decision Share. The 90-day closed-room window is still
    retained personal data for support/audit purposes, not anonymous analytics.
 
-Stable client states must distinguish `active`, `full`, `expired`, `revoked`,
-and generic `unavailable`. The success response distinguishes `recorded` from
-`updated`. Retrying an accepted write must not produce a duplicate receipt.
+Stable reviewer client states distinguish `active`, `full`, `closed`, and
+generic `unavailable`; expired, revoked, and archived `410` responses all map
+to the same identity-safe `closed` screen. A dependency or authoritative
+admission failure uses a distinct temporary state that confirms the review
+remains private and retries the same bearer link; it must not ask for a link
+that cannot be reissued for the same comparison. The success response
+distinguishes `recorded` from `updated`. Retrying an accepted write must not
+produce a duplicate receipt.
 
 ## Owner experience and trust copy
 
@@ -198,8 +213,8 @@ split or `not_ready` result must not be reframed as a recommendation.
 - Use a heading hierarchy and semantic `fieldset`/`legend` groups for role,
   preference, confidence, and reasons. Use native radio/checkbox controls or a
   fully equivalent keyboard and assistive-technology pattern.
-- Announce loading, recorded, updated, validation failure, full, expired, and
-  revoked states with appropriate status/alert semantics without moving focus
+- Announce loading, recorded, updated, validation failure, full, closed, and
+  unavailable states with appropriate status/alert semantics without moving focus
   unexpectedly.
 - All controls have visible focus, text labels, error association, and a
   minimum 48-by-48 CSS pixel target. Counts and A/B states are not conveyed by

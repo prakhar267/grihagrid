@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import worker, { __test } from "../worker/index.js";
 
@@ -129,4 +130,22 @@ test("malformed percent escapes on Family bearer routes are rejected without a 5
     console.error = originalError;
     console.log = originalLog;
   }
+});
+
+test("Family Alignment frontend hides the comparison and retries temporary admission failures", async () => {
+  const app = await readFile(new URL("../src/App.jsx", import.meta.url), "utf8");
+  const start = app.indexOf("function FamilyAlignmentReviewPage(");
+  const end = app.indexOf("function CheckoutReturnPage(", start);
+  assert.ok(start >= 0 && end > start, "Family Alignment review must remain a discrete frontend flow");
+  const review = app.slice(start, end);
+  assert.match(review, /if\(err\.status===410\)setPhase\('closed'\)/u);
+  assert.match(review, /else if\(err\.status===404\)setPhase\('unavailable'\)/u);
+  assert.match(review, /setRoom\(null\)/u, "each load must clear any stale comparison before admission");
+  assert.match(review, /setPhase\('temporary'\)/u, "dependency failures must use a retryable private state");
+  assert.match(review, /The review remains private and nothing was submitted\./u);
+  assert.match(review, /setLoadAttempt\(value=>value\+1\)/u, "retry must re-run admission for the same bearer link");
+  assert.match(review, /Try this link again/u);
+  assert.match(review, /ref=\{stateHeadingRef\} tabIndex="-1"/u, "asynchronous terminal states must receive focus");
+  assert.match(review, /This family review has ended\./u);
+  assert.match(review, /No response can be viewed or submitted from this link\./u);
 });
