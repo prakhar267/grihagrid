@@ -87,6 +87,8 @@ without a duplicate row or attribution increment, while conflicting key reuse is
 rejected.
 
 See `docs/product-blueprint.md` for the product specification and `docs/operations-runbook.md` for the launch/rollback checklist.
+The fail-closed schema inventory, two-read budget, and exact-version latency
+validation are defined in `docs/readiness-performance.md`.
 
 ## Important product boundary
 

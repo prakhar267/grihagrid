@@ -690,10 +690,329 @@ async function reportHandoffControl(db) {
     const row = await db.prepare(
       "SELECT enabled FROM report_handoff_controls WHERE control_key='report_handoff'",
     ).first();
-    return Number(row?.enabled) === 1 ? "enabled" : Number(row?.enabled) === 0 ? "disabled" : "unavailable";
+    if (!row || typeof row !== "object" || Array.isArray(row)) return "unavailable";
+    return row.enabled === 1 ? "enabled" : row.enabled === 0 ? "disabled" : "unavailable";
   } catch {
     return "unavailable";
   }
+}
+
+function readinessManifest({ tables = [], indexes = [], triggers = [], columns = {} }) {
+  return Object.freeze({
+    objects: Object.freeze([
+      ...tables.map((name) => `table:${name}`),
+      ...indexes.map((name) => `index:${name}`),
+      ...triggers.map((name) => `trigger:${name}`),
+    ]),
+    columns: Object.freeze(Object.entries(columns).flatMap(([table, names]) => (
+      names.map((name) => `${table}:${name}`)
+    ))),
+  });
+}
+
+const READINESS_REQUIRED_TABLES = Object.freeze([
+  "users", "sessions", "projects", "reports", "purchased_report_snapshots", "order_fulfillments",
+  "ai_planning_briefs", "ai_generation_counters", "ai_generation_leases", "decision_comparisons",
+  "decision_selections", "purchased_decision_snapshots", "decision_shares", "product_event_aggregates",
+  "decision_progress", "payment_terminal_records", "payment_reconciliation_cases", "family_alignment_rooms",
+  "family_alignment_responses", "project_revisions", "project_revision_requests", "project_revision_reports",
+  "report_feedback", "report_shares", "report_share_read_counters", "report_share_create_counters",
+  "report_handoff_controls",
+]);
+
+const READINESS_MANIFESTS = Object.freeze({
+  revision: readinessManifest({
+    tables: ["project_revisions", "project_revision_requests", "project_revision_reports"],
+    indexes: [
+      "idx_project_revisions_owner_created", "idx_project_revision_requests_project",
+      "idx_project_revision_reports_source",
+    ],
+    triggers: [
+      "project_revision_capture_insert", "project_revision_capture_update", "projects_input_revision_guard",
+      "project_revision_source_change_effects", "project_revisions_identity_guard",
+      "archived_project_revision_insert_guard", "project_revisions_immutable_update",
+      "project_revisions_immutable_delete", "project_revision_request_result_guard",
+      "project_revision_requests_immutable_update", "project_revision_requests_immutable_delete",
+      "project_revision_report_source_guard", "project_revision_reports_immutable_update",
+      "project_revision_reports_immutable_delete",
+    ],
+    columns: {
+      projects: ["input_hash", "input_schema_version", "estimate_rule_version", "brief_check_version", "brief_check_json"],
+      reports: ["project_input_revision"],
+      project_revisions: [
+        "project_id", "revision", "provenance", "input_schema_version", "estimate_rule_version",
+        "brief_check_version", "content_hash", "input_json", "estimate_json", "brief_check_json", "created_at",
+      ],
+      project_revision_requests: [
+        "idempotency_key_hash", "request_hash", "result_content_hash", "project_id", "expected_revision",
+        "result_revision", "created_at",
+      ],
+      project_revision_reports: [
+        "project_id", "project_revision", "report_schema_version", "source_report_id", "source_content_hash",
+        "input_hash", "content_json", "generated_at",
+      ],
+    },
+  }),
+  reportFeedback: readinessManifest({
+    tables: ["report_feedback"],
+    indexes: ["idx_report_feedback_updated", "idx_report_feedback_outcome"],
+    triggers: [
+      "report_feedback_insert_guard", "report_feedback_update_guard", "project_input_allowlist_insert_guard",
+      "project_input_allowlist_update_guard", "project_account_limit_insert_guard",
+    ],
+    columns: {
+      report_feedback: [
+        "project_id", "project_revision", "report_schema_version", "user_id", "outcome", "sections_json",
+        "created_at", "updated_at",
+      ],
+    },
+  }),
+  reportShare: readinessManifest({
+    tables: [
+      "report_shares", "report_share_read_counters", "report_share_create_counters", "report_handoff_controls",
+    ],
+    indexes: [
+      "idx_report_shares_owner_created", "idx_report_shares_expiry", "idx_report_shares_revoked",
+      "idx_report_share_read_counters_updated", "idx_report_share_create_counters_updated",
+    ],
+    triggers: [
+      "report_share_sections_insert_guard", "report_share_identity_immutable", "archived_report_share_insert_guard",
+      "report_share_active_limit_insert", "report_handoff_enabled_insert_guard",
+    ],
+    columns: {
+      report_shares: [
+        "id", "project_id", "user_id", "project_revision", "report_schema_version", "sections_json",
+        "report_content_hash", "token_hash", "idempotency_key_hash", "request_hash", "expires_at", "revoked_at",
+        "access_count", "last_accessed_at", "created_at",
+      ],
+      report_share_read_counters: ["subject_hash", "window_start", "request_count", "limit_count", "updated_at"],
+      report_share_create_counters: ["user_id", "window_start", "request_count", "limit_count", "updated_at"],
+      report_handoff_controls: ["control_key", "enabled", "updated_at"],
+    },
+  }),
+  projectCreation: readinessManifest({
+    indexes: ["idx_projects_user_creation_key"],
+    columns: { projects: ["creation_key_hash", "creation_request_hash"] },
+  }),
+  auth: readinessManifest({
+    tables: ["users", "sessions", "password_change_attempt_counters", "login_attempt_fences"],
+    indexes: ["idx_password_change_attempts_updated", "idx_login_attempt_fences_expires"],
+    triggers: ["users_auth_state_update_guard", "session_auth_state_immutable"],
+    columns: {
+      users: ["auth_generation", "auth_revision_id", "password_changed_at"],
+      sessions: ["auth_generation", "auth_revision_id"],
+      password_change_attempt_counters: ["user_id", "window_start", "request_count", "limit_count", "updated_at"],
+      login_attempt_fences: [
+        "user_id", "window_started_at", "expires_at", "request_count", "limit_count", "updated_at",
+      ],
+    },
+  }),
+  familyAlignment: readinessManifest({
+    tables: ["family_alignment_rooms", "family_alignment_responses"],
+    indexes: [
+      "idx_family_alignment_owner_created", "idx_family_alignment_expiry",
+      "idx_family_alignment_responses_room_updated",
+    ],
+    triggers: [
+      "family_alignment_response_insert_guard", "family_alignment_response_update_guard",
+      "family_alignment_room_identity_immutable", "family_alignment_response_count_insert",
+      "family_alignment_response_active_after_insert", "family_alignment_response_active_after_update",
+      "family_alignment_response_count_delete",
+    ],
+    columns: {
+      family_alignment_rooms: [
+        "id", "project_id", "user_id", "comparison_id", "comparison_version", "token_hash", "idempotency_key",
+        "request_hash", "response_count", "access_count", "last_accessed_at", "expires_at", "revoked_at", "created_at",
+      ],
+      family_alignment_responses: [
+        "id", "room_id", "receipt_hash", "role", "preference", "confidence", "reasons_json", "created_at", "updated_at",
+      ],
+    },
+  }),
+  archiveSafety: readinessManifest({
+    triggers: [
+      "archived_decision_comparison_insert_guard", "archived_decision_selection_insert_guard",
+      "archived_decision_selection_update_guard", "archived_project_file_insert_guard", "archived_order_insert_guard",
+      "archived_decision_share_insert_guard", "archived_report_insert_guard", "archived_report_update_guard",
+      "archived_ai_brief_insert_guard", "archived_ai_brief_update_guard", "archived_family_room_insert_guard",
+      "archived_family_response_insert_guard", "archived_family_response_update_guard",
+    ],
+  }),
+  decision: readinessManifest({
+    tables: [
+      "decision_comparisons", "decision_selections", "purchased_decision_snapshots", "decision_shares",
+      "product_event_aggregates", "decision_progress",
+    ],
+    columns: {
+      projects: ["id", "input_revision"],
+      orders: ["id", "product_code", "entitlement_revoked_at", "terms_version", "terms_accepted_at"],
+      decision_comparisons: [
+        "id", "project_id", "user_id", "version", "priority", "content_hash", "content_json", "created_at",
+        "project_input_revision",
+      ],
+      decision_selections: ["comparison_id", "project_id", "user_id", "scenario_id", "selected_at", "locked_at"],
+      purchased_decision_snapshots: [
+        "id", "order_id", "project_id", "user_id", "comparison_id", "selected_scenario_id",
+        "snapshot_schema_version", "content_hash", "artifact_json", "created_at",
+      ],
+      decision_shares: [
+        "id", "order_id", "snapshot_id", "project_id", "user_id", "token_hash", "idempotency_key", "request_hash",
+        "expires_at", "revoked_at", "access_count", "last_accessed_at", "created_at",
+      ],
+      product_event_aggregates: ["event_day", "event_name", "surface", "outcome", "event_count", "updated_at"],
+      decision_progress: [
+        "snapshot_id", "order_id", "first_opened_at", "first_printed_at", "first_shared_at",
+        "professional_handoff_at", "updated_at",
+      ],
+    },
+  }),
+  payment: readinessManifest({
+    tables: ["payment_terminal_records", "payment_reconciliation_cases"],
+    columns: {
+      orders: ["request_hash"],
+      payment_terminal_records: [
+        "record_type", "provider_object_id", "terminal_action", "provider_event_id", "provider_payment_id", "order_id",
+        "amount_paise", "currency", "provider_state", "observed_at",
+      ],
+      payment_reconciliation_cases: [
+        "id", "order_id", "conflicting_order_id", "provider_event_id", "provider_payment_id", "reason", "status",
+        "created_at", "updated_at", "resolved_at",
+      ],
+    },
+  }),
+  ai: readinessManifest({
+    tables: ["ai_planning_briefs"],
+    columns: {
+      ai_planning_briefs: [
+        "schema_version", "prompt_version", "prompt_sha256", "model", "source_report_id", "source_report_version",
+        "source_input_hash", "content_json", "provider_interaction_id",
+      ],
+    },
+  }),
+  aiAbuse: readinessManifest({
+    tables: ["ai_generation_counters", "ai_generation_leases"],
+    columns: {
+      ai_generation_counters: ["scope", "subject_id", "window_start", "request_count", "limit_count", "updated_at"],
+      ai_generation_leases: ["project_id", "user_id", "lease_token", "source_input_hash", "expires_at"],
+    },
+  }),
+});
+
+const READINESS_COLUMN_TABLES = Object.freeze([...new Set(
+  Object.values(READINESS_MANIFESTS).flatMap((manifest) => (
+    manifest.columns.map((key) => key.slice(0, key.indexOf(":")))
+  )),
+)]);
+
+const READINESS_DATABASE_INVENTORY_SQL = `WITH target_tables(table_name) AS (
+  VALUES ${READINESS_COLUMN_TABLES.map((name) => `('${name}')`).join(",")}
+)
+SELECT 'object' AS kind,type AS scope,name
+  FROM sqlite_master
+ WHERE type IN ('table','index','trigger')
+UNION ALL
+SELECT 'column' AS kind,target_tables.table_name AS scope,columns.name
+  FROM target_tables
+  JOIN pragma_table_info(target_tables.table_name) AS columns`;
+
+function readinessInventoryRowsForTest() {
+  const objects = new Set(READINESS_REQUIRED_TABLES.map((name) => `table:${name}`));
+  const columns = new Set();
+  for (const manifest of Object.values(READINESS_MANIFESTS)) {
+    for (const key of manifest.objects) objects.add(key);
+    for (const key of manifest.columns) columns.add(key);
+  }
+  const row = (kind, key) => {
+    const separator = key.indexOf(":");
+    return { kind, scope: key.slice(0, separator), name: key.slice(separator + 1) };
+  };
+  return [
+    ...[...objects].sort().map((key) => row("object", key)),
+    ...[...columns].sort().map((key) => row("column", key)),
+  ];
+}
+
+function readinessInventoryHas(inventory, manifest) {
+  return manifest.objects.every((key) => inventory.objects.has(key))
+    && manifest.columns.every((key) => inventory.columns.has(key));
+}
+
+async function readinessDatabaseState(db) {
+  const result = await db.prepare(READINESS_DATABASE_INVENTORY_SQL).all();
+  if (!result || result.success !== true || !Array.isArray(result.results)) {
+    throw new Error("readiness inventory returned an invalid result");
+  }
+  const inventory = { objects: new Set(), columns: new Set() };
+  for (const row of result.results) {
+    if (!row || typeof row !== "object" || Array.isArray(row)
+        || typeof row.kind !== "string" || typeof row.scope !== "string" || typeof row.name !== "string"
+        || !row.scope || !row.name) {
+      throw new Error("readiness inventory contains an invalid row");
+    }
+    if (row.kind === "object") {
+      if (!["table", "index", "trigger"].includes(row.scope)) {
+        throw new Error("readiness inventory contains an invalid object scope");
+      }
+      const key = `${row.scope}:${row.name}`;
+      if (inventory.objects.has(key)) throw new Error("readiness inventory contains a duplicate object");
+      inventory.objects.add(key);
+    } else if (row.kind === "column") {
+      if (!READINESS_COLUMN_TABLES.includes(row.scope)) {
+        throw new Error("readiness inventory contains an invalid column scope");
+      }
+      const key = `${row.scope}:${row.name}`;
+      if (inventory.columns.has(key)) throw new Error("readiness inventory contains a duplicate column");
+      inventory.columns.add(key);
+    } else {
+      throw new Error("readiness inventory contains an invalid kind");
+    }
+  }
+
+  const current = (manifest) => readinessInventoryHas(inventory, manifest) ? "current" : "outdated";
+  const revisionSchema = current(READINESS_MANIFESTS.revision);
+  const reportFeedbackSchema = current(READINESS_MANIFESTS.reportFeedback);
+  const projectCreationSchema = current(READINESS_MANIFESTS.projectCreation);
+  const authSchema = current(READINESS_MANIFESTS.auth);
+  const familyAlignmentSchema = current(READINESS_MANIFESTS.familyAlignment);
+  const archiveSafetySchema = current(READINESS_MANIFESTS.archiveSafety);
+  const decisionSchema = current(READINESS_MANIFESTS.decision);
+  const paymentSchema = current(READINESS_MANIFESTS.payment);
+  const aiSchema = current(READINESS_MANIFESTS.ai);
+  const aiAbuseControl = readinessInventoryHas(inventory, READINESS_MANIFESTS.aiAbuse)
+    && typeof db.batch === "function"
+    ? "configured"
+    : "unavailable";
+
+  const reportShareStructureCurrent = readinessInventoryHas(inventory, READINESS_MANIFESTS.reportShare);
+  const reportHandoffControlState = reportShareStructureCurrent ? await reportHandoffControl(db) : "unavailable";
+  const reportShareSchema = reportShareStructureCurrent && reportHandoffControlState !== "unavailable"
+    ? "current"
+    : "outdated";
+  const requiredTablesPresent = READINESS_REQUIRED_TABLES.every((name) => inventory.objects.has(`table:${name}`));
+  const schema = requiredTablesPresent && aiSchema === "current" && aiAbuseControl === "configured"
+    && decisionSchema === "current" && paymentSchema === "current" && familyAlignmentSchema === "current"
+    && archiveSafetySchema === "current" && revisionSchema === "current"
+    && reportFeedbackSchema === "current" && reportShareSchema === "current"
+    && projectCreationSchema === "current" && authSchema === "current"
+    ? "current"
+    : "outdated";
+
+  return {
+    database: "ok",
+    schema,
+    aiSchema,
+    aiAbuseControl,
+    decisionSchema,
+    paymentSchema,
+    familyAlignmentSchema,
+    archiveSafetySchema,
+    revisionSchema,
+    reportFeedbackSchema,
+    reportShareSchema,
+    reportHandoffControlState,
+    projectCreationSchema,
+    authSchema,
+  };
 }
 
 async function requireReportHandoffEnabled(db) {
@@ -7200,382 +7519,24 @@ async function api(request, env, ctx, url) {
       let authSchema = "unknown";
       if (env.DB) {
         try {
-          const result = await env.DB.prepare(
-            `SELECT COUNT(*) AS count,
-                    SUM(CASE WHEN name='ai_planning_briefs' THEN 1 ELSE 0 END) AS ai_brief_count,
-                    SUM(CASE WHEN name IN ('ai_generation_counters','ai_generation_leases') THEN 1 ELSE 0 END) AS ai_abuse_count,
-                    SUM(CASE WHEN name IN ('payment_terminal_records','payment_reconciliation_cases') THEN 1 ELSE 0 END) AS payment_hardening_count,
-                    SUM(CASE WHEN name IN ('family_alignment_rooms','family_alignment_responses') THEN 1 ELSE 0 END) AS family_alignment_count,
-                    SUM(CASE WHEN name IN ('project_revisions','project_revision_requests','project_revision_reports') THEN 1 ELSE 0 END) AS revision_table_count,
-                    SUM(CASE WHEN name='report_feedback' THEN 1 ELSE 0 END) AS report_feedback_count,
-                    SUM(CASE WHEN name IN ('report_shares','report_share_read_counters',
-                                           'report_share_create_counters','report_handoff_controls') THEN 1 ELSE 0 END) AS report_share_count,
-                    SUM(CASE WHEN name IN
-                      ('decision_comparisons','decision_selections','purchased_decision_snapshots',
-                       'decision_shares','product_event_aggregates','decision_progress') THEN 1 ELSE 0 END) AS decision_table_count
-               FROM sqlite_master
-              WHERE type='table' AND name IN
-                ('users','sessions','projects','reports','purchased_report_snapshots','order_fulfillments',
-                 'ai_planning_briefs','ai_generation_counters','ai_generation_leases','decision_comparisons',
-                 'decision_selections','purchased_decision_snapshots','decision_shares','product_event_aggregates',
-                 'decision_progress','payment_terminal_records','payment_reconciliation_cases',
-                 'family_alignment_rooms','family_alignment_responses','project_revisions',
-                 'project_revision_requests','project_revision_reports','report_feedback','report_shares',
-                 'report_share_read_counters','report_share_create_counters','report_handoff_controls')`,
-          ).first();
-          database = "ok";
-          const requiredTablesPresent = Number(result?.count) === 27;
-          if (Number(result?.revision_table_count) === 3) {
-            try {
-              await env.DB.prepare(
-                `SELECT input_hash,input_schema_version,estimate_rule_version,brief_check_version,brief_check_json
-                   FROM projects LIMIT 0`,
-              ).first();
-              await env.DB.prepare("SELECT project_input_revision FROM reports LIMIT 0").first();
-              await env.DB.prepare(
-                `SELECT project_id,revision,provenance,input_schema_version,estimate_rule_version,
-                        brief_check_version,content_hash,input_json,estimate_json,brief_check_json,created_at
-                   FROM project_revisions LIMIT 0`,
-              ).first();
-              await env.DB.prepare(
-                `SELECT idempotency_key_hash,request_hash,result_content_hash,project_id,
-                        expected_revision,result_revision,created_at
-                   FROM project_revision_requests LIMIT 0`,
-              ).first();
-              await env.DB.prepare(
-                `SELECT project_id,project_revision,report_schema_version,source_report_id,
-                        source_content_hash,input_hash,content_json,generated_at
-                   FROM project_revision_reports LIMIT 0`,
-              ).first();
-              const revisionObjects = await env.DB.prepare(
-                `SELECT
-                   SUM(CASE WHEN type='trigger' AND name IN (
-                     'project_revision_capture_insert','project_revision_capture_update',
-                     'projects_input_revision_guard',
-                     'project_revision_source_change_effects','project_revisions_identity_guard',
-                     'archived_project_revision_insert_guard','project_revisions_immutable_update',
-                     'project_revisions_immutable_delete','project_revision_request_result_guard',
-                     'project_revision_requests_immutable_update','project_revision_requests_immutable_delete',
-                     'project_revision_report_source_guard','project_revision_reports_immutable_update',
-                     'project_revision_reports_immutable_delete'
-                   ) THEN 1 ELSE 0 END) AS trigger_count,
-                   SUM(CASE WHEN type='index' AND name IN (
-                     'idx_project_revisions_owner_created','idx_project_revision_requests_project',
-                     'idx_project_revision_reports_source'
-                   ) THEN 1 ELSE 0 END) AS index_count
-                 FROM sqlite_master
-                WHERE type IN ('trigger','index')`,
-              ).first();
-              revisionSchema = Number(revisionObjects?.trigger_count) === 14
-                && Number(revisionObjects?.index_count) === 3
-                ? "current"
-                : "outdated";
-            } catch {
-              revisionSchema = "outdated";
-            }
-          } else {
-            revisionSchema = "outdated";
-          }
-          if (Number(result?.report_feedback_count) === 1) {
-            try {
-              await env.DB.prepare(
-                `SELECT project_id,project_revision,report_schema_version,user_id,
-                        outcome,sections_json,created_at,updated_at
-                   FROM report_feedback LIMIT 0`,
-              ).first();
-              const feedbackObjects = await env.DB.prepare(
-                `SELECT
-                   SUM(CASE WHEN type='trigger' AND name IN (
-                     'report_feedback_insert_guard','report_feedback_update_guard',
-                     'project_input_allowlist_insert_guard','project_input_allowlist_update_guard',
-                     'project_account_limit_insert_guard'
-                   ) THEN 1 ELSE 0 END) AS trigger_count,
-                   SUM(CASE WHEN type='index' AND name IN (
-                     'idx_report_feedback_updated','idx_report_feedback_outcome'
-                   ) THEN 1 ELSE 0 END) AS index_count
-                 FROM sqlite_master
-                WHERE type IN ('trigger','index')`,
-              ).first();
-              reportFeedbackSchema = Number(feedbackObjects?.trigger_count) === 5
-                && Number(feedbackObjects?.index_count) === 2
-                ? "current"
-                : "outdated";
-            } catch {
-              reportFeedbackSchema = "outdated";
-            }
-          } else {
-            reportFeedbackSchema = "outdated";
-          }
-          if (Number(result?.report_share_count) === 4) {
-            try {
-              await env.DB.prepare(
-                `SELECT id,project_id,user_id,project_revision,report_schema_version,sections_json,
-                        report_content_hash,token_hash,idempotency_key_hash,request_hash,expires_at,
-                        revoked_at,access_count,last_accessed_at,created_at
-                   FROM report_shares LIMIT 0`,
-              ).first();
-              await env.DB.prepare(
-                `SELECT subject_hash,window_start,request_count,limit_count,updated_at
-                   FROM report_share_read_counters LIMIT 0`,
-              ).first();
-              await env.DB.prepare(
-                `SELECT user_id,window_start,request_count,limit_count,updated_at
-                   FROM report_share_create_counters LIMIT 0`,
-              ).first();
-              await env.DB.prepare(
-                `SELECT control_key,enabled,updated_at FROM report_handoff_controls LIMIT 0`,
-              ).first();
-              const shareObjects = await env.DB.prepare(
-                `SELECT
-                   SUM(CASE WHEN type='trigger' AND name IN (
-                     'report_share_sections_insert_guard','report_share_identity_immutable',
-                     'archived_report_share_insert_guard','report_share_active_limit_insert',
-                     'report_handoff_enabled_insert_guard'
-                   ) THEN 1 ELSE 0 END) AS trigger_count,
-                   SUM(CASE WHEN type='index' AND name IN (
-                     'idx_report_shares_owner_created','idx_report_shares_expiry',
-                     'idx_report_shares_revoked','idx_report_share_read_counters_updated',
-                     'idx_report_share_create_counters_updated'
-                   ) THEN 1 ELSE 0 END) AS index_count
-                 FROM sqlite_master WHERE type IN ('trigger','index')`,
-              ).first();
-              reportHandoffControlState = await reportHandoffControl(env.DB);
-              reportShareSchema = Number(shareObjects?.trigger_count) === 5
-                && Number(shareObjects?.index_count) === 5
-                && reportHandoffControlState !== "unavailable"
-                ? "current"
-                : "outdated";
-            } catch {
-              reportShareSchema = "outdated";
-              reportHandoffControlState = "unavailable";
-            }
-          } else {
-            reportShareSchema = "outdated";
-            reportHandoffControlState = "unavailable";
-          }
-          try {
-            await env.DB.prepare(
-              "SELECT creation_key_hash,creation_request_hash FROM projects LIMIT 0",
-            ).first();
-            const projectCreationObjects = await env.DB.prepare(
-              `SELECT COUNT(*) AS count FROM sqlite_master
-                WHERE type='index' AND name='idx_projects_user_creation_key'`,
-            ).first();
-            projectCreationSchema = Number(projectCreationObjects?.count) === 1 ? "current" : "outdated";
-          } catch {
-            projectCreationSchema = "outdated";
-          }
-          try {
-            await env.DB.prepare(
-              "SELECT auth_generation,auth_revision_id,password_changed_at FROM users LIMIT 0",
-            ).first();
-            await env.DB.prepare(
-              "SELECT auth_generation,auth_revision_id FROM sessions LIMIT 0",
-            ).first();
-            await env.DB.prepare(
-              `SELECT * FROM (
-                 SELECT user_id,window_start AS window_started_at,NULL AS expires_at,
-                        request_count,limit_count,updated_at
-                   FROM password_change_attempt_counters
-                 UNION ALL
-                 SELECT user_id,window_started_at,expires_at,request_count,limit_count,updated_at
-                   FROM login_attempt_fences
-               ) LIMIT 0`,
-            ).first();
-            const authObjects = await env.DB.prepare(
-              `SELECT
-                 SUM(CASE WHEN type='trigger' AND name IN (
-                   'users_auth_state_update_guard','session_auth_state_immutable'
-                 ) THEN 1 ELSE 0 END) AS trigger_count,
-                 SUM(CASE WHEN type='index' AND name IN (
-                   'idx_password_change_attempts_updated','idx_login_attempt_fences_expires'
-                 )
-                          THEN 1 ELSE 0 END) AS index_count
-                 FROM sqlite_master WHERE type IN ('trigger','index')`,
-            ).first();
-            authSchema = Number(authObjects?.trigger_count) === 2
-              && Number(authObjects?.index_count) === 2
-              ? "current"
-              : "outdated";
-          } catch {
-            authSchema = "outdated";
-          }
-          if (Number(result?.family_alignment_count) === 2) {
-            try {
-              await env.DB.prepare(
-                `SELECT id,project_id,user_id,comparison_id,comparison_version,token_hash,idempotency_key,
-                        request_hash,response_count,access_count,last_accessed_at,expires_at,revoked_at,created_at
-                   FROM family_alignment_rooms LIMIT 0`,
-              ).first();
-              await env.DB.prepare(
-                `SELECT id,room_id,receipt_hash,role,preference,confidence,reasons_json,created_at,updated_at
-                   FROM family_alignment_responses LIMIT 0`,
-              ).first();
-              const familyObjects = await env.DB.prepare(
-                `SELECT
-                   SUM(CASE WHEN type='trigger' AND name IN (
-                     'family_alignment_response_insert_guard',
-                     'family_alignment_response_update_guard',
-                     'family_alignment_room_identity_immutable',
-                     'family_alignment_response_count_insert',
-                     'family_alignment_response_active_after_insert',
-                     'family_alignment_response_active_after_update',
-                     'family_alignment_response_count_delete'
-                   ) THEN 1 ELSE 0 END) AS family_alignment_trigger_count,
-                   SUM(CASE WHEN type='index' AND name IN (
-                     'idx_family_alignment_owner_created',
-                     'idx_family_alignment_expiry',
-                     'idx_family_alignment_responses_room_updated'
-                   ) THEN 1 ELSE 0 END) AS family_alignment_index_count
-                 FROM sqlite_master
-                WHERE (type='trigger' AND name LIKE 'family_alignment_%')
-                   OR (type='index' AND name LIKE 'idx_family_alignment_%')`,
-              ).first();
-              if (Number(familyObjects?.family_alignment_trigger_count) !== 7
-                || Number(familyObjects?.family_alignment_index_count) !== 3) {
-                throw new Error("family alignment database objects are incomplete");
-              }
-              familyAlignmentSchema = "current";
-            } catch {
-              familyAlignmentSchema = "outdated";
-            }
-          } else {
-            familyAlignmentSchema = "outdated";
-          }
-          try {
-            const archiveSafety = await env.DB.prepare(
-              `SELECT COUNT(*) AS count FROM sqlite_master
-                WHERE type='trigger' AND name IN (
-                  'archived_decision_comparison_insert_guard',
-                  'archived_decision_selection_insert_guard',
-                  'archived_decision_selection_update_guard',
-                  'archived_project_file_insert_guard',
-                  'archived_order_insert_guard',
-                  'archived_decision_share_insert_guard',
-                  'archived_report_insert_guard',
-                  'archived_report_update_guard',
-                  'archived_ai_brief_insert_guard',
-                  'archived_ai_brief_update_guard',
-                  'archived_family_room_insert_guard',
-                  'archived_family_response_insert_guard',
-                  'archived_family_response_update_guard'
-                )`,
-            ).first();
-            archiveSafetySchema = Number(archiveSafety?.count) === 13 ? "current" : "outdated";
-          } catch {
-            archiveSafetySchema = "outdated";
-          }
-          if (Number(result?.decision_table_count) === 6) {
-            try {
-              await env.DB.prepare(
-                "SELECT id,input_revision FROM projects LIMIT 0",
-              ).first();
-              await env.DB.prepare(
-                "SELECT id,product_code,entitlement_revoked_at,terms_version,terms_accepted_at FROM orders LIMIT 0",
-              ).first();
-              await env.DB.prepare(
-                `SELECT id,project_id,user_id,version,priority,content_hash,content_json,created_at,
-                        project_input_revision FROM decision_comparisons LIMIT 0`,
-              ).first();
-              await env.DB.prepare(
-                "SELECT comparison_id,project_id,user_id,scenario_id,selected_at,locked_at FROM decision_selections LIMIT 0",
-              ).first();
-              await env.DB.prepare(
-                `SELECT id,order_id,project_id,user_id,comparison_id,selected_scenario_id,
-                        snapshot_schema_version,content_hash,artifact_json,created_at
-                   FROM purchased_decision_snapshots LIMIT 0`,
-              ).first();
-              await env.DB.prepare(
-                `SELECT id,order_id,snapshot_id,project_id,user_id,token_hash,idempotency_key,
-                        request_hash,expires_at,revoked_at,access_count,last_accessed_at,created_at
-                   FROM decision_shares LIMIT 0`,
-              ).first();
-              await env.DB.prepare(
-                "SELECT event_day,event_name,surface,outcome,event_count,updated_at FROM product_event_aggregates LIMIT 0",
-              ).first();
-              await env.DB.prepare(
-                `SELECT snapshot_id,order_id,first_opened_at,first_printed_at,first_shared_at,
-                        professional_handoff_at,updated_at FROM decision_progress LIMIT 0`,
-              ).first();
-              decisionSchema = "current";
-            } catch {
-              decisionSchema = "outdated";
-            }
-          } else {
-            decisionSchema = "outdated";
-          }
-          if (Number(result?.payment_hardening_count) === 2) {
-            try {
-              await env.DB.prepare("SELECT request_hash FROM orders LIMIT 0").first();
-              await env.DB.prepare(
-                `SELECT record_type,provider_object_id,terminal_action,provider_event_id,provider_payment_id,
-                        order_id,amount_paise,currency,provider_state,observed_at
-                   FROM payment_terminal_records LIMIT 0`,
-              ).first();
-              await env.DB.prepare(
-                `SELECT id,order_id,conflicting_order_id,provider_event_id,provider_payment_id,
-                        reason,status,created_at,updated_at,resolved_at
-                   FROM payment_reconciliation_cases LIMIT 0`,
-              ).first();
-              paymentSchema = "current";
-            } catch {
-              paymentSchema = "outdated";
-            }
-          } else {
-            paymentSchema = "outdated";
-          }
-          if (Number(result?.ai_brief_count) === 1) {
-            try {
-              await env.DB.prepare(
-                `SELECT schema_version,prompt_version,prompt_sha256,model,source_report_id,
-                        source_report_version,source_input_hash,content_json,provider_interaction_id
-                   FROM ai_planning_briefs LIMIT 0`,
-              ).first();
-              aiSchema = "current";
-            } catch {
-              aiSchema = "outdated";
-            }
-          } else {
-            aiSchema = "outdated";
-          }
-          if (Number(result?.ai_abuse_count) === 2 && typeof env.DB.batch === "function") {
-            try {
-              await env.DB.prepare(
-                "SELECT scope,subject_id,window_start,request_count,limit_count,updated_at FROM ai_generation_counters LIMIT 0",
-              ).first();
-              await env.DB.prepare(
-                "SELECT project_id,user_id,lease_token,source_input_hash,expires_at FROM ai_generation_leases LIMIT 0",
-              ).first();
-              aiAbuseControl = "configured";
-            } catch {
-              aiAbuseControl = "unavailable";
-            }
-          } else {
-            aiAbuseControl = "unavailable";
-          }
-          schema = requiredTablesPresent && aiSchema === "current" && aiAbuseControl === "configured"
-            && decisionSchema === "current" && paymentSchema === "current" && familyAlignmentSchema === "current"
-            && archiveSafetySchema === "current" && revisionSchema === "current"
-            && reportFeedbackSchema === "current" && reportShareSchema === "current"
-            && projectCreationSchema === "current"
-            && authSchema === "current"
-            ? "current"
-            : "outdated";
+          ({
+            database,
+            schema,
+            aiSchema,
+            aiAbuseControl,
+            decisionSchema,
+            paymentSchema,
+            familyAlignmentSchema,
+            archiveSafetySchema,
+            revisionSchema,
+            reportFeedbackSchema,
+            reportShareSchema,
+            reportHandoffControlState,
+            projectCreationSchema,
+            authSchema,
+          } = await readinessDatabaseState(env.DB));
         } catch {
           database = "error";
-          schema = "unknown";
-          aiSchema = "unknown";
-          aiAbuseControl = "unknown";
-          decisionSchema = "unknown";
-          paymentSchema = "unknown";
-          familyAlignmentSchema = "unknown";
-          archiveSafetySchema = "unknown";
-          revisionSchema = "unknown";
-          reportFeedbackSchema = "unknown";
-          reportShareSchema = "unknown";
-          reportHandoffControlState = "unknown";
-          projectCreationSchema = "unknown";
-          authSchema = "unknown";
         }
       }
       const rateLimit = env.GRIHAGRID_CACHE ? "configured" : "missing";
@@ -8109,6 +8070,7 @@ export const __test = {
   publicReportShareProjection,
   reportShareMetadata,
   reportHandoffControl,
+  readinessInventoryRowsForTest,
   reportShareAbuseHmacKey,
   revisionFromRow,
   requireCsrf,

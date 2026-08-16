@@ -17,6 +17,14 @@ import { monitorRelease, ReleaseTailCoverageError, summarizeSamples } from "../s
 import { changedFiles, classifyReleaseFiles, isDocumentationOnly } from "../scripts/release-scope.mjs";
 import { waitForRelease } from "../scripts/wait-for-release.mjs";
 
+function workflowStep(source, name) {
+  const marker = `      - name: ${name}`;
+  const start = source.indexOf(marker);
+  assert.notEqual(start, -1, `missing workflow step: ${name}`);
+  const next = source.indexOf("\n      - name:", start + marker.length);
+  return next === -1 ? source.slice(start) : source.slice(start, next);
+}
+
 test("deployment authorization requires bounded exact-main CodeQL evidence", async () => {
   const workflow = await readFile(new URL("../.github/workflows/deploy.yml", import.meta.url), "utf8");
   assert.match(workflow, /security-events:\s*read/u);
@@ -33,6 +41,75 @@ test("deployment authorization requires bounded exact-main CodeQL evidence", asy
   assert.match(workflow, /openAlertCount: 0/u);
   assert.match(workflow, /path: release-evidence\/authorization\/codeql-gate\.json/u);
   assert.doesNotMatch(workflow, /path:\s*\$RUNNER_TEMP\/codeql-(?:analyses|open-alerts)\.json/u);
+});
+
+test("no-migration releases stop on unexpected remote migration drift before mutation", async () => {
+  const workflow = await readFile(new URL("../.github/workflows/deploy.yml", import.meta.url), "utf8");
+  for (const environment of ["staging", "production"]) {
+    const names = [
+      `Inspect pending ${environment} migrations and aggregate data state`,
+      `Reject unexpected ${environment} migration drift`,
+      `Create protected ${environment} export and recovery point`,
+      `Apply and verify ${environment} migrations`,
+      `Deploy authorized SHA to ${environment}`,
+    ];
+    const positions = names.map((name) => workflow.indexOf(`      - name: ${name}`));
+    assert.ok(
+      positions.every((position, index) => position >= 0 && (index === 0 || position > positions[index - 1])),
+      `${environment} drift guard must precede every release mutation`,
+    );
+    const guard = workflowStep(workflow, names[1]);
+    assert.match(guard, /id: migration_drift_guard/u);
+    assert.match(guard, /AUTHORIZED_MIGRATIONS: \$\{\{ needs\.authorize\.outputs\.migrations \}\}/u);
+    assert.match(guard, /REMOTE_PENDING_MIGRATIONS: \$\{\{ steps\.migrations\.outputs\.pending \}\}/u);
+    assert.match(guard, /\[\[ "\$AUTHORIZED_MIGRATIONS" == "false" && "\$REMOTE_PENDING_MIGRATIONS" == "true" \]\]/u);
+    assert.doesNotMatch(guard, /continue-on-error/u);
+    assert.match(guard, /exit 1/u);
+    const failClosed = workflowStep(workflow, `Fail closed ${environment} report handoff before regression handling`);
+    assert.match(failClosed, /steps\.migration_drift_guard\.outcome == 'success'/u);
+
+    const mayMutateHandoff = ({ migrations, driftGuard, version }) =>
+      migrations === "success" && driftGuard === "success" && version !== "success";
+    assert.equal(
+      mayMutateHandoff({ migrations: "success", driftGuard: "failure", version: "skipped" }),
+      false,
+      `${environment} drift rejection must not reach the later always() control mutation`,
+    );
+  }
+});
+
+test("exact-version latency gates block canaries and enter every rollback path", async () => {
+  const workflow = await readFile(new URL("../.github/workflows/deploy.yml", import.meta.url), "utf8");
+  assert.equal((workflow.match(/^\s*id: readiness_latency$/gmu) || []).length, 2);
+  assert.equal((workflow.match(/steps\.readiness_latency\.outcome/gu) || []).length, 8);
+  for (const environment of ["staging", "production"]) {
+    const latency = workflowStep(workflow, `Gate ${environment} readiness latency on the exact version`);
+    assert.match(latency, /if: steps\.propagation\.outcome == 'success'/u);
+    assert.match(latency, /continue-on-error:\s*true/u);
+    assert.match(latency, /GRIHAGRID_RELEASE_ID:\s*\$\{\{ steps\.version\.outputs\.version_id \}\}/u);
+    assert.match(latency, /GRIHAGRID_RELEASE_SHA:\s*\$\{\{ env\.RELEASE_SHA \}\}/u);
+    assert.match(latency, /EXPECT_REPORT_HANDOFF:\s*"false"/u);
+    assert.match(
+      latency,
+      new RegExp(`EXPECT_AI_PLANNING_BRIEF:\\s*"${environment === "production" ? "true" : "false"}"`, "u"),
+    );
+    assert.match(latency, new RegExp(`release-evidence/${environment}/readiness-latency\\.json`, "u"));
+    assert.doesNotMatch(latency, /secrets\./u);
+
+    const canary = workflowStep(workflow, `Run ${environment} authenticated canary under bounded handoff activation`);
+    assert.match(canary, /steps\.propagation\.outcome == 'success' && steps\.readiness_latency\.outcome == 'success'/u);
+    const failClosed = workflowStep(workflow, `Fail closed ${environment} report handoff before regression handling`);
+    assert.match(failClosed, /steps\.readiness_latency\.outcome != 'success'/u);
+    const rollback = workflowStep(workflow, `Roll back a confirmed compatible ${environment} regression`);
+    assert.match(rollback, /steps\.readiness_latency\.outcome == 'failure'/u);
+    const finalFailure = workflowStep(
+      workflow,
+      environment === "staging"
+        ? "Fail closed after a staging release regression"
+        : "Fail closed after a production release or monitoring failure",
+    );
+    assert.match(finalFailure, /steps\.readiness_latency\.outcome == 'failure'/u);
+  }
 });
 
 test("release scope skips only documentation and treats deletions as deployable file paths", () => {

@@ -11,6 +11,10 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const wranglerCli = path.join(root, "node_modules", "wrangler", "bin", "wrangler.js");
 const reportShareAbuseHmacKey = "ab".repeat(32);
+const localD1ApiPath = "/cdn-cgi/local/explorer/api/d1/database";
+const localD1TimeoutMs = 10_000;
+const localD1MaxRequestBytes = 1024 * 1024;
+const localD1MaxResponseBytes = 2 * 1024 * 1024;
 
 function reservePort() {
   return new Promise((resolve, reject) => {
@@ -74,10 +78,20 @@ async function startWorker(
       const response = await fetch(`${origin}/api/health`);
       if (response.status === 200) {
         await response.arrayBuffer();
-        return { child, exited, origin, logs: () => logs };
+        const server = { child, exited, origin, logs: () => logs };
+        try {
+          server.databaseId = await discoverLocalD1Database(server);
+          return server;
+        } catch (error) {
+          await stopWorker(server);
+          const discoveryError = new Error(`wrangler local D1 discovery failed:\n${error?.message || error}\n${logs}`);
+          discoveryError.code = "LOCAL_D1_DISCOVERY_FAILED";
+          throw discoveryError;
+        }
       }
       await response.arrayBuffer();
-    } catch {
+    } catch (error) {
+      if (error?.code === "LOCAL_D1_DISCOVERY_FAILED") throw error;
       // workerd is still starting.
     }
   }
@@ -111,8 +125,137 @@ function query(stateDirectory, sql) {
     .flatMap((entry) => entry.results || []);
 }
 
-function ownerHandoffWriteState(stateDirectory, userId) {
-  const row = query(stateDirectory, `
+function isPlainRecord(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+async function boundedJson(response, context) {
+  const contentType = response.headers.get("content-type") || "";
+  assert.match(contentType, /^application\/json\b/iu, `${context}: expected JSON, received ${contentType || "no content type"}`);
+  const lengthHeader = response.headers.get("content-length");
+  if (lengthHeader !== null) {
+    const declaredLength = Number(lengthHeader);
+    assert.ok(Number.isSafeInteger(declaredLength) && declaredLength >= 0, `${context}: invalid content length`);
+    assert.ok(declaredLength <= localD1MaxResponseBytes, `${context}: response exceeded byte limit`);
+  }
+  assert.ok(response.body, `${context}: response body missing`);
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let byteLength = 0;
+  let text = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    byteLength += value.byteLength;
+    if (byteLength > localD1MaxResponseBytes) {
+      await reader.cancel();
+      assert.fail(`${context}: response exceeded byte limit`);
+    }
+    text += decoder.decode(value, { stream: true });
+  }
+  text += decoder.decode();
+  assert.ok(text, `${context}: empty JSON response`);
+  let payload;
+  try {
+    payload = JSON.parse(text);
+  } catch (error) {
+    assert.fail(`${context}: invalid JSON (${error?.message || error})`);
+  }
+  return { payload, text };
+}
+
+function validateLocalD1Envelope(payload, context) {
+  assert.ok(isPlainRecord(payload), `${context}: invalid response envelope`);
+  assert.equal(typeof payload.success, "boolean", `${context}: missing success flag`);
+  assert.ok(Array.isArray(payload.errors), `${context}: errors must be an array`);
+  assert.ok(Array.isArray(payload.messages), `${context}: messages must be an array`);
+}
+
+async function discoverLocalD1Database(server) {
+  const response = await fetch(`${server.origin}${localD1ApiPath}`, {
+    headers: {
+      accept: "application/json",
+      "x-miniflare-explorer-no-aggregate": "true",
+    },
+    signal: AbortSignal.timeout(localD1TimeoutMs),
+  });
+  const { payload } = await boundedJson(response, "local D1 discovery");
+  validateLocalD1Envelope(payload, "local D1 discovery");
+  assert.equal(response.status, 200, `local D1 discovery failed with HTTP ${response.status}`);
+  assert.equal(payload.success, true, `local D1 discovery failed: ${JSON.stringify(payload.errors)}`);
+  assert.deepEqual(payload.errors, []);
+  assert.ok(Array.isArray(payload.result), "local D1 discovery result must be an array");
+  assert.ok(isPlainRecord(payload.result_info), "local D1 discovery result info missing");
+  assert.equal(payload.result_info.count, payload.result.length, "local D1 discovery count mismatch");
+  const matches = payload.result.filter((entry) => isPlainRecord(entry) && entry.name === "DB");
+  assert.equal(matches.length, 1, `expected one local DB binding, received ${JSON.stringify(payload.result)}`);
+  assert.match(matches[0].uuid, /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/u, "local DB binding returned an invalid UUID");
+  return matches[0].uuid;
+}
+
+function validateLocalD1Result(result, context) {
+  assert.ok(isPlainRecord(result), `${context}: invalid result entry`);
+  assert.equal(result.success, true, `${context}: result entry was unsuccessful`);
+  assert.ok(isPlainRecord(result.meta), `${context}: result metadata missing`);
+  assert.ok(isPlainRecord(result.results), `${context}: result rows missing`);
+  const { columns, rows } = result.results;
+  assert.ok(Array.isArray(columns), `${context}: result columns must be an array`);
+  assert.ok(columns.every((column) => typeof column === "string"), `${context}: invalid result column`);
+  assert.equal(new Set(columns).size, columns.length, `${context}: duplicate result column`);
+  assert.ok(Array.isArray(rows), `${context}: result rows must be an array`);
+  assert.ok(rows.every((row) => Array.isArray(row) && row.length === columns.length), `${context}: invalid result row`);
+}
+
+async function liveD1(server, sql) {
+  assert.ok(server?.databaseId, "live D1 requires a discovered database binding");
+  assert.equal(typeof sql, "string");
+  assert.ok(sql.trim(), "live D1 SQL must not be empty");
+  assert.ok(Buffer.byteLength(sql, "utf8") <= localD1MaxRequestBytes, "live D1 SQL exceeded byte limit");
+  let response;
+  try {
+    response = await fetch(
+      `${server.origin}${localD1ApiPath}/${encodeURIComponent(server.databaseId)}/raw`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-miniflare-explorer-no-aggregate": "true",
+        },
+        body: JSON.stringify({ sql }),
+        signal: AbortSignal.timeout(localD1TimeoutMs),
+      },
+    );
+  } catch (error) {
+    throw new Error(`live D1 request failed: ${error?.message || error}\n${server.logs()}`);
+  }
+  const { payload, text } = await boundedJson(response, "live D1 execution");
+  validateLocalD1Envelope(payload, "live D1 execution");
+  if (payload.success === false) {
+    assert.equal(response.ok, false, "live D1 failure returned a successful HTTP status");
+    assert.ok(payload.errors.length > 0, "live D1 failure omitted errors");
+    assert.equal(payload.result, null, "live D1 failure returned a result");
+    const errorText = payload.errors.map((error) => {
+      assert.ok(isPlainRecord(error), "live D1 returned an invalid error");
+      assert.ok(typeof error.message === "string" && error.message, "live D1 error omitted its message");
+      return error.message;
+    }).join("\n");
+    return { status: response.ok ? 1 : response.status, stdout: text, stderr: errorText, result: null };
+  }
+  assert.equal(response.status, 200, `live D1 succeeded with HTTP ${response.status}`);
+  assert.deepEqual(payload.errors, []);
+  assert.ok(Array.isArray(payload.result) && payload.result.length > 0, "live D1 success omitted results");
+  for (const result of payload.result) validateLocalD1Result(result, "live D1 execution");
+  return { status: 0, stdout: text, stderr: "", result: payload.result };
+}
+
+async function liveQuery(server, sql) {
+  const execution = requireD1(await liveD1(server, sql), "live D1 query failed");
+  const { columns, rows } = execution.result.at(-1).results;
+  return rows.map((row) => Object.fromEntries(columns.map((column, index) => [column, row[index]])));
+}
+
+async function ownerHandoffWriteState(server, userId) {
+  const row = (await liveQuery(server, `
     SELECT
       (SELECT COALESCE(SUM(request_count),0)
          FROM report_share_create_counters WHERE user_id='${userId}') AS quota_count,
@@ -122,7 +265,7 @@ function ownerHandoffWriteState(stateDirectory, userId) {
         WHERE event_name IN (
           'report_handoff_link_created','report_handoff_opened','report_handoff_link_revoked'
         )) AS event_count;
-  `)[0];
+  `))[0];
   return {
     quotaCount: Number(row.quota_count),
     shareCount: Number(row.share_count),
@@ -130,13 +273,13 @@ function ownerHandoffWriteState(stateDirectory, userId) {
   };
 }
 
-function handoffEventCounts(stateDirectory) {
+async function handoffEventCounts(server) {
   const counts = {
     report_handoff_link_created: 0,
     report_handoff_opened: 0,
     report_handoff_link_revoked: 0,
   };
-  for (const row of query(stateDirectory, `
+  for (const row of await liveQuery(server, `
     SELECT event_name,COALESCE(SUM(event_count),0) AS event_count
       FROM product_event_aggregates
      WHERE event_name IN (
@@ -336,7 +479,7 @@ test("Professional Handoff links preserve one redacted immutable report across o
     assert.equal(defaultReadiness.payload.checks.reportShareSchema, "current");
     assert.equal(defaultReadiness.payload.checks.reportHandoffControl, "disabled");
     assert.equal(defaultReadiness.payload.capabilities.reportHandoff, false);
-    requireD1(d1(stateDirectory, "execute", `
+    requireD1(await liveD1(server, `
       UPDATE report_handoff_controls
          SET enabled=1,updated_at=datetime('now')
        WHERE control_key='report_handoff';
@@ -402,7 +545,7 @@ test("Professional Handoff links preserve one redacted immutable report across o
     const other = await register(server.origin, "other");
     const source = await createReport(server.origin, owner, "MAIN");
 
-    const stateBeforeInvalidSecrets = ownerHandoffWriteState(stateDirectory, owner.user.id);
+    const stateBeforeInvalidSecrets = await ownerHandoffWriteState(server, owner.user.id);
     assert.deepEqual(stateBeforeInvalidSecrets, {
       quotaCount: 0,
       shareCount: 0,
@@ -427,7 +570,7 @@ test("Professional Handoff links preserve one redacted immutable report across o
         code: "abuse_control_unavailable",
       });
       assert.deepEqual(
-        ownerHandoffWriteState(stateDirectory, owner.user.id),
+        await ownerHandoffWriteState(server, owner.user.id),
         stateBeforeInvalidSecrets,
         `${label} handoff key mutated quota, share, or aggregate state`,
       );
@@ -468,7 +611,7 @@ test("Professional Handoff links preserve one redacted immutable report across o
     const mainToken = tokenFromShare(mainShare);
     assert.deepEqual(mainShare.sections, allSections);
     assert.equal(Object.hasOwn(mainShare, "token"), false);
-    const storedShare = query(stateDirectory, `SELECT token_hash,idempotency_key_hash,request_hash,report_content_hash FROM report_shares WHERE id='${mainShare.id}';`)[0];
+    const storedShare = (await liveQuery(server, `SELECT token_hash,idempotency_key_hash,request_hash,report_content_hash FROM report_shares WHERE id='${mainShare.id}';`))[0];
     for (const value of [storedShare.token_hash, storedShare.request_hash, storedShare.report_content_hash]) {
       assert.match(value, /^[a-f0-9]{64}$/u);
     }
@@ -512,7 +655,7 @@ test("Professional Handoff links preserve one redacted immutable report across o
       "AGGREGATE_CANARY",
       canaryMarker,
     );
-    const eventsBeforeCanary = handoffEventCounts(stateDirectory);
+    const eventsBeforeCanary = await handoffEventCounts(server);
     const canaryCreated = await createShare(
       server.origin,
       canaryOwner,
@@ -540,7 +683,7 @@ test("Professional Handoff links preserve one redacted immutable report across o
     );
     assert.equal(canaryRevoked.response.status, 204, JSON.stringify(canaryRevoked.payload));
     assert.deepEqual(
-      handoffEventCounts(stateDirectory),
+      await handoffEventCounts(server),
       eventsBeforeCanary,
       "the release canary lifecycle must not inflate customer handoff aggregates",
     );
@@ -552,7 +695,7 @@ test("Professional Handoff links preserve one redacted immutable report across o
       "AGGREGATE_CUSTOMER",
       "Customer aggregate project",
     );
-    const eventsBeforeCustomer = handoffEventCounts(stateDirectory);
+    const eventsBeforeCustomer = await handoffEventCounts(server);
     const customerCreated = await createShare(
       server.origin,
       metricsOwner,
@@ -569,7 +712,7 @@ test("Professional Handoff links preserve one redacted immutable report across o
       { method: "DELETE", auth: metricsOwner },
     );
     assert.equal(customerRevoked.response.status, 204, JSON.stringify(customerRevoked.payload));
-    assert.deepEqual(handoffEventCounts(stateDirectory), {
+    assert.deepEqual(await handoffEventCounts(server), {
       report_handoff_link_created: eventsBeforeCustomer.report_handoff_link_created + 1,
       report_handoff_opened: eventsBeforeCustomer.report_handoff_opened + 1,
       report_handoff_link_revoked: eventsBeforeCustomer.report_handoff_link_revoked + 1,
@@ -580,7 +723,7 @@ test("Professional Handoff links preserve one redacted immutable report across o
     // authoritative linearization point and must map to the stable public 503.
     const createRaceOwner = await register(server.origin, "create-disable-race");
     const createRaceSource = await createReport(server.origin, createRaceOwner, "CREATE_DISABLE_RACE");
-    requireD1(d1(stateDirectory, "execute", `
+    requireD1(await liveD1(server, `
       CREATE TRIGGER test_disable_handoff_after_create_admission
       AFTER INSERT ON report_share_create_counters
       WHEN NEW.user_id='${createRaceOwner.user.id}'
@@ -602,15 +745,15 @@ test("Professional Handoff links preserve one redacted immutable report across o
       error: "professional handoff is temporarily unavailable",
       code: "report_handoff_disabled",
     });
-    assert.equal(Number(query(
-      stateDirectory,
+    assert.equal(Number((await liveQuery(
+      server,
       `SELECT COUNT(*) AS count FROM report_shares WHERE user_id='${createRaceOwner.user.id}';`,
-    )[0].count), 0);
-    assert.deepEqual(query(
-      stateDirectory,
+    ))[0].count), 0);
+    assert.deepEqual(await liveQuery(
+      server,
       "SELECT enabled FROM report_handoff_controls WHERE control_key='report_handoff';",
     ), [{ enabled: 0 }]);
-    requireD1(d1(stateDirectory, "execute", `
+    requireD1(await liveD1(server, `
       DROP TRIGGER test_disable_handoff_after_create_admission;
       UPDATE report_handoff_controls
          SET enabled=1,updated_at=datetime('now')
@@ -620,7 +763,7 @@ test("Professional Handoff links preserve one redacted immutable report across o
     // Force the switch closed after the Worker's early redemption check by
     // flipping it from the strongly-consistent read-admission insert. The final
     // conditional access update must not increment or return report content.
-    requireD1(d1(stateDirectory, "execute", `
+    requireD1(await liveD1(server, `
       CREATE TRIGGER test_disable_handoff_after_read_admission
       AFTER INSERT ON report_share_read_counters
       BEGIN
@@ -629,16 +772,16 @@ test("Professional Handoff links preserve one redacted immutable report across o
          WHERE control_key='report_handoff';
       END;
     `), "redemption-race trigger install failed");
-    const accessCountBeforeDisableRace = Number(query(
-      stateDirectory,
+    const accessCountBeforeDisableRace = Number((await liveQuery(
+      server,
       `SELECT access_count FROM report_shares WHERE id='${mainShare.id}';`,
-    )[0].access_count);
-    const openEventsBeforeDisableRace = Number(query(
-      stateDirectory,
+    ))[0].access_count);
+    const openEventsBeforeDisableRace = Number((await liveQuery(
+      server,
       `SELECT COALESCE(SUM(event_count),0) AS count
          FROM product_event_aggregates
         WHERE event_name='report_handoff_opened';`,
-    )[0].count);
+    ))[0].count);
     const redemptionAcrossDisable = await openShare(server.origin, mainToken, {
       headers: { "cf-connecting-ip": "203.0.113.208" },
     });
@@ -648,17 +791,17 @@ test("Professional Handoff links preserve one redacted immutable report across o
       code: "report_handoff_disabled",
     });
     assert.equal(Object.hasOwn(redemptionAcrossDisable.payload, "share"), false);
-    assert.equal(Number(query(
-      stateDirectory,
+    assert.equal(Number((await liveQuery(
+      server,
       `SELECT access_count FROM report_shares WHERE id='${mainShare.id}';`,
-    )[0].access_count), accessCountBeforeDisableRace);
-    assert.equal(Number(query(
-      stateDirectory,
+    ))[0].access_count), accessCountBeforeDisableRace);
+    assert.equal(Number((await liveQuery(
+      server,
       `SELECT COALESCE(SUM(event_count),0) AS count
          FROM product_event_aggregates
         WHERE event_name='report_handoff_opened';`,
-    )[0].count), openEventsBeforeDisableRace);
-    requireD1(d1(stateDirectory, "execute", `
+    ))[0].count), openEventsBeforeDisableRace);
+    requireD1(await liveD1(server, `
       DROP TRIGGER test_disable_handoff_after_read_admission;
       UPDATE report_handoff_controls
          SET enabled=1,updated_at=datetime('now')
@@ -675,11 +818,11 @@ test("Professional Handoff links preserve one redacted immutable report across o
     assert.equal(controlShareResult.response.status, 201, JSON.stringify(controlShareResult.payload));
     const controlShare = controlShareResult.payload.share;
     const controlToken = tokenFromShare(controlShare);
-    const ownerCreateQuotaBeforeDisable = Number(query(
-      stateDirectory,
+    const ownerCreateQuotaBeforeDisable = Number((await liveQuery(
+      server,
       `SELECT COALESCE(SUM(request_count),0) AS count FROM report_share_create_counters WHERE user_id='${owner.user.id}';`,
-    )[0].count);
-    requireD1(d1(stateDirectory, "execute", `
+    ))[0].count);
+    requireD1(await liveD1(server, `
       UPDATE report_handoff_controls
          SET enabled=0,updated_at=datetime('now')
        WHERE control_key='report_handoff';
@@ -712,11 +855,11 @@ test("Professional Handoff links preserve one redacted immutable report across o
       { method: "DELETE", auth: owner },
     );
     assert.equal(revokeWhileDisabled.response.status, 204);
-    assert.equal(Number(query(
-      stateDirectory,
+    assert.equal(Number((await liveQuery(
+      server,
       `SELECT COALESCE(SUM(request_count),0) AS count FROM report_share_create_counters WHERE user_id='${owner.user.id}';`,
-    )[0].count), ownerCreateQuotaBeforeDisable);
-    requireD1(d1(stateDirectory, "execute", `
+    ))[0].count), ownerCreateQuotaBeforeDisable);
+    requireD1(await liveD1(server, `
       UPDATE report_handoff_controls
          SET enabled=1,updated_at=datetime('now')
        WHERE control_key='report_handoff';
@@ -728,14 +871,14 @@ test("Professional Handoff links preserve one redacted immutable report across o
     assert.equal((await openShare(server.origin, controlToken)).response.status, 410);
 
     const admissionIp="198.51.100.77";
-    const accessCountBeforeAdmissionRace=Number(query(stateDirectory, `SELECT access_count FROM report_shares WHERE id='${mainShare.id}';`)[0].access_count);
+    const accessCountBeforeAdmissionRace=Number((await liveQuery(server, `SELECT access_count FROM report_shares WHERE id='${mainShare.id}';`))[0].access_count);
     const admissionRace=await Promise.all(Array.from({length:121},()=>openShare(server.origin,mainToken,{
       headers:{"cf-connecting-ip":admissionIp},
     })));
     const admissionStatuses=admissionRace.map(result=>result.response.status);
     assert.equal(admissionStatuses.filter(status=>status===200).length,120);
     assert.equal(admissionStatuses.filter(status=>status===429).length,1);
-    const counterRows=query(stateDirectory,"SELECT subject_hash,window_start,request_count,limit_count FROM report_share_read_counters;");
+    const counterRows=await liveQuery(server,"SELECT subject_hash,window_start,request_count,limit_count FROM report_share_read_counters;");
     const admissionCounter=counterRows.find((row) => row.subject_hash === createHmac(
       "sha256",
       reportShareAbuseHmacKey,
@@ -749,7 +892,7 @@ test("Professional Handoff links preserve one redacted immutable report across o
     );
     assert.equal(JSON.stringify(counterRows).includes(admissionIp),false);
     assert.equal(JSON.stringify(counterRows).includes(mainToken),false);
-    const accessCountAfterAdmissionRace=Number(query(stateDirectory, `SELECT access_count FROM report_shares WHERE id='${mainShare.id}';`)[0].access_count);
+    const accessCountAfterAdmissionRace=Number((await liveQuery(server, `SELECT access_count FROM report_shares WHERE id='${mainShare.id}';`))[0].access_count);
     assert.equal(accessCountAfterAdmissionRace-accessCountBeforeAdmissionRace,120);
 
     const revised = await call(server.origin, `/api/projects/${source.project.id}/revisions`, {
@@ -784,16 +927,16 @@ test("Professional Handoff links preserve one redacted immutable report across o
       const extra = await createShare(server.origin, owner, source, `report-share-${index}`, { sections: ["overview"] });
       assert.equal(extra.response.status, 201, JSON.stringify(extra.payload));
     }
-    assert.equal(Number(query(stateDirectory, `SELECT COUNT(*) AS count FROM report_shares WHERE project_id='${source.project.id}' AND revoked_at IS NULL AND expires_at>datetime('now');`)[0].count), 4);
+    assert.equal(Number((await liveQuery(server, `SELECT COUNT(*) AS count FROM report_shares WHERE project_id='${source.project.id}' AND revoked_at IS NULL AND expires_at>datetime('now');`))[0].count), 4);
     const capRace = await Promise.all([
       createShare(server.origin, owner, source, "report-share-five-a", { sections: ["overview"] }),
       createShare(server.origin, owner, source, "report-share-five-b", { sections: ["overview"] }),
     ]);
     assert.deepEqual(capRace.map(result=>result.response.status).sort(), [201, 409]);
     assert.equal(capRace.find(result=>result.response.status===409)?.payload.code, "report_share_limit");
-    assert.equal(Number(query(stateDirectory, `SELECT COUNT(*) AS count FROM report_shares WHERE project_id='${source.project.id}' AND revoked_at IS NULL AND expires_at>datetime('now');`)[0].count), 5);
+    assert.equal(Number((await liveQuery(server, `SELECT COUNT(*) AS count FROM report_shares WHERE project_id='${source.project.id}' AND revoked_at IS NULL AND expires_at>datetime('now');`))[0].count), 5);
 
-    requireD1(d1(stateDirectory, "execute", `
+    requireD1(await liveD1(server, `
       WITH RECURSIVE history(index_value) AS (
         SELECT 1
         UNION ALL
@@ -814,7 +957,7 @@ test("Professional Handoff links preserve one redacted immutable report across o
         datetime('now','+' || index_value || ' minutes')
       FROM history;
     `), "closed history fixture insert failed");
-    const activeIds=query(stateDirectory, `SELECT id FROM report_shares WHERE project_id='${source.project.id}' AND revoked_at IS NULL AND expires_at>datetime('now') ORDER BY id;`).map(row=>row.id);
+    const activeIds=(await liveQuery(server, `SELECT id FROM report_shares WHERE project_id='${source.project.id}' AND revoked_at IS NULL AND expires_at>datetime('now') ORDER BY id;`)).map(row=>row.id);
     assert.equal(activeIds.length,5);
     const boundedHistory=await call(server.origin, `/api/projects/${source.project.id}/report-shares`, { auth: owner });
     assert.equal(boundedHistory.response.status,200);
@@ -841,10 +984,10 @@ test("Professional Handoff links preserve one redacted immutable report across o
     const closed = await openShare(server.origin, mainToken);
     assert.equal(closed.response.status, 410);
     assert.equal(closed.payload.code, "report_share_unavailable");
-    const closedAccessCount=Number(query(stateDirectory, `SELECT access_count FROM report_shares WHERE id='${mainShare.id}';`)[0].access_count);
+    const closedAccessCount=Number((await liveQuery(server, `SELECT access_count FROM report_shares WHERE id='${mainShare.id}';`))[0].access_count);
     const afterClosure=await Promise.all(Array.from({length:8},()=>openShare(server.origin,mainToken)));
     assert.ok(afterClosure.every(result=>result.response.status===410));
-    assert.equal(Number(query(stateDirectory, `SELECT access_count FROM report_shares WHERE id='${mainShare.id}';`)[0].access_count),closedAccessCount);
+    assert.equal(Number((await liveQuery(server, `SELECT access_count FROM report_shares WHERE id='${mainShare.id}';`))[0].access_count),closedAccessCount);
 
     const quotaOwner = await register(server.origin, "quota-owner");
     const quotaSource = await createReport(server.origin, quotaOwner, "QUOTA");
@@ -869,8 +1012,8 @@ test("Professional Handoff links preserve one redacted immutable report across o
       )));
       assert.ok(waveRevokes.every((result) => result.response.status === 204));
     }
-    const quotaRows = query(
-      stateDirectory,
+    const quotaRows = await liveQuery(
+      server,
       `SELECT window_start,request_count,limit_count FROM report_share_create_counters WHERE user_id='${quotaOwner.user.id}';`,
     );
     assert.equal(quotaRows.length, 1);
@@ -896,14 +1039,14 @@ test("Professional Handoff links preserve one redacted immutable report across o
     assert.equal(quotaReplayAfterLimit.response.status, 200, JSON.stringify(quotaReplayAfterLimit.payload));
     assert.equal(quotaReplayAfterLimit.payload.share.id, quotaReplay.payload.share.id);
     assert.equal(quotaReplayAfterLimit.payload.idempotentReplay, true);
-    assert.equal(Number(query(
-      stateDirectory,
+    assert.equal(Number((await liveQuery(
+      server,
       `SELECT request_count FROM report_share_create_counters WHERE user_id='${quotaOwner.user.id}';`,
-    )[0].request_count), 20);
+    ))[0].request_count), 20);
 
     const expiredToken = "e".repeat(43);
     const expiredTokenHash = createHash("sha256").update(expiredToken).digest("hex");
-    requireD1(d1(stateDirectory, "execute", `
+    requireD1(await liveD1(server, `
       INSERT INTO report_shares (
         id,project_id,user_id,project_revision,report_schema_version,sections_json,
         report_content_hash,token_hash,idempotency_key_hash,request_hash,expires_at,created_at
@@ -919,7 +1062,7 @@ test("Professional Handoff links preserve one redacted immutable report across o
 
     const retentionToken = "r".repeat(43);
     const retentionTokenHash = createHash("sha256").update(retentionToken).digest("hex");
-    requireD1(d1(stateDirectory, "execute", `
+    requireD1(await liveD1(server, `
       INSERT INTO report_shares (
         id,project_id,user_id,project_revision,report_schema_version,sections_json,
         report_content_hash,token_hash,idempotency_key_hash,request_hash,expires_at,created_at
@@ -951,15 +1094,15 @@ test("Professional Handoff links preserve one redacted immutable report across o
       await wait(100);
     }
     assert.equal(retentionStatus, 404, "scheduled cleanup did not remove the over-90-day report share");
-    assert.equal(Number(query(stateDirectory, "SELECT COUNT(*) AS count FROM report_shares WHERE id='retention-old';")[0].count), 0);
-    assert.equal(Number(query(stateDirectory, `SELECT COUNT(*) AS count FROM report_share_read_counters WHERE subject_hash='${"9".repeat(64)}';`)[0].count), 0);
-    assert.ok(Number(query(stateDirectory, "SELECT COUNT(*) AS count FROM report_share_read_counters;")[0].count)>0);
-    assert.equal(Number(query(
-      stateDirectory,
+    assert.equal(Number((await liveQuery(server, "SELECT COUNT(*) AS count FROM report_shares WHERE id='retention-old';"))[0].count), 0);
+    assert.equal(Number((await liveQuery(server, `SELECT COUNT(*) AS count FROM report_share_read_counters WHERE subject_hash='${"9".repeat(64)}';`))[0].count), 0);
+    assert.ok(Number((await liveQuery(server, "SELECT COUNT(*) AS count FROM report_share_read_counters;"))[0].count)>0);
+    assert.equal(Number((await liveQuery(
+      server,
       `SELECT COUNT(*) AS count FROM report_share_create_counters WHERE user_id='${other.user.id}';`,
-    )[0].count), 0);
-    assert.deepEqual(query(
-      stateDirectory,
+    ))[0].count), 0);
+    assert.deepEqual(await liveQuery(
+      server,
       `SELECT request_count,limit_count FROM report_share_create_counters WHERE user_id='${quotaOwner.user.id}';`,
     ), [{ request_count: 20, limit_count: 20 }]);
     let historicalAfterCleanup;
@@ -970,13 +1113,13 @@ test("Professional Handoff links preserve one redacted immutable report across o
     }
     assert.equal(historicalAfterCleanup.response.status, 200);
 
-    const directRetarget = d1(stateDirectory, "execute", `UPDATE report_shares SET project_revision=project_revision+1 WHERE id='${historical.payload.share.id}';`);
+    const directRetarget = await liveD1(server, `UPDATE report_shares SET project_revision=project_revision+1 WHERE id='${historical.payload.share.id}';`);
     assert.notEqual(directRetarget.status, 0);
     assert.match(`${directRetarget.stdout}\n${directRetarget.stderr}`, /immutable/iu);
 
     const deleted = await call(server.origin, `/api/projects/${source.project.id}`, { method: "DELETE", auth: owner });
     assert.equal(deleted.response.status, 204, JSON.stringify(deleted.payload));
-    assert.equal(Number(query(stateDirectory, `SELECT COUNT(*) AS count FROM report_shares WHERE project_id='${source.project.id}';`)[0].count), 0);
+    assert.equal(Number((await liveQuery(server, `SELECT COUNT(*) AS count FROM report_shares WHERE project_id='${source.project.id}';`))[0].count), 0);
     assert.equal((await openShare(server.origin, historicalToken)).response.status, 404);
 
     // Run the deliberate stream cancellation last. Miniflare can tear down an

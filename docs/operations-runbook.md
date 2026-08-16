@@ -26,7 +26,10 @@ Uploads and any product that promises them stay closed while R2 is absent.
 
 `/api/health` is a dependency-independent liveness probe. `/api/readiness`
 checks D1 reachability, the required schema, the KV binding, and reports
-AI/upload/payment capabilities. Neither endpoint proves Gemini generation quality, Razorpay webhook delivery,
+AI/upload/payment capabilities. Its current-schema path uses one metadata
+inventory read and at most one uncached Professional Handoff control read; a
+future capability must extend that folded inventory rather than add serial D1
+probes. Neither endpoint proves Gemini generation quality, Razorpay webhook delivery,
 cron execution, or a complete customer journey; synthetics remain mandatory.
 
 The Worker currently reads these runtime values:
@@ -469,6 +472,11 @@ existing migration between the reviewed base and release SHA. Every CI and
 privileged deployment run scans the entire post-`0012` migration set, not only
 the current diff, and rejects destructive or in-place SQL. This prevents a
 failed release from leaving an unsafe pending migration for the next release.
+For a release whose reviewed diff contains no migration, any remotely pending
+migration is drift: stop immediately after inspection, before export,
+application, control mutation, Worker deployment or rollback. Do not let a
+no-migration release inherit and apply another change while claiming the
+rollback path is schema-free.
 When any remote migration is pending, automation
 records aggregate row counts, and checks key tables, columns, indexes,
 triggers, and foreign keys after application. It first creates a mode-0600
@@ -523,6 +531,9 @@ npx wrangler tail grihagrid --format json --status error
 
 The automated path also checks `readiness.releaseId` against the exact active
 Worker version across three consecutive full smoke samples, runs the
+20-request serial readiness latency gate while Professional Handoff is still
+closed, preserves every raw sample plus nearest-rank p95, and requires p95
+strictly below 500 ms before any authenticated canary mutation. It then runs the
 authenticated create → read → deterministic report → feedback → delete →
 logout canary,
 proves that paid-order creation and private upload both return their expected
@@ -625,7 +636,7 @@ orders.
 |---|---|---|
 | 1 minute | `GET /` | `200`, expected brand marker, TLS valid, less than 3 s |
 | 1 minute | `GET /api/health` | `200`, JSON `status=ok`, fresh timestamp |
-| 1 minute | `GET /api/readiness` | `200`, JSON `status=ready`, D1/schema/KV checks healthy |
+| 1 minute | `GET /api/readiness` | `200`, JSON `status=ready`, D1/schema/KV checks healthy; record complete end-to-end latency samples and keep monthly p95 under 500 ms |
 | 5 minutes | `POST /api/estimate` fixture | `200`, expected schema and fixed numeric fixture |
 | 15 minutes | Canary login + `GET /api/projects` | Session succeeds and only canary-owned data appears |
 | Daily while login fencing is enabled | Synthetic login → session restore → logout, plus isolated staging 12→13 fence fixture | Normal login leaves no fence; the fixture admits at most 12, request 13 is generic 401, expiry does not slide, cleanup is exact, and output contains no account/IP/credential value |
@@ -713,7 +724,7 @@ weeks of real traffic.
 | Public calculator availability | 99.9% | Successful external homepage, health, and estimate checks |
 | Authenticated API availability | 99.9% | Non-4xx project/report requests excluding deliberate client errors |
 | Worker server-error ratio | At least 99.9% non-5xx | Cloudflare invocations by route and version |
-| Health/estimate latency | p95 under 500 ms | External and Worker latency |
+| Health/readiness/estimate latency | p95 under 500 ms | External and Worker route-template latency; readiness also retains its two-read healthy-path budget |
 | Authenticated CRUD latency | p95 under 750 ms | Worker route-template latency |
 | Brief revision correctness | 100%; zero tolerance | One CAS winner/idempotent result per accepted edit; no fabricated history, stale-current report, reopened Family room or mutation of sold evidence |
 | Decision Compare fulfillment | At least 90% inside published pilot promise | `payment_webhook_events.processed_at`/`orders.paid_at` to an available matching purchased snapshot; v1 has no correction/reissue workflow |
