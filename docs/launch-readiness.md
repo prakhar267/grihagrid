@@ -270,9 +270,12 @@ legal, monitoring and operational gates below have dated evidence.
   requires and remains auditable/reconcilable.
 - [x] Checkout and fulfillment controls fail closed, are independently tested,
   and do not prevent receipt of already-signed payment webhooks.
-- [ ] Registration/login, email verification, password recovery, session
-  management, order history, receipts, account deletion and refund support work
-  end to end.
+- [ ] Authenticated password rotation replaces the current session and revokes
+  every earlier authentication generation atomically; stale-login and
+  concurrent-change races fail closed.
+- [ ] Email verification, lost-password recovery, account deletion, receipts
+  and refund support work end to end. Authenticated password rotation is not a
+  recovery substitute.
 - [ ] Keyboard, screen reader, 200% zoom, reduced motion, WCAG 2.2 AA contrast,
   390/768/1024/1440 layouts, slow network and A4 print/PDF pass.
 - [ ] Representative supported city/finish/floor fixtures and both A/B ordering
@@ -440,6 +443,31 @@ new paid capability.
 - [ ] The merged SHA passes protected CI and CodeQL, staging then production
   smoke/authenticated canaries, exact-version cleanup, and the 30-minute
   production error-tail observation with paid and upload capabilities closed.
+
+## Account Security release gate
+
+- [ ] Migration `0015` preserves every existing credential and session at
+  authentication generation one with its legacy null revision, changes no
+  protected row count or canonical user/session/project/report bytes, and
+  reports `authSchema=current` in both environments.
+- [ ] The current-password endpoint enforces exact input, trusted origin, live
+  session, CSRF, fail-closed IP KV and an atomic five-attempt D1 account limit
+  before credential mutation; no password, bearer, hash, generation or session
+  identifier reaches output, analytics or operational logs.
+- [ ] One successful D1 batch changes the independently salted password record,
+  advances the generation, revokes every older session and returns one working
+  replacement session; old password and retained old cookies all fail.
+- [ ] Concurrent password changes produce one winner, a stale verified login
+  cannot insert a surviving session, and injected failures roll back credentials
+  plus sessions without split state.
+- [ ] `/security` passes keyboard, screen-reader announcements, visible focus,
+  390 px, 200% zoom/text spacing, high contrast, reduced motion, print and
+  slow/error-state checks without claiming lost-password recovery.
+- [ ] The exact merged SHA passes protected CI and CodeQL, encrypted migration
+  backup, old-Worker rollback rehearsal, staging and production password-change
+  canaries with exact synthetic cleanup, public/authenticated smoke, and a
+  30-minute exact-version observation while paid checkout, fulfillment and
+  uploads remain closed.
 
 ## Project Decision Home release gate
 

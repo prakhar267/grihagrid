@@ -149,7 +149,7 @@ interleaved within their own real-D1 fixtures.
   checkout and fulfillment controls remain closed throughout the suite.
 - Populated upgrade: apply migrations through `0011` to a fixture containing a
   real owner, non-first input revision and saved schema-v1 report, then apply
-  `0012`, `0013`, and `0014`. Require exact preservation of the v1 bytes and honest
+  `0012`, `0013`, `0014`, and `0015`. Require exact preservation of the v1 bytes and honest
   baseline, zero fabricated revisions/feedback, canonical removal of unsupported
   keys only on the next real source revision, null creation metadata on existing
   projects, the unique per-user creation-key index, and enforcement of the
@@ -400,6 +400,21 @@ interleaved within their own real-D1 fixtures.
 | Measurement | Query protected adjacent windows after multiple eligible reports, including two windows whose corresponding cells are six and five, plus a recent response on an old report | Old-report response is excluded; one statement reconciles denominator, total and rate; exact categorical arrays stay empty for both individually above-threshold windows until fixed non-overlapping snapshots exist, without returning identity or resource keys |
 | Operations | Inspect strict preflight, mode-0600 evidence cleanup, readiness, failed/successful canary cleanup and old-Worker rehearsal | `reportFeedbackSchema=current`, capability true, exact canary IDs have zero residue, templated logs, and rollback is compatibility-gated |
 
+## Account Security manual acceptance matrix
+
+| Area | Test | Required result |
+|---|---|---|
+| Password rotation | Change from a valid current password to a different valid password, then try both credentials | The old password fails, the new password logs in, and the current response carries one working replacement session/CSRF pair |
+| Session revocation | Create two sessions before the change, retain both bearer cookies, then rotate through one | Both retained cookies return `401`; only the returned replacement session works |
+| Strict boundary | Try wrong current password, same password, 9/129-character values, non-string values, missing/extra fields, malformed JSON and oversized bodies | Each returns the documented bounded error with zero user/session mutation and no password material in response/logs |
+| Browser defences | Repeat without origin, from a foreign origin, without matching CSRF and with missing/failing KV or D1 admission | Origin/CSRF/abuse checks fail closed before PBKDF2 or credential mutation |
+| Concurrency | Race 20 password guesses through deliberately non-atomic KV, race two different changes, and pause a login after old-password verification while a change wins | Exactly five guesses reach verification and 15 are D1-limited; one change commits; the loser cannot delete the winner's session; the stale login inserts no usable session |
+| Atomicity | Inject failure at credential update, old-session delete and replacement-session insert | The D1 batch rolls back completely: either old credentials/sessions work or only the new credentials/replacement works |
+| Migration and rollback | Upgrade populated 0014 data, inspect defaults/guards, run the prior Worker, then restore the new Worker | Existing credentials/sessions survive at generation one/null revision; protected counts and canonical user/session/project/report hashes do not change; old Worker remains schema-compatible and a restored current Worker rejects rollback-created legacy sessions for advanced accounts |
+| Accessibility | Exercise keyboard, screen reader, 390 px, 200% zoom/text spacing, high contrast, reduced motion and print | Persistent labels/autocomplete, visible focus, announced validation/result states, no overlap/overflow, and no credential form in print |
+| Privacy | Search URL, history, storage, analytics, API response, custom logs and D1 outside credential/session columns | No current/new password, bearer/CSRF token, password hash/salt, generation or session ID is exposed; route logging remains templated |
+| Paid containment | Inspect catalog/readiness and order/upload paths before and after change | Checkout, fulfillment and uploads remain closed; project/report/order/payment bytes are unchanged |
+
 ## Required release evidence
 
 Attach to the release record, without secrets or customer data:
@@ -427,9 +442,13 @@ Attach to the release record, without secrets or customer data:
   schema-v1 API/UI/D1 rejection, archived/ownership/CSRF/KV-failure/rate-limit
   evidence, the exact 60→61 feedback limit and 50→51 project cap, concurrent
   atomic-write and archive/delete-race evidence, D1 guard bypasses, aggregate redaction,
-  populated `0011`→`0014` upgrade, project-create replay/race proof,
+  populated `0011`→`0015` upgrade, project-create replay/race proof,
   public-to-created estimate equality, failed/successful exact-ID canary cleanup,
   print exclusion and keyboard/screen-reader/reflow results;
+- account-security strict-schema/origin/CSRF/KV fixtures, old-password and
+  pre-change-bearer rejection, concurrent-change and stale-login race evidence,
+  D1 rollback injection, populated migration/old-Worker compatibility, bounded
+  route logs, and keyboard/screen-reader/reflow/print results;
 - encrypted D1 backup checksum, isolated restore counts and measured RTO; and
 - go/no-go sign-off from founder/product, engineering on-call, payment owner,
   and quality/professional owner.

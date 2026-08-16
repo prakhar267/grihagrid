@@ -49,7 +49,7 @@ class MemoryStatement {
   }
 
   async first() {
-    if (this.sql.startsWith("SELECT id,email,name,created_at,password_hash,password_salt,password_iterations,password_algorithm FROM users WHERE email=")) {
+    if (this.sql.startsWith("SELECT id,email,name,created_at,password_hash,password_salt,password_iterations,password_algorithm,")) {
       const user = this.db.users.find((candidate) => candidate.email === this.values[0] && !candidate.deleted_at);
       return user ? { ...user } : null;
     }
@@ -68,10 +68,25 @@ class MemoryStatement {
         user_id: user.id,
         csrf_hash: session.csrf_hash,
         expires_at: session.expires_at,
+        auth_generation: session.auth_generation,
+        auth_revision_id: session.auth_revision_id,
         email: user.email,
         name: user.name,
         user_created_at: user.created_at,
+        password_hash: user.password_hash,
+        password_salt: user.password_salt,
+        password_iterations: user.password_iterations,
+        password_algorithm: user.password_algorithm,
+        password_changed_at: user.password_changed_at,
       } : null;
+    }
+    if (this.sql.startsWith("INSERT INTO sessions")) {
+      const [id, user_id, token_hash, csrf_hash, expires_at, created_at, last_seen_at, auth_generation, auth_revision_id] = this.values;
+      const user = this.db.users.find((candidate) => candidate.id === user_id && !candidate.deleted_at
+        && candidate.auth_generation === auth_generation && candidate.auth_revision_id === auth_revision_id);
+      if (!user) return null;
+      this.db.sessions.push({ id, user_id, token_hash, csrf_hash, expires_at, created_at, last_seen_at, auth_generation, auth_revision_id });
+      return { id };
     }
     if (this.sql.includes("FROM projects p WHERE p.id=? AND p.user_id=?")) {
       const project = this.db.projects.find((candidate) => candidate.id === this.values[0] && candidate.user_id === this.values[1]);
@@ -82,13 +97,25 @@ class MemoryStatement {
 
   async run() {
     if (this.sql.startsWith("INSERT INTO users")) {
-      const [id, email, name, created_at, password_hash, password_salt, password_iterations, password_algorithm] = this.values;
-      this.db.users.push({ id, email, name, created_at, password_hash, password_salt, password_iterations, password_algorithm });
+      const [id, email, name, created_at, password_hash, password_salt, password_iterations, password_algorithm, password_changed_at] = this.values;
+      this.db.users.push({
+        id,
+        email,
+        name,
+        created_at,
+        password_hash,
+        password_salt,
+        password_iterations,
+        password_algorithm,
+        password_changed_at,
+        auth_generation: 1,
+        auth_revision_id: null,
+      });
       return { success: true };
     }
     if (this.sql.startsWith("INSERT INTO sessions")) {
-      const [id, user_id, token_hash, csrf_hash, expires_at, created_at, last_seen_at] = this.values;
-      this.db.sessions.push({ id, user_id, token_hash, csrf_hash, expires_at, created_at, last_seen_at });
+      const [id, user_id, token_hash, csrf_hash, expires_at, created_at, last_seen_at, auth_generation, auth_revision_id] = this.values;
+      this.db.sessions.push({ id, user_id, token_hash, csrf_hash, expires_at, created_at, last_seen_at, auth_generation, auth_revision_id });
       return { success: true };
     }
     if (this.sql.startsWith("DELETE FROM sessions WHERE id=? AND user_id=?")) {

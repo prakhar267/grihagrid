@@ -287,6 +287,12 @@ Migrations currently run in this order:
     request digests plus a unique per-user partial index, allowing an exact lost
     create response to replay without a duplicate project or KPI increment while
     remaining compatible with the previous Worker's explicit insert.
+15. `0015_account_security.sql`: monotonic authentication generation and opaque
+    revision fields on accounts/sessions, password-change timestamps, a guarded
+    credential-state transition, immutable session authentication state, and a
+    strongly consistent per-account attempt counter with a retention index.
+    Existing rows remain generation one with a null legacy revision; counters
+    start empty and scheduled maintenance removes rows older than two days.
 
 Each schema-and-Worker release is one ordered change: audit and back up D1,
 apply the migration, verify the expanded schema and its compatibility with the
@@ -337,16 +343,18 @@ missing, malformed, or truncated result blocks migration and rollback
 eligibility; do not silently delete or rewrite customer history to make the
 audit pass.
 
-With `umask 077`, capture canonical ordered `projects` and `reports` query
-results outside the repository and require their row counts and SHA-256 values
-to be identical after applying `0013`. These remote reads are deliberately
-fail-closed but are not one transactional snapshot: a legitimate concurrent
-write may trip the invariance gate. In that case, stop promotion and rerun the
-audit/evidence in a controlled quiet window from fresh queries; never waive a
-hash mismatch or interpret it as permission to reverse the applied migration.
-Raw query results remain mode 0600, are used only to compute bounded evidence,
-are removed from the runner in the unconditional cleanup step, and never enter
-release artifacts.
+With `umask 077`, capture canonical ordered `users`, `sessions`, `projects` and
+`reports` query results outside the repository and require their row counts and
+SHA-256 values to be identical after applying migrations. Pre-0014 creation
+metadata canonicalizes to null; pre-0015 authentication generations canonicalize
+to one and opaque revisions/password-change timestamps to null. These remote
+reads are deliberately fail-closed but are not one transactional snapshot: a
+legitimate concurrent write may trip the invariance gate. In that case, stop
+promotion and rerun the audit/evidence in a controlled quiet window from fresh
+queries; never waive a hash mismatch or interpret it as permission to reverse
+the applied migration. Raw query results remain mode 0600, are used only to
+compute bounded evidence, are removed from the runner in the unconditional
+cleanup step, and never enter release artifacts.
 
 After migration, require `report_feedback` to be empty when `0013` was newly
 applied, `PRAGMA foreign_key_check` to return no rows, the feedback table, both
@@ -355,9 +363,22 @@ the required columns to exist. For `0014`, require both nullable creation
 metadata columns and `idx_projects_user_creation_key`. The release evidence
 canonicalizer represents a pre-0014 missing creation field as `null`, so the
 first additive upgrade compares equal while every later non-null digest remains
-protected byte-for-byte. Readiness must report `reportFeedbackSchema=current`,
-`projectCreationSchema=current`, and `reportFeedback=true` while every paid and
-upload control remains closed.
+protected byte-for-byte. For `0015`, require both generation/revision pairs,
+the password-change timestamp, `password_change_attempt_counters`, its retention
+index and both authentication-state triggers; canonical user/session hashes
+must remain equal through the migration. Readiness must
+report `reportFeedbackSchema=current`, `projectCreationSchema=current`,
+`authSchema=current`, `reportFeedback=true`, and `accountSecurity=true` while
+every paid and upload control remains closed.
+
+Password change uses KV only as the fail-closed IP perimeter. The authoritative
+five-attempt account limit is one conditional D1 UPSERT per fixed 15-minute
+window; parallel requests must return at most five credential-verification
+responses and every remaining attempt must be `429 rate_limited`. A missing
+table, failed D1 admission, missing KV or failed KV operation is
+`503 abuse_control_unavailable`, before PBKDF2 verification or credential
+mutation. The scheduled two-day cleanup is retention only and must never be
+used to make a release with a broken admission query appear healthy.
 
 Before deploying the candidate, run the reviewed **current** authenticated
 smoke harness against the still-active previous Worker with legacy-Worker mode
@@ -933,8 +954,10 @@ until headroom is restored.
 - Treat cross-account access, private-file exposure, credential leakage, and
   unverified paid state as SEV-1 even if only one record is known affected.
 
-The current application has no email verification, password-reset/recovery,
-account-deletion workflow, immutable audit-event table, or malware scanning.
+The current application supports current-password rotation with generation-
+based revocation of older sessions. It still has no email verification,
+lost-password reset/recovery, account-deletion workflow, immutable audit-event
+table, or malware scanning.
 Documented manual support is not an enterprise substitute; implement and test
 these controls before broad public sales.
 
@@ -1025,6 +1048,16 @@ corrupts creation metadata. A previous Worker does not provide keyed-create
 replay semantics, so keep the release quiet during rehearsal and require the
 current harness to create, read, generate, delete, and prove exact-ID zero
 residue before that version can be selected for rollback.
+
+Migration `0015` is readable by the prior Worker: additive session columns have
+compatible defaults and its explicit inserts continue to work. During a
+verified emergency rollback, a fresh login may create a legacy generation-one,
+null-revision session even for an account whose password has already advanced;
+the old Worker can use that session only while it is active. Restoring the
+current Worker rejects it because generation/revision no longer match. A
+rollback never restores a deleted pre-change bearer or the previous password.
+Keep the rollback window quiet, keep paid/upload controls closed, and require a
+fresh login after roll-forward. Never remove the columns or weaken the guards.
 
 ```sql
 SELECT p.id,p.input_revision,MAX(r.revision) AS stored_revision

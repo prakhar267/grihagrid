@@ -109,8 +109,14 @@ ready.
 Free-product readiness probe. Returns `200 status=ready` only when D1 is
 reachable, the required schema is present, and the KV abuse-control binding
 exists. The response separately reports Gemini planning, private upload, and
-paid-checkout capabilities, including `decisionSchema`, `paymentSchema`,
-`revisionSchema`, `reportFeedbackSchema`, and `projectCreationSchema`.
+paid-checkout capabilities, including `authSchema`, `decisionSchema`,
+`paymentSchema`, `revisionSchema`, `reportFeedbackSchema`, and
+`projectCreationSchema`.
+`authSchema=current` requires migration 0015's account/session
+generation-and-revision columns, password-change timestamp, atomic password-
+attempt table/index and both D1 authentication-state guards.
+`capabilities.accountSecurity` is true only when that schema and KV abuse
+control are ready.
 `projectCreationSchema=current` requires migration 0014's two nullable project
 creation columns and unique partial index. `releaseId` is the non-secret Cloudflare Worker version ID
 used to correlate a deployment with smoke and monitoring evidence.
@@ -273,6 +279,32 @@ The `204` response is explicitly `no-store`.
 
 Requires session. Returns `{ user, csrfToken }`; use this to restore frontend
 auth state after reload. Expired/deleted sessions return `401`.
+
+### `PUT /api/auth/password`
+
+Requires a trusted same-origin request, live session, matching CSRF
+cookie/header/hash and configured KV abuse control. The exact JSON body is:
+
+```json
+{
+  "currentPassword": "the current password",
+  "newPassword": "a different password between 10 and 128 characters"
+}
+```
+
+Unknown fields and scalar coercion are rejected. KV fails closed around the IP
+perimeter, and one conditional D1 UPSERT admits no more than five concurrent or
+sequential verification attempts per account in each fixed 15-minute window.
+The current password is verified with the stored versioned PBKDF2 record; the
+new value must differ.
+Success advances the account authentication generation plus opaque revision,
+writes a newly salted password record, revokes all older sessions and creates
+one replacement session in one D1 transaction. It returns `{ user, csrfToken }`
+and replaces both cookies. A concurrent login that verified stale
+authentication state cannot insert a usable session. See
+`docs/account-security.md` for the race, accessibility and rollback contract.
+This is not password recovery: a customer who no longer knows the current
+password still requires a future verified email flow.
 
 ## Project endpoints
 

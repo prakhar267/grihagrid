@@ -15,6 +15,7 @@
     "check": "npm run build && npm run test:sites && npm run check:ops",
     "smoke": "node scripts/smoke.mjs",
     "smoke:auth": "node scripts/authenticated-smoke.mjs",
+    "canary:account-security": "node scripts/account-security-canary.mjs",
     "monitor:release": "node scripts/monitor-release.mjs",
     "deploy": "wrangler deploy"
   },

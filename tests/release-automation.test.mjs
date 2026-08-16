@@ -32,7 +32,7 @@ test("release scope skips only documentation and treats deletions as deployable 
 test("release database evidence hard-gates legacy safety and proves migration data invariance", () => {
   const d1 = (results) => [{ success: true, results }];
   const countsRows = [
-    ["users", 1], ["projects", 1], ["reports", 1], ["orders", 0], ["payment_webhook_events", 0],
+    ["users", 1], ["sessions", 1], ["projects", 1], ["reports", 1], ["orders", 0], ["payment_webhook_events", 0],
   ].map(([entity, row_count]) => ({ entity, row_count }));
   const audit = {
     invalid_input_rows: 0,
@@ -41,22 +41,52 @@ test("release database evidence hard-gates legacy safety and proves migration da
     unsafe_revision_reports: 0,
     unsafe_current_reports: 0,
   };
+  const users = [{
+    id: "user-1",
+    email: "owner@example.test",
+    name: "Owner",
+    password_hash: "password-hash",
+    password_salt: "password-salt",
+    password_iterations: 100000,
+    password_algorithm: "PBKDF2-SHA256",
+    created_at: "2026-08-16 00:00:00",
+    deleted_at: null,
+  }];
+  const sessions = [{
+    id: "session-1",
+    user_id: "user-1",
+    token_hash: "token-hash",
+    csrf_hash: "csrf-hash",
+    expires_at: "2026-09-16 00:00:00",
+    created_at: "2026-08-16 00:00:00",
+    last_seen_at: "2026-08-16 00:00:00",
+  }];
   const projects = [{ id: "project-1", input_json: "{\"width\":30}", status: "report_ready" }];
   const reports = [{ id: "report-1", project_id: "project-1", content_json: "{\"version\":2}" }];
   const pre = buildPreMigrationEvidence({
     environment: "staging",
     countsPayload: d1(countsRows),
     auditPayload: d1([audit]),
+    usersPayload: d1(users),
+    sessionsPayload: d1(sessions),
     projectsPayload: d1(projects),
     reportsPayload: d1(reports),
   });
   assert.equal(pre.legacySafety.unknown_input_rows, 0);
   assert.match(pre.canonical.projects.sha256, /^[a-f0-9]{64}$/u);
+  assert.equal(pre.canonical.users.algorithm, "PBKDF2-SHA256");
+  assert.equal(pre.canonical.users.iterations, 100_000);
+  assert.match(pre.canonical.users.saltBase64Url, /^[A-Za-z0-9_-]{22}$/u);
+  assert.match(pre.canonical.users.digest, /^[a-f0-9]{64}$/u);
+  assert.equal(JSON.stringify(pre).includes("password-hash"), false);
+  assert.equal(JSON.stringify(pre).includes("password-salt"), false);
   assert.throws(
     () => buildPreMigrationEvidence({
       environment: "staging",
       countsPayload: d1(countsRows),
       auditPayload: d1([{ ...audit, soil_report_keys: 1 }]),
+      usersPayload: d1(users),
+      sessionsPayload: d1(sessions),
       projectsPayload: d1(projects),
       reportsPayload: d1(reports),
     }),
@@ -72,12 +102,19 @@ test("release database evidence hard-gates legacy safety and proves migration da
     "trigger:project_input_allowlist_insert_guard", "trigger:project_input_allowlist_update_guard",
     "trigger:project_account_limit_insert_guard",
     "index:idx_projects_user_creation_key",
+    "table:password_change_attempt_counters", "index:idx_password_change_attempts_updated",
+    "trigger:users_auth_state_update_guard", "trigger:session_auth_state_immutable",
   ].map((entry) => {
     const separator = entry.indexOf(":");
     return { type: entry.slice(0, separator), name: entry.slice(separator + 1) };
   });
   const columns = [
     "users:id", "users:email", "users:password_hash", "users:password_salt", "users:password_iterations", "users:password_algorithm",
+    "users:auth_generation", "users:auth_revision_id", "users:password_changed_at",
+    "sessions:id", "sessions:user_id", "sessions:token_hash", "sessions:csrf_hash", "sessions:auth_generation", "sessions:auth_revision_id",
+    "password_change_attempt_counters:user_id", "password_change_attempt_counters:window_start",
+    "password_change_attempt_counters:request_count", "password_change_attempt_counters:limit_count",
+    "password_change_attempt_counters:updated_at",
     "projects:id", "projects:user_id", "projects:status", "projects:input_json", "projects:input_revision", "projects:input_hash", "projects:brief_check_json",
     "projects:creation_key_hash", "projects:creation_request_hash",
     "orders:id", "orders:project_id", "orders:plan", "orders:status", "orders:product_code", "orders:request_hash",
@@ -95,6 +132,8 @@ test("release database evidence hard-gates legacy safety and proves migration da
     schemaPayload: d1(schemaNames),
     columnsPayload: d1(columns),
     countsPayload: d1(countsRows),
+    usersPayload: d1(users.map((user) => ({ ...user, auth_generation: 1, auth_revision_id: null, password_changed_at: null }))),
+    sessionsPayload: d1(sessions.map((session) => ({ ...session, auth_generation: 1, auth_revision_id: null }))),
     projectsPayload: d1(projects.map((project) => ({
       ...project,
       creation_key_hash: null,
@@ -105,6 +144,7 @@ test("release database evidence hard-gates legacy safety and proves migration da
     feedbackMigrationPending: true,
   });
   assert.equal(post.coreDataUnchanged, true);
+  assert.equal(post.credentialsAndSessionsUnchanged, true);
   assert.equal(post.reportFeedbackRows, 0);
   const residue = verifyCanaryResidueEvidence({
     environment: "staging",
@@ -147,6 +187,8 @@ test("release database evidence hard-gates legacy safety and proves migration da
       schemaPayload: d1(schemaNames),
       columnsPayload: d1(columns),
       countsPayload: d1(countsRows),
+      usersPayload: d1(users.map((user) => ({ ...user, auth_generation: 1, auth_revision_id: null, password_changed_at: null }))),
+      sessionsPayload: d1(sessions.map((session) => ({ ...session, auth_generation: 1, auth_revision_id: null }))),
       projectsPayload: d1([{
         ...projects[0],
         status: "changed",
@@ -157,7 +199,29 @@ test("release database evidence hard-gates legacy safety and proves migration da
       feedbackCountPayload: d1([{ row_count: 0 }]),
       feedbackMigrationPending: true,
     }),
-    /canonical projects or reports bytes/u,
+    /canonical users, sessions, projects, or reports bytes/u,
+  );
+
+  assert.throws(
+    () => verifyPostMigrationEvidence({
+      environment: "staging",
+      pre,
+      foreignKeysPayload: d1([]),
+      schemaPayload: d1(schemaNames),
+      columnsPayload: d1(columns),
+      countsPayload: d1(countsRows),
+      usersPayload: d1(users.map((user) => ({ ...user, auth_generation: 2, auth_revision_id: "revision-2-value", password_changed_at: null }))),
+      sessionsPayload: d1(sessions.map((session) => ({ ...session, auth_generation: 1, auth_revision_id: null }))),
+      projectsPayload: d1(projects.map((project) => ({
+        ...project,
+        creation_key_hash: null,
+        creation_request_hash: null,
+      }))),
+      reportsPayload: d1(reports),
+      feedbackCountPayload: d1([{ row_count: 0 }]),
+      feedbackMigrationPending: true,
+    }),
+    /canonical users, sessions, projects, or reports bytes/u,
   );
 });
 
@@ -261,11 +325,12 @@ test("authenticated smoke proves current and rollback-compatible Worker paths fa
     if (url.pathname === "/api/readiness") {
       return Response.json({
         releaseId,
+        checks: legacyResponse ? {} : { authSchema: "current" },
         capabilities: {
           paidCheckout: false,
           paidFulfillment: false,
           privateUploads: false,
-          ...(legacyResponse ? {} : { reportFeedback: true }),
+          ...(legacyResponse ? {} : { reportFeedback: true, accountSecurity: true }),
         },
       });
     }
@@ -416,7 +481,8 @@ test("authenticated smoke deletes only its exact marker after an ambiguous creat
     if (url.pathname === "/api/readiness") {
       return Response.json({
         releaseId: "22222222-2222-4222-8222-222222222222",
-        capabilities: { paidCheckout: false, paidFulfillment: false, privateUploads: false, reportFeedback: true },
+        checks: { authSchema: "current" },
+        capabilities: { paidCheckout: false, paidFulfillment: false, privateUploads: false, reportFeedback: true, accountSecurity: true },
       });
     }
     if (url.pathname === "/api/auth/me") {

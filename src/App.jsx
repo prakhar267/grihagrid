@@ -139,7 +139,7 @@ function useProjectCreationKey(recoverStored = false) {
 }
 
 function isPrivateAccountPath(pathname) {
-  return /^\/(?:dashboard|orders(?:\/|$)|projects\/|report\/|checkout\/return)/u.test(pathname);
+  return /^\/(?:dashboard|security(?:\/|$)|orders(?:\/|$)|projects\/|report\/|checkout\/return)/u.test(pathname);
 }
 
 function safeDecodePathSegment(value) {
@@ -198,7 +198,7 @@ function WorkspaceAccount({ user, onLogout }) {
     onLogout();
     replaceRoute("/", { logoutConfirmed: true });
   }
-  return <div className="workspace-account"><p>{user?.name||user?.email}</p><button ref={buttonRef} type="button" disabled={pending} aria-busy={pending} aria-describedby={failed?errorId:undefined} onClick={logout}><SignOut/> {pending?'Logging out…':failed?'Retry logout':'Log out'}</button><span className="workspace-account__status" role="status" aria-live="polite">{pending?'Logging out…':''}</span>{failed&&<p className="workspace-account__error" id={errorId} role="alert">{LOGOUT_FAILURE_MESSAGE}</p>}</div>;
+  return <div className="workspace-account"><p>{user?.name||user?.email}</p><div className="workspace-account__actions"><button type="button" disabled={pending} aria-label="Account security" onClick={()=>route('/security')}><LockKey/><span>Security</span></button><button ref={buttonRef} type="button" disabled={pending} aria-busy={pending} aria-describedby={failed?errorId:undefined} onClick={logout}><SignOut/><span>{pending?'Logging out…':failed?'Retry logout':'Log out'}</span></button></div><span className="workspace-account__status" role="status" aria-live="polite">{pending?'Logging out…':''}</span>{failed&&<p className="workspace-account__error" id={errorId} role="alert">{LOGOUT_FAILURE_MESSAGE}</p>}</div>;
 }
 
 function Footer() {
@@ -516,6 +516,103 @@ function AuthPage({ mode, onAuthenticated }) {
     }catch(err){if(active.current)setError(err.message)}finally{if(active.current)setBusy(false)}
   }
   return <main className="auth-page"><div className="auth-architecture"><img width="1536" height="1024" src="/assets/v2/monograph-house-v2.jpg" onError={e=>{e.currentTarget.src='/assets/grihagrid-hero.jpg'}} alt="Contemporary Indian home"/><div><Brand inverted disabled={busy} onHome={abandon}/><blockquote>Start with clarity.<br/>Build with confidence.</blockquote></div></div><section className="auth-form"><button className="back-action" disabled={busy} onClick={abandon}><ArrowLeft/> Home</button><span className="kicker">Private project workspace</span><h1>{isLogin?'Welcome back.':'Create your account.'}</h1><p>{isLogin?'Return to your saved home plans.':'Save the brief you just created and keep every decision together.'}</p><form onSubmit={submit}>{!isLogin&&<label>Full name<input required autoComplete="name" value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label>}<label>Email address<input required type="email" autoComplete="email" value={form.email} onChange={e=>setForm({...form,email:e.target.value})}/></label><label>Password<input required type="password" minLength="10" autoComplete={isLogin?'current-password':'new-password'} value={form.password} onChange={e=>setForm({...form,password:e.target.value})}/><small>At least 10 characters</small></label>{error&&<p className="form-error" role="alert">{error}</p>}<button disabled={busy} className="copper-button" type="submit">{busy?'Please wait…':authenticated?'Retry saving project':isLogin?'Log in':'Create account'} <ArrowRight/></button></form><p className="auth-switch">{isLogin?'New to GrihaGrid?':'Already have an account?'} <button disabled={busy} onClick={()=>replaceRoute(isLogin?'/register':'/login',pendingAuthContinuationState())}>{isLogin?'Create account':'Log in'}</button></p></section></main>;
+}
+
+function accountSecurityFailure(error) {
+  const code=error?.payload?.code;
+  const ambiguous={ambiguous:true,message:"We could not confirm whether the password changed. This page has not claimed that older sessions were revoked. If the request reached GrihaGrid, use the new password the next time you log in."};
+  if(code==="current_password_incorrect")return {field:"currentPassword",message:"Your current password is incorrect. Check it and try again."};
+  if(code==="password_reuse")return {field:"newPassword",message:"Choose a new password that is different from your current password."};
+  if(code==="invalid_password")return {field:"newPassword",message:"Use between 10 and 128 characters for your new password."};
+  if(code==="auth_state_changed")return {field:"currentPassword",message:"Your account changed while this request was being checked. Enter your current password and try again."};
+  if(code==="rate_limited")return {message:"Too many password attempts were made. Wait a little before trying again."};
+  if(code==="abuse_control_unavailable")return {message:"Password changes are temporarily unavailable while account protection recovers. Your existing password and sessions are unchanged."};
+  if(code==="origin_rejected"||code==="csrf_rejected")return {message:"This secure page is no longer current. Reload it before trying again."};
+  if(code==="unauthenticated")return {needsLogin:true,message:"Your session has ended. Log in again before changing your password."};
+  if(error instanceof ApiError&&error.status===408&&error.payload==null)return ambiguous;
+  if(error instanceof ApiError&&error.status>=400&&error.status<500)return {message:error.message||"We could not change your password. Check the form and try again."};
+  return ambiguous;
+}
+
+function AccountSecurityPage({ user, onAuthenticated }) {
+  const [form,setForm]=useState({currentPassword:"",newPassword:"",confirmPassword:""});
+  const [phase,setPhase]=useState("idle");
+  const [failure,setFailure]=useState(null);
+  const active=useRef(true);
+  const requestRef=useRef(null);
+  const currentRef=useRef(null);
+  const newRef=useRef(null);
+  const confirmRef=useRef(null);
+  const errorRef=useRef(null);
+  const successRef=useRef(null);
+  const errorId=useId();
+  const newHelpId=useId();
+  const confirmHelpId=useId();
+  const pending=phase==="pending";
+  useEffect(()=>{active.current=true;return()=>{active.current=false;requestRef.current?.abort()}},[]);
+  useEffect(()=>{if(user===null)replaceRoute('/login')},[user]);
+
+  function focusFailure(nextFailure){
+    const target=nextFailure.field==="currentPassword"?currentRef:nextFailure.field==="newPassword"?newRef:nextFailure.field==="confirmPassword"?confirmRef:errorRef;
+    window.requestAnimationFrame(()=>target.current?.focus({preventScroll:true}));
+  }
+
+  function rejectForm(nextFailure){
+    setFailure(nextFailure);setPhase("error");focusFailure(nextFailure);
+  }
+
+  function update(field,value){
+    setForm(current=>({...current,[field]:value}));
+    if(phase==="error"){setFailure(null);setPhase("idle")}
+  }
+
+  async function changePassword(event){
+    event.preventDefault();
+    if(requestRef.current)return;
+    if(!form.currentPassword)return rejectForm({field:"currentPassword",message:"Enter your current password."});
+    if(form.newPassword.length<10||form.newPassword.length>128)return rejectForm({field:"newPassword",message:"Use between 10 and 128 characters for your new password."});
+    if(!form.confirmPassword)return rejectForm({field:"confirmPassword",message:"Enter the new password again to confirm it."});
+    if(form.newPassword!==form.confirmPassword)return rejectForm({field:"confirmPassword",message:"The two new-password entries do not match."});
+    if(form.currentPassword===form.newPassword)return rejectForm({field:"newPassword",message:"Your new password must be different from your current password."});
+    const controller=new AbortController();
+    requestRef.current=controller;setFailure(null);setPhase("pending");
+    try{
+      const result=await api('/api/auth/password',{method:'PUT',signal:controller.signal,body:{currentPassword:form.currentPassword,newPassword:form.newPassword}});
+      if(!active.current||controller.signal.aborted)return;
+      if(!result?.user||typeof result.csrfToken!=="string"||!result.csrfToken)throw new ApiError("Password change response was incomplete",502,result);
+      setForm({currentPassword:"",newPassword:"",confirmPassword:""});
+      onAuthenticated(result.user);
+      setPhase("success");
+      window.requestAnimationFrame(()=>successRef.current?.focus({preventScroll:true}));
+    }catch(error){
+      if(!active.current||controller.signal.aborted)return;
+      const nextFailure=accountSecurityFailure(error);
+      setFailure(nextFailure);setPhase("error");focusFailure(nextFailure);
+    }finally{
+      if(requestRef.current===controller)requestRef.current=null;
+    }
+  }
+
+  if(user==null)return <main className="security-page security-page--loading"><header className="security-page__topbar"><Brand disabled/><span>Private account</span></header><div className="security-loading" role="status" aria-live="polite"><LockKey/><span className="kicker">Account security</span><h1>{user===null?'Returning to sign in…':'Opening your secure account…'}</h1><p>No account controls are shown until this session is confirmed.</p></div></main>;
+
+  const fieldError=failure?.field;
+  const currentDescription=fieldError==="currentPassword"?errorId:undefined;
+  const newDescription=fieldError==="newPassword"?`${newHelpId} ${errorId}`:newHelpId;
+  const confirmDescription=fieldError==="confirmPassword"?`${confirmHelpId} ${errorId}`:confirmHelpId;
+  return <main className="security-page"><header className="security-page__topbar"><Brand disabled={pending}/><button type="button" className="back-action" disabled={pending} onClick={()=>route('/dashboard')}><ArrowLeft/> My projects</button></header><div className="security-layout">
+    <section className="security-intro" aria-labelledby="security-title"><span className="kicker">Account security · private</span><h1 id="security-title">Change your<br/><i>password.</i></h1><p>Use a password unique to GrihaGrid. We will preserve this browser as your current session and close every genuinely older route into the account.</p><div className="security-principles"><div><span>01</span><p><strong>This browser stays signed in.</strong> Its tabs share the fresh session cookie and CSRF token created by this change.</p></div><div><span>02</span><p><strong>Every older session is revoked.</strong> Copied sessions and sessions in other browsers or devices can no longer open the account.</p></div></div><small><ShieldCheck/> GrihaGrid will never ask you to send a password by email.</small></section>
+    <section className="security-panel" aria-labelledby="security-form-title" aria-busy={pending}>
+      {phase==="success"?<div ref={successRef} className="security-success" tabIndex="-1" role="status" aria-live="polite" aria-atomic="true"><CheckCircle/><span className="kicker">Password changed</span><h2 id="security-form-title">Your new key is active.</h2><p>This browser remains signed in with a fresh session. Other tabs in the same browser profile share the replacement cookie and may remain signed in. Every genuinely older or copied session, including sessions in other browsers and devices, has been revoked.</p><button type="button" className="copper-button" onClick={()=>route('/dashboard')}>Return to my projects <ArrowRight/></button></div>:<><header><span className="kicker">Credential update</span><h2 id="security-form-title">Choose a new key.</h2><p>Signed in as <strong>{user.email||user.name}</strong>. Your current password confirms this change; there is no password-recovery flow on this page.</p></header><form noValidate onSubmit={changePassword}>
+        <label>Current password<input ref={currentRef} required type="password" maxLength="128" autoComplete="current-password" autoCapitalize="none" spellCheck="false" disabled={pending} value={form.currentPassword} aria-invalid={fieldError==="currentPassword"||undefined} aria-describedby={currentDescription} onChange={event=>update("currentPassword",event.target.value)}/></label>
+        <label>New password<input ref={newRef} required type="password" minLength="10" maxLength="128" autoComplete="new-password" autoCapitalize="none" spellCheck="false" disabled={pending} value={form.newPassword} aria-invalid={fieldError==="newPassword"||undefined} aria-describedby={newDescription} onChange={event=>update("newPassword",event.target.value)}/><small id={newHelpId}>10–128 characters. Use a password different from your current one.</small></label>
+        <label>Confirm new password<input ref={confirmRef} required type="password" minLength="10" maxLength="128" autoComplete="new-password" autoCapitalize="none" spellCheck="false" disabled={pending} value={form.confirmPassword} aria-invalid={fieldError==="confirmPassword"||undefined} aria-describedby={confirmDescription} onChange={event=>update("confirmPassword",event.target.value)}/><small id={confirmHelpId}>Enter the new password exactly as above.</small></label>
+        {failure&&<div ref={errorRef} id={errorId} className={`security-message security-message--error ${failure.ambiguous?'security-message--ambiguous':''}`} tabIndex="-1" role="alert"><WarningCircle/><div><strong>{failure.ambiguous?'Change not confirmed':'Password not changed'}</strong><p>{failure.message}</p>{failure.needsLogin&&<button type="button" className="underlined-action" onClick={()=>replaceRoute('/login')}>Go to log in</button>}</div></div>}
+        {pending&&<p className="security-form-status" role="status" aria-live="polite"><LockKey/> Updating your password and revoking older sessions…</p>}
+        <button type="submit" className="copper-button copper-button--large" disabled={pending}>{pending?'Securing account…':'Change password'} <ArrowRight/></button>
+      </form></>}
+      <p className="security-print-note">Account security controls are available only inside the signed-in GrihaGrid workspace. No password fields or session details are included in print.</p>
+    </section>
+  </div></main>;
 }
 
 function Dashboard({ user, onLogout }) {
@@ -2298,7 +2395,7 @@ export function App() {
     window.addEventListener('focus',revalidate);window.addEventListener('pageshow',revalidate);document.addEventListener('visibilitychange',onVisibility);
     return()=>{window.removeEventListener('focus',revalidate);window.removeEventListener('pageshow',revalidate);document.removeEventListener('visibilitychange',onVisibility)};
   },[]);
-  useEffect(()=>{const titles={'/':'GrihaGrid — Know what fits. Know what it costs.','/pricing':'Pricing — GrihaGrid','/about':'About — GrihaGrid','/plans':'Sample plan — GrihaGrid','/compare/sample':'Sample Decision Compare — GrihaGrid','/start':'Plan my home — GrihaGrid','/login':'Log in — GrihaGrid','/register':'Create account — GrihaGrid','/dashboard':'My projects — GrihaGrid','/orders':'Orders — GrihaGrid','/privacy':'Privacy — GrihaGrid','/terms':'Terms — GrihaGrid','/refund':'Refunds — GrihaGrid'};document.title=path.startsWith('/report/')?'Decision book — GrihaGrid':path.startsWith('/projects/')&&path.endsWith('/brief')?'Brief Check — GrihaGrid':path.startsWith('/projects/')&&path.endsWith('/compare')?'Decision Compare — GrihaGrid':path.startsWith('/projects/')?'Project home — GrihaGrid':path.startsWith('/orders/')?'Purchased artifact — GrihaGrid':path.startsWith('/share/decision/')?'Shared decision — GrihaGrid':path.startsWith('/align/')?'Family review — GrihaGrid':(titles[path]||'Page not found — GrihaGrid')},[path]);
+  useEffect(()=>{const titles={'/':'GrihaGrid — Know what fits. Know what it costs.','/pricing':'Pricing — GrihaGrid','/about':'About — GrihaGrid','/plans':'Sample plan — GrihaGrid','/compare/sample':'Sample Decision Compare — GrihaGrid','/start':'Plan my home — GrihaGrid','/login':'Log in — GrihaGrid','/register':'Create account — GrihaGrid','/dashboard':'My projects — GrihaGrid','/security':'Account security — GrihaGrid','/orders':'Orders — GrihaGrid','/privacy':'Privacy — GrihaGrid','/terms':'Terms — GrihaGrid','/refund':'Refunds — GrihaGrid'};document.title=path.startsWith('/report/')?'Decision book — GrihaGrid':path.startsWith('/projects/')&&path.endsWith('/brief')?'Brief Check — GrihaGrid':path.startsWith('/projects/')&&path.endsWith('/compare')?'Decision Compare — GrihaGrid':path.startsWith('/projects/')?'Project home — GrihaGrid':path.startsWith('/orders/')?'Purchased artifact — GrihaGrid':path.startsWith('/share/decision/')?'Shared decision — GrihaGrid':path.startsWith('/align/')?'Family review — GrihaGrid':(titles[path]||'Page not found — GrihaGrid')},[path]);
   useEffect(()=>{
     if(focusedPath.current===path)return undefined;
     focusedPath.current=path;
@@ -2353,6 +2450,7 @@ export function App() {
   if(path==='/start')return <StartPage user={user}/>;
   if(path==='/login'||path==='/register')return <AuthPage key={path} mode={path.slice(1)} onAuthenticated={authenticated=>{authRevision.current+=1;authenticatedSession.current=true;setUser(authenticated)}}/>;
   if(path==='/dashboard')return <Dashboard user={user} onLogout={()=>{authRevision.current+=1;authenticatedSession.current=false;setUser(null)}}/>;
+  if(path==='/security')return <AccountSecurityPage user={user} onAuthenticated={authenticated=>{authRevision.current+=1;authenticatedSession.current=true;setUser(authenticated)}}/>;
   if(path==='/orders')return <OrderHistoryPage user={user} onLogout={()=>{authRevision.current+=1;authenticatedSession.current=false;setUser(null)}}/>;
   if(briefMatch)return <BriefPage projectId={safeDecodePathSegment(briefMatch[1])}/>;
   if(decisionMatch)return <DecisionComparePage projectId={safeDecodePathSegment(decisionMatch[1])}/>;

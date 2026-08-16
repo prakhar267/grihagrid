@@ -377,11 +377,15 @@ jobs:
           wrangler d1 migrations list DB --remote --env staging \
             | tee release-evidence/staging/pre-migration-list.txt
           wrangler d1 execute DB --remote --env staging --json --command \
-            "SELECT 'users' AS entity,COUNT(*) AS row_count FROM users UNION ALL SELECT 'projects',COUNT(*) FROM projects UNION ALL SELECT 'reports',COUNT(*) FROM reports UNION ALL SELECT 'orders',COUNT(*) FROM orders UNION ALL SELECT 'payment_webhook_events',COUNT(*) FROM payment_webhook_events;" \
+            "SELECT 'users' AS entity,COUNT(*) AS row_count FROM users UNION ALL SELECT 'sessions',COUNT(*) FROM sessions UNION ALL SELECT 'projects',COUNT(*) FROM projects UNION ALL SELECT 'reports',COUNT(*) FROM reports UNION ALL SELECT 'orders',COUNT(*) FROM orders UNION ALL SELECT 'payment_webhook_events',COUNT(*) FROM payment_webhook_events;" \
             > "$RUNNER_TEMP/staging-pre-migration-counts.json"
           wrangler d1 execute DB --remote --env staging --json --command \
             "SELECT (SELECT COUNT(*) FROM projects WHERE NOT json_valid(input_json) OR json_type(input_json)!='object') AS invalid_input_rows,(SELECT COUNT(DISTINCT p.id) FROM projects p,json_each(p.input_json) field WHERE field.key NOT IN ('width','length','city','facing','floors','bedrooms','bathrooms','parking','style','quality','roadWidthFt','plotShape','accessibility','futureUse','budgetLakh')) AS unknown_input_rows,(SELECT COUNT(*) FROM projects p,json_each(p.input_json) field WHERE field.key='soilReport') AS soil_report_keys,(SELECT COUNT(*) FROM project_revision_reports rr WHERE rr.report_schema_version=2 AND (NOT json_valid(rr.content_json) OR json_type(rr.content_json,'$.risks')!='array' OR NOT EXISTS (SELECT 1 FROM json_each(rr.content_json,'$.risks') risk WHERE risk.type='text' AND risk.value='Foundation assumptions must be validated through a geotechnical investigation.'))) AS unsafe_revision_reports,(SELECT COUNT(*) FROM reports report WHERE report.version=2 AND (NOT json_valid(report.content_json) OR json_type(report.content_json,'$.risks')!='array' OR NOT EXISTS (SELECT 1 FROM json_each(report.content_json,'$.risks') risk WHERE risk.type='text' AND risk.value='Foundation assumptions must be validated through a geotechnical investigation.'))) AS unsafe_current_reports;" \
             > "$RUNNER_TEMP/staging-pre-migration-audit.json"
+          wrangler d1 execute DB --remote --env staging --json --command \
+            "SELECT * FROM users ORDER BY id;" > "$RUNNER_TEMP/staging-pre-migration-users.json"
+          wrangler d1 execute DB --remote --env staging --json --command \
+            "SELECT * FROM sessions ORDER BY id;" > "$RUNNER_TEMP/staging-pre-migration-sessions.json"
           wrangler d1 execute DB --remote --env staging --json --command \
             "SELECT * FROM projects ORDER BY id;" > "$RUNNER_TEMP/staging-pre-migration-projects.json"
           wrangler d1 execute DB --remote --env staging --json --command \
@@ -389,6 +393,8 @@ jobs:
           node scripts/release-db-evidence.mjs pre staging \
             "$RUNNER_TEMP/staging-pre-migration-counts.json" \
             "$RUNNER_TEMP/staging-pre-migration-audit.json" \
+            "$RUNNER_TEMP/staging-pre-migration-users.json" \
+            "$RUNNER_TEMP/staging-pre-migration-sessions.json" \
             "$RUNNER_TEMP/staging-pre-migration-projects.json" \
             "$RUNNER_TEMP/staging-pre-migration-reports.json" \
             release-evidence/staging/pre-migration-proof.json
@@ -500,11 +506,15 @@ jobs:
             "SELECT type,name FROM sqlite_schema WHERE type IN ('table','index','trigger') AND name NOT LIKE 'sqlite_%' ORDER BY type,name;" \
             > release-evidence/staging/schema-objects.json
           wrangler d1 execute DB --remote --env staging --json --command \
-            "SELECT 'users' AS table_name,name FROM pragma_table_info('users') UNION ALL SELECT 'projects',name FROM pragma_table_info('projects') UNION ALL SELECT 'orders',name FROM pragma_table_info('orders') UNION ALL SELECT 'project_revisions',name FROM pragma_table_info('project_revisions') UNION ALL SELECT 'report_feedback',name FROM pragma_table_info('report_feedback') ORDER BY table_name,name;" \
+            "SELECT 'users' AS table_name,name FROM pragma_table_info('users') UNION ALL SELECT 'sessions',name FROM pragma_table_info('sessions') UNION ALL SELECT 'password_change_attempt_counters',name FROM pragma_table_info('password_change_attempt_counters') UNION ALL SELECT 'projects',name FROM pragma_table_info('projects') UNION ALL SELECT 'orders',name FROM pragma_table_info('orders') UNION ALL SELECT 'project_revisions',name FROM pragma_table_info('project_revisions') UNION ALL SELECT 'report_feedback',name FROM pragma_table_info('report_feedback') ORDER BY table_name,name;" \
             > "$RUNNER_TEMP/staging-schema-columns.json"
           wrangler d1 execute DB --remote --env staging --json --command \
-            "SELECT 'users' AS entity,COUNT(*) AS row_count FROM users UNION ALL SELECT 'projects',COUNT(*) FROM projects UNION ALL SELECT 'reports',COUNT(*) FROM reports UNION ALL SELECT 'orders',COUNT(*) FROM orders UNION ALL SELECT 'payment_webhook_events',COUNT(*) FROM payment_webhook_events;" \
+            "SELECT 'users' AS entity,COUNT(*) AS row_count FROM users UNION ALL SELECT 'sessions',COUNT(*) FROM sessions UNION ALL SELECT 'projects',COUNT(*) FROM projects UNION ALL SELECT 'reports',COUNT(*) FROM reports UNION ALL SELECT 'orders',COUNT(*) FROM orders UNION ALL SELECT 'payment_webhook_events',COUNT(*) FROM payment_webhook_events;" \
             > "$RUNNER_TEMP/staging-post-migration-counts.json"
+          wrangler d1 execute DB --remote --env staging --json --command \
+            "SELECT * FROM users ORDER BY id;" > "$RUNNER_TEMP/staging-post-migration-users.json"
+          wrangler d1 execute DB --remote --env staging --json --command \
+            "SELECT * FROM sessions ORDER BY id;" > "$RUNNER_TEMP/staging-post-migration-sessions.json"
           wrangler d1 execute DB --remote --env staging --json --command \
             "SELECT * FROM projects ORDER BY id;" > "$RUNNER_TEMP/staging-post-migration-projects.json"
           wrangler d1 execute DB --remote --env staging --json --command \
@@ -518,6 +528,8 @@ jobs:
               release-evidence/staging/schema-objects.json \
               "$RUNNER_TEMP/staging-schema-columns.json" \
               "$RUNNER_TEMP/staging-post-migration-counts.json" \
+              "$RUNNER_TEMP/staging-post-migration-users.json" \
+              "$RUNNER_TEMP/staging-post-migration-sessions.json" \
               "$RUNNER_TEMP/staging-post-migration-projects.json" \
               "$RUNNER_TEMP/staging-post-migration-reports.json" \
               "$RUNNER_TEMP/staging-post-migration-feedback-count.json" \
@@ -723,9 +735,13 @@ jobs:
           rm -f -- \
             "$RUNNER_TEMP/staging-pre-migration-counts.json" \
             "$RUNNER_TEMP/staging-pre-migration-audit.json" \
+            "$RUNNER_TEMP/staging-pre-migration-users.json" \
+            "$RUNNER_TEMP/staging-pre-migration-sessions.json" \
             "$RUNNER_TEMP/staging-pre-migration-projects.json" \
             "$RUNNER_TEMP/staging-pre-migration-reports.json" \
             "$RUNNER_TEMP/staging-post-migration-counts.json" \
+            "$RUNNER_TEMP/staging-post-migration-users.json" \
+            "$RUNNER_TEMP/staging-post-migration-sessions.json" \
             "$RUNNER_TEMP/staging-post-migration-projects.json" \
             "$RUNNER_TEMP/staging-post-migration-reports.json" \
             "$RUNNER_TEMP/staging-post-migration-feedback-count.json" \
@@ -883,11 +899,15 @@ jobs:
           wrangler d1 migrations list DB --remote --env="" \
             | tee release-evidence/production/pre-migration-list.txt
           wrangler d1 execute DB --remote --env="" --json --command \
-            "SELECT 'users' AS entity,COUNT(*) AS row_count FROM users UNION ALL SELECT 'projects',COUNT(*) FROM projects UNION ALL SELECT 'reports',COUNT(*) FROM reports UNION ALL SELECT 'orders',COUNT(*) FROM orders UNION ALL SELECT 'payment_webhook_events',COUNT(*) FROM payment_webhook_events;" \
+            "SELECT 'users' AS entity,COUNT(*) AS row_count FROM users UNION ALL SELECT 'sessions',COUNT(*) FROM sessions UNION ALL SELECT 'projects',COUNT(*) FROM projects UNION ALL SELECT 'reports',COUNT(*) FROM reports UNION ALL SELECT 'orders',COUNT(*) FROM orders UNION ALL SELECT 'payment_webhook_events',COUNT(*) FROM payment_webhook_events;" \
             > "$RUNNER_TEMP/production-pre-migration-counts.json"
           wrangler d1 execute DB --remote --env="" --json --command \
             "SELECT (SELECT COUNT(*) FROM projects WHERE NOT json_valid(input_json) OR json_type(input_json)!='object') AS invalid_input_rows,(SELECT COUNT(DISTINCT p.id) FROM projects p,json_each(p.input_json) field WHERE field.key NOT IN ('width','length','city','facing','floors','bedrooms','bathrooms','parking','style','quality','roadWidthFt','plotShape','accessibility','futureUse','budgetLakh')) AS unknown_input_rows,(SELECT COUNT(*) FROM projects p,json_each(p.input_json) field WHERE field.key='soilReport') AS soil_report_keys,(SELECT COUNT(*) FROM project_revision_reports rr WHERE rr.report_schema_version=2 AND (NOT json_valid(rr.content_json) OR json_type(rr.content_json,'$.risks')!='array' OR NOT EXISTS (SELECT 1 FROM json_each(rr.content_json,'$.risks') risk WHERE risk.type='text' AND risk.value='Foundation assumptions must be validated through a geotechnical investigation.'))) AS unsafe_revision_reports,(SELECT COUNT(*) FROM reports report WHERE report.version=2 AND (NOT json_valid(report.content_json) OR json_type(report.content_json,'$.risks')!='array' OR NOT EXISTS (SELECT 1 FROM json_each(report.content_json,'$.risks') risk WHERE risk.type='text' AND risk.value='Foundation assumptions must be validated through a geotechnical investigation.'))) AS unsafe_current_reports;" \
             > "$RUNNER_TEMP/production-pre-migration-audit.json"
+          wrangler d1 execute DB --remote --env="" --json --command \
+            "SELECT * FROM users ORDER BY id;" > "$RUNNER_TEMP/production-pre-migration-users.json"
+          wrangler d1 execute DB --remote --env="" --json --command \
+            "SELECT * FROM sessions ORDER BY id;" > "$RUNNER_TEMP/production-pre-migration-sessions.json"
           wrangler d1 execute DB --remote --env="" --json --command \
             "SELECT * FROM projects ORDER BY id;" > "$RUNNER_TEMP/production-pre-migration-projects.json"
           wrangler d1 execute DB --remote --env="" --json --command \
@@ -895,6 +915,8 @@ jobs:
           node scripts/release-db-evidence.mjs pre production \
             "$RUNNER_TEMP/production-pre-migration-counts.json" \
             "$RUNNER_TEMP/production-pre-migration-audit.json" \
+            "$RUNNER_TEMP/production-pre-migration-users.json" \
+            "$RUNNER_TEMP/production-pre-migration-sessions.json" \
             "$RUNNER_TEMP/production-pre-migration-projects.json" \
             "$RUNNER_TEMP/production-pre-migration-reports.json" \
             release-evidence/production/pre-migration-proof.json
@@ -1006,11 +1028,15 @@ jobs:
             "SELECT type,name FROM sqlite_schema WHERE type IN ('table','index','trigger') AND name NOT LIKE 'sqlite_%' ORDER BY type,name;" \
             > release-evidence/production/schema-objects.json
           wrangler d1 execute DB --remote --env="" --json --command \
-            "SELECT 'users' AS table_name,name FROM pragma_table_info('users') UNION ALL SELECT 'projects',name FROM pragma_table_info('projects') UNION ALL SELECT 'orders',name FROM pragma_table_info('orders') UNION ALL SELECT 'project_revisions',name FROM pragma_table_info('project_revisions') UNION ALL SELECT 'report_feedback',name FROM pragma_table_info('report_feedback') ORDER BY table_name,name;" \
+            "SELECT 'users' AS table_name,name FROM pragma_table_info('users') UNION ALL SELECT 'sessions',name FROM pragma_table_info('sessions') UNION ALL SELECT 'password_change_attempt_counters',name FROM pragma_table_info('password_change_attempt_counters') UNION ALL SELECT 'projects',name FROM pragma_table_info('projects') UNION ALL SELECT 'orders',name FROM pragma_table_info('orders') UNION ALL SELECT 'project_revisions',name FROM pragma_table_info('project_revisions') UNION ALL SELECT 'report_feedback',name FROM pragma_table_info('report_feedback') ORDER BY table_name,name;" \
             > "$RUNNER_TEMP/production-schema-columns.json"
           wrangler d1 execute DB --remote --env="" --json --command \
-            "SELECT 'users' AS entity,COUNT(*) AS row_count FROM users UNION ALL SELECT 'projects',COUNT(*) FROM projects UNION ALL SELECT 'reports',COUNT(*) FROM reports UNION ALL SELECT 'orders',COUNT(*) FROM orders UNION ALL SELECT 'payment_webhook_events',COUNT(*) FROM payment_webhook_events;" \
+            "SELECT 'users' AS entity,COUNT(*) AS row_count FROM users UNION ALL SELECT 'sessions',COUNT(*) FROM sessions UNION ALL SELECT 'projects',COUNT(*) FROM projects UNION ALL SELECT 'reports',COUNT(*) FROM reports UNION ALL SELECT 'orders',COUNT(*) FROM orders UNION ALL SELECT 'payment_webhook_events',COUNT(*) FROM payment_webhook_events;" \
             > "$RUNNER_TEMP/production-post-migration-counts.json"
+          wrangler d1 execute DB --remote --env="" --json --command \
+            "SELECT * FROM users ORDER BY id;" > "$RUNNER_TEMP/production-post-migration-users.json"
+          wrangler d1 execute DB --remote --env="" --json --command \
+            "SELECT * FROM sessions ORDER BY id;" > "$RUNNER_TEMP/production-post-migration-sessions.json"
           wrangler d1 execute DB --remote --env="" --json --command \
             "SELECT * FROM projects ORDER BY id;" > "$RUNNER_TEMP/production-post-migration-projects.json"
           wrangler d1 execute DB --remote --env="" --json --command \
@@ -1024,6 +1050,8 @@ jobs:
               release-evidence/production/schema-objects.json \
               "$RUNNER_TEMP/production-schema-columns.json" \
               "$RUNNER_TEMP/production-post-migration-counts.json" \
+              "$RUNNER_TEMP/production-post-migration-users.json" \
+              "$RUNNER_TEMP/production-post-migration-sessions.json" \
               "$RUNNER_TEMP/production-post-migration-projects.json" \
               "$RUNNER_TEMP/production-post-migration-reports.json" \
               "$RUNNER_TEMP/production-post-migration-feedback-count.json" \
@@ -1377,9 +1405,13 @@ jobs:
           rm -f -- \
             "$RUNNER_TEMP/production-pre-migration-counts.json" \
             "$RUNNER_TEMP/production-pre-migration-audit.json" \
+            "$RUNNER_TEMP/production-pre-migration-users.json" \
+            "$RUNNER_TEMP/production-pre-migration-sessions.json" \
             "$RUNNER_TEMP/production-pre-migration-projects.json" \
             "$RUNNER_TEMP/production-pre-migration-reports.json" \
             "$RUNNER_TEMP/production-post-migration-counts.json" \
+            "$RUNNER_TEMP/production-post-migration-users.json" \
+            "$RUNNER_TEMP/production-post-migration-sessions.json" \
             "$RUNNER_TEMP/production-post-migration-projects.json" \
             "$RUNNER_TEMP/production-post-migration-reports.json" \
             "$RUNNER_TEMP/production-post-migration-feedback-count.json" \
