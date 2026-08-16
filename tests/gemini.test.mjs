@@ -6,6 +6,7 @@ import worker, { __test } from "../worker/index.js";
 
 const ORIGIN = "https://app.example.test";
 const API_KEY = "server-only-gemini-key";
+const REPORT_SHARE_ABUSE_HMAC_KEY = "ab".repeat(32);
 const assets = { fetch: async () => new Response("missing", { status: 404 }) };
 
 function request(path, init = {}) {
@@ -970,7 +971,7 @@ test("AI provider configuration fails closed while model fallback is stable", as
 
 test("readiness reports AI capability without exposing the configured secret", async () => {
   const readinessDb = (counts = {
-    count: 23,
+    count: 27,
     ai_brief_count: 1,
     ai_abuse_count: 2,
     decision_table_count: 6,
@@ -978,6 +979,7 @@ test("readiness reports AI capability without exposing the configured secret", a
     family_alignment_count: 2,
     revision_table_count: 3,
     report_feedback_count: 1,
+    report_share_count: 4,
   }, withBatch = true, staleDecisionColumns = false, stalePaymentColumns = false, staleFamilyColumns = false, staleFamilyObjects = false, staleArchiveSafety = false, staleRevisionObjects = false, staleProjectCreation = false) => ({
     ...(withBatch ? { batch: async () => [] } : {}),
     prepare(sql) {
@@ -997,9 +999,13 @@ test("readiness reports AI capability without exposing the configured secret", a
           if (sql.includes("AS trigger_count") && sql.includes("report_feedback_insert_guard")) {
             return { trigger_count: 5, index_count: 2 };
           }
+          if (sql.includes("AS trigger_count") && sql.includes("report_share_sections_insert_guard")) {
+            return { trigger_count: 5, index_count: 5 };
+          }
           if (sql.includes("idx_projects_user_creation_key")) {
             return { count: staleProjectCreation ? 0 : 1 };
           }
+          if (sql.includes("FROM report_handoff_controls")) return { enabled: 1 };
           if (sql.includes("users_auth_state_update_guard")) {
             return { trigger_count: 2, index_count: 1 };
           }
@@ -1017,6 +1023,7 @@ test("readiness reports AI capability without exposing the configured secret", a
     DB: readinessDb(),
     GRIHAGRID_CACHE: new MemoryKv(),
     GEMINI_API_KEY: API_KEY,
+    REPORT_SHARE_ABUSE_HMAC_KEY,
   });
   assert.equal(response.status, 200);
   const body = await response.json();
@@ -1028,11 +1035,13 @@ test("readiness reports AI capability without exposing the configured secret", a
   assert.equal(body.checks.archiveSafetySchema, "current");
   assert.equal(body.checks.revisionSchema, "current");
   assert.equal(body.checks.reportFeedbackSchema, "current");
+  assert.equal(body.checks.reportShareSchema, "current");
   assert.equal(body.checks.projectCreationSchema, "current");
   assert.equal(body.capabilities.aiPlanningBrief, true);
   assert.equal(body.capabilities.familyAlignment, true);
   assert.equal(body.capabilities.briefCheck, true);
   assert.equal(body.capabilities.reportFeedback, true);
+  assert.equal(body.capabilities.reportHandoff, true);
   assert.equal(JSON.stringify(body).includes(API_KEY), false);
 
   const staleDecision = await worker.fetch(request("/api/readiness"), {
@@ -1040,6 +1049,7 @@ test("readiness reports AI capability without exposing the configured secret", a
     DB: readinessDb(undefined, true, true),
     GRIHAGRID_CACHE: new MemoryKv(),
     GEMINI_API_KEY: API_KEY,
+    REPORT_SHARE_ABUSE_HMAC_KEY,
   });
   assert.equal(staleDecision.status, 503);
   const staleDecisionBody = await staleDecision.json();
@@ -1051,6 +1061,7 @@ test("readiness reports AI capability without exposing the configured secret", a
     DB: readinessDb(undefined, true, false, true),
     GRIHAGRID_CACHE: new MemoryKv(),
     GEMINI_API_KEY: API_KEY,
+    REPORT_SHARE_ABUSE_HMAC_KEY,
   });
   assert.equal(stalePayment.status, 503);
   const stalePaymentBody = await stalePayment.json();
@@ -1062,6 +1073,7 @@ test("readiness reports AI capability without exposing the configured secret", a
     DB: readinessDb(undefined, true, false, false, true),
     GRIHAGRID_CACHE: new MemoryKv(),
     GEMINI_API_KEY: API_KEY,
+    REPORT_SHARE_ABUSE_HMAC_KEY,
   });
   assert.equal(staleFamily.status, 503);
   const staleFamilyBody = await staleFamily.json();
@@ -1073,6 +1085,7 @@ test("readiness reports AI capability without exposing the configured secret", a
     DB: readinessDb(undefined, true, false, false, false, true),
     GRIHAGRID_CACHE: new MemoryKv(),
     GEMINI_API_KEY: API_KEY,
+    REPORT_SHARE_ABUSE_HMAC_KEY,
   });
   assert.equal(staleFamilyObjects.status, 503);
   const staleFamilyObjectsBody = await staleFamilyObjects.json();
@@ -1084,6 +1097,7 @@ test("readiness reports AI capability without exposing the configured secret", a
     DB: readinessDb(undefined, true, false, false, false, false, true),
     GRIHAGRID_CACHE: new MemoryKv(),
     GEMINI_API_KEY: API_KEY,
+    REPORT_SHARE_ABUSE_HMAC_KEY,
   });
   assert.equal(staleArchiveSafety.status, 503);
   const staleArchiveSafetyBody = await staleArchiveSafety.json();
@@ -1095,6 +1109,7 @@ test("readiness reports AI capability without exposing the configured secret", a
     DB: readinessDb(undefined, true, false, false, false, false, false, true),
     GRIHAGRID_CACHE: new MemoryKv(),
     GEMINI_API_KEY: API_KEY,
+    REPORT_SHARE_ABUSE_HMAC_KEY,
   });
   assert.equal(staleRevisionObjectsResponse.status, 503);
   const staleRevisionObjectsBody = await staleRevisionObjectsResponse.json();
@@ -1107,6 +1122,7 @@ test("readiness reports AI capability without exposing the configured secret", a
     DB: readinessDb(undefined, true, false, false, false, false, false, false, true),
     GRIHAGRID_CACHE: new MemoryKv(),
     GEMINI_API_KEY: API_KEY,
+    REPORT_SHARE_ABUSE_HMAC_KEY,
   });
   assert.equal(staleProjectCreationResponse.status, 503);
   const staleProjectCreationBody = await staleProjectCreationResponse.json();
@@ -1115,13 +1131,14 @@ test("readiness reports AI capability without exposing the configured secret", a
 
   for (const [label, overrides] of [
     ["invalid model", { DB: readinessDb(), GEMINI_API_KEY: API_KEY, GEMINI_MODEL: "bad/model" }],
-    ["missing AI table", { DB: readinessDb({ count: 22, ai_brief_count: 0, ai_abuse_count: 2, decision_table_count: 6, payment_hardening_count: 2, family_alignment_count: 2, revision_table_count: 3, report_feedback_count: 1 }), GEMINI_API_KEY: API_KEY }],
+    ["missing AI table", { DB: readinessDb({ count: 24, ai_brief_count: 0, ai_abuse_count: 2, decision_table_count: 6, payment_hardening_count: 2, family_alignment_count: 2, revision_table_count: 3, report_feedback_count: 1, report_share_count: 4 }), GEMINI_API_KEY: API_KEY }],
     ["missing atomic batch", { DB: readinessDb(undefined, false), GEMINI_API_KEY: API_KEY }],
     ["invalid key", { DB: readinessDb(), GEMINI_API_KEY: "short" }],
   ]) {
     const unavailable = await worker.fetch(request("/api/readiness"), {
       ASSETS: assets,
       GRIHAGRID_CACHE: new MemoryKv(),
+      REPORT_SHARE_ABUSE_HMAC_KEY,
       ...overrides,
     });
     const unavailableBody = await unavailable.json();

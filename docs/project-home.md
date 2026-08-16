@@ -32,7 +32,8 @@ primary next action, in this order:
 1. Generate or open current feasibility.
 2. Start a comparison, or recalculate a stale one.
 3. Choose a direction from the current comparison.
-4. Open the selected direction and professional handoff material.
+4. Open the current planning report at its Professional Handoff controls, where
+   the owner chooses exactly which immutable sections to share.
 
 An archived project remains readable, but Home must not invite generation or
 planning/content mutations. Archiving permanently closes outstanding Family

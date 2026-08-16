@@ -8,8 +8,11 @@ const files = Object.freeze({
   ci: new URL("../.github/workflows/ci.yml", import.meta.url),
   smokeWorkflow: new URL("../.github/workflows/production-smoke.yml", import.meta.url),
   deployWorkflow: new URL("../.github/workflows/deploy.yml", import.meta.url),
+  smoke: new URL("./smoke.mjs", import.meta.url),
+  waitForRelease: new URL("./wait-for-release.mjs", import.meta.url),
   authenticatedSmoke: new URL("./authenticated-smoke.mjs", import.meta.url),
   releaseDbEvidence: new URL("./release-db-evidence.mjs", import.meta.url),
+  worker: new URL("../worker/index.js", import.meta.url),
 });
 
 function environmentBlock(source, name) {
@@ -41,7 +44,7 @@ function workflowStep(source, name) {
 }
 
 export async function checkOpsConfig() {
-  const [wrangler, packageText, gitignore, ci, smokeWorkflow, deployWorkflow, authenticatedSmoke, releaseDbEvidence] = await Promise.all(
+  const [wrangler, packageText, gitignore, ci, smokeWorkflow, deployWorkflow, smoke, waitForRelease, authenticatedSmoke, releaseDbEvidence, worker] = await Promise.all(
     Object.values(files).map((file) => readFile(file, "utf8")),
   );
   const packageJson = JSON.parse(packageText);
@@ -148,10 +151,21 @@ export async function checkOpsConfig() {
   assert.match(deployWorkflow, /workflow_run:[\s\S]*workflows:\s*\["CI"\]/u, "deployment must follow completed CI");
   assert.match(deployWorkflow, /concurrency:[\s\S]*queue:\s*max/u, "deployment runs must queue instead of replacing pending releases");
   assert.match(deployWorkflow, /checks:\s*read/u, "deployment gate must read exact-SHA check results");
+  assert.match(deployWorkflow, /security-events:\s*read/u, "deployment gate must read bounded code-scanning evidence");
   assert.match(deployWorkflow, /workflow_dispatch'\s*&&\s*github\.ref\s*==\s*'refs\/heads\/main'/u, "manual releases must use the main workflow ref");
   assert.match(deployWorkflow, /manual releases must target the current main tip/u, "manual releases must reject historical main ancestors");
   assert.match(deployWorkflow, /fetch-depth:\s*0/u, "release ancestry must use complete history");
   assert.match(deployWorkflow, /dynamic\/github-code-scanning\/codeql/u, "release gate must verify the trusted CodeQL workflow identity");
+  assert.match(deployWorkflow, /code-scanning\/analyses/u, "release gate must query exact-SHA CodeQL analysis results");
+  assert.match(deployWorkflow, /analysis\.commit_sha === process\.env\.CODEQL_RELEASE_SHA/u, "release gate must bind CodeQL analysis evidence to the merged SHA");
+  assert.match(deployWorkflow, /analysis\.ref === "refs\/heads\/main"/u, "release gate must bind CodeQL analysis evidence to main");
+  assert.match(deployWorkflow, /language:javascript-typescript/u, "release gate must require JavaScript\/TypeScript CodeQL analysis");
+  assert.match(deployWorkflow, /code-scanning\/alerts/u, "release gate must query open code-scanning alerts after exact-SHA success");
+  assert.match(deployWorkflow, /-f state=open -f ref=refs\/heads\/main -f tool_name=CodeQL/u, "release gate must scope open CodeQL alerts to main");
+  assert.match(deployWorkflow, /assert\.equal\(alerts\.length, 0/u, "release gate must fail closed when main has open CodeQL alerts");
+  assert.match(deployWorkflow, /assert\.equal\(resultsCount, 0/u, "release gate must fail closed when the exact-SHA CodeQL analysis contains results");
+  assert.match(deployWorkflow, /release-evidence\/authorization\/codeql-gate\.json/u, "release gate must persist bounded CodeQL evidence");
+  assert.doesNotMatch(deployWorkflow, /path:\s*\$RUNNER_TEMP\/codeql-(?:analyses|open-alerts)\.json/u, "raw CodeQL API responses must not enter artifacts");
   assert.match(deployWorkflow, /environment:[\s\S]*name:\s*staging/u, "deployment must use the staging environment");
   assert.match(deployWorkflow, /needs:\s*\[authorize, validate, staging\]/u, "production must depend on validation and staging");
   assert.match(deployWorkflow, /name:\s*production/u, "deployment must use the production environment");
@@ -173,15 +187,51 @@ export async function checkOpsConfig() {
   assert.match(authenticatedSmoke, /LEGACY_WORKER_COMPAT === "true"/u, "the authenticated CLI must expose reviewed legacy-Worker mode");
   assert.match(authenticatedSmoke, /canaryProjectIds: \[\.\.\.cleanupIds\]\.sort\(\)/u, "authenticated smoke evidence must identify every synthetic project");
   assert.match(authenticatedSmoke, /primaryError\.releaseEvidence = result/u, "failed authenticated canaries must still expose cleanup evidence");
+  assert.match(authenticatedSmoke, /readiness\?\.checks\?\.reportShareSchema, "current"/u, "the authenticated canary must require current report-share schema");
+  assert.match(authenticatedSmoke, /readiness\?\.checks\?\.reportHandoffControl, "enabled"/u, "the authenticated canary must require the report-handoff control to be enabled");
+  assert.match(authenticatedSmoke, /readiness\?\.checks\?\.reportShareAbuseHashing, "configured"/u, "the authenticated canary must require report-share abuse hashing");
+  assert.match(authenticatedSmoke, /readiness\?\.capabilities\?\.reportHandoff, true/u, "the authenticated canary must require report handoff readiness");
+  assert.match(authenticatedSmoke, /call\("\/api\/shared\/report", \{[\s\S]*?anonymous: true,[\s\S]*?JSON\.stringify\(\{ token: reportShareToken \}\)/u, "the authenticated canary must redeem report handoffs anonymously through the constant POST route");
+  assert.match(authenticatedSmoke, /Object\.keys\(publicShare\?\.share \|\| \{\}\)\.sort\(\), \["expiresAt", "sections"\]/u, "the authenticated canary must enforce the minimal public handoff envelope");
+  assert.doesNotMatch(authenticatedSmoke, /publicShare\?\.share\?\.report/u, "the authenticated canary must not expect the retired public report wrapper");
+  assert.match(authenticatedSmoke, /\[410\]/u, "the authenticated canary must prove revoked report handoffs are gone");
+  assert.match(smoke, /const legacyWorker = options\.legacyWorker === true/u, "public smoke must support previous-Worker compatibility mode");
+  assert.match(smoke, /const expectReportHandoff = options\.expectReportHandoff !== false/u, "public smoke must support exact-version checks while handoff is closed");
+  assert.match(smoke, /expectReportHandoff \? "enabled" : "disabled"/u, "public smoke must verify the requested report-handoff control state");
+  assert.match(smoke, /if \(!legacyWorker\) \{[\s\S]*?reportShareDocumentCheck\(origin,"GET"\)[\s\S]*?reportShareDocumentCheck\(origin,"HEAD"\)/u, "legacy smoke must skip the handoff-only document route");
+  assert.match(smoke, /if \(!legacyWorker\) \{[\s\S]*?reportHandoffControl[\s\S]*?reportShareAbuseHashing/u, "legacy smoke must skip current-only handoff readiness checks");
+  assert.match(waitForRelease, /smoke\(origin, \{ expectedReleaseId, legacyWorker, expectReportHandoff \}\)/u, "release polling must pass legacy and handoff-control expectations to every smoke sample");
+  assert.match(waitForRelease, /LEGACY_WORKER_COMPAT === "true"/u, "release polling CLI must expose legacy compatibility mode");
+  assert.match(waitForRelease, /EXPECT_REPORT_HANDOFF !== "false"/u, "release polling CLI must expose closed-control propagation mode");
   assert.match(releaseDbEvidence, /buildCanaryResidueSql/u, "release evidence must build an exact canary-ID residue query");
-  for (const table of ["projects", "project_revisions", "reports", "project_revision_reports", "report_feedback"]) {
+  for (const table of ["projects", "project_revisions", "reports", "project_revision_reports", "report_feedback", "report_shares"]) {
     assert.match(
       releaseDbEvidence,
       new RegExp(`FROM ${table} WHERE (?:id|project_id) IN \\(\\$\\{ids\\}\\)`, "u"),
       `canary residue proof must query exact IDs in ${table}`,
     );
   }
-  assert.match(releaseDbEvidence, /\["projects", "project_revisions", "reports", "revision_reports", "feedback"\]/u, "canary residue verification must fail closed on every project-owned report and revision table");
+  assert.match(releaseDbEvidence, /\["projects", "project_revisions", "reports", "revision_reports", "feedback", "report_shares"\]/u, "canary residue verification must fail closed on every project-owned report and revision table");
+  for (const object of [
+    "table:report_shares",
+    "table:report_share_read_counters",
+    "table:report_share_create_counters",
+    "table:report_handoff_controls",
+    "index:idx_report_shares_owner_created",
+    "index:idx_report_shares_expiry",
+    "index:idx_report_shares_revoked",
+    "index:idx_report_share_read_counters_updated",
+    "index:idx_report_share_create_counters_updated",
+    "trigger:report_share_sections_insert_guard",
+    "trigger:report_share_identity_immutable",
+    "trigger:archived_report_share_insert_guard",
+    "trigger:report_share_active_limit_insert",
+    "trigger:report_handoff_enabled_insert_guard",
+  ]) {
+    assert.match(releaseDbEvidence, new RegExp(`"${object}"`, "u"), `release evidence must require ${object}`);
+  }
+  const reportHandoffInventory = releaseDbEvidence.match(/const REQUIRED_0016_OBJECTS = Object\.freeze\(\[([\s\S]*?)\]\);/u)?.[1] || "";
+  assert.equal((reportHandoffInventory.match(/"trigger:/gu) || []).length, 5, "release evidence must inventory all five report-handoff D1 triggers");
   assert.match(releaseDbEvidence, /projectIdsSha256/u, "release artifacts must retain only a digest of canary project IDs");
   for (const field of [
     "invalid_input_rows",
@@ -206,7 +256,7 @@ export async function checkOpsConfig() {
     "protected-count evidence must not exceed D1's compound SELECT term limit",
   );
   assert.equal(
-    (deployWorkflow.match(/WITH target_tables\(table_name\) AS \(VALUES \('users'\),\('sessions'\),\('password_change_attempt_counters'\),\('projects'\),\('orders'\),\('project_revisions'\),\('report_feedback'\)\) SELECT target_tables\.table_name,columns\.name FROM target_tables JOIN pragma_table_info\(target_tables\.table_name\) AS columns/gu) || []).length,
+    (deployWorkflow.match(/WITH target_tables\(table_name\) AS \(VALUES \('users'\),\('sessions'\),\('password_change_attempt_counters'\),\('report_share_read_counters'\),\('report_share_create_counters'\),\('report_handoff_controls'\),\('projects'\),\('orders'\),\('project_revisions'\),\('report_feedback'\),\('report_shares'\)\) SELECT target_tables\.table_name,columns\.name FROM target_tables JOIN pragma_table_info\(target_tables\.table_name\) AS columns/gu) || []).length,
     2,
     "both schema-column inventories must use one D1-compatible SELECT",
   );
@@ -215,7 +265,49 @@ export async function checkOpsConfig() {
     /pragma_table_info\('users'\) UNION ALL/u,
     "schema-column evidence must not exceed D1's compound SELECT term limit",
   );
-  assert.equal((deployWorkflow.match(/LEGACY_WORKER_COMPAT:\s*"true"/gu) || []).length, 2, "both environments must rehearse the previous Worker with the current harness");
+  assert.equal((deployWorkflow.match(/LEGACY_WORKER_COMPAT:\s*"true"/gu) || []).length, 6, "both environments must use legacy mode for rollback rehearsals and all four rollback version checks");
+  assert.equal((deployWorkflow.match(/0016_report_handoff_links\.sql/gu) || []).length, 2, "both environments must detect a pending report-handoff migration");
+  assert.equal((deployWorkflow.match(/REPORT_SHARE_MIGRATION_PENDING=/gu) || []).length, 2, "both environments must prove both new report-share tables start empty");
+  assert.equal(
+    (deployWorkflow.match(/SELECT COUNT\(\*\) AS row_count FROM report_share_read_counters;/gu) || []).length,
+    2,
+    "both environments must count the new hashed read-counter table after migration",
+  );
+  assert.equal(
+    (deployWorkflow.match(/SELECT COUNT\(\*\) AS row_count FROM report_share_create_counters;/gu) || []).length,
+    2,
+    "both environments must count the new create-counter table after migration",
+  );
+  assert.equal(
+    (deployWorkflow.match(/SELECT control_key,enabled FROM report_handoff_controls ORDER BY control_key;/gu) || []).length,
+    8,
+    "post-migration, post-canary-closure, and rollback gates must prove the exact report-handoff control row",
+  );
+  assert.equal((deployWorkflow.match(/release-db-evidence\.mjs handoff-counts /gu) || []).length, 2, "both environments must persist bounded post-canary handoff counts");
+  assert.match(releaseDbEvidence, /reportShareReadCounterRows/u, "post-migration evidence must emit the hashed read-counter count");
+  assert.match(releaseDbEvidence, /new report_share_read_counters table must start empty/u, "the 0016 release gate must reject a pre-populated hashed read-counter table");
+  assert.match(releaseDbEvidence, /reportShareCreateCounterRows/u, "post-migration evidence must emit the create-counter count");
+  assert.match(releaseDbEvidence, /new report_share_create_counters table must start empty/u, "the 0016 release gate must reject a pre-populated create-counter table");
+  assert.match(releaseDbEvidence, /report handoff control must contain exactly one row/u, "release evidence must require exactly one report-handoff control row");
+  assert.match(releaseDbEvidence, /expectedEnabled: false/u, "post-migration evidence must require the report-handoff control to start disabled");
+  assert.match(releaseDbEvidence, /the report handoff control must be enabled after release checks/u, "post-canary evidence must require the control to finish enabled on success");
+  assert.match(worker, /'report_handoff_enabled_insert_guard'/u, "readiness must inventory the enabled-control insert fence");
+  assert.match(worker, /Number\(shareObjects\?\.trigger_count\) === 5/u, "readiness must require all five report-handoff triggers");
+  assert.match(
+    worker,
+    /DELETE FROM report_shares WHERE expires_at<datetime\('now','-90 days'\) OR \(revoked_at IS NOT NULL AND revoked_at<datetime\('now','-90 days'\)\)/u,
+    "scheduled hygiene must delete only report shares that have been expired or revoked for 90 days",
+  );
+  assert.match(
+    worker,
+    /DELETE FROM report_share_read_counters WHERE updated_at<datetime\('now','-2 days'\)/u,
+    "scheduled hygiene must bound hashed public-report admission counters to two days",
+  );
+  assert.match(
+    worker,
+    /DELETE FROM report_share_create_counters WHERE updated_at<datetime\('now','-2 days'\)/u,
+    "scheduled hygiene must bound report-share creation counters to two days",
+  );
   assert.doesNotMatch(deployWorkflow, /git show[^\n]*authenticated-smoke\.mjs/u, "rollback rehearsal must not execute the previous commit's harness");
   assert.match(deployWorkflow, /wait-for-release\.mjs/u, "releases must wait for consecutive exact-version smoke samples");
   assert.match(deployWorkflow, /Reconfirm the exact staging version/u, "production must reject staging drift after its hold");
@@ -234,7 +326,7 @@ export async function checkOpsConfig() {
   assert.equal((deployWorkflow.match(/release-db-evidence\.mjs residue-sql /gu) || []).length, 4, "old-Worker and candidate canaries need exact-ID residue SQL in both environments");
   assert.equal((deployWorkflow.match(/release-db-evidence\.mjs residue /gu) || []).length, 4, "old-Worker and candidate canaries need verified zero-residue evidence in both environments");
   assert.equal((deployWorkflow.match(/if: always\(\) && steps\.rollback_compat\.outcome != 'skipped'/gu) || []).length, 2, "rollback rehearsal residue must run after success or failure in both environments");
-  assert.equal((deployWorkflow.match(/if: always\(\) && steps\.canary\.outcome != 'skipped'/gu) || []).length, 2, "candidate residue must run after success or failure in both environments");
+  assert.equal((deployWorkflow.match(/if: always\(\) && steps\.canary\.outcome != 'skipped'/gu) || []).length, 4, "candidate residue and closed-control proof must run after each attempted canary");
   for (const environment of ["staging", "production"]) {
     for (const stepName of [
       `Inspect pending ${environment} migrations and aggregate data state`,
@@ -250,6 +342,94 @@ export async function checkOpsConfig() {
         assert.doesNotMatch(step, /--file/u, `${stepName} must not mix Wrangler file-upload progress with JSON evidence`);
       }
     }
+    const applyMigrations = workflowStep(deployWorkflow, `Apply and verify ${environment} migrations`);
+    assert.match(applyMigrations, /steps\.migrations\.outputs\.report_share_pending \}\}" != "true"/u, `${environment} later releases must close an already-existing report-handoff control before activation`);
+    assert.match(applyMigrations, /UPDATE report_handoff_controls SET enabled=0/u, `${environment} later releases must explicitly start with report handoff closed`);
+    assert.match(applyMigrations, /REPORT_HANDOFF_EXPECTED_ENABLED=false/u, `${environment} migration evidence must require a disabled report-handoff control`);
+
+    const propagation = workflowStep(deployWorkflow, `Wait for three exact ${environment} smoke samples`);
+    assert.match(propagation, /EXPECT_REPORT_HANDOFF:\s*"false"/u, `${environment} exact-version propagation must run while report handoff remains closed`);
+
+    const canary = workflowStep(deployWorkflow, `Run ${environment} authenticated canary under bounded handoff activation`);
+    assert.match(canary, /if: steps\.propagation\.outcome == 'success'/u, `${environment} handoff activation must follow closed exact-version propagation`);
+    assert.match(canary, /trap reclose_report_handoff_after_canary EXIT/u, `${environment} authenticated canary must install its fail-closed EXIT trap before enabling`);
+    assert.match(canary, /UPDATE report_handoff_controls SET enabled=1/u, `${environment} authenticated canary must activate handoff explicitly`);
+    assert.match(canary, /UPDATE report_handoff_controls SET enabled=0/u, `${environment} authenticated canary EXIT trap must always re-close handoff`);
+    assert.match(canary, /REPORT_HANDOFF_EXPECTED_ENABLED=true/u, `${environment} authenticated canary must prove its bounded activation`);
+    assert.match(canary, /REPORT_HANDOFF_EXPECTED_ENABLED=false/u, `${environment} authenticated canary trap must prove it reclosed`);
+    assert.match(canary, /authenticated-smoke\.mjs/u, `${environment} bounded activation must contain the authenticated canary`);
+
+    const disabled = workflowStep(deployWorkflow, `Prove ${environment} report handoff reclosed after authenticated canary`);
+    assert.doesNotMatch(disabled, /UPDATE report_handoff_controls/u, `${environment} post-canary proof must not mask a failed EXIT-trap reclose`);
+    assert.match(disabled, /SELECT control_key,enabled FROM report_handoff_controls/u, `${environment} post-canary proof must read the already-closed control`);
+    assert.match(disabled, /REPORT_HANDOFF_EXPECTED_ENABLED=false/u, `${environment} post-canary proof must require the disabled database row`);
+    assert.match(disabled, /reportHandoffControl, "disabled"/u, `${environment} readiness must report the disabled control`);
+    assert.match(disabled, /reportHandoff, false/u, `${environment} readiness must withdraw the handoff capability`);
+    assert.match(disabled, /\}, 503\);/u, `${environment} disabled redemption must fail closed with HTTP 503`);
+    assert.match(disabled, /report_handoff_disabled/u, `${environment} disabled redemption must expose only the stable disabled code`);
+
+    const restored = workflowStep(deployWorkflow, `Restore and verify ${environment} report handoff control`);
+    for (const gate of ["canary", "residue", "handoff_reclosed"]) {
+      assert.match(restored, new RegExp(`steps\\.${gate}\\.outcome == 'success'`, "u"), `${environment} final restoration must require successful ${gate} evidence`);
+    }
+    assert.match(restored, /trap reclose_report_handoff_on_failure EXIT/u, `${environment} restoration must install a fail-closed trap before enabling`);
+    assert.match(restored, /UPDATE report_handoff_controls SET enabled=1/u, `${environment} restoration must explicitly enable the control`);
+    assert.match(restored, /UPDATE report_handoff_controls SET enabled=0/u, `${environment} restoration failure trap must re-close the control`);
+    assert.match(restored, /REPORT_HANDOFF_EXPECTED_ENABLED=true/u, `${environment} restoration must prove the enabled database row`);
+    assert.match(restored, /reportHandoffControl, "enabled"/u, `${environment} readiness must report the enabled control`);
+    assert.match(restored, /\}, 404\);/u, `${environment} enabled missing-token redemption must return HTTP 404`);
+    assert.match(restored, /report_share_not_found/u, `${environment} enabled missing-token redemption must expose the stable not-found code`);
+
+    const counts = workflowStep(deployWorkflow, `Record ${environment} post-canary report handoff counts`);
+    assert.match(counts, /if: steps\.handoff_restore\.outcome == 'success'/u, `${environment} bounded counts must follow final verified restoration`);
+    for (const count of ["report_shares", "report_share_read_counters", "report_share_create_counters", "report_handoff_controls", "enabled_report_handoff_controls"]) {
+      assert.match(counts, new RegExp(`AS ${count}\\b`, "u"), `${environment} post-canary evidence must include ${count}`);
+    }
+    assert.match(counts, /release-db-evidence\.mjs handoff-counts/u, `${environment} post-canary counts must pass bounded validation`);
+    const orderedReleaseSteps = [
+      `Wait for three exact ${environment} smoke samples`,
+      `Run ${environment} authenticated canary under bounded handoff activation`,
+      `Prove ${environment} canary left zero database residue`,
+      `Prove ${environment} report handoff reclosed after authenticated canary`,
+      `Restore and verify ${environment} report handoff control`,
+      `Record ${environment} post-canary report handoff counts`,
+    ].map((name) => deployWorkflow.indexOf(`      - name: ${name}`));
+    assert.ok(
+      orderedReleaseSteps.every((position, index) => position >= 0 && (index === 0 || position > orderedReleaseSteps[index - 1])),
+      `${environment} must propagate closed, run a bounded canary, prove residue and closure, then restore and count`,
+    );
+
+    const unverifiedFailClosed = workflowStep(deployWorkflow, `Disable ${environment} report handoff before unverified rollback`);
+    assert.match(unverifiedFailClosed, /if: >-[\s\S]*steps\.version\.outcome == 'failure'/u, `${environment} ambiguous activation must disable report handoff before rollback`);
+    assert.match(unverifiedFailClosed, /UPDATE report_handoff_controls SET enabled=0/u, `${environment} unverified rollback must leave the control disabled`);
+
+    const failClosed = workflowStep(deployWorkflow, `Fail closed ${environment} report handoff before regression handling`);
+    assert.match(failClosed, /steps\.migrations\.outcome == 'success'/u, `${environment} report handoff failure handling may run only after a verified migration step`);
+    assert.match(failClosed, /steps\.version\.outcome != 'success'/u, `${environment} report handoff must close after an unverified or skipped activation`);
+    for (const gate of ["propagation", "canary", "residue", "handoff_reclosed", "handoff_restore", "handoff_counts"]) {
+      assert.match(failClosed, new RegExp(`steps\\.${gate}\\.outcome != 'success'`, "u"), `${environment} report handoff must close when ${gate} is not successful`);
+    }
+    if (environment === "production") {
+      assert.match(failClosed, /steps\.observe\.outcome != 'success'/u, "production report handoff must close unless the full monitor succeeds");
+      assert.match(workflowStep(deployWorkflow, "Observe the exact production version for 30 minutes"), /if: steps\.handoff_counts\.outcome == 'success'/u, "production monitoring must follow handoff count evidence");
+    }
+    assert.match(failClosed, /UPDATE report_handoff_controls SET enabled=0/u, `${environment} regression handling must close report handoff before rollback or failure`);
+
+    const regressionRollback = workflowStep(deployWorkflow, `Roll back a confirmed compatible ${environment} regression`);
+    assert.ok(deployWorkflow.indexOf(`Fail closed ${environment} report handoff before regression handling`) < deployWorkflow.indexOf(`Roll back a confirmed compatible ${environment} regression`), `${environment} report handoff must close before compatible rollback`);
+    assert.match(regressionRollback, /steps\.handoff_reclosed\.outcome == 'failure'/u, `${environment} closed-control proof failure must trigger compatible rollback`);
+    assert.match(regressionRollback, /steps\.handoff_restore\.outcome == 'failure'/u, `${environment} restore proof failure must trigger compatible rollback`);
+    assert.match(regressionRollback, /steps\.handoff_counts\.outcome == 'failure'/u, `${environment} bounded-count failure must trigger compatible rollback`);
+
+    for (const rollback of ["unverified", "regression"]) {
+      const rollbackVerification = workflowStep(
+        deployWorkflow,
+        `Verify the exact ${environment} version after ${rollback} rollback`,
+      );
+      assert.match(rollbackVerification, /LEGACY_WORKER_COMPAT:\s*"true"/u, `${environment} ${rollback} rollback must use legacy public smoke mode`);
+      assert.match(rollbackVerification, /REPORT_HANDOFF_EXPECTED_ENABLED=false/u, `${environment} ${rollback} rollback must prove the control remains disabled`);
+    }
+
     const cleanup = workflowStep(deployWorkflow, `Remove ${environment} backup material from the runner`);
     assert.match(cleanup, /if: always\(\)/u, `${environment} raw-evidence cleanup must be unconditional`);
     assert.match(cleanup, /rm -f --/u, `${environment} raw-evidence cleanup must remove temporary files`);
@@ -266,6 +446,21 @@ export async function checkOpsConfig() {
       "post-migration-projects.json",
       "post-migration-reports.json",
       "post-migration-feedback-count.json",
+      "post-migration-report-share-count.json",
+      "post-migration-report-share-read-counter-count.json",
+      "post-migration-report-share-create-counter-count.json",
+      "post-migration-report-handoff-control.json",
+      "report-handoff-pre-activation-close.json",
+      "report-handoff-canary-enable.json",
+      "report-handoff-canary-reclose.json",
+      "report-handoff-reclosed.json",
+      "report-handoff-enable.json",
+      "report-handoff-restore-failure-disable.json",
+      "report-handoff-unverified-disable.json",
+      "unverified-rollback-report-handoff-control.json",
+      "report-handoff-failure-disable.json",
+      "regression-rollback-report-handoff-control.json",
+      "post-canary-report-handoff-counts.json",
       "rollback-residue.sql",
       "rollback-residue.json",
       "canary-residue.sql",

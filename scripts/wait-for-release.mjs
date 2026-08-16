@@ -54,6 +54,8 @@ export async function waitForRelease(rawOrigin, releaseId, options = {}) {
 
   const timeoutMs = positiveInteger(options.timeoutMs, DEFAULT_TIMEOUT_MS, "release probe timeout");
   const intervalMs = positiveInteger(options.intervalMs, DEFAULT_INTERVAL_MS, "release probe interval");
+  const legacyWorker = options.legacyWorker === true;
+  const expectReportHandoff = options.expectReportHandoff !== false;
   const smoke = options.smoke || runSmoke;
   const now = options.now || Date.now;
   const sleep = options.sleep || ((delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)));
@@ -82,13 +84,15 @@ export async function waitForRelease(rawOrigin, releaseId, options = {}) {
     while (now() < deadlineMs) {
       attempts += 1;
       try {
-        const sample = await smoke(origin, { expectedReleaseId });
+        const sample = await smoke(origin, { expectedReleaseId, legacyWorker, expectReportHandoff });
         if (now() > deadlineMs) throw timeout();
         streak.push(sample);
         if (streak.length === REQUIRED_CONSECUTIVE_SAMPLES) {
           return {
             origin,
             releaseId: expectedReleaseId,
+            legacyWorker,
+            expectReportHandoff,
             startedAt: new Date(startedAtMs).toISOString(),
             readyAt: new Date(now()).toISOString(),
             attempts,
@@ -130,6 +134,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const result = await waitForRelease(origin, releaseId, {
     timeoutMs: process.env.GRIHAGRID_RELEASE_WAIT_TIMEOUT_MS,
     intervalMs: process.env.GRIHAGRID_RELEASE_WAIT_INTERVAL_MS,
+    legacyWorker: process.env.LEGACY_WORKER_COMPAT === "true",
+    expectReportHandoff: process.env.EXPECT_REPORT_HANDOFF !== "false",
   });
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }

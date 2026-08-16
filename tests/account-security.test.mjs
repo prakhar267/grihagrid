@@ -231,7 +231,7 @@ function failedPasswordAdmissionDatabase(db) {
 test("0015 preserves populated generation-one rows and previous-Worker inserts while forward auth stays generation-bound", { timeout: 60_000 }, async (context) => {
   const db = await realD1(context, "migration");
   const names = await migrationNames();
-  assert.equal(names.at(-1), "0015_account_security.sql");
+  assert.equal(names.includes("0015_account_security.sql"), true);
   await applyMigrations(db, names.filter((name) => ["0001_initial.sql", "0002_backend.sql"].includes(name)));
   await db.prepare(
     `INSERT INTO users
@@ -243,7 +243,7 @@ test("0015 preserves populated generation-one rows and previous-Worker inserts w
      VALUES ('legacy-session','legacy-user','legacy-token','legacy-csrf','2099-01-01 00:00:00','2026-08-15 00:00:00','2026-08-15 00:00:00')`,
   ).run();
 
-  await applyMigrations(db, names.slice(-1));
+  await applyMigrations(db, ["0015_account_security.sql"]);
   const migratedUser = await db.prepare(
     "SELECT auth_generation,auth_revision_id,password_changed_at FROM users WHERE id='legacy-user'",
   ).first();

@@ -13,14 +13,19 @@ html_handling = "none"
 enabled = true
 head_sampling_rate = 1
 
-# Cloudflare invocation logs include the raw request URL. Decision share links
-# carry a bearer secret in that URL, so keep automatic invocation logs off and
-# rely on the Worker's templated `request_complete` custom log instead.
+# Some collaboration surfaces still use bearer URLs. Keep automatic invocation
+# logs off and rely on the Worker's templated `request_complete` custom log.
+# Professional Handoff additionally keeps its capability in a URL fragment and
+# redeems it through a constant-path POST, so the secret never enters HTTP URLs.
 [observability.logs]
 invocation_logs = false
 
 [version_metadata]
 binding = "CF_VERSION_METADATA"
+
+# Professional Handoff also requires a distinct 64-hex
+# REPORT_SHARE_ABUSE_HMAC_KEY Worker secret in each environment. Enter it only
+# through `wrangler secret put`; never define it in this file or reuse it.
 
 [vars]
 APP_ENV = "production"

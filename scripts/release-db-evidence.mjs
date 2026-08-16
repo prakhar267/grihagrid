@@ -39,6 +39,23 @@ const REQUIRED_0015_OBJECTS = Object.freeze([
   "trigger:session_auth_state_immutable",
 ]);
 
+const REQUIRED_0016_OBJECTS = Object.freeze([
+  "table:report_shares",
+  "table:report_share_read_counters",
+  "table:report_share_create_counters",
+  "table:report_handoff_controls",
+  "index:idx_report_shares_owner_created",
+  "index:idx_report_shares_expiry",
+  "index:idx_report_shares_revoked",
+  "index:idx_report_share_read_counters_updated",
+  "index:idx_report_share_create_counters_updated",
+  "trigger:report_share_sections_insert_guard",
+  "trigger:report_share_identity_immutable",
+  "trigger:archived_report_share_insert_guard",
+  "trigger:report_share_active_limit_insert",
+  "trigger:report_handoff_enabled_insert_guard",
+]);
+
 const REQUIRED_BASELINE_OBJECTS = Object.freeze([
   "table:users",
   "table:projects",
@@ -63,6 +80,27 @@ const REQUIRED_COLUMNS = Object.freeze([
   "project_revisions:project_id", "project_revisions:revision", "project_revisions:content_hash", "project_revisions:input_json", "project_revisions:brief_check_json",
   "report_feedback:project_id", "report_feedback:project_revision", "report_feedback:report_schema_version", "report_feedback:user_id",
   "report_feedback:outcome", "report_feedback:sections_json", "report_feedback:created_at", "report_feedback:updated_at",
+  "report_shares:id", "report_shares:project_id", "report_shares:user_id", "report_shares:project_revision",
+  "report_shares:report_schema_version", "report_shares:sections_json", "report_shares:report_content_hash",
+  "report_shares:token_hash", "report_shares:idempotency_key_hash", "report_shares:request_hash",
+  "report_shares:expires_at", "report_shares:revoked_at", "report_shares:access_count",
+  "report_shares:last_accessed_at", "report_shares:created_at",
+  "report_share_read_counters:subject_hash", "report_share_read_counters:window_start",
+  "report_share_read_counters:request_count", "report_share_read_counters:limit_count",
+  "report_share_read_counters:updated_at",
+  "report_share_create_counters:user_id", "report_share_create_counters:window_start",
+  "report_share_create_counters:request_count", "report_share_create_counters:limit_count",
+  "report_share_create_counters:updated_at",
+  "report_handoff_controls:control_key", "report_handoff_controls:enabled",
+  "report_handoff_controls:updated_at",
+]);
+
+const REQUIRED_SCHEMA_OBJECTS = Object.freeze([
+  ...REQUIRED_BASELINE_OBJECTS,
+  ...REQUIRED_0013_OBJECTS,
+  ...REQUIRED_0014_OBJECTS,
+  ...REQUIRED_0015_OBJECTS,
+  ...REQUIRED_0016_OBJECTS,
 ]);
 
 function stableStringify(value) {
@@ -81,6 +119,52 @@ function d1Rows(payload, label) {
   assert.ok(Array.isArray(payload) && payload.length > 0, `${label} must contain D1 result batches`);
   assert.ok(payload.every((batch) => batch?.success === true), `${label} contains a failed D1 batch`);
   return payload.flatMap((batch) => Array.isArray(batch.results) ? batch.results : []);
+}
+
+export function verifyReportHandoffControlEvidence({
+  environment,
+  controlPayload,
+  expectedEnabled,
+}) {
+  assert.match(String(environment), /^(?:staging|production)$/u, "invalid release environment");
+  assert.equal(typeof expectedEnabled, "boolean", "expected report-handoff control state must be boolean");
+  const rows = d1Rows(controlPayload, "report handoff control");
+  assert.equal(rows.length, 1, "report handoff control must contain exactly one row");
+  assert.equal(rows[0].control_key, "report_handoff", "unexpected report handoff control key");
+  const enabled = Number(rows[0].enabled);
+  assert.ok(enabled === 0 || enabled === 1, "report handoff control enabled state is invalid");
+  assert.equal(enabled === 1, expectedEnabled, "report handoff control is not in the expected state");
+  return {
+    environment,
+    checkedAt: new Date().toISOString(),
+    controlKey: "report_handoff",
+    controlRows: 1,
+    enabled: enabled === 1,
+  };
+}
+
+export function verifyReportHandoffCountsEvidence({ environment, countsPayload }) {
+  assert.match(String(environment), /^(?:staging|production)$/u, "invalid release environment");
+  const rows = d1Rows(countsPayload, "post-canary report handoff counts");
+  assert.equal(rows.length, 1, "post-canary report handoff counts must contain exactly one row");
+  const counts = Object.fromEntries([
+    "report_shares",
+    "report_share_read_counters",
+    "report_share_create_counters",
+    "report_handoff_controls",
+    "enabled_report_handoff_controls",
+  ].map((key) => [key, Number(rows[0][key])]));
+  for (const [key, count] of Object.entries(counts)) {
+    assert.ok(Number.isSafeInteger(count) && count >= 0, `invalid ${key} count`);
+  }
+  assert.equal(counts.report_handoff_controls, 1, "report handoff controls must contain exactly one row");
+  assert.equal(counts.enabled_report_handoff_controls, 1, "the report handoff control must be enabled after release checks");
+  return {
+    environment,
+    checkedAt: new Date().toISOString(),
+    counts,
+    controlEnabled: true,
+  };
 }
 
 function exactCounts(payload) {
@@ -206,7 +290,12 @@ export function verifyPostMigrationEvidence({
   projectsPayload,
   reportsPayload,
   feedbackCountPayload,
+  reportShareCountPayload,
+  reportShareReadCounterCountPayload,
+  reportShareCreateCounterCountPayload,
+  reportHandoffControlPayload,
   feedbackMigrationPending,
+  reportShareMigrationPending,
 }) {
   assert.equal(pre.environment, environment, "pre/post environment mismatch");
   const foreignKeyBatches = Array.isArray(foreignKeysPayload) ? foreignKeysPayload : [];
@@ -217,7 +306,7 @@ export function verifyPostMigrationEvidence({
   );
 
   const schemaNames = new Set(d1Rows(schemaPayload, "schema objects").map((row) => `${row.type}:${row.name}`));
-  for (const name of [...REQUIRED_BASELINE_OBJECTS, ...REQUIRED_0013_OBJECTS, ...REQUIRED_0014_OBJECTS, ...REQUIRED_0015_OBJECTS]) {
+  for (const name of REQUIRED_SCHEMA_OBJECTS) {
     assert.ok(schemaNames.has(name), `required schema object is missing: ${name}`);
   }
   const columns = new Set(d1Rows(columnsPayload, "schema columns").map((row) => `${row.table_name}:${row.name}`));
@@ -239,6 +328,40 @@ export function verifyPostMigrationEvidence({
   assert.ok(Number.isSafeInteger(reportFeedbackRows) && reportFeedbackRows >= 0, "invalid report feedback row count");
   if (feedbackMigrationPending) assert.equal(reportFeedbackRows, 0, "new report_feedback table must start empty");
 
+  const reportShareRows = d1Rows(reportShareCountPayload, "report share count");
+  assert.equal(reportShareRows.length, 1, "report share count must return one row");
+  const reportShares = Number(reportShareRows[0].row_count);
+  assert.ok(Number.isSafeInteger(reportShares) && reportShares >= 0, "invalid report share row count");
+  if (reportShareMigrationPending) assert.equal(reportShares, 0, "new report_shares table must start empty");
+
+  const reportShareReadCounterRows = d1Rows(reportShareReadCounterCountPayload, "report share read counter count");
+  assert.equal(reportShareReadCounterRows.length, 1, "report share read counter count must return one row");
+  const reportShareReadCounters = Number(reportShareReadCounterRows[0].row_count);
+  assert.ok(
+    Number.isSafeInteger(reportShareReadCounters) && reportShareReadCounters >= 0,
+    "invalid report share read counter row count",
+  );
+  if (reportShareMigrationPending) {
+    assert.equal(reportShareReadCounters, 0, "new report_share_read_counters table must start empty");
+  }
+
+  const reportShareCreateCounterRows = d1Rows(reportShareCreateCounterCountPayload, "report share create counter count");
+  assert.equal(reportShareCreateCounterRows.length, 1, "report share create counter count must return one row");
+  const reportShareCreateCounters = Number(reportShareCreateCounterRows[0].row_count);
+  assert.ok(
+    Number.isSafeInteger(reportShareCreateCounters) && reportShareCreateCounters >= 0,
+    "invalid report share create counter row count",
+  );
+  if (reportShareMigrationPending) {
+    assert.equal(reportShareCreateCounters, 0, "new report_share_create_counters table must start empty");
+  }
+
+  const reportHandoffControl = verifyReportHandoffControlEvidence({
+    environment,
+    controlPayload: reportHandoffControlPayload,
+    expectedEnabled: false,
+  });
+
   return {
     environment,
     checkedAt: new Date().toISOString(),
@@ -249,7 +372,13 @@ export function verifyPostMigrationEvidence({
     foreignKeyCheckRows: 0,
     reportFeedbackRows,
     feedbackMigrationPending: Boolean(feedbackMigrationPending),
-    requiredSchemaObjects: [...REQUIRED_BASELINE_OBJECTS, ...REQUIRED_0013_OBJECTS, ...REQUIRED_0014_OBJECTS, ...REQUIRED_0015_OBJECTS],
+    reportShareRows: reportShares,
+    reportShareReadCounterRows: reportShareReadCounters,
+    reportShareCreateCounterRows: reportShareCreateCounters,
+    reportHandoffControlRows: reportHandoffControl.controlRows,
+    reportHandoffControlEnabled: reportHandoffControl.enabled,
+    reportShareMigrationPending: Boolean(reportShareMigrationPending),
+    requiredSchemaObjects: [...REQUIRED_SCHEMA_OBJECTS],
     requiredColumns: [...REQUIRED_COLUMNS],
   };
 }
@@ -269,7 +398,7 @@ export function verifyCanaryResidueEvidence({
   const rows = d1Rows(residuePayload, "canary residue");
   assert.equal(rows.length, 1, "canary residue query must return one row");
   const residue = Object.fromEntries(
-    ["projects", "project_revisions", "reports", "revision_reports", "feedback"].map((key) => [key, Number(rows[0][key])]),
+    ["projects", "project_revisions", "reports", "revision_reports", "feedback", "report_shares"].map((key) => [key, Number(rows[0][key])]),
   );
   for (const [entity, count] of Object.entries(residue)) {
     assert.ok(Number.isSafeInteger(count) && count >= 0, `invalid ${entity} residue count`);
@@ -299,7 +428,8 @@ export function buildCanaryResidueSql(canaryProjectIds) {
     `  (SELECT COUNT(*) FROM project_revisions WHERE project_id IN (${ids})) AS project_revisions,`,
     `  (SELECT COUNT(*) FROM reports WHERE project_id IN (${ids})) AS reports,`,
     `  (SELECT COUNT(*) FROM project_revision_reports WHERE project_id IN (${ids})) AS revision_reports,`,
-    `  (SELECT COUNT(*) FROM report_feedback WHERE project_id IN (${ids})) AS feedback;`,
+    `  (SELECT COUNT(*) FROM report_feedback WHERE project_id IN (${ids})) AS feedback,`,
+    `  (SELECT COUNT(*) FROM report_shares WHERE project_id IN (${ids})) AS report_shares;`,
     "",
   ].join("\n");
 }
@@ -313,7 +443,7 @@ function writeJson(filename, value) {
 }
 
 function usage() {
-  throw new Error("usage: release-db-evidence.mjs pre|post|residue-sql|residue <environment> <evidence files...>");
+  throw new Error("usage: release-db-evidence.mjs pre|post|residue-sql|residue|handoff-control|handoff-counts <environment> <evidence files...>");
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
@@ -329,8 +459,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       projectsPayload: readJson(projects),
       reportsPayload: readJson(reports),
     }));
-  } else if (mode === "post" && files.length === 11) {
-    const [pre, foreignKeys, schema, columns, counts, users, sessions, projects, reports, feedbackCount, output] = files;
+  } else if (mode === "post" && files.length === 15) {
+    const [pre, foreignKeys, schema, columns, counts, users, sessions, projects, reports, feedbackCount, reportShareCount, reportShareReadCounterCount, reportShareCreateCounterCount, reportHandoffControl, output] = files;
     writeJson(output, verifyPostMigrationEvidence({
       environment,
       pre: readJson(pre),
@@ -343,7 +473,12 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       projectsPayload: readJson(projects),
       reportsPayload: readJson(reports),
       feedbackCountPayload: readJson(feedbackCount),
+      reportShareCountPayload: readJson(reportShareCount),
+      reportShareReadCounterCountPayload: readJson(reportShareReadCounterCount),
+      reportShareCreateCounterCountPayload: readJson(reportShareCreateCounterCount),
+      reportHandoffControlPayload: readJson(reportHandoffControl),
       feedbackMigrationPending: process.env.FEEDBACK_MIGRATION_PENDING === "true",
+      reportShareMigrationPending: process.env.REPORT_SHARE_MIGRATION_PENDING === "true",
     }));
   } else if (mode === "residue-sql" && files.length === 2) {
     const [canary, output] = files;
@@ -356,6 +491,21 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       environment,
       residuePayload: readJson(residue),
       canaryProjectIds: canaryEvidence.canaryProjectIds,
+    }));
+  } else if (mode === "handoff-control" && files.length === 2) {
+    const [control, output] = files;
+    const expected = process.env.REPORT_HANDOFF_EXPECTED_ENABLED;
+    assert.ok(expected === "true" || expected === "false", "REPORT_HANDOFF_EXPECTED_ENABLED must be true or false");
+    writeJson(output, verifyReportHandoffControlEvidence({
+      environment,
+      controlPayload: readJson(control),
+      expectedEnabled: expected === "true",
+    }));
+  } else if (mode === "handoff-counts" && files.length === 2) {
+    const [counts, output] = files;
+    writeJson(output, verifyReportHandoffCountsEvidence({
+      environment,
+      countsPayload: readJson(counts),
     }));
   } else {
     usage();

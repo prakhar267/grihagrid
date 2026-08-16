@@ -20,6 +20,65 @@ paid-closed product release. They remain concept-stage planning aids rather than
 feasibility, code, design, structural or construction approval. Paid checkout,
 fulfillment, the paid-plan allowlist and private uploads remain closed.
 
+## Professional Handoff release gate
+
+Selective report handoff is **not recorded as live until the protected release
+finishes**. The candidate adds migration `0016_report_handoff_links.sql` and a
+free bearer-link flow for one exact immutable schema-v2 report. It does not
+enable checkout, fulfillment, uploads, professional review, or any claim of
+architect/engineer acceptance.
+
+The release record must name the merged SHA, PR, exact-SHA CI and CodeQL runs,
+staging and production Worker versions, migration/backup evidence, and the full
+30-minute production observation. Before this section can be marked released,
+both environments must show no pending migration and pass all of these gates:
+
+- D1 contains `report_shares`, `report_share_read_counters`,
+  `report_share_create_counters`, and the single `report_handoff_controls` row,
+  which migration evidence proves starts disabled and final release evidence
+  proves enabled; indexes
+  `idx_report_shares_owner_created`, `idx_report_shares_expiry`,
+  `idx_report_shares_revoked`, `idx_report_share_read_counters_updated`, and
+  `idx_report_share_create_counters_updated`; and triggers
+  `report_share_sections_insert_guard`, `report_share_identity_immutable`,
+  `archived_report_share_insert_guard`, and
+  `report_share_active_limit_insert`, plus
+  `report_handoff_enabled_insert_guard`; every expected column is present and a
+  newly applied share/read/create stores all start empty;
+- canonical users, sessions, projects and reports plus protected counts are
+  unchanged through migration, and `PRAGMA foreign_key_check` returns no rows;
+- each environment has a distinct 64-hex `REPORT_SHARE_ABUSE_HMAC_KEY` Worker
+  secret; final readiness reports `reportShareSchema=current`,
+  `reportHandoffControl=enabled`, `reportShareAbuseHashing=configured`, and
+  `reportHandoff=true` while
+  paid checkout, paid fulfillment and private uploads remain false;
+- the current authenticated canary creates a 1-day link to its exact report,
+  requires the one-time URL to use `/share/report#<token>` without emitting the
+  capability, posts it to the constant public API without cookies, proves only
+  `overview`, `risks`, and `nextActions` are
+  returned, revokes the link, observes `410`, deletes its project and revokes
+  its session;
+- direct exact-project residue queries return zero projects, revisions, reports,
+  revision reports, feedback and `report_shares` after both the previous-Worker
+  compatibility rehearsal and candidate canary, including failed canaries;
+- no bearer URL/token appears in logs or release artifacts; the local real-D1
+  workerd gate seeds an over-90-day expired link and an active historical link,
+  proves 121 parallel same-IP reads admit exactly 120, proves create/revoke churn
+  admits no more than 20 daily creates, verifies the cleanup query uses both
+  expiry/revoked indexes, seeds old read/create admission rows, invokes the
+  scheduled handler, and proves only eligible link and counter rows are deleted;
+- staging and production keep the default-disabled control closed through three
+  exact-version propagation samples; enable it only inside the authenticated
+  canary step whose EXIT trap always re-closes it; prove exact-ID residue,
+  capability false and public `503` while re-closed; then perform the only final
+  fail-closed restoration, require capability true/missing-token `404`, and
+  capture dated bounded post-canary counts for share/read/create rows and
+  control state.
+
+Until exact dated evidence replaces this gate, Professional Handoff is a release
+candidate, not a production claim. Its detailed contract is in
+[report-handoff.md](report-handoff.md).
+
 ## Report feedback release recorded on 2026-08-16
 
 Version-bound report feedback is live as a free, paid-closed learning loop for

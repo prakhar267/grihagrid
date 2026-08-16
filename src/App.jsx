@@ -62,6 +62,16 @@ const familyStatusCopy = {
   aligned_b: ["The family is aligned on Option B", "Every recorded preference points to the same direction."],
   not_ready: ["The family is not ready to choose", "The responses suggest more information or another conversation is needed."],
 };
+const reportHandoffSectionOptions = [
+  ["overview", "Report overview", "Brief Check, main reading, and professional boundary."],
+  ["programme", "Programme", "Plot, likely built-up area, rooms, and suggested spaces."],
+  ["cost", "Planning cost", "Indicative range, rate basis, and cost allocation."],
+  ["timeline", "Planning timeline", "Indicative duration and phase sequence."],
+  ["risks", "Risks to verify", "Known uncertainties for a licensed professional to challenge."],
+  ["next_actions", "Next actions", "The questions and checks to take into the first meeting."],
+];
+const reportHandoffSectionSet = new Set(reportHandoffSectionOptions.map(([value]) => value));
+const defaultReportHandoffSections = ["overview", "risks", "next_actions"];
 
 function useCommerceCatalog() {
   const [availability,setAvailability]=useState({});
@@ -142,8 +152,159 @@ function isPrivateAccountPath(pathname) {
   return /^\/(?:dashboard|security(?:\/|$)|orders(?:\/|$)|projects\/|report\/|checkout\/return)/u.test(pathname);
 }
 
+function isPublicReportSharePath(pathname) {
+  return pathname==="/share/report";
+}
+
+function reportShareCapabilityToken(location=window.location) {
+  if(location.pathname!=="/share/report"||location.search||!/^#[A-Za-z0-9_-]{43}$/u.test(location.hash))return "";
+  return location.hash.slice(1);
+}
+
+function scrubClosedReportShareCapability(token) {
+  if(typeof token!=="string"||!token)return;
+  if(window.location.pathname!=="/share/report"||window.location.search||window.location.hash!==`#${token}`)return;
+  window.history.replaceState(window.history.state,"","/share/report");
+}
+
 function safeDecodePathSegment(value) {
   try { return decodeURIComponent(value); } catch { return value; }
+}
+
+function reportShareMetadata(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || typeof value.id !== "string" || !value.id) return null;
+  const projectRevision=Number(value.projectRevision);
+  const reportSchemaVersion=Number(value.reportSchemaVersion);
+  if (!Number.isInteger(projectRevision)||projectRevision<1||!Number.isInteger(reportSchemaVersion)||reportSchemaVersion<1) return null;
+  const sections=Array.isArray(value.sections)
+    ? [...new Set(value.sections.filter(section=>typeof section==="string"&&reportHandoffSectionSet.has(section)))]
+    : [];
+  return {
+    id:value.id,
+    projectRevision,
+    reportSchemaVersion,
+    sections,
+    expiresAt:typeof value.expiresAt==="string"?value.expiresAt:null,
+    revokedAt:typeof value.revokedAt==="string"?value.revokedAt:null,
+    active:value.active===true,
+    accessCount:Number.isFinite(Number(value.accessCount))?Math.max(0,Number(value.accessCount)):0,
+    lastAccessedAt:typeof value.lastAccessedAt==="string"?value.lastAccessedAt:null,
+    createdAt:typeof value.createdAt==="string"?value.createdAt:null,
+  };
+}
+
+function oneTimeReportShareUrl(value) {
+  if (typeof value!=="string"||!value) return "";
+  try {
+    const url=new URL(value,window.location.origin);
+    if(url.origin!==window.location.origin||url.username||url.password||url.pathname!=="/share/report"||url.search||!/^#[A-Za-z0-9_-]{43}$/u.test(url.hash))return "";
+    return url.href;
+  } catch { return ""; }
+}
+
+function scrubSharedReportCapabilityForPrint() {
+  const originalPath=window.location.pathname;
+  const originalSearch=window.location.search;
+  const originalHash=window.location.hash;
+  if(originalPath!=="/share/report"||originalSearch||!/^#[A-Za-z0-9_-]{43}$/u.test(originalHash))return null;
+  const originalState=window.history.state;
+  let restored=false;
+  const restore=()=>{
+    if(restored)return;
+    restored=true;
+    if(window.location.pathname===originalPath&&!window.location.search&&!window.location.hash){
+      window.history.replaceState(originalState,"",`${originalPath}${originalHash}`);
+    }
+  };
+  window.history.replaceState(originalState,"",originalPath);
+  return restore;
+}
+
+function printSharedReportWithoutCapability() {
+  let restore;
+  try { restore=scrubSharedReportCapabilityForPrint(); }
+  catch { return; }
+  if(!restore){window.print();return}
+  const finish=()=>{
+    window.removeEventListener("afterprint",finish);
+    restore();
+  };
+  window.addEventListener("afterprint",finish,{once:true});
+  try {
+    window.print();
+  } catch { finish(); }
+}
+
+function publicReportText(value) {
+  return typeof value==="string"&&value.trim()?value.trim():null;
+}
+
+function publicReportNumber(value) {
+  if(value===null||value===undefined||value==="")return null;
+  const number=Number(value);
+  return Number.isFinite(number)&&number>=0?number:null;
+}
+
+function publicReportStrings(value) {
+  return Array.isArray(value)?value.map(publicReportText).filter(Boolean):[];
+}
+
+function normalizePublicReportShare(value) {
+  const share=value&&typeof value==="object"&&!Array.isArray(value)?value:null;
+  const rawSections=share?.sections&&typeof share.sections==="object"&&!Array.isArray(share.sections)?share.sections:null;
+  if(!share||!publicReportText(share.expiresAt)||!rawSections)return null;
+  const overview=rawSections.overview&&typeof rawSections.overview==="object"&&!Array.isArray(rawSections.overview)?{
+    status:publicReportText(rawSections.overview.status),
+    label:publicReportText(rawSections.overview.label),
+    headline:publicReportText(rawSections.overview.headline),
+    summary:publicReportText(rawSections.overview.summary),
+    disclaimer:publicReportText(rawSections.overview.disclaimer),
+  }:null;
+  const programme=rawSections.programme&&typeof rawSections.programme==="object"&&!Array.isArray(rawSections.programme)?{
+    plotSqft:publicReportNumber(rawSections.programme.plotSqft),
+    targetBuiltUpSqft:publicReportNumber(rawSections.programme.targetBuiltUpSqft),
+    floorCount:publicReportNumber(rawSections.programme.floorCount),
+    bedrooms:publicReportNumber(rawSections.programme.bedrooms),
+    bathrooms:publicReportNumber(rawSections.programme.bathrooms),
+    estimatedFloorPlateSqft:publicReportNumber(rawSections.programme.estimatedFloorPlateSqft),
+    estimatedOpenAreaSqft:publicReportNumber(rawSections.programme.estimatedOpenAreaSqft),
+    suggestedSpaces:publicReportStrings(rawSections.programme.suggestedSpaces),
+  }:null;
+  const rawCategories=rawSections.cost&&Array.isArray(rawSections.cost.categories)?rawSections.cost.categories:[];
+  const cost=rawSections.cost&&typeof rawSections.cost==="object"&&!Array.isArray(rawSections.cost)?{
+    currency:publicReportText(rawSections.cost.currency),
+    lowInr:publicReportNumber(rawSections.cost.lowInr),
+    midpointInr:publicReportNumber(rawSections.cost.midpointInr),
+    highInr:publicReportNumber(rawSections.cost.highInr),
+    assumedRateInrPerSqft:publicReportNumber(rawSections.cost.assumedRateInrPerSqft),
+    categories:rawCategories.map(category=>category&&typeof category==="object"&&!Array.isArray(category)?{
+      name:publicReportText(category.name),
+      percent:publicReportNumber(category.percent),
+      amountInr:publicReportNumber(category.amountInr),
+    }:null).filter(category=>category?.name),
+    disclaimer:publicReportText(rawSections.cost.disclaimer),
+  }:null;
+  const rawPhases=rawSections.timeline&&Array.isArray(rawSections.timeline.phases)?rawSections.timeline.phases:[];
+  const timeline=rawSections.timeline&&typeof rawSections.timeline==="object"&&!Array.isArray(rawSections.timeline)?{
+    estimatedMonths:publicReportNumber(rawSections.timeline.estimatedMonths),
+    phases:rawPhases.map(phase=>phase&&typeof phase==="object"&&!Array.isArray(phase)?{
+      name:publicReportText(phase.name||phase.label),
+      months:publicReportNumber(phase.months),
+      weeks:publicReportNumber(phase.weeks),
+      duration:publicReportText(phase.duration),
+      detail:publicReportText(phase.detail),
+    }:null).filter(phase=>phase?.name),
+  }:null;
+  const sections={
+    overview:overview&&Object.values(overview).some(Boolean)?overview:null,
+    programme:programme&&Object.values(programme).some(value=>value!==null&&(Array.isArray(value)?value.length>0:true))?programme:null,
+    cost:cost&&[cost.lowInr,cost.midpointInr,cost.highInr,cost.assumedRateInrPerSqft,cost.categories.length,cost.disclaimer].some(Boolean)?cost:null,
+    timeline:timeline&&(timeline.estimatedMonths!==null||timeline.phases.length)?timeline:null,
+    risks:publicReportStrings(rawSections.risks),
+    nextActions:publicReportStrings(rawSections.nextActions),
+  };
+  if(!Object.values(sections).some(value=>Array.isArray(value)?value.length>0:Boolean(value)))return null;
+  return {expiresAt:share.expiresAt,sections};
 }
 
 function Brand({ inverted = false, disabled = false, onHome = null }) {
@@ -671,10 +832,10 @@ const projectHomeActions = {
     Icon: SealCheck,
   },
   open_handoff: {
-    target: "compare",
-    label: "Open handoff material",
-    title: "Take one decision into the room.",
-    copy: "Your direction is recorded. Open the current comparison, architect questions, and printable working copy for the professional conversation.",
+    target: "report",
+    label: "Open professional handoff",
+    title: "Put the current report in the room.",
+    copy: "Your direction is recorded. Choose the exact planning-report sections to share with a licensed architect or engineer.",
     Icon: ArrowRight,
   },
   view_archived: {
@@ -752,6 +913,7 @@ function projectHomePath(projectId, action) {
   const definition = projectHomeActions[action?.code];
   if (!definition || (action?.target && action.target !== definition.target)) return null;
   const encodedProjectId=encodeURIComponent(projectId);
+  if (action?.code === "open_handoff") return `/report/${encodedProjectId}#professional-handoff`;
   if (definition.target === "report") return `/report/${encodedProjectId}`;
   if (definition.target === "compare") return `/projects/${encodedProjectId}/compare`;
   if (definition.target === "dashboard") return "/dashboard";
@@ -1960,6 +2122,95 @@ function SharedDecisionPage({ token }) {
   return <main className="shared-decision"><header><Brand/><span><LockKey/> Read-only · expires {formatDate(state.share.expiresAt)}</span><button onClick={()=>window.print()}><DownloadSimple/> Print</button></header><DecisionDocument comparison={comparison} project={project} readonly artifact/><footer><p>Shared privately through GrihaGrid. This link does not reveal the owner’s account or project files.</p><button className="underlined-action" onClick={()=>route('/')}>Create my own Brief Check <ArrowRight/></button></footer></main>;
 }
 
+function SharedReportState({ phase, onRetry }) {
+  const closed=phase==="closed";
+  const missing=phase==="missing";
+  const headingRef=useRef(null);
+  useEffect(()=>{window.requestAnimationFrame(()=>headingRef.current?.focus({preventScroll:true}))},[phase]);
+  return <main className="shared-state shared-report-state"><Brand/><div role="alert">{closed?<XCircle/>:missing?<Compass/>:<WarningCircle/>}<span className="kicker">{closed?"Link expired or revoked":missing?"Handoff link unavailable":"Secure sharing unavailable"}</span><h1 ref={headingRef} tabIndex="-1">{closed?"This report is no longer shared.":missing?"This handoff link cannot be opened.":"We could not open this handoff."}</h1><p>{closed?"Ask the project owner for a fresh professional handoff link.":missing?"Check the address or ask the project owner for a fresh link.":"The report remains private. Try again when the secure sharing service is available."}</p>{!closed&&!missing&&<button className="copper-button" onClick={onRetry}>Try again <ArrowClockwise/></button>}{(closed||missing)&&<button className="copper-button" onClick={()=>route('/')}>Visit GrihaGrid <ArrowRight/></button>}</div></main>;
+}
+
+function SharedReportPage() {
+  const capabilityRef=useRef(reportShareCapabilityToken());
+  const requestRevision=useRef(0);
+  const [capabilityRevision,setCapabilityRevision]=useState(0);
+  const [state,setState]=useState({phase:"loading",share:null});
+  async function load(signal) {
+    const revision=++requestRevision.current;
+    setState({phase:"loading",share:null});
+    const token=capabilityRef.current;
+    if(!token){setState({phase:"missing",share:null});return}
+    try {
+      const result=await publicApi("/api/shared/report",{method:"POST",body:{token},signal});
+      if(signal?.aborted||revision!==requestRevision.current||token!==capabilityRef.current)return;
+      const share=normalizePublicReportShare(result?.share);
+      setState(share?{phase:"ready",share}:{phase:"error",share:null});
+    } catch(err) {
+      if(signal?.aborted||revision!==requestRevision.current||token!==capabilityRef.current)return;
+      if(err instanceof ApiError&&[404,410].includes(err.status))scrubClosedReportShareCapability(token);
+      setState({phase:err instanceof ApiError&&err.status===410?"closed":err instanceof ApiError&&err.status===404?"missing":"error",share:null});
+    }
+  }
+  useEffect(()=>{
+    const refreshCapability=()=>{
+      const next=reportShareCapabilityToken();
+      if(next===capabilityRef.current)return;
+      capabilityRef.current=next;
+      requestRevision.current+=1;
+      setState({phase:"loading",share:null});
+      setCapabilityRevision(value=>value+1);
+    };
+    window.addEventListener("hashchange",refreshCapability);
+    window.addEventListener("popstate",refreshCapability);
+    return()=>{window.removeEventListener("hashchange",refreshCapability);window.removeEventListener("popstate",refreshCapability)};
+  },[]);
+  useEffect(()=>{
+    let restore=null;
+    const finish=()=>{
+      restore?.();
+      restore=null;
+    };
+    const beforePrint=()=>{
+      if(restore)return;
+      try { restore=scrubSharedReportCapabilityForPrint(); }
+      catch { restore=null; }
+    };
+    window.addEventListener("beforeprint",beforePrint);
+    window.addEventListener("afterprint",finish);
+    return()=>{window.removeEventListener("beforeprint",beforePrint);window.removeEventListener("afterprint",finish);finish()};
+  },[]);
+  useEffect(()=>{const controller=new AbortController();load(controller.signal);return()=>controller.abort()},[capabilityRevision]);
+  if(state.phase==="loading")return <main className="shared-state shared-report-state" aria-busy="true"><Brand/><div role="status"><Eye/><span className="kicker">Professional handoff</span><h1>Opening a shared report…</h1><p>Validating this expiring, read-only link.</p></div></main>;
+  if(state.phase!=="ready")return <SharedReportState phase={state.phase} onRetry={()=>load()}/>;
+  const {expiresAt,sections}=state.share;
+  const overview=sections.overview;
+  const programme=sections.programme;
+  const cost=sections.cost;
+  const timeline=sections.timeline;
+  const programmeFacts=programme?[
+    ["Plot area",programme.plotSqft,"sq ft"],
+    ["Likely built-up",programme.targetBuiltUpSqft,"sq ft"],
+    ["Floor count",programme.floorCount,""],
+    ["Bedrooms",programme.bedrooms,""],
+    ["Bathrooms",programme.bathrooms,""],
+    ["Likely floor plate",programme.estimatedFloorPlateSqft,"sq ft"],
+    ["Likely open area",programme.estimatedOpenAreaSqft,"sq ft"],
+  ].filter(([,value])=>value!==null):[];
+  return <main className="shared-report"><header><Brand inverted/><span><LockKey/> Read only · expires {formatDateTime(expiresAt)}</span><button onClick={printSharedReportWithoutCapability}><DownloadSimple/> Print</button></header>
+    <article className="shared-report__document" aria-label="Shared professional handoff report">
+      <header className="shared-report__cover"><div><span className="kicker">GrihaGrid · professional handoff</span><h1>Planning evidence for a professional conversation.</h1><p>Selected concept-stage evidence · no account required</p></div><div><span>Read-only bearer link</span><strong>Expires {formatDateTime(expiresAt)}</strong></div></header>
+      {overview&&<section className="shared-report__overview" aria-labelledby="shared-report-overview"><span className="kicker">Report overview{overview.label?` · ${overview.label}`:""}</span><h2 id="shared-report-overview">{overview.headline||"Read the saved planning evidence."}</h2>{overview.summary&&<p>{overview.summary}</p>}{overview.disclaimer&&<small>{overview.disclaimer}</small>}</section>}
+      {programme&&<section className="shared-report__section shared-report__programme" aria-labelledby="shared-report-programme"><header><span className="kicker">Programme</span><h2 id="shared-report-programme">What the brief is trying to hold.</h2></header>{programmeFacts.length>0&&<dl>{programmeFacts.map(([label,value,suffix])=><div key={label}><dt>{label}</dt><dd>{Number(value).toLocaleString("en-IN")}{suffix?` ${suffix}`:""}</dd></div>)}</dl>}{programme.suggestedSpaces.length>0&&<div className="shared-report__spaces"><h3>Suggested spaces</h3><ul>{programme.suggestedSpaces.map((space,index)=><li key={`${space}-${index}`}><CheckCircle/>{space}</li>)}</ul></div>}</section>}
+      {cost&&<section className="shared-report__section shared-report__cost" aria-labelledby="shared-report-cost"><header><span className="kicker">Planning cost</span><h2 id="shared-report-cost">An indicative range, not a quotation.</h2></header>{cost.lowInr!==null&&cost.highInr!==null&&<div className="shared-report__range"><span>Concept-stage planning range</span><strong>{formatLakh(cost.lowInr)}–{formatLakh(cost.highInr)}</strong>{cost.midpointInr!==null&&<small>Working midpoint {formatLakh(cost.midpointInr)}</small>}</div>}{cost.assumedRateInrPerSqft!==null&&<p className="shared-report__rate">Assumed rate · ₹{cost.assumedRateInrPerSqft.toLocaleString("en-IN")} per sq ft</p>}{cost.categories.length>0&&<div className="shared-report__categories">{cost.categories.map((category,index)=><div key={`${category.name}-${index}`}><span>{category.name}</span>{category.percent!==null&&<i aria-hidden="true"><b style={{width:`${Math.min(100,category.percent)}%`}}/></i>}<strong>{category.amountInr!==null?formatLakh(category.amountInr):category.percent!==null?`${category.percent}%`:"—"}</strong></div>)}</div>}{cost.disclaimer&&<p className="shared-report__section-note">{cost.disclaimer}</p>}</section>}
+      {timeline&&<section className="shared-report__section shared-report__timeline" aria-labelledby="shared-report-timeline"><header><span className="kicker">Planning timeline</span><h2 id="shared-report-timeline">Sequence before certainty.</h2>{timeline.estimatedMonths!==null&&<p><strong>{timeline.estimatedMonths} months</strong> · indicative total</p>}</header>{timeline.phases.length>0&&<ol>{timeline.phases.map((phase,index)=><li key={`${phase.name}-${index}`}><span>{String(index+1).padStart(2,"0")}</span><div><h3>{phase.name}</h3>{(phase.duration||phase.weeks!==null||phase.months!==null)&&<strong>{phase.duration||(phase.weeks!==null?`${phase.weeks} week${phase.weeks===1?"":"s"}`:`${phase.months} month${phase.months===1?"":"s"}`)}</strong>}{phase.detail&&<p>{phase.detail}</p>}</div></li>)}</ol>}</section>}
+      {sections.risks.length>0&&<section className="shared-report__section shared-report__numbered" aria-labelledby="shared-report-risks"><header><span className="kicker">Risks to verify</span><h2 id="shared-report-risks">Questions before drawings.</h2></header><ol>{sections.risks.map((risk,index)=><li key={`${risk}-${index}`}><span>{String(index+1).padStart(2,"0")}</span><p>{risk}</p></li>)}</ol></section>}
+      {sections.nextActions.length>0&&<section className="shared-report__section shared-report__numbered" aria-labelledby="shared-report-actions"><header><span className="kicker">Next actions</span><h2 id="shared-report-actions">Take the next conversation in order.</h2></header><ol>{sections.nextActions.map((action,index)=><li key={`${action}-${index}`}><span>{String(index+1).padStart(2,"0")}</span><p>{action}</p></li>)}</ol></section>}
+      <footer className="shared-report__boundary"><ShieldCheck/><p><strong>Professional validation is still required.</strong> This read-only handoff is a concept-stage planning aid, not architectural, structural, geotechnical, municipal, legal, tax, or construction approval.</p></footer>
+    </article>
+    <footer className="shared-report__footer"><div><p><LockKey/> Shared privately through GrihaGrid until {formatDateTime(expiresAt)}. This page contains only the report sections the owner selected.</p><small>The link does not reveal the owner’s account, files, feedback, AI brief, comparisons, orders, or other report revisions.</small></div><button className="underlined-action" onClick={()=>route("/start")}>Create my free Brief Check <ArrowRight/></button></footer>
+  </main>;
+}
+
 function FamilyReviewComparison({ scenarios, assumptions, disclaimer }) {
   if(!Array.isArray(scenarios)||scenarios.length!==2)return <div className="family-review__invalid"><WarningCircle/><p>Two complete options are required for a family review.</p></div>;
   return <section className="family-review__comparison" aria-labelledby="family-options-title">
@@ -2250,6 +2501,142 @@ function ReportFeedback({ projectId, projectRevision, reportSchemaVersion, reado
   </section>;
 }
 
+function reportHandoffShareState(share) {
+  if(share.revokedAt)return "revoked";
+  if(!share.active)return "expired";
+  return "active";
+}
+
+function ReportHandoffPanel({ projectId, projectRevision, reportSchemaVersion, archived=false, historical=false }) {
+  const [shares,setShares]=useState([]);
+  const [sections,setSections]=useState(defaultReportHandoffSections);
+  const [days,setDays]=useState("7");
+  const [phase,setPhase]=useState("loading");
+  const [busy,setBusy]=useState("");
+  const [secret,setSecret]=useState(null);
+  const [message,setMessage]=useState("");
+  const [error,setError]=useState("");
+  const titleId=useId();
+  const selectionId=useId();
+  const bearerWarningId=useId();
+  const messageRef=useRef(null);
+  const secretRef=useRef(null);
+  const panelRef=useRef(null);
+
+  useEffect(()=>{
+    if(window.location.hash!=="#professional-handoff")return undefined;
+    const frame=window.requestAnimationFrame(()=>{
+      const panel=panelRef.current;
+      if(!panel)return;
+      panel.focus({preventScroll:true});
+      panel.scrollIntoView({block:"start"});
+    });
+    return()=>window.cancelAnimationFrame(frame);
+  },[projectId,projectRevision,reportSchemaVersion]);
+
+  function announce(value,focus=false) {
+    setMessage(value);
+    if(focus)window.requestAnimationFrame(()=>messageRef.current?.focus());
+  }
+
+  async function load(signal) {
+    setError("");setPhase("loading");
+    try {
+      const result=await api(`/api/projects/${encodeURIComponent(projectId)}/report-shares`,{signal});
+      if(signal?.aborted)return false;
+      const normalized=Array.isArray(result?.shares)?result.shares.map(reportShareMetadata).filter(Boolean):[];
+      setShares(normalized);setPhase("ready");
+      return true;
+    } catch(err) {
+      if(signal?.aborted)return false;
+      if(err instanceof ApiError&&err.status===401){route("/login");return false}
+      if(err instanceof ApiError&&(err.status===501||err.status===503)){setPhase("unavailable");return false}
+      setError(err?.message||"Professional handoff history could not be loaded.");setPhase("error");
+      return false;
+    }
+  }
+
+  useEffect(()=>{const controller=new AbortController();setSecret(null);setMessage("");load(controller.signal);return()=>controller.abort()},[projectId,projectRevision,reportSchemaVersion]);
+  useEffect(()=>{if(archived)setSecret(null)},[archived]);
+
+  function toggleSection(value) {
+    setError("");setMessage("");
+    setSections(current=>current.includes(value)?current.filter(section=>section!==value):reportHandoffSectionOptions.map(([section])=>section).filter(section=>section===value||current.includes(section)));
+  }
+
+  async function createShare(event) {
+    event.preventDefault();
+    if(archived||busy||phase!=="ready")return;
+    if(!sections.length){setError("Choose at least one report section for the professional handoff.");return}
+    setBusy("create");setSecret(null);setMessage("");setError("");
+    const storageKey=`grihagrid.reportHandoff.${projectId}.${projectRevision}.${reportSchemaVersion}.${days}.${sections.join("-")}`;
+    try {
+      const result=await api(`/api/projects/${encodeURIComponent(projectId)}/report-shares`,{
+        method:"POST",
+        headers:{"idempotency-key":idempotencyKey(storageKey)},
+        body:{projectRevision,reportSchemaVersion,expiresInDays:Number(days),sections},
+      });
+      removeSessionValue(storageKey);
+      const share=reportShareMetadata(result?.share);
+      if(share)setShares(current=>[share,...current.filter(item=>item.id!==share.id)]);
+      const url=oneTimeReportShareUrl(result?.share?.url);
+      if(share&&url){setSecret({shareId:share.id,url});setMessage("");window.requestAnimationFrame(()=>secretRef.current?.focus())}
+      else announce("This handoff link already exists, but its secret address was shown only once. Revoke it below and create a fresh link if you need an address to share.",true);
+    } catch(err) {
+      setError(err instanceof ApiError&&err.status===503?"Professional handoff sharing is temporarily unavailable. No report was made public.":err?.message||"The professional handoff link could not be created.");
+    } finally {setBusy("")}
+  }
+
+  async function copySecret() {
+    if(archived||!secret?.url)return;
+    setError("");setMessage("");
+    try{await copyText(secret.url);announce("Private handoff link copied. Share it only with the intended licensed architect or engineer.")}
+    catch(err){setError(err?.message||"Copy is unavailable in this browser. Select the one-time address and copy it manually.")}
+  }
+
+  async function revokeShare(share) {
+    if(reportHandoffShareState(share)!=="active"||busy)return;
+    if(!window.confirm("Revoke this professional handoff link? Anyone using it will lose access immediately. The saved report is not deleted. This cannot be undone."))return;
+    setBusy(share.id);setError("");setMessage("");
+    try {
+      await api(`/api/projects/${encodeURIComponent(projectId)}/report-shares/${encodeURIComponent(share.id)}`,{method:"DELETE",body:{}});
+      setSecret(current=>current?.shareId===share.id?null:current);
+      const refreshed=await load();
+      if(refreshed)announce(`Professional handoff for report revision ${share.projectRevision} revoked. Future visits are blocked; the saved report is unchanged.`,true);
+      else setError("The link was revoked, but its authoritative status could not be reloaded. Refresh before relying on the history shown here.");
+    } catch(err){setError(err?.message||"The professional handoff link could not be revoked.")}
+    finally{setBusy("")}
+  }
+
+  const selectedCount=sections.length;
+  return <section ref={panelRef} id="professional-handoff" tabIndex="-1" className={`report-handoff ${historical?"report-handoff--historical":""} ${archived?"report-handoff--archived":""}`} aria-labelledby={titleId} aria-busy={phase==="loading"||Boolean(busy)}>
+    <header className="report-handoff__heading"><div><span className="kicker">Professional handoff · secure link</span><h2 id={titleId}>{archived?(historical?"Review this archived revision’s handoff history.":"Review this archived report’s handoff history."):historical?"Share this exact saved revision.":"Put this report in the room."}</h2><p>{archived?"This saved report remains readable, while link creation and copying are closed. Active bearer links can still be revoked below.":historical?"A link from this page is permanently attributed to this historical report revision. It never becomes the current project record.":"Create a read-only bearer link for a licensed architect or engineer. Only the sections you choose leave the private workspace."}</p></div><div className="report-handoff__folio" aria-label={`Report revision ${projectRevision}, schema version ${reportSchemaVersion}`}><span>Report revision</span><strong>{String(projectRevision).padStart(2,"0")}</strong><small>Schema v{reportSchemaVersion}</small></div></header>
+    <div className="report-handoff__privacy"><ShieldCheck/><p><strong>Your account stays private.</strong> Links never include account details, project files, feedback, AI briefs, comparisons, orders, or another report revision.</p></div>
+    {phase==="loading"&&<p className="report-handoff__loading" role="status"><ArrowClockwise/> Checking professional handoff history…</p>}
+    {phase==="unavailable"&&<div className="report-handoff__notice"><LockKey/><div><strong>Professional handoff is not available right now.</strong><p>This report remains private and unchanged.</p></div></div>}
+    {phase==="error"&&<div className="report-handoff__notice report-handoff__notice--error"><WarningCircle/><div><strong>We could not open handoff history.</strong><p role="alert">{error}</p><button className="underlined-action" onClick={()=>load()}>Try again <ArrowClockwise/></button></div></div>}
+    {phase==="ready"&&<>
+      {archived?<div className="report-handoff__notice"><LockKey/><div><strong>Archived handoff history · read only.</strong><p>New links and copying are closed. Any still-active link can be revoked to reduce access.</p></div></div>:<><div id={bearerWarningId} className="report-handoff__bearer-warning"><WarningCircle/><p><strong>Anyone with this link can read the sections you select.</strong> Send it only to the licensed architect or engineer you intend to involve. The link does not verify their identity or document their involvement.</p></div><form className="report-handoff__form" aria-describedby={bearerWarningId} onSubmit={createShare}>
+        <fieldset aria-describedby={selectionId} disabled={Boolean(busy)}><legend>Choose what the professional can see</legend><div className="report-handoff__sections">{reportHandoffSectionOptions.map(([value,label,copy])=><label key={value}><input type="checkbox" value={value} checked={sections.includes(value)} onChange={()=>toggleSection(value)}/><span><strong>{label}</strong><small>{copy}</small></span></label>)}</div><p id={selectionId} className="report-handoff__selection" aria-live="polite">{selectedCount} of {reportHandoffSectionOptions.length} sections selected{selectedCount===0?" · choose at least one":""}</p></fieldset>
+        <div className="report-handoff__create"><label>Link expires<select value={days} disabled={Boolean(busy)} onChange={event=>setDays(event.target.value)}><option value="1">In 24 hours</option><option value="7">In 7 days</option><option value="30">In 30 days</option></select></label><button className="copper-button" type="submit" disabled={Boolean(busy)||selectedCount===0}>{busy==="create"?"Creating private link…":"Create private link"} <ShareNetwork/></button><small>The one-time address remains readable until expiry or revocation.</small></div>
+      </form></>}
+      {secret&&!archived&&<div ref={secretRef} className="report-handoff__secret" tabIndex="-1" role="status" aria-live="polite"><div><span className="kicker">One-time private address</span><h3>Copy this link now.</h3><p>GrihaGrid will not show this address again after you leave or refresh.</p></div><div><input aria-label="One-time professional handoff link" readOnly value={secret.url} onFocus={event=>event.currentTarget.select()}/><button className="outline-button" type="button" onClick={copySecret}><Copy/> Copy link</button></div></div>}
+      <div ref={messageRef} className="report-handoff__message" tabIndex="-1" aria-live="polite">{message&&<p className="success-message" role="status"><CheckCircle/>{message}</p>}{error&&<p className="form-error" role="alert">{error}</p>}</div>
+      <section className="report-handoff__history" aria-labelledby={`${titleId}-history`}>
+        <header><div><span className="kicker">Link history</span><h3 id={`${titleId}-history`}>Active links first. Recent history follows.</h3></div><p>{shares.length?`${shares.length===50?"Showing 50":"Showing "+shares.length} handoff link${shares.length===1?"":"s"}${shares.length===50?"; active links first, followed by recent closed history":""}. Page loads may include previews or scanners; they are not unique people or proof of review.`:"No professional handoff links have been created for this project."}</p></header>
+        {shares.length>0&&<ol className="report-handoff__history-list" role="list">{shares.map(share=>{
+          const state=reportHandoffShareState(share);
+          const isThisReport=share.projectRevision===projectRevision&&share.reportSchemaVersion===reportSchemaVersion;
+          const sectionLabels=reportHandoffSectionOptions.filter(([value])=>share.sections.includes(value)).map(([,label])=>label);
+          const createdAt=formatDateTime(share.createdAt);
+          const linkContext=`professional handoff link for report revision ${share.projectRevision}, created ${createdAt}`;
+          return <li key={share.id}><article className={`report-handoff__link report-handoff__link--${state}`}><LinkSimple aria-hidden="true"/><div><strong>{state==="active"?"Active private link":state==="revoked"?"Revoked link":"Expired link"} · Revision {share.projectRevision}{isThisReport?" · this report":" · another saved report"}</strong><span>Created {createdAt} · {state==="revoked"?`Revoked ${formatDateTime(share.revokedAt)}`:state==="expired"?`Expired ${formatDateTime(share.expiresAt)}`:`Expires ${formatDateTime(share.expiresAt)}`} · {share.accessCount} page load{share.accessCount===1?"":"s"} (not unique people) · {share.lastAccessedAt?`Last loaded ${formatDateTime(share.lastAccessedAt)}`:"Not loaded yet"}</span><small>{sectionLabels.length?sectionLabels.join(" · "):"Selected section record unavailable"}</small></div><div>{!archived&&state==="active"&&secret?.shareId===share.id&&<button type="button" aria-label={`Copy ${linkContext}`} onClick={copySecret}><Copy/> Copy</button>}{state==="active"&&<button className="report-handoff__revoke" type="button" aria-label={`${busy===share.id?"Revoking":"Revoke"} ${linkContext}`} disabled={Boolean(busy)} onClick={()=>revokeShare(share)}><XCircle/> {busy===share.id?"Revoking…":"Revoke"}</button>}</div></article></li>;
+        })}</ol>}
+      </section>
+    </>}
+  </section>;
+}
+
 function ReportPage({ id, revision=null }) {
   const [state,setState]=useState({phase:"loading",project:null,report:null,input:null,estimate:null,briefCheck:null,projectRevision:null,reportSchemaVersion:null,error:"",historical:false});
   const [generating,setGenerating]=useState(false);
@@ -2333,13 +2720,14 @@ function ReportPage({ id, revision=null }) {
     {costCategories.length>0&&<section className="report-budget"><h2>Indicative cost allocation</h2>{costCategories.map(category=><div key={category.name}><span>{category.name}</span><i><b style={{width:`${category.percent}%`}}/></i><strong>{formatLakh(category.amountInr)}</strong></div>)}</section>}
     <section className="report-boundary"><ShieldCheck/><p><strong>Use this report to explore—not as professional site validation or construction instruction.</strong> A licensed local architect and structural engineer must validate measurements, access, site conditions, bylaws, drawings and specifications.</p></section>
     {Number.isInteger(projectRevision)&&projectRevision>0&&reportSchemaVersion===2&&<ReportFeedback key={`${id}:${projectRevision}:${reportSchemaVersion}`} projectId={id} projectRevision={projectRevision} reportSchemaVersion={reportSchemaVersion} readonly={archived} onProjectArchived={()=>setState(current=>({...current,project:{...current.project,status:"archived"}}))}/>}
+    {Number.isInteger(projectRevision)&&projectRevision>0&&reportSchemaVersion===2&&<ReportHandoffPanel key={`handoff:${id}:${projectRevision}:${reportSchemaVersion}`} projectId={id} projectRevision={projectRevision} reportSchemaVersion={reportSchemaVersion} archived={archived} historical={historical}/>}
     {!historical&&<><section className={`report-compare-bridge ${archived?"report-compare-bridge--archived":""}`}><div><span className="kicker">Decision Compare · two alternatives</span><h2>{archived?"Open the saved comparison record.":"What changes if the brief changes?"}</h2><p>{archived?"If a versioned comparison exists, it opens as read-only evidence. No browser draft will be treated as a saved project record.":"Hold the plot constant. Compare exactly two ways to trade area, programme and planning cost—then record one direction for the family and architect."}</p></div><div><ArrowsLeftRight/><button className={archived?"outline-button":"copper-button"} onClick={()=>route(`/projects/${id}/compare`)}>{archived?"Open comparison record":"Compare two options"} <ArrowRight/></button>{!archived&&<button className="underlined-action" onClick={()=>route("/compare/sample")}>See a sample first</button>}</div></section><AiPlanningBrief projectId={id} readonly={archived}/>{!archived&&<PurchasePanel projectId={id}/>}<ProjectFiles projectId={id} readonly={archived}/></>}
   </div></main>;
 }
 
 function LegalPage({ type }) {
   const title={privacy:'Privacy policy',terms:'Terms of use',refund:'Refund & cancellation'}[type];
-  return <main className="legal-page"><span className="kicker">Legal · Plain language</span><h1>{title}</h1><p className="legal-date">Effective 15 August 2026</p><section><h2>The short version</h2><p>GrihaGrid is a concept-stage planning service. We collect the minimum information needed to operate your account, save projects, generate reports and support purchases. Project information is private by default.</p><h2>Your files and account</h2><p>Account sessions use secure, HTTP-only cookies. Private uploads are optional and may not be enabled in every release; the product checks availability before accepting a file. When enabled, uploaded site material is account-scoped, served only through authenticated requests, and can be deleted by the project owner. The Brief Check and concept-planning range remain available without uploads.</p>{type==='privacy'&&<><h2>Gemini-assisted briefs</h2><p>AI briefs are for users aged 18 or older and require consent before generation. We send sanitized planning facts—not account details, precise addresses or uploaded files—to Google Gemini. On Google’s Free tier, inputs and outputs may be reviewed or used to improve its products. Gemini output is advisory and is saved with your project.</p><h2>Report feedback</h2><p>If you choose to rate a saved report, we store one outcome and one to three fixed section labels—never free text—against your account-owned project, exact project revision and report schema version. We use this to understand which planning evidence is useful, unclear or needs checking; it does not alter the report or request professional review.</p><p>Feedback remains with the private project, including while it is archived read-only, until the project is deleted. Project deletion removes the linked feedback. Product metrics expose only aggregate outcome and section counts, without account, project, revision or report identity.</p></>}{type!=='refund'&&<><h2>Family Alignment</h2><p>A project owner may create a seven-day bearer link showing two redacted options. Anyone holding that link can access the review until it expires or is revoked, so owners should share it carefully. Reviewers provide only a role category, preference, confidence and one to three structured reasons; GrihaGrid does not collect their name, contact details or free-text comments.</p><p>The owner sees aggregate response counts and reasons, not reviewer profiles or contact identity. A random response receipt and the reviewer’s own structured choices are cached locally in that browser so the response can be amended while the room remains open. GrihaGrid sends neither value to analytics. Clearing this site’s browser data removes the local copy and update capability. Family responses are advisory and never constitute professional approval.</p><p>Expired or revoked rooms and their structured responses may be retained for up to 90 days for bounded support, abuse review and audit, then the room and its responses are deleted together. An unpaid project deletion removes its Family Alignment rooms and responses through the same project deletion workflow.</p></>}<h2>Professional boundary</h2><p>Generated concepts, estimates and compliance cues are indicative. They do not replace licensed architectural, structural, geotechnical, legal, tax or municipal advice.</p><h2>Payments and refunds</h2><p>The free Brief Check requires no payment. Digital reports may be cancelled before generation begins. Expert reviews may be cancelled before a professional accepts the assignment. Final policy is subject to applicable Indian consumer law.</p><h2>Contact</h2><p>Email <a href="mailto:hello@grihagrid.in">hello@grihagrid.in</a>. These policies must receive final counsel review before live payment activation.</p></section></main>;
+  return <main className="legal-page"><span className="kicker">Legal · Plain language</span><h1>{title}</h1><p className="legal-date">Effective 16 August 2026</p><section><h2>The short version</h2><p>GrihaGrid is a concept-stage planning service. We collect the minimum information needed to operate your account, save projects, generate reports and support purchases. Project information is private by default.</p><h2>Your files and account</h2><p>Account sessions use secure, HTTP-only cookies. Private uploads are optional and may not be enabled in every release; the product checks availability before accepting a file. When enabled, uploaded site material is account-scoped, served only through authenticated requests, and can be deleted by the project owner. The Brief Check and concept-planning range remain available without uploads.</p>{type==='privacy'&&<><h2>Gemini-assisted briefs</h2><p>AI briefs are for users aged 18 or older and require consent before generation. We send sanitized planning facts—not account details, precise addresses or uploaded files—to Google Gemini. On Google’s Free tier, inputs and outputs may be reviewed or used to improve its products. Gemini output is advisory and is saved with your project.</p><h2>Report feedback</h2><p>If you choose to rate a saved report, we store one outcome and one to three fixed section labels—never free text—against your account-owned project, exact project revision and report schema version. We use this to understand which planning evidence is useful, unclear or needs checking; it does not alter the report or request professional review.</p><p>Feedback remains with the private project, including while it is archived read-only, until the project is deleted. Project deletion removes the linked feedback. Product metrics expose only aggregate outcome and section counts, without account, project, revision or report identity.</p></>}{type!=='refund'&&<><h2>Family Alignment</h2><p>A project owner may create a seven-day bearer link showing two redacted options. Anyone holding that link can access the review until it expires or is revoked, so owners should share it carefully. Reviewers provide only a role category, preference, confidence and one to three structured reasons; GrihaGrid does not collect their name, contact details or free-text comments.</p><p>The owner sees aggregate response counts and reasons, not reviewer profiles or contact identity. A random response receipt and the reviewer’s own structured choices are cached locally in that browser so the response can be amended while the room remains open. GrihaGrid sends neither value to analytics. Clearing this site’s browser data removes the local copy and update capability. Family responses are advisory and never constitute professional approval.</p><p>Expired or revoked rooms and their structured responses may be retained for up to 90 days for bounded support, abuse review and audit, then the room and its responses are deleted together. An unpaid project deletion removes its Family Alignment rooms and responses through the same project deletion workflow.</p><h2>Professional Handoff</h2><p>A project owner may choose specific saved report sections and create an expiring capability link. Anyone holding that capability can read those selected planning facts until the owner revokes the link or it expires, so both owners and recipients should handle it as a private bearer secret.</p><p>The owner sees each link’s aggregate open count and last-opened time. Browser previews, security scanners, and repeated visits may increment those figures; they do not identify a recipient or prove that a professional read, accepted, or approved the report. Closed link records may be retained for up to 90 days for bounded support, abuse review, and audit, while project deletion removes them with the project.</p></>}<h2>Professional boundary</h2><p>Generated concepts, estimates and compliance cues are indicative. They do not replace licensed architectural, structural, geotechnical, legal, tax or municipal advice.</p><h2>Payments and refunds</h2><p>The free Brief Check requires no payment. Digital reports may be cancelled before generation begins. Expert reviews may be cancelled before a professional accepts the assignment. Final policy is subject to applicable Indian consumer law.</p><h2>Contact</h2><p>Email <a href="mailto:hello@grihagrid.in">hello@grihagrid.in</a>. These policies must receive final counsel review before live payment activation.</p></section></main>;
 }
 
 function NotFoundPage() { return <main className="error-page"><Compass/><span className="kicker">404 · Outside the plot</span><h1>This page is not in the plan.</h1><p>The address may have changed, or the page may never have existed.</p><button className="copper-button" onClick={()=>route('/')}>Return home <ArrowRight/></button></main>; }
@@ -2347,10 +2735,11 @@ function NotFoundPage() { return <main className="error-page"><Compass/><span cl
 function AppShell({ user, children }) { return <><a className="skip-link" href="#main-content">Skip to content</a><Header user={user}/><div id="main-content">{children}</div><Footer/></>; }
 
 export function App() {
-  const [path,setPath]=useState(window.location.pathname);const [user,setUser]=useState(undefined);
+  const [path,setPath]=useState(window.location.pathname);const [user,setUser]=useState(()=>isPublicReportSharePath(window.location.pathname)?null:undefined);
   const focusedPath=useRef(path);
   const authRevision=useRef(0);
   const authenticatedSession=useRef(false);
+  const authBootstrapComplete=useRef(false);
   useEffect(()=>{const onPop=()=>setPath(window.location.pathname);window.addEventListener('popstate',onPop);return()=>window.removeEventListener('popstate',onPop)},[]);
   useEffect(()=>{
     const applyRemoteLogout=()=>{authRevision.current+=1;authenticatedSession.current=false;clearLocalLogoutState();setUser(null);if(isPrivateAccountPath(window.location.pathname))replaceRoute('/',{logoutConfirmed:true})};
@@ -2361,7 +2750,13 @@ export function App() {
     window.addEventListener('storage',onStorage);
     return()=>{window.removeEventListener('storage',onStorage);if(channel){channel.removeEventListener('message',onChannel);channel.close()}};
   },[]);
-  useEffect(()=>{const revision=authRevision.current;api('/api/auth/me').then(x=>{if(authRevision.current===revision){authenticatedSession.current=Boolean(x.user);setUser(x.user||null);if(x.user&&window.history.state?.logoutConfirmed===true)replaceRoute(window.location.pathname,{})}}).catch(error=>{if(authRevision.current===revision&&isApplicationUnauthenticated(error)){authenticatedSession.current=false;setUser(null)}});},[]);
+  useEffect(()=>{
+    if(isPublicReportSharePath(path)){if(authBootstrapComplete.current)authRevision.current+=1;authBootstrapComplete.current=false;authenticatedSession.current=false;setUser(null);return}
+    if(authBootstrapComplete.current)return;
+    authBootstrapComplete.current=true;
+    const revision=authRevision.current;
+    api('/api/auth/me').then(x=>{if(authRevision.current===revision){authenticatedSession.current=Boolean(x.user);setUser(x.user||null);if(x.user&&window.history.state?.logoutConfirmed===true)replaceRoute(window.location.pathname,{})}}).catch(error=>{if(authRevision.current===revision&&isApplicationUnauthenticated(error)){authenticatedSession.current=false;setUser(null)}});
+  },[path]);
   useEffect(()=>{
     let checking=false;
     const revalidate=async()=>{
@@ -2369,6 +2764,7 @@ export function App() {
       const requestedLocation=`${pathname}${window.location.search}${window.location.hash}`;
       const privatePath=isPrivateAccountPath(pathname);
       const confirmationVisible=window.history.state?.logoutConfirmed===true;
+      if(isPublicReportSharePath(pathname)){authenticatedSession.current=false;setUser(null);return}
       if(checking||!shouldRevalidateSession(privatePath,window.history.state))return;
       checking=true;const revision=authRevision.current;
       const targetIsCurrent=()=>isCurrentSessionRevalidationTarget(
@@ -2395,7 +2791,7 @@ export function App() {
     window.addEventListener('focus',revalidate);window.addEventListener('pageshow',revalidate);document.addEventListener('visibilitychange',onVisibility);
     return()=>{window.removeEventListener('focus',revalidate);window.removeEventListener('pageshow',revalidate);document.removeEventListener('visibilitychange',onVisibility)};
   },[]);
-  useEffect(()=>{const titles={'/':'GrihaGrid — Know what fits. Know what it costs.','/pricing':'Pricing — GrihaGrid','/about':'About — GrihaGrid','/plans':'Sample plan — GrihaGrid','/compare/sample':'Sample Decision Compare — GrihaGrid','/start':'Plan my home — GrihaGrid','/login':'Log in — GrihaGrid','/register':'Create account — GrihaGrid','/dashboard':'My projects — GrihaGrid','/security':'Account security — GrihaGrid','/orders':'Orders — GrihaGrid','/privacy':'Privacy — GrihaGrid','/terms':'Terms — GrihaGrid','/refund':'Refunds — GrihaGrid'};document.title=path.startsWith('/report/')?'Decision book — GrihaGrid':path.startsWith('/projects/')&&path.endsWith('/brief')?'Brief Check — GrihaGrid':path.startsWith('/projects/')&&path.endsWith('/compare')?'Decision Compare — GrihaGrid':path.startsWith('/projects/')?'Project home — GrihaGrid':path.startsWith('/orders/')?'Purchased artifact — GrihaGrid':path.startsWith('/share/decision/')?'Shared decision — GrihaGrid':path.startsWith('/align/')?'Family review — GrihaGrid':(titles[path]||'Page not found — GrihaGrid')},[path]);
+  useEffect(()=>{const titles={'/':'GrihaGrid — Know what fits. Know what it costs.','/pricing':'Pricing — GrihaGrid','/about':'About — GrihaGrid','/plans':'Sample plan — GrihaGrid','/compare/sample':'Sample Decision Compare — GrihaGrid','/start':'Plan my home — GrihaGrid','/login':'Log in — GrihaGrid','/register':'Create account — GrihaGrid','/dashboard':'My projects — GrihaGrid','/security':'Account security — GrihaGrid','/orders':'Orders — GrihaGrid','/privacy':'Privacy — GrihaGrid','/terms':'Terms — GrihaGrid','/refund':'Refunds — GrihaGrid'};document.title=path.startsWith('/report/')?'Decision book — GrihaGrid':path.startsWith('/projects/')&&path.endsWith('/brief')?'Brief Check — GrihaGrid':path.startsWith('/projects/')&&path.endsWith('/compare')?'Decision Compare — GrihaGrid':path.startsWith('/projects/')?'Project home — GrihaGrid':path.startsWith('/orders/')?'Purchased artifact — GrihaGrid':path==='/share/report'?'Professional handoff — GrihaGrid':path.startsWith('/share/decision/')?'Shared decision — GrihaGrid':path.startsWith('/align/')?'Family review — GrihaGrid':(titles[path]||'Page not found — GrihaGrid')},[path]);
   useEffect(()=>{
     if(focusedPath.current===path)return undefined;
     focusedPath.current=path;
@@ -2418,7 +2814,7 @@ export function App() {
     };
     frame=window.requestAnimationFrame(()=>{
       focusHeading();
-      const hash=window.location.hash.slice(1);
+      const hash=isPublicReportSharePath(path)?"":window.location.hash.slice(1);
       const target=hash?document.getElementById(safeDecodePathSegment(hash)):null;
       if(target)target.scrollIntoView({block:'start'});
       else window.scrollTo({top:0,behavior:'auto'});
@@ -2458,6 +2854,7 @@ export function App() {
   if(historicalReportMatch)return <ReportPage id={safeDecodePathSegment(historicalReportMatch[1])} revision={Number(historicalReportMatch[2])}/>;
   if(reportMatch)return <ReportPage id={safeDecodePathSegment(reportMatch[1])}/>;
   if(artifactMatch)return <PurchasedArtifactPage orderId={safeDecodePathSegment(artifactMatch[1])}/>;
+  if(path==='/share/report')return <SharedReportPage/>;
   if(shareMatch)return <SharedDecisionPage token={safeDecodePathSegment(shareMatch[1])}/>;
   if(alignmentMatch)return <FamilyAlignmentReviewPage token={alignmentMatch[1]}/>;
   if(path==='/checkout/return')return <CheckoutReturnPage orderId={checkoutOrder}/>;

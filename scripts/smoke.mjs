@@ -66,10 +66,28 @@ async function jsonCheck(origin, path, init, validate) {
   return { path, status: response.status, latencyMs, attempts };
 }
 
+async function reportShareDocumentCheck(origin, method) {
+  const path="/share/report";
+  const {response,latencyMs,attempts}=await timedFetch(new URL(path,origin),{
+    method,
+    headers:{accept:"text/html"},
+  });
+  assert.equal(response.status,200,`${method} ${path} returned ${response.status}`);
+  assertSecurityHeaders(response,path);
+  assert.match(response.headers.get("content-type")||"",/^text\/html\b/u,`${method} ${path} must return HTML`);
+  assert.equal(response.headers.get("cache-control"),"no-store",`${method} ${path} must not be cached`);
+  assert.equal(response.headers.get("x-robots-tag"),"noindex,nofollow,noarchive",`${method} ${path} must not be indexed`);
+  assert.equal(response.headers.get("referrer-policy"),"no-referrer",`${method} ${path} must not forward its capability`);
+  await response.body?.cancel();
+  return {path,method,status:response.status,latencyMs,attempts};
+}
+
 export async function runSmoke(rawOrigin, options = {}) {
   const origin = canonicalOrigin(rawOrigin);
   const expectCheckout = options.expectCheckout === true;
   const expectedReleaseId = options.expectedReleaseId ? String(options.expectedReleaseId) : "";
+  const legacyWorker = options.legacyWorker === true;
+  const expectReportHandoff = options.expectReportHandoff !== false;
   const checks = [];
 
   const home = await timedFetch(origin);
@@ -79,6 +97,11 @@ export async function runSmoke(rawOrigin, options = {}) {
   const homepage = await home.response.text();
   assert.match(homepage, /GrihaGrid/u, "homepage brand marker is missing");
   checks.push({ path: "/", status: 200, latencyMs: home.latencyMs, attempts: home.attempts });
+
+  if (!legacyWorker) {
+    checks.push(await reportShareDocumentCheck(origin,"GET"));
+    checks.push(await reportShareDocumentCheck(origin,"HEAD"));
+  }
 
   checks.push(await jsonCheck(origin, "/api/health", {}, (body) => {
     assert.equal(body.status, "ok");
@@ -90,6 +113,11 @@ export async function runSmoke(rawOrigin, options = {}) {
     assert.equal(body.status, "ready");
     assert.equal(body.checks?.familyAlignmentSchema, "current");
     assert.equal(body.checks?.reportFeedbackSchema, "current");
+    if (!legacyWorker) {
+      assert.equal(body.checks?.reportShareSchema, "current");
+      assert.equal(body.checks?.reportHandoffControl, expectReportHandoff ? "enabled" : "disabled");
+      assert.equal(body.checks?.reportShareAbuseHashing, "configured");
+    }
     assert.equal(body.checks?.projectCreationSchema, "current");
     assert.equal(body.checks?.authSchema, "current");
     assert.equal(body.checks?.privateStorage, "unavailable");
@@ -97,6 +125,7 @@ export async function runSmoke(rawOrigin, options = {}) {
     assert.equal(body.capabilities?.freePlanning, true);
     assert.equal(body.capabilities?.familyAlignment, true);
     assert.equal(body.capabilities?.reportFeedback, true);
+    if (!legacyWorker) assert.equal(body.capabilities?.reportHandoff, expectReportHandoff);
     assert.equal(body.capabilities?.accountSecurity, true);
     assert.equal(body.capabilities?.privateUploads, false);
     assert.equal(body.capabilities?.paidCheckout, expectCheckout);
@@ -148,7 +177,13 @@ export async function runSmoke(rawOrigin, options = {}) {
     }
   }));
 
-  return { origin: origin.origin, checkedAt: new Date().toISOString(), checks };
+  return {
+    origin: origin.origin,
+    checkedAt: new Date().toISOString(),
+    legacyWorker,
+    expectReportHandoff,
+    checks,
+  };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
@@ -157,6 +192,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const result = await runSmoke(origin, {
     expectCheckout: process.env.EXPECT_PAID_CHECKOUT === "true",
     expectedReleaseId: process.env.EXPECT_RELEASE_ID,
+    legacyWorker: process.env.LEGACY_WORKER_COMPAT === "true",
+    expectReportHandoff: process.env.EXPECT_REPORT_HANDOFF !== "false",
   });
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }

@@ -1,18 +1,39 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { runAuthenticatedSmoke } from "../scripts/authenticated-smoke.mjs";
+import { reportShareCapabilityToken, runAuthenticatedSmoke } from "../scripts/authenticated-smoke.mjs";
 import {
   buildCanaryResidueSql,
   buildPreMigrationEvidence,
   verifyCanaryResidueEvidence,
+  verifyReportHandoffControlEvidence,
+  verifyReportHandoffCountsEvidence,
   verifyPostMigrationEvidence,
 } from "../scripts/release-db-evidence.mjs";
 import { monitorRelease, ReleaseTailCoverageError, summarizeSamples } from "../scripts/monitor-release.mjs";
 import { changedFiles, classifyReleaseFiles, isDocumentationOnly } from "../scripts/release-scope.mjs";
+import { waitForRelease } from "../scripts/wait-for-release.mjs";
+
+test("deployment authorization requires bounded exact-main CodeQL evidence", async () => {
+  const workflow = await readFile(new URL("../.github/workflows/deploy.yml", import.meta.url), "utf8");
+  assert.match(workflow, /security-events:\s*read/u);
+  const exactSuccess = workflow.indexOf('process.stdout.write("success")');
+  const analysesQuery = workflow.indexOf("code-scanning/analyses");
+  const alertsQuery = workflow.indexOf("code-scanning/alerts");
+  assert.ok(exactSuccess >= 0 && analysesQuery > exactSuccess && alertsQuery > analysesQuery);
+  assert.match(workflow, /analysis\.commit_sha === process\.env\.CODEQL_RELEASE_SHA/u);
+  assert.match(workflow, /analysis\.ref === "refs\/heads\/main"/u);
+  assert.match(workflow, /language:javascript-typescript/u);
+  assert.match(workflow, /-f state=open -f ref=refs\/heads\/main -f tool_name=CodeQL/u);
+  assert.match(workflow, /assert\.equal\(alerts\.length, 0/u);
+  assert.match(workflow, /assert\.equal\(resultsCount, 0/u);
+  assert.match(workflow, /openAlertCount: 0/u);
+  assert.match(workflow, /path: release-evidence\/authorization\/codeql-gate\.json/u);
+  assert.doesNotMatch(workflow, /path:\s*\$RUNNER_TEMP\/codeql-(?:analyses|open-alerts)\.json/u);
+});
 
 test("release scope skips only documentation and treats deletions as deployable file paths", () => {
   assert.equal(isDocumentationOnly("docs/operations-runbook.md"), true);
@@ -104,6 +125,12 @@ test("release database evidence hard-gates legacy safety and proves migration da
     "index:idx_projects_user_creation_key",
     "table:password_change_attempt_counters", "index:idx_password_change_attempts_updated",
     "trigger:users_auth_state_update_guard", "trigger:session_auth_state_immutable",
+    "table:report_shares", "table:report_share_read_counters", "table:report_share_create_counters", "table:report_handoff_controls",
+    "index:idx_report_shares_owner_created", "index:idx_report_shares_expiry", "index:idx_report_shares_revoked",
+    "index:idx_report_share_read_counters_updated", "index:idx_report_share_create_counters_updated",
+    "trigger:report_share_sections_insert_guard", "trigger:report_share_identity_immutable",
+    "trigger:archived_report_share_insert_guard", "trigger:report_share_active_limit_insert",
+    "trigger:report_handoff_enabled_insert_guard",
   ].map((entry) => {
     const separator = entry.indexOf(":");
     return { type: entry.slice(0, separator), name: entry.slice(separator + 1) };
@@ -121,11 +148,23 @@ test("release database evidence hard-gates legacy safety and proves migration da
     "project_revisions:project_id", "project_revisions:revision", "project_revisions:content_hash", "project_revisions:input_json", "project_revisions:brief_check_json",
     "report_feedback:project_id", "report_feedback:project_revision", "report_feedback:report_schema_version", "report_feedback:user_id",
     "report_feedback:outcome", "report_feedback:sections_json", "report_feedback:created_at", "report_feedback:updated_at",
+    "report_shares:id", "report_shares:project_id", "report_shares:user_id", "report_shares:project_revision",
+    "report_shares:report_schema_version", "report_shares:sections_json", "report_shares:report_content_hash",
+    "report_shares:token_hash", "report_shares:idempotency_key_hash", "report_shares:request_hash",
+    "report_shares:expires_at", "report_shares:revoked_at", "report_shares:access_count",
+    "report_shares:last_accessed_at", "report_shares:created_at",
+    "report_share_read_counters:subject_hash", "report_share_read_counters:window_start",
+    "report_share_read_counters:request_count", "report_share_read_counters:limit_count",
+    "report_share_read_counters:updated_at",
+    "report_share_create_counters:user_id", "report_share_create_counters:window_start",
+    "report_share_create_counters:request_count", "report_share_create_counters:limit_count",
+    "report_share_create_counters:updated_at",
+    "report_handoff_controls:control_key", "report_handoff_controls:enabled", "report_handoff_controls:updated_at",
   ].map((entry) => {
     const separator = entry.indexOf(":");
     return { table_name: entry.slice(0, separator), name: entry.slice(separator + 1) };
   });
-  const post = verifyPostMigrationEvidence({
+  const postInput = {
     environment: "staging",
     pre,
     foreignKeysPayload: d1([]),
@@ -141,15 +180,26 @@ test("release database evidence hard-gates legacy safety and proves migration da
     }))),
     reportsPayload: d1(reports),
     feedbackCountPayload: d1([{ row_count: 0 }]),
+    reportShareCountPayload: d1([{ row_count: 0 }]),
+    reportShareReadCounterCountPayload: d1([{ row_count: 0 }]),
+    reportShareCreateCounterCountPayload: d1([{ row_count: 0 }]),
+    reportHandoffControlPayload: d1([{ control_key: "report_handoff", enabled: 0 }]),
     feedbackMigrationPending: true,
-  });
+    reportShareMigrationPending: true,
+  };
+  const post = verifyPostMigrationEvidence(postInput);
   assert.equal(post.coreDataUnchanged, true);
   assert.equal(post.credentialsAndSessionsUnchanged, true);
   assert.equal(post.reportFeedbackRows, 0);
+  assert.equal(post.reportShareRows, 0);
+  assert.equal(post.reportShareReadCounterRows, 0);
+  assert.equal(post.reportShareCreateCounterRows, 0);
+  assert.equal(post.reportHandoffControlRows, 1);
+  assert.equal(post.reportHandoffControlEnabled, false);
   const residue = verifyCanaryResidueEvidence({
     environment: "staging",
     canaryProjectIds: ["11111111-1111-4111-8111-111111111111"],
-    residuePayload: d1([{ projects: 0, project_revisions: 0, reports: 0, revision_reports: 0, feedback: 0 }]),
+    residuePayload: d1([{ projects: 0, project_revisions: 0, reports: 0, revision_reports: 0, feedback: 0, report_shares: 0 }]),
   });
   assert.equal(residue.canaryResidue, 0);
   assert.equal(residue.canaryProjectCount, 1);
@@ -162,66 +212,76 @@ test("release database evidence hard-gates legacy safety and proves migration da
     buildCanaryResidueSql(["11111111-1111-4111-8111-111111111111"]),
     /FROM project_revisions WHERE project_id IN \('11111111-1111-4111-8111-111111111111'\)/u,
   );
+  assert.match(
+    buildCanaryResidueSql(["11111111-1111-4111-8111-111111111111"]),
+    /FROM report_shares WHERE project_id IN \('11111111-1111-4111-8111-111111111111'\)/u,
+  );
   assert.throws(() => buildCanaryResidueSql(["not-a-project"]), /invalid canary project identifier/u);
   assert.throws(
     () => verifyCanaryResidueEvidence({
       environment: "staging",
       canaryProjectIds: ["11111111-1111-4111-8111-111111111111"],
-      residuePayload: d1([{ projects: 0, project_revisions: 0, reports: 0, revision_reports: 0, feedback: 1 }]),
+      residuePayload: d1([{ projects: 0, project_revisions: 0, reports: 0, revision_reports: 0, feedback: 1, report_shares: 0 }]),
     }),
     /left feedback residue/u,
   );
   assert.throws(
     () => verifyCanaryResidueEvidence({
       environment: "staging",
+      canaryProjectIds: ["11111111-1111-4111-8111-111111111111"],
+      residuePayload: d1([{ projects: 0, project_revisions: 0, reports: 0, revision_reports: 0, feedback: 0, report_shares: 1 }]),
+    }),
+    /left report_shares residue/u,
+  );
+  assert.throws(
+    () => verifyCanaryResidueEvidence({
+      environment: "staging",
       canaryProjectIds: [],
-      residuePayload: d1([{ projects: 0, project_revisions: 0, reports: 0, revision_reports: 0, feedback: 0 }]),
+      residuePayload: d1([{ projects: 0, project_revisions: 0, reports: 0, revision_reports: 0, feedback: 0, report_shares: 0 }]),
     }),
     /at least one project identifier/u,
   );
   assert.throws(
     () => verifyPostMigrationEvidence({
-      environment: "staging",
-      pre,
-      foreignKeysPayload: d1([]),
-      schemaPayload: d1(schemaNames),
-      columnsPayload: d1(columns),
-      countsPayload: d1(countsRows),
-      usersPayload: d1(users.map((user) => ({ ...user, auth_generation: 1, auth_revision_id: null, password_changed_at: null }))),
-      sessionsPayload: d1(sessions.map((session) => ({ ...session, auth_generation: 1, auth_revision_id: null }))),
+      ...postInput,
       projectsPayload: d1([{
         ...projects[0],
         status: "changed",
         creation_key_hash: null,
         creation_request_hash: null,
       }]),
-      reportsPayload: d1(reports),
-      feedbackCountPayload: d1([{ row_count: 0 }]),
-      feedbackMigrationPending: true,
     }),
     /canonical users, sessions, projects, or reports bytes/u,
   );
 
   assert.throws(
     () => verifyPostMigrationEvidence({
-      environment: "staging",
-      pre,
-      foreignKeysPayload: d1([]),
-      schemaPayload: d1(schemaNames),
-      columnsPayload: d1(columns),
-      countsPayload: d1(countsRows),
+      ...postInput,
       usersPayload: d1(users.map((user) => ({ ...user, auth_generation: 2, auth_revision_id: "revision-2-value", password_changed_at: null }))),
-      sessionsPayload: d1(sessions.map((session) => ({ ...session, auth_generation: 1, auth_revision_id: null }))),
-      projectsPayload: d1(projects.map((project) => ({
-        ...project,
-        creation_key_hash: null,
-        creation_request_hash: null,
-      }))),
-      reportsPayload: d1(reports),
-      feedbackCountPayload: d1([{ row_count: 0 }]),
-      feedbackMigrationPending: true,
     }),
     /canonical users, sessions, projects, or reports bytes/u,
+  );
+
+  assert.throws(
+    () => verifyPostMigrationEvidence({
+      ...postInput,
+      reportShareReadCounterCountPayload: d1([{ row_count: 1 }]),
+    }),
+    /new report_share_read_counters table must start empty/u,
+  );
+  assert.throws(
+    () => verifyPostMigrationEvidence({
+      ...postInput,
+      reportShareCreateCounterCountPayload: d1([{ row_count: 1 }]),
+    }),
+    /new report_share_create_counters table must start empty/u,
+  );
+  assert.throws(
+    () => verifyPostMigrationEvidence({
+      ...postInput,
+      reportHandoffControlPayload: d1([{ control_key: "report_handoff", enabled: 1 }]),
+    }),
+    /report handoff control is not in the expected state/u,
   );
 });
 
@@ -255,6 +315,67 @@ test("release scope cannot hide a runtime deletion inside a documentation rename
   } finally {
     await rm(repository, { recursive: true, force: true });
   }
+});
+
+test("report handoff release evidence is bounded and requires one enabled control", () => {
+  const d1 = (results) => [{ success: true, results }];
+  const disabled = verifyReportHandoffControlEvidence({
+    environment: "staging",
+    controlPayload: d1([{ control_key: "report_handoff", enabled: 0 }]),
+    expectedEnabled: false,
+  });
+  assert.deepEqual({
+    controlKey: disabled.controlKey,
+    controlRows: disabled.controlRows,
+    enabled: disabled.enabled,
+  }, {
+    controlKey: "report_handoff",
+    controlRows: 1,
+    enabled: false,
+  });
+  assert.throws(
+    () => verifyReportHandoffControlEvidence({
+      environment: "production",
+      controlPayload: d1([
+        { control_key: "report_handoff", enabled: 1 },
+        { control_key: "unexpected", enabled: 1 },
+      ]),
+      expectedEnabled: true,
+    }),
+    /exactly one row/u,
+  );
+
+  const counts = verifyReportHandoffCountsEvidence({
+    environment: "production",
+    countsPayload: d1([{
+      report_shares: 12,
+      report_share_read_counters: 3,
+      report_share_create_counters: 2,
+      report_handoff_controls: 1,
+      enabled_report_handoff_controls: 1,
+    }]),
+  });
+  assert.deepEqual(counts.counts, {
+    report_shares: 12,
+    report_share_read_counters: 3,
+    report_share_create_counters: 2,
+    report_handoff_controls: 1,
+    enabled_report_handoff_controls: 1,
+  });
+  assert.equal(counts.controlEnabled, true);
+  assert.throws(
+    () => verifyReportHandoffCountsEvidence({
+      environment: "production",
+      countsPayload: d1([{
+        report_shares: 12,
+        report_share_read_counters: 3,
+        report_share_create_counters: 2,
+        report_handoff_controls: 1,
+        enabled_report_handoff_controls: 0,
+      }]),
+    }),
+    /must be enabled after release checks/u,
+  );
 });
 
 test("release monitor summary counts actual requests including bounded retries", () => {
@@ -291,6 +412,74 @@ test("release monitor distinguishes lost tail coverage from an application regre
   );
 });
 
+test("release rollback polling propagates legacy Worker compatibility to every smoke sample", async () => {
+  const seen = [];
+  let clock = 0;
+  const result = await waitForRelease(
+    "https://worker.example.test",
+    "11111111-1111-4111-8111-111111111111",
+    {
+      timeoutMs: 1_000,
+      intervalMs: 1,
+      legacyWorker: true,
+      now: () => clock,
+      sleep: async (delayMs) => { clock += delayMs; },
+      smoke: async (origin, options) => {
+        seen.push({ origin, ...options });
+        return { checks: [] };
+      },
+    },
+  );
+  assert.equal(result.legacyWorker, true);
+  assert.equal(result.consecutiveSamples, 3);
+  assert.equal(seen.length, 3);
+  assert.ok(seen.every((sample) => sample.legacyWorker === true));
+  assert.ok(seen.every((sample) => sample.expectReportHandoff === true));
+  assert.ok(seen.every((sample) => sample.expectedReleaseId === result.releaseId));
+});
+
+test("release propagation can require the exact Worker while report handoff remains closed", async () => {
+  const seen = [];
+  let clock = 0;
+  const result = await waitForRelease(
+    "https://worker.example.test",
+    "11111111-1111-4111-8111-111111111111",
+    {
+      timeoutMs: 1_000,
+      intervalMs: 1,
+      expectReportHandoff: false,
+      now: () => clock,
+      sleep: async (delayMs) => { clock += delayMs; },
+      smoke: async (_origin, options) => {
+        seen.push(options);
+        return { checks: [] };
+      },
+    },
+  );
+  assert.equal(result.expectReportHandoff, false);
+  assert.equal(result.consecutiveSamples, 3);
+  assert.ok(seen.every((sample) => sample.expectReportHandoff === false));
+});
+
+test("report handoff capability parsing never includes a bearer in assertion errors", () => {
+  const bearer="q".repeat(43);
+  assert.equal(
+    reportShareCapabilityToken(`https://worker.example.test/share/report#${bearer}`,"https://worker.example.test"),
+    bearer,
+  );
+  for(const unsafe of [
+    `not a URL ${bearer}`,
+    `https://evil.example/share/report#${bearer}`,
+    `https://worker.example.test/share/report/${bearer}`,
+    `https://worker.example.test/share/report?token=${bearer}`,
+  ]){
+    let error;
+    try{reportShareCapabilityToken(unsafe,"https://worker.example.test")}catch(caught){error=caught}
+    assert.ok(error instanceof Error);
+    assert.equal(String(error.message).includes(bearer),false);
+  }
+});
+
 test("authenticated smoke proves current and rollback-compatible Worker paths fail closed", async () => {
   const originalFetch = globalThis.fetch;
   const projectId = "11111111-1111-4111-8111-111111111111";
@@ -300,7 +489,10 @@ test("authenticated smoke proves current and rollback-compatible Worker paths fa
   let loggedOut = false;
   let legacyResponse = false;
   let createCalls = 0;
+  let reportShareActive = false;
   const denied = [];
+  const reportShareId = "33333333-3333-4333-8333-333333333333";
+  const reportShareToken = "report-share-canary-token-00000000000000000";
   const estimatorInput = { width: 30, length: 50, floors: "G+1", quality: "Signature", city: "Pune" };
   const estimatorEstimate = {
     plotSqft: 1500,
@@ -325,12 +517,17 @@ test("authenticated smoke proves current and rollback-compatible Worker paths fa
     if (url.pathname === "/api/readiness") {
       return Response.json({
         releaseId,
-        checks: legacyResponse ? {} : { authSchema: "current" },
+        checks: legacyResponse ? {} : {
+          authSchema: "current",
+          reportShareSchema: "current",
+          reportHandoffControl: "enabled",
+          reportShareAbuseHashing: "configured",
+        },
         capabilities: {
           paidCheckout: false,
           paidFulfillment: false,
           privateUploads: false,
-          ...(legacyResponse ? {} : { reportFeedback: true, accountSecurity: true }),
+          ...(legacyResponse ? {} : { reportFeedback: true, accountSecurity: true, reportHandoff: true }),
         },
       });
     }
@@ -398,6 +595,47 @@ test("authenticated smoke proves current and rollback-compatible Worker paths fa
         updatedAt: "2026-08-15T00:00:00.000Z",
       } });
     }
+    if (url.pathname === `/api/projects/${projectId}/report-shares` && method === "POST") {
+      assert.match(new Headers(init.headers).get("idempotency-key") || "", /^release-report-share-/u);
+      assert.deepEqual(JSON.parse(init.body), {
+        projectRevision: 1,
+        reportSchemaVersion: 2,
+        expiresInDays: 1,
+        sections: ["overview", "risks", "next_actions"],
+      });
+      reportShareActive = true;
+      return Response.json({ share: {
+        id: reportShareId,
+        projectRevision: 1,
+        reportSchemaVersion: 2,
+        sections: ["overview", "risks", "next_actions"],
+        expiresAt: "2026-08-17 00:00:00",
+        revokedAt: null,
+        active: true,
+        accessCount: 0,
+        createdAt: "2026-08-16 00:00:00",
+        url: `https://worker.example.test/share/report#${reportShareToken}`,
+      } }, { status: 201 });
+    }
+    if (url.pathname === "/api/shared/report" && method === "POST") {
+      assert.deepEqual(JSON.parse(init.body), { token: reportShareToken });
+      assert.equal(new Headers(init.headers).get("cookie"), null);
+      assert.equal(new Headers(init.headers).get("x-csrf-token"), null);
+      return reportShareActive
+        ? Response.json({ share: {
+          expiresAt: "2026-08-17 00:00:00",
+          sections: {
+            overview: { headline: "A bounded planning overview" },
+            risks: ["Verify all site conditions locally."],
+            nextActions: ["Commission measured-site validation."],
+          },
+        } })
+        : Response.json({ code: "report_share_unavailable" }, { status: 410 });
+    }
+    if (url.pathname === `/api/projects/${projectId}/report-shares/${reportShareId}` && method === "DELETE") {
+      reportShareActive = false;
+      return new Response(null, { status: 204 });
+    }
     if (url.pathname === `/api/projects/${projectId}/orders` && method === "POST") {
       assert.match(new Headers(init.headers).get("idempotency-key") || "", /^closed-/u);
       denied.push("checkout");
@@ -438,6 +676,7 @@ test("authenticated smoke proves current and rollback-compatible Worker paths fa
     assert.equal(result.sessionRevocationVerified, true);
     assert.equal(result.publicEstimateVerified, true);
     assert.equal(result.projectCreateReplayVerified, true);
+    assert.equal(result.reportHandoffVerified, true);
     assert.deepEqual(result.canaryProjectIds, [projectId]);
     assert.equal(deleted, true);
 
@@ -446,6 +685,7 @@ test("authenticated smoke proves current and rollback-compatible Worker paths fa
     loggedOut = false;
     legacyResponse = true;
     createCalls = 0;
+    reportShareActive = false;
     denied.length = 0;
     const rollbackResult = await runAuthenticatedSmoke(
       "https://worker.example.test",
@@ -481,8 +721,13 @@ test("authenticated smoke deletes only its exact marker after an ambiguous creat
     if (url.pathname === "/api/readiness") {
       return Response.json({
         releaseId: "22222222-2222-4222-8222-222222222222",
-        checks: { authSchema: "current" },
-        capabilities: { paidCheckout: false, paidFulfillment: false, privateUploads: false, reportFeedback: true, accountSecurity: true },
+        checks: {
+          authSchema: "current",
+          reportShareSchema: "current",
+          reportHandoffControl: "enabled",
+          reportShareAbuseHashing: "configured",
+        },
+        capabilities: { paidCheckout: false, paidFulfillment: false, privateUploads: false, reportFeedback: true, accountSecurity: true, reportHandoff: true },
       });
     }
     if (url.pathname === "/api/auth/me") {

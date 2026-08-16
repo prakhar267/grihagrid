@@ -24,6 +24,21 @@ function canonicalOrigin(raw) {
   return origin;
 }
 
+export function reportShareCapabilityToken(rawUrl, expectedOrigin) {
+  let url;
+  try {
+    url = new URL(String(rawUrl || ""));
+  } catch {
+    throw new Error("report handoff did not return a valid fragment capability URL");
+  }
+  const token = /^#[A-Za-z0-9_-]{43}$/u.test(url.hash) ? url.hash.slice(1) : "";
+  if (url.origin !== String(expectedOrigin) || url.username || url.password
+      || url.pathname !== "/share/report" || url.search || !token) {
+    throw new Error("report handoff did not return a valid fragment capability URL");
+  }
+  return token;
+}
+
 function cookieValues(response) {
   const values = typeof response.headers.getSetCookie === "function"
     ? response.headers.getSetCookie()
@@ -81,6 +96,7 @@ export async function runAuthenticatedSmoke(rawOrigin, credentials, options = {}
   let projectCreateAttempted = false;
   let publicEstimateVerified = false;
   let projectCreateReplayVerified = false;
+  let reportHandoffVerified = false;
   const cleanupIds = new Set();
   const deletedIds = new Set();
   let primaryError = null;
@@ -88,24 +104,27 @@ export async function runAuthenticatedSmoke(rawOrigin, credentials, options = {}
   const marker = `Release canary ${crypto.randomUUID()}`;
 
   function safeRoute(path) {
-    return path.replace(/\/([0-9a-f]{8}-[0-9a-f-]{27})(?=\/|$)/giu, "/:projectId");
+    return path
+      .replace(/\/([0-9a-f]{8}-[0-9a-f-]{27})(?=\/|$)/giu, "/:projectId")
+      .replace(/\/report-shares\/[^/]+$/u, "/report-shares/:shareId");
   }
 
   async function call(path, init = {}, expected = [200]) {
     const startedAt = performance.now();
-    const method = init.method || "GET";
-    const headers = new Headers(init.headers || {});
-    if (jar.size && !headers.has("cookie")) headers.set("cookie", cookieHeader(jar));
-    if (init.body !== undefined && !(init.body instanceof FormData) && !headers.has("content-type")) {
+    const { anonymous = false, ...requestInit } = init;
+    const method = requestInit.method || "GET";
+    const headers = new Headers(requestInit.headers || {});
+    if (!anonymous && jar.size && !headers.has("cookie")) headers.set("cookie", cookieHeader(jar));
+    if (requestInit.body !== undefined && !(requestInit.body instanceof FormData) && !headers.has("content-type")) {
       headers.set("content-type", "application/json");
     }
     if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
       headers.set("origin", origin.origin);
       const effectiveCsrf = csrfToken || decodeURIComponent(jar.get(CSRF_COOKIE) || "");
-      if (effectiveCsrf && !path.startsWith("/api/auth/login")) headers.set("x-csrf-token", effectiveCsrf);
+      if (!anonymous && effectiveCsrf && !path.startsWith("/api/auth/login")) headers.set("x-csrf-token", effectiveCsrf);
     }
     const response = await fetch(new URL(path, origin), {
-      ...init,
+      ...requestInit,
       headers,
       redirect: "error",
       signal: AbortSignal.timeout(options.timeoutMs || REQUEST_TIMEOUT_MS),
@@ -139,6 +158,10 @@ export async function runAuthenticatedSmoke(rawOrigin, credentials, options = {}
       assert.equal(readiness?.capabilities?.reportFeedback, true, "authenticated canary requires report feedback to be ready");
       assert.equal(readiness?.checks?.authSchema, "current", "authenticated canary requires account-security schema to be current");
       assert.equal(readiness?.capabilities?.accountSecurity, true, "authenticated canary requires account security to be ready");
+      assert.equal(readiness?.checks?.reportShareSchema, "current", "authenticated canary requires report-share schema to be current");
+      assert.equal(readiness?.checks?.reportHandoffControl, "enabled", "authenticated canary requires the report-handoff control to be enabled");
+      assert.equal(readiness?.checks?.reportShareAbuseHashing, "configured", "authenticated canary requires report-share abuse hashing");
+      assert.equal(readiness?.capabilities?.reportHandoff, true, "authenticated canary requires professional report handoff to be ready");
     }
 
     const me = await call("/api/auth/me");
@@ -238,6 +261,49 @@ export async function runAuthenticatedSmoke(rawOrigin, credentials, options = {}
       const reportAfterFeedback = await call(`/api/projects/${encodedProjectId}/report`);
       assert.equal(JSON.stringify(reportAfterFeedback?.report), immutableReportJson, "canary feedback mutated the immutable report bytes");
       assert.equal(await reportSha256(reportAfterFeedback?.report), immutableReportSha256, "canary feedback changed the immutable report checksum");
+
+      const handoffSections = ["overview", "risks", "next_actions"];
+      const createdShare = await call(`/api/projects/${encodedProjectId}/report-shares`, {
+        method: "POST",
+        headers: { "idempotency-key": `release-report-share-${crypto.randomUUID()}` },
+        body: JSON.stringify({
+          projectRevision,
+          reportSchemaVersion,
+          expiresInDays: 1,
+          sections: handoffSections,
+        }),
+      }, [201]);
+      const reportShare = createdShare?.share;
+      const reportShareId = String(reportShare?.id || "");
+      assert.match(reportShareId, /^[0-9a-f-]{36}$/u, "report handoff did not return a valid share identifier");
+      assert.equal(reportShare?.projectRevision, projectRevision, "report handoff changed the project revision");
+      assert.equal(reportShare?.reportSchemaVersion, reportSchemaVersion, "report handoff changed the report schema version");
+      assert.deepEqual(reportShare?.sections, handoffSections, "report handoff changed the selected sections");
+      assert.equal(reportShare?.active, true, "new report handoff was not active");
+      const reportShareToken = reportShareCapabilityToken(reportShare?.url, origin.origin);
+
+      const publicShare = await call("/api/shared/report", {
+        method: "POST",
+        anonymous: true,
+        body: JSON.stringify({ token: reportShareToken }),
+      });
+      assert.deepEqual(Object.keys(publicShare?.share || {}).sort(), ["expiresAt", "sections"], "public handoff exposed owner metadata or report internals");
+      assert.equal(publicShare?.share?.expiresAt, reportShare?.expiresAt, "public handoff changed the share expiry");
+      assert.deepEqual(
+        Object.keys(publicShare?.share?.sections || {}).sort(),
+        ["nextActions", "overview", "risks"],
+        "public handoff did not enforce the selected-section allowlist",
+      );
+      assert.equal(JSON.stringify(publicShare).includes(projectId), false, "public handoff exposed the private project identifier");
+      assert.equal(JSON.stringify(publicShare).includes(reportShareId), false, "public handoff exposed the private share identifier");
+
+      await call(`/api/projects/${encodedProjectId}/report-shares/${encodeURIComponent(reportShareId)}`, { method: "DELETE" }, [204]);
+      await call("/api/shared/report", {
+        method: "POST",
+        anonymous: true,
+        body: JSON.stringify({ token: reportShareToken }),
+      }, [410]);
+      reportHandoffVerified = true;
     }
 
     const closedOrder = await call(`/api/projects/${encodedProjectId}/orders`, {
@@ -313,6 +379,7 @@ export async function runAuthenticatedSmoke(rawOrigin, credentials, options = {}
     projectCreateAttempted,
     publicEstimateVerified,
     projectCreateReplayVerified,
+    reportHandoffVerified,
     projectCreated: cleanupIds.size > 0,
     projectDeleted: cleanupIds.size > 0 && deletedIds.size === cleanupIds.size,
     canaryProjectIds: [...cleanupIds].sort(),
