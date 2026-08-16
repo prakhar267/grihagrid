@@ -1,6 +1,6 @@
 # GrihaGrid
 
-India-first concept-stage home-planning SaaS. GrihaGrid turns a plot brief into a city-adjusted construction range, a private saved project, a deterministic planning report with version-bound structured feedback, an optional Gemini-assisted planning brief, and Decision Compare: a versioned side-by-side choice between exactly two home briefs.
+India-first concept-stage home-planning SaaS. GrihaGrid turns a plot brief into a city-adjusted construction range, a private saved project, a deterministic planning report with version-bound structured feedback and selective professional handoff, an optional Gemini-assisted planning brief, and Decision Compare: a versioned side-by-side choice between exactly two home briefs.
 
 Production: <https://grihagrid.prakhargupta267.workers.dev>
 
@@ -11,11 +11,13 @@ The public site and free planning journey are live. The ₹999 Decision Compare 
 ```bash
 npm install
 npx wrangler d1 migrations apply grihagrid-db --local
-npx wrangler dev --local --port 8790 --ip 127.0.0.1 --var APP_ORIGIN:http://127.0.0.1:5173
+npx wrangler dev --local --port 8790 --ip 127.0.0.1 --var APP_ENV:test --var APP_ORIGIN:http://127.0.0.1:5173
 npm run dev
 ```
 
-The Vite frontend proxies `/api` to the local Worker on port 8790.
+The Vite frontend proxies `/api` to the local Worker on port 8790. Only the
+`test` environment accepts an HTTP loopback `APP_ORIGIN`, which keeps bearer
+handoff links testable locally without relaxing staging or production HTTPS.
 
 ## Checks
 
@@ -72,6 +74,11 @@ release cannot leave an unsafe migration queued for a later release.
 The deployment target is a Cloudflare Worker with static assets, D1 for application and immutable purchase records, KV for abuse controls, version metadata for release correlation, and a daily cleanup cron. Production and staging use separate Workers, D1 databases, KV namespaces, origins, and paid kill switches. Configure the bindings and secrets documented in `docs/backend-api.md` and `docs/payments.md`; normal releases then flow through the protected GitHub deployment workflow, with the runbook commands retained for verified break-glass recovery.
 
 The public calculator, authentication, private projects, deterministic report, structured Brief Check feedback, working Decision Compare, and dashboard work without payment-provider secrets. Authenticated customers can rotate a known password and revoke every older session through one generation-fenced D1 transaction; email-based recovery is still unavailable. See `docs/account-security.md`. The calculator is server-authoritative, validates and reconciles the exact public tuple, exposes its published calculation rule and current-market calibration limitation, omits account credentials, and never supplies a trusted estimate to project creation; see `docs/public-estimator.md`. Feedback is a separate owner-scoped record on one immutable report revision, contains no free text, and never rewrites report bytes; see `docs/report-feedback.md`. The optional AI brief uses a server-only `GEMINI_API_KEY`, sends only an allowlisted sanitized planning record, and fails closed behind atomic D1 spend limits and a per-project generation lease; see `docs/gemini-ai.md`. Decision Compare needs no upload storage. R2-backed uploads remain unavailable until R2 is activated. Live checkout remains closed until Razorpay live-mode/KYC and webhook reconciliation, receipts/tax/refund operations, customer recovery/deletion, monitoring, and rollback evidence are all proven.
+
+Professional Handoff creates a revocable, expiring bearer link to only the
+owner-selected sections of one immutable schema-v2 report. It exposes no account
+or project workspace and never represents professional approval; see
+`docs/report-handoff.md`.
 
 The estimator-to-account journey also uses a stable, user-scoped project-create
 idempotency key: a lost successful response replays the same canonical project

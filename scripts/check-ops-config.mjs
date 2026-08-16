@@ -10,6 +10,7 @@ const files = Object.freeze({
   deployWorkflow: new URL("../.github/workflows/deploy.yml", import.meta.url),
   authenticatedSmoke: new URL("./authenticated-smoke.mjs", import.meta.url),
   releaseDbEvidence: new URL("./release-db-evidence.mjs", import.meta.url),
+  worker: new URL("../worker/index.js", import.meta.url),
 });
 
 function environmentBlock(source, name) {
@@ -41,7 +42,7 @@ function workflowStep(source, name) {
 }
 
 export async function checkOpsConfig() {
-  const [wrangler, packageText, gitignore, ci, smokeWorkflow, deployWorkflow, authenticatedSmoke, releaseDbEvidence] = await Promise.all(
+  const [wrangler, packageText, gitignore, ci, smokeWorkflow, deployWorkflow, authenticatedSmoke, releaseDbEvidence, worker] = await Promise.all(
     Object.values(files).map((file) => readFile(file, "utf8")),
   );
   const packageJson = JSON.parse(packageText);
@@ -173,15 +174,32 @@ export async function checkOpsConfig() {
   assert.match(authenticatedSmoke, /LEGACY_WORKER_COMPAT === "true"/u, "the authenticated CLI must expose reviewed legacy-Worker mode");
   assert.match(authenticatedSmoke, /canaryProjectIds: \[\.\.\.cleanupIds\]\.sort\(\)/u, "authenticated smoke evidence must identify every synthetic project");
   assert.match(authenticatedSmoke, /primaryError\.releaseEvidence = result/u, "failed authenticated canaries must still expose cleanup evidence");
+  assert.match(authenticatedSmoke, /readiness\?\.checks\?\.reportShareSchema, "current"/u, "the authenticated canary must require current report-share schema");
+  assert.match(authenticatedSmoke, /readiness\?\.capabilities\?\.reportHandoff, true/u, "the authenticated canary must require report handoff readiness");
+  assert.match(authenticatedSmoke, /call\("\/api\/shared\/report", \{[\s\S]*?anonymous: true,[\s\S]*?JSON\.stringify\(\{ token: reportShareToken \}\)/u, "the authenticated canary must redeem report handoffs anonymously through the constant POST route");
+  assert.match(authenticatedSmoke, /\[410\]/u, "the authenticated canary must prove revoked report handoffs are gone");
   assert.match(releaseDbEvidence, /buildCanaryResidueSql/u, "release evidence must build an exact canary-ID residue query");
-  for (const table of ["projects", "project_revisions", "reports", "project_revision_reports", "report_feedback"]) {
+  for (const table of ["projects", "project_revisions", "reports", "project_revision_reports", "report_feedback", "report_shares"]) {
     assert.match(
       releaseDbEvidence,
       new RegExp(`FROM ${table} WHERE (?:id|project_id) IN \\(\\$\\{ids\\}\\)`, "u"),
       `canary residue proof must query exact IDs in ${table}`,
     );
   }
-  assert.match(releaseDbEvidence, /\["projects", "project_revisions", "reports", "revision_reports", "feedback"\]/u, "canary residue verification must fail closed on every project-owned report and revision table");
+  assert.match(releaseDbEvidence, /\["projects", "project_revisions", "reports", "revision_reports", "feedback", "report_shares"\]/u, "canary residue verification must fail closed on every project-owned report and revision table");
+  for (const object of [
+    "table:report_shares",
+    "table:report_share_read_counters",
+    "index:idx_report_shares_owner_created",
+    "index:idx_report_shares_expiry",
+    "index:idx_report_share_read_counters_updated",
+    "trigger:report_share_sections_insert_guard",
+    "trigger:report_share_identity_immutable",
+    "trigger:archived_report_share_insert_guard",
+    "trigger:report_share_active_limit_insert",
+  ]) {
+    assert.match(releaseDbEvidence, new RegExp(`"${object}"`, "u"), `release evidence must require ${object}`);
+  }
   assert.match(releaseDbEvidence, /projectIdsSha256/u, "release artifacts must retain only a digest of canary project IDs");
   for (const field of [
     "invalid_input_rows",
@@ -206,7 +224,7 @@ export async function checkOpsConfig() {
     "protected-count evidence must not exceed D1's compound SELECT term limit",
   );
   assert.equal(
-    (deployWorkflow.match(/WITH target_tables\(table_name\) AS \(VALUES \('users'\),\('sessions'\),\('password_change_attempt_counters'\),\('projects'\),\('orders'\),\('project_revisions'\),\('report_feedback'\)\) SELECT target_tables\.table_name,columns\.name FROM target_tables JOIN pragma_table_info\(target_tables\.table_name\) AS columns/gu) || []).length,
+    (deployWorkflow.match(/WITH target_tables\(table_name\) AS \(VALUES \('users'\),\('sessions'\),\('password_change_attempt_counters'\),\('report_share_read_counters'\),\('projects'\),\('orders'\),\('project_revisions'\),\('report_feedback'\),\('report_shares'\)\) SELECT target_tables\.table_name,columns\.name FROM target_tables JOIN pragma_table_info\(target_tables\.table_name\) AS columns/gu) || []).length,
     2,
     "both schema-column inventories must use one D1-compatible SELECT",
   );
@@ -216,6 +234,25 @@ export async function checkOpsConfig() {
     "schema-column evidence must not exceed D1's compound SELECT term limit",
   );
   assert.equal((deployWorkflow.match(/LEGACY_WORKER_COMPAT:\s*"true"/gu) || []).length, 2, "both environments must rehearse the previous Worker with the current harness");
+  assert.equal((deployWorkflow.match(/0016_report_handoff_links\.sql/gu) || []).length, 2, "both environments must detect a pending report-handoff migration");
+  assert.equal((deployWorkflow.match(/REPORT_SHARE_MIGRATION_PENDING=/gu) || []).length, 2, "both environments must prove both new report-share tables start empty");
+  assert.equal(
+    (deployWorkflow.match(/SELECT COUNT\(\*\) AS row_count FROM report_share_read_counters;/gu) || []).length,
+    2,
+    "both environments must count the new hashed read-counter table after migration",
+  );
+  assert.match(releaseDbEvidence, /reportShareReadCounterRows/u, "post-migration evidence must emit the hashed read-counter count");
+  assert.match(releaseDbEvidence, /new report_share_read_counters table must start empty/u, "the 0016 release gate must reject a pre-populated hashed read-counter table");
+  assert.match(
+    worker,
+    /DELETE FROM report_shares WHERE expires_at<datetime\('now','-90 days'\) OR \(revoked_at IS NOT NULL AND revoked_at<datetime\('now','-90 days'\)\)/u,
+    "scheduled hygiene must delete only report shares that have been expired or revoked for 90 days",
+  );
+  assert.match(
+    worker,
+    /DELETE FROM report_share_read_counters WHERE updated_at<datetime\('now','-2 days'\)/u,
+    "scheduled hygiene must bound hashed public-report admission counters to two days",
+  );
   assert.doesNotMatch(deployWorkflow, /git show[^\n]*authenticated-smoke\.mjs/u, "rollback rehearsal must not execute the previous commit's harness");
   assert.match(deployWorkflow, /wait-for-release\.mjs/u, "releases must wait for consecutive exact-version smoke samples");
   assert.match(deployWorkflow, /Reconfirm the exact staging version/u, "production must reject staging drift after its hold");
@@ -266,6 +303,8 @@ export async function checkOpsConfig() {
       "post-migration-projects.json",
       "post-migration-reports.json",
       "post-migration-feedback-count.json",
+      "post-migration-report-share-count.json",
+      "post-migration-report-share-read-counter-count.json",
       "rollback-residue.sql",
       "rollback-residue.json",
       "canary-residue.sql",

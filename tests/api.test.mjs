@@ -68,7 +68,19 @@ test("public Decision Compare projection excludes owner and snapshot internals",
 
 test("share origins are canonical HTTPS URLs and sensitive routes fail closed without abuse control", async () => {
   assert.equal(__test.canonicalAppOrigin({ APP_ORIGIN: "https://app.example.test" }), "https://app.example.test");
+  assert.equal(
+    __test.canonicalAppOrigin({ APP_ENV: "test", APP_ORIGIN: "http://127.0.0.1:8791" }),
+    "http://127.0.0.1:8791",
+  );
   assert.throws(() => __test.canonicalAppOrigin({ APP_ORIGIN: "http://app.example.test" }), /not configured/u);
+  assert.throws(
+    () => __test.canonicalAppOrigin({ APP_ENV: "test", APP_ORIGIN: "http://app.example.test" }),
+    /not configured/u,
+  );
+  assert.throws(
+    () => __test.canonicalAppOrigin({ APP_ENV: "staging", APP_ORIGIN: "http://127.0.0.1:8791" }),
+    /not configured/u,
+  );
   assert.throws(() => __test.canonicalAppOrigin({ APP_ORIGIN: "https://app.example.test/path" }), /not configured/u);
 
   const shared = await worker.fetch(new Request("https://example.test/api/shared/decision-compare/abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNO"), {

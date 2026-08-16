@@ -37,7 +37,9 @@ class PaymentD1 {
     const normalized = sql.replace(/\s+/gu, " ").trim();
     if (normalized.startsWith("DELETE FROM ai_generation_")
       || normalized.startsWith("DELETE FROM password_change_attempt_counters")
-      || normalized.startsWith("DELETE FROM family_alignment_rooms")) this.maintenanceStatements.push(normalized);
+      || normalized.startsWith("DELETE FROM family_alignment_rooms")
+      || normalized.startsWith("DELETE FROM report_shares")
+      || normalized.startsWith("DELETE FROM report_share_read_counters")) this.maintenanceStatements.push(normalized);
     return new PaymentStatement(this, normalized);
   }
 
@@ -287,6 +289,8 @@ class PaymentStatement {
     if (this.sql.startsWith("DELETE FROM password_change_attempt_counters WHERE updated_at")) return { success: true };
     if (this.sql.startsWith("DELETE FROM decision_shares WHERE")) return { success: true };
     if (this.sql.startsWith("DELETE FROM family_alignment_rooms WHERE")) return { success: true };
+    if (this.sql.startsWith("DELETE FROM report_shares WHERE")) return { success: true };
+    if (this.sql.startsWith("DELETE FROM report_share_read_counters WHERE")) return { success: true };
     if (this.sql.startsWith("DELETE FROM product_event_aggregates WHERE")) return { success: true };
     if (this.sql.startsWith("INSERT INTO payment_webhook_events")) {
       const [provider_event_id, event_type, payload_sha256, order_id, provider_payment_id] = this.values;
@@ -835,6 +839,18 @@ test("daily maintenance expires stale checkout links and covers new retention ta
   assert.equal(DB.maintenanceStatements.some((sql) => sql.startsWith("DELETE FROM ai_generation_counters")), true);
   assert.equal(DB.maintenanceStatements.some((sql) => sql.startsWith("DELETE FROM password_change_attempt_counters")), true);
   assert.equal(DB.maintenanceStatements.some((sql) => sql.startsWith("DELETE FROM family_alignment_rooms")), true);
+  assert.equal(
+    DB.maintenanceStatements.includes(
+      "DELETE FROM report_shares WHERE expires_at<datetime('now','-90 days') OR (revoked_at IS NOT NULL AND revoked_at<datetime('now','-90 days'))",
+    ),
+    true,
+  );
+  assert.equal(
+    DB.maintenanceStatements.includes(
+      "DELETE FROM report_share_read_counters WHERE updated_at<datetime('now','-2 days')",
+    ),
+    true,
+  );
 });
 
 test("a late capture atomically supersedes an unpaid replacement checkout", async () => {

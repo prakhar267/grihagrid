@@ -28,7 +28,9 @@ are only streamed after a D1 ownership check.
    storage_unavailable` until `FILES` exists.
 4. Optionally set `APP_ORIGIN` or comma-separated `ALLOWED_ORIGINS`. The request
    URL's origin is always trusted. Production should normally serve the UI and
-   API from the same origin.
+   API from the same origin. Canonical bearer URLs require HTTPS in every
+   deployed environment; only `APP_ENV=test` may use exact HTTP loopback hosts
+   (`127.0.0.1`, `localhost`, or `[::1]`) for local end-to-end testing.
 
 Decision Compare does not require R2. Paid checkout additionally requires
 Razorpay key ID/secret, webhook secret, KV, an exact HTTPS `APP_ORIGIN`, and all
@@ -111,7 +113,7 @@ reachable, the required schema is present, and the KV abuse-control binding
 exists. The response separately reports Gemini planning, private upload, and
 paid-checkout capabilities, including `authSchema`, `decisionSchema`,
 `paymentSchema`, `revisionSchema`, `reportFeedbackSchema`, and
-`projectCreationSchema`.
+`projectCreationSchema`, plus `reportShareSchema`.
 `authSchema=current` requires migration 0015's account/session
 generation-and-revision columns, password-change timestamp, atomic password-
 attempt table/index and both D1 authentication-state guards.
@@ -127,6 +129,8 @@ its immutable guards, the pre-existing `projects_input_revision_guard`, and KV
 abuse control are ready; `capabilities.reportFeedback` is true only when the
 separate feedback table, its owner/archive guards, the project-input
 allowlist/account ceiling, and KV abuse control are ready;
+`capabilities.reportHandoff` is true only when `reportShareSchema=current`, the
+four report-share guards and both indexes exist, and KV abuse control is ready;
 unavailable optional capabilities do not
 make the free product unready. Returns `503 status=not_ready` if a required
 free-product dependency is absent or unhealthy.
@@ -857,6 +861,75 @@ delivery phases, project-sensitive risks, next actions, an input hash, and the
 concept-stage disclaimer. It is intentionally deterministic product logic, not
 a statutory drawing, engineering design, contractor quote, or permit approval.
 
+### Professional Handoff report sharing
+
+- `GET /api/projects/:projectId/report-shares` lists at most 50 owner-scoped
+  metadata records, ordering every active link first (there can be at most five)
+  and then recent closed history so no live link becomes undiscoverable or
+  irrevocable. It never returns a bearer token, token hash, content hash, request
+  hash, idempotency digest, or reusable URL.
+- `POST /api/projects/:projectId/report-shares` requires trusted origin, session,
+  owner scope, CSRF, KV abuse control, an active project and a bounded
+  `Idempotency-Key`. The exact body is:
+
+  ```json
+  {
+    "projectRevision": 3,
+    "reportSchemaVersion": 2,
+    "expiresInDays": 7,
+    "sections": ["overview", "cost", "risks", "next_actions"]
+  }
+  ```
+
+  Expiry must be 1, 7, or 30 days. `sections` contains one to six unique values
+  from `overview`, `programme`, `cost`, `timeline`, `risks`, and
+  `next_actions`. The source must be that project's exact immutable schema-v2
+  revision report. First success is `201 { share }`; `share` contains bounded
+  owner metadata and the one-time `/share/report#<token>` URL. Exact replay is
+  `200` with the same metadata and `idempotentReplay: true`, but no token or URL.
+  Reusing the key for another request is `409`. At most five active links may
+  exist for one project.
+- `DELETE /api/projects/:projectId/report-shares/:shareId` is owner-scoped,
+  trusted-origin and CSRF-protected. It revokes monotonically and returns empty
+  `204`; an exact repeat remains `204`.
+- Public `POST /api/shared/report` requires no session, accepts exactly
+  `{ "token": "<43-character base64url capability>" }`, and returns only:
+
+  ```json
+  {
+    "share": {
+      "expiresAt": "2026-08-23 12:00:00",
+      "report": {
+        "schemaVersion": 2,
+        "generatedAt": "2026-08-16 12:00:00",
+        "sections": {
+          "overview": {},
+          "cost": {},
+          "risks": [],
+          "nextActions": []
+        }
+      }
+    }
+  }
+  ```
+
+  Only requested sections appear; `next_actions` maps to `nextActions` in the
+  public report shape. Missing/malformed tokens are `404`; expired or revoked
+  records are `410`. Reads are no-store and increment only the bounded server-side
+  access counter. KV provides a fail-closed perimeter and a strongly consistent
+  D1 counter admits at most 120 requests per hashed IP/hour before the share
+  lookup, including under concurrency. The raw IP is not stored. The customer
+  URL places the capability in
+  a fragment, which browsers do not send over HTTP; the page transfers it only
+  in an anonymous, credential-free POST body to the constant API path. The
+  document is `no-store`, `noindex,nofollow,noarchive`, robots-excluded and
+  `no-referrer`; printing scrubs the fragment. Invocation logs remain off as
+  defense in depth, and operational logs use only `/api/shared/report`.
+
+The link does not request or record professional acceptance and never changes
+the immutable report. Full security, schema, retention, canary and rollback
+requirements are in [report-handoff.md](report-handoff.md).
+
 ### `GET|PUT /api/projects/:projectId/revisions/:revision/reports/:schemaVersion/feedback`
 
 The owner-scoped GET returns `{ feedback: null }` or the one response bound to
@@ -949,7 +1022,8 @@ Requires CSRF. Removes the private R2 object and its D1 metadata. Returns `204`.
 
 The configured daily cron deletes expired D1 sessions, expires stale checkout
 links, removes expired AI generation leases, prunes old AI counters, removes
-shares 90 days after expiry/revocation, and removes product-event aggregates
+Decision, Family Alignment, and Professional Handoff records 90 days after
+expiry/revocation, and removes product-event aggregates
 older than 400 days. The Worker applies CSP, HSTS, frame denial, MIME sniffing
 protection, referrer policy, permissions policy, and no-store JSON defaults to
 every API response.

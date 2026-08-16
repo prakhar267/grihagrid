@@ -323,10 +323,10 @@ test("report feedback is exact, private, immutable-report-safe, and observable o
 
     const feedbackMigration = migrationFile(13);
     assert.equal(path.basename(feedbackMigration), "0013_report_feedback_and_intake_hardening.sql");
-    requireD1Success(d1(stateDirectory, "migrate"), "migrations 0013 through 0015 failed");
+    requireD1Success(d1(stateDirectory, "migrate"), "migrations 0013 through 0016 failed");
     const migrationLedger = query(stateDirectory, "SELECT id,name FROM d1_migrations ORDER BY id", "migration ledger query failed");
-    assert.equal(migrationLedger.length, 15);
-    assert.equal(migrationLedger.at(-1)?.name, "0015_account_security.sql");
+    assert.equal(migrationLedger.length, 16);
+    assert.equal(migrationLedger.at(-1)?.name, "0016_report_handoff_links.sql");
     const schemaObjects = query(
       stateDirectory,
       `SELECT type,name FROM sqlite_master WHERE name IN (
@@ -358,8 +358,10 @@ test("report feedback is exact, private, immutable-report-safe, and observable o
     assert.equal(readiness.response.status, 200, JSON.stringify(readiness.payload));
     assert.equal(readiness.payload.status, "ready");
     assert.equal(readiness.payload.checks.reportFeedbackSchema, "current");
+    assert.equal(readiness.payload.checks.reportShareSchema, "current");
     assert.equal(readiness.payload.checks.projectCreationSchema, "current");
     assert.equal(readiness.payload.capabilities.reportFeedback, true);
+    assert.equal(readiness.payload.capabilities.reportHandoff, true);
 
     const owner = await register(server.origin, "primary");
     const other = await register(server.origin, "other");

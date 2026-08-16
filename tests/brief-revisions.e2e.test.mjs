@@ -478,10 +478,10 @@ test("Brief Check revisions are truthful, immutable, owner-scoped, and race safe
   let server = null;
   const capturedLogs = [];
   try {
-    requireD1Success(d1(stateDirectory, "migrate"), "fresh 0001-0015 migration chain failed");
+    requireD1Success(d1(stateDirectory, "migrate"), "fresh 0001-0016 migration chain failed");
     const applied = rowsFor(stateDirectory, "SELECT name FROM d1_migrations ORDER BY id", "migration ledger query failed");
-    assert.equal(applied.length, 15, JSON.stringify(applied));
-    assert.equal(applied.at(-1)?.name, "0015_account_security.sql");
+    assert.equal(applied.length, 16, JSON.stringify(applied));
+    assert.equal(applied.at(-1)?.name, "0016_report_handoff_links.sql");
 
     server = await startWorker(stateDirectory, assetsDirectory, port);
     const readiness = await call(server.origin, "/api/readiness");
@@ -492,22 +492,24 @@ test("Brief Check revisions are truthful, immutable, owner-scoped, and race safe
       readiness.payload.checks,
       [
         "database", "schema", "rateLimit", "aiSchema", "aiAbuseControl", "decisionSchema",
-        "paymentSchema", "familyAlignmentSchema", "archiveSafetySchema", "revisionSchema", "reportFeedbackSchema", "projectCreationSchema", "authSchema", "ai",
+        "paymentSchema", "familyAlignmentSchema", "archiveSafetySchema", "revisionSchema", "reportFeedbackSchema", "reportShareSchema", "projectCreationSchema", "authSchema", "ai",
         "privateStorage", "acceptingPaidPlans",
       ],
       "readiness.checks",
     );
     assertExactKeys(
       readiness.payload.capabilities,
-      ["freePlanning", "privateUploads", "paidCheckout", "paidFulfillment", "aiPlanningBrief", "decisionCompare", "familyAlignment", "briefCheck", "reportFeedback", "accountSecurity"],
+      ["freePlanning", "privateUploads", "paidCheckout", "paidFulfillment", "aiPlanningBrief", "decisionCompare", "familyAlignment", "briefCheck", "reportFeedback", "reportHandoff", "accountSecurity"],
       "readiness.capabilities",
     );
     assert.equal(readiness.payload.checks.revisionSchema, "current");
     assert.equal(readiness.payload.checks.reportFeedbackSchema, "current");
+    assert.equal(readiness.payload.checks.reportShareSchema, "current");
     assert.equal(readiness.payload.checks.projectCreationSchema, "current");
     assert.equal(readiness.payload.checks.authSchema, "current");
     assert.equal(readiness.payload.capabilities.briefCheck, true);
     assert.equal(readiness.payload.capabilities.reportFeedback, true);
+    assert.equal(readiness.payload.capabilities.reportHandoff, true);
     assert.equal(readiness.payload.capabilities.accountSecurity, true);
     assert.equal(readiness.payload.capabilities.paidCheckout, false);
     assert.equal(readiness.payload.capabilities.paidFulfillment, false);

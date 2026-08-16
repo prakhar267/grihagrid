@@ -970,7 +970,7 @@ test("AI provider configuration fails closed while model fallback is stable", as
 
 test("readiness reports AI capability without exposing the configured secret", async () => {
   const readinessDb = (counts = {
-    count: 23,
+    count: 25,
     ai_brief_count: 1,
     ai_abuse_count: 2,
     decision_table_count: 6,
@@ -978,6 +978,7 @@ test("readiness reports AI capability without exposing the configured secret", a
     family_alignment_count: 2,
     revision_table_count: 3,
     report_feedback_count: 1,
+    report_share_count: 2,
   }, withBatch = true, staleDecisionColumns = false, stalePaymentColumns = false, staleFamilyColumns = false, staleFamilyObjects = false, staleArchiveSafety = false, staleRevisionObjects = false, staleProjectCreation = false) => ({
     ...(withBatch ? { batch: async () => [] } : {}),
     prepare(sql) {
@@ -996,6 +997,9 @@ test("readiness reports AI capability without exposing the configured secret", a
           }
           if (sql.includes("AS trigger_count") && sql.includes("report_feedback_insert_guard")) {
             return { trigger_count: 5, index_count: 2 };
+          }
+          if (sql.includes("AS trigger_count") && sql.includes("report_share_sections_insert_guard")) {
+            return { trigger_count: 4, index_count: 3 };
           }
           if (sql.includes("idx_projects_user_creation_key")) {
             return { count: staleProjectCreation ? 0 : 1 };
@@ -1028,11 +1032,13 @@ test("readiness reports AI capability without exposing the configured secret", a
   assert.equal(body.checks.archiveSafetySchema, "current");
   assert.equal(body.checks.revisionSchema, "current");
   assert.equal(body.checks.reportFeedbackSchema, "current");
+  assert.equal(body.checks.reportShareSchema, "current");
   assert.equal(body.checks.projectCreationSchema, "current");
   assert.equal(body.capabilities.aiPlanningBrief, true);
   assert.equal(body.capabilities.familyAlignment, true);
   assert.equal(body.capabilities.briefCheck, true);
   assert.equal(body.capabilities.reportFeedback, true);
+  assert.equal(body.capabilities.reportHandoff, true);
   assert.equal(JSON.stringify(body).includes(API_KEY), false);
 
   const staleDecision = await worker.fetch(request("/api/readiness"), {

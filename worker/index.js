@@ -12,8 +12,9 @@ const SECURITY_HEADERS = {
   "content-security-policy": "default-src 'self'; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   "cross-origin-opener-policy": "same-origin",
   "permissions-policy": "camera=(), microphone=(), geolocation=(), payment=()",
-  // Decision share links contain a bearer secret in the path. Never forward a
-  // document URL to another request, including same-origin asset requests.
+  // Bearer shares must never forward their document URL to another request.
+  // Professional Handoff keeps its capability in the fragment as an
+  // additional boundary, while older share surfaces still use path tokens.
   "referrer-policy": "no-referrer",
   "strict-transport-security": "max-age=31536000; includeSubDomains",
   "x-content-type-options": "nosniff",
@@ -144,6 +145,11 @@ const FAMILY_ALIGNMENT_EVENT_NAMES = new Set([
   "family_alignment_review_opened",
   "family_alignment_response_submitted",
 ]);
+const REPORT_SHARE_EVENT_NAMES = new Set([
+  "report_handoff_link_created",
+  "report_handoff_opened",
+  "report_handoff_link_revoked",
+]);
 const PRODUCT_EVENT_SURFACES = new Set(["project_home", "owner_compare", "family_review", "checkout", "orders", "artifact", "public_share", "unknown"]);
 const PRODUCT_EVENT_OUTCOMES = new Set(["success", "failure", "saved", "preview", "cancelled", "unknown"]);
 const FAMILY_ALIGNMENT_ROLES = new Set(["spouse", "parent", "sibling", "advisor", "other"]);
@@ -152,6 +158,19 @@ const FAMILY_ALIGNMENT_CONFIDENCE = new Set(["high", "medium", "low"]);
 const FAMILY_ALIGNMENT_REASONS = new Set(["budget", "space", "parking", "accessibility", "future_expansion", "construction_complexity"]);
 const FAMILY_ALIGNMENT_RESPONSE_LIMIT = 5;
 const FAMILY_ALIGNMENT_HISTORY_LIMIT = 20;
+const REPORT_SHARE_SECTIONS = Object.freeze([
+  "overview",
+  "programme",
+  "cost",
+  "timeline",
+  "risks",
+  "next_actions",
+]);
+const REPORT_SHARE_SECTION_SET = new Set(REPORT_SHARE_SECTIONS);
+const REPORT_SHARE_HISTORY_LIMIT = 50;
+const REPORT_SHARE_ACTIVE_LIMIT = 5;
+const REPORT_SHARE_READ_LIMIT = 120;
+const REPORT_SHARE_READ_WINDOW_SECONDS = 60 * 60;
 const PROJECT_REVISION_HISTORY_LIMIT = 50;
 const PROJECT_REVISION_DEFAULT_LIMIT = 20;
 const REPORT_FEEDBACK_OUTCOMES = new Set(["helpful", "unclear", "needs_review"]);
@@ -552,6 +571,22 @@ async function familyAlignmentEvent(db, eventName, surface, outcome = "success")
   }
 }
 
+async function reportShareEvent(db, eventName, surface) {
+  if (!REPORT_SHARE_EVENT_NAMES.has(eventName)) return;
+  try {
+    await db.prepare(
+      `INSERT INTO product_event_aggregates
+         (event_day,event_name,surface,outcome,event_count,updated_at)
+       VALUES (date('now'),?,?, 'success',1,?)
+       ON CONFLICT(event_day,event_name,surface,outcome)
+       DO UPDATE SET event_count=event_count+1,updated_at=excluded.updated_at`,
+    ).bind(eventName, surface, sqliteTimestamp()).run();
+  } catch {
+    // Aggregate measurement is deliberately ancillary to secure link actions.
+    console.error("Professional Handoff aggregate recording failed");
+  }
+}
+
 async function publicEstimatorBriefStarted(db, request) {
   if (request.headers.get("x-grihagrid-entry-point") !== "public_estimator") return;
   try {
@@ -597,6 +632,35 @@ async function acquirePasswordChangeAdmission(db, userId, date = new Date(), lim
          AND password_change_attempt_counters.request_count<password_change_attempt_counters.limit_count
        RETURNING request_count`,
     ).bind(userId, windowStart, limit, now).first();
+  } catch {
+    throw new HttpError(503, "abuse controls are temporarily unavailable", "abuse_control_unavailable");
+  }
+  if (!admitted) throw new HttpError(429, "too many attempts; please try again later", "rate_limited");
+}
+
+async function acquireReportShareReadAdmission(db, request, date = new Date(), limit = REPORT_SHARE_READ_LIMIT) {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > REPORT_SHARE_READ_LIMIT
+      || !(date instanceof Date) || Number.isNaN(date.valueOf())) {
+    throw new HttpError(503, "abuse controls are temporarily unavailable", "abuse_control_unavailable");
+  }
+  const windowMs = REPORT_SHARE_READ_WINDOW_SECONDS * 1000;
+  const windowStart = sqliteTimestamp(new Date(Math.floor(date.getTime() / windowMs) * windowMs));
+  const now = sqliteTimestamp(date);
+  const subjectHash = await digestHex(`report-share-read:${requestIp(request)}`);
+  let admitted;
+  try {
+    admitted = await db.prepare(
+      `INSERT INTO report_share_read_counters
+         (subject_hash,window_start,request_count,limit_count,updated_at)
+       VALUES (?,?,1,?,?)
+       ON CONFLICT(subject_hash,window_start) DO UPDATE SET
+         request_count=report_share_read_counters.request_count+1,
+         limit_count=excluded.limit_count,
+         updated_at=excluded.updated_at
+       WHERE report_share_read_counters.limit_count=excluded.limit_count
+         AND report_share_read_counters.request_count<report_share_read_counters.limit_count
+       RETURNING request_count`,
+    ).bind(subjectHash, windowStart, limit, now).first();
   } catch {
     throw new HttpError(503, "abuse controls are temporarily unavailable", "abuse_control_unavailable");
   }
@@ -730,7 +794,10 @@ function canonicalAppOrigin(env) {
   const configured = String(env.APP_ORIGIN || "").split(",", 1)[0].trim();
   try {
     const parsed = new URL(configured);
-    if (parsed.protocol !== "https:" || parsed.username || parsed.password
+    const loopbackTestOrigin = String(env.APP_ENV || "").trim() === "test"
+      && parsed.protocol === "http:"
+      && new Set(["127.0.0.1", "localhost", "[::1]"]).has(parsed.hostname);
+    if ((parsed.protocol !== "https:" && !loopbackTestOrigin) || parsed.username || parsed.password
       || parsed.pathname !== "/" || parsed.search || parsed.hash) throw new Error("invalid origin");
     return parsed.origin;
   } catch {
@@ -4811,6 +4878,394 @@ async function updateDecisionProgress(request, env, orderId) {
   return json({ progress: await readDecisionProgress(db, row.snapshot_id) });
 }
 
+function reportShareFailure(message = "shared report is unavailable") {
+  console.error(`Professional Handoff projection failed: ${message}`);
+  return new HttpError(500, "shared report is unavailable", "report_share_unavailable");
+}
+
+function reportShareText(value, label, maximum = 1_000) {
+  if (typeof value !== "string" || !value.trim() || value.length > maximum
+      || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/u.test(value)) {
+    throw reportShareFailure(`shared report ${label} is invalid`);
+  }
+  return value;
+}
+
+function reportShareNumber(value, label, maximum, integer = false) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > maximum
+      || (integer && !Number.isInteger(value))) {
+    throw reportShareFailure(`shared report ${label} is invalid`);
+  }
+  return value;
+}
+
+function reportShareTextList(value, label, maximumItems = 16, maximumLength = 1_000) {
+  if (!Array.isArray(value) || value.length < 1 || value.length > maximumItems) {
+    throw reportShareFailure(`shared report ${label} is invalid`);
+  }
+  return value.map((item, index) => reportShareText(item, `${label} item ${index + 1}`, maximumLength));
+}
+
+function normalizeReportShareSections(value, code = "invalid_report_share") {
+  if (!Array.isArray(value) || value.length < 1 || value.length > REPORT_SHARE_SECTIONS.length
+      || new Set(value).size !== value.length
+      || value.some((section) => typeof section !== "string" || !REPORT_SHARE_SECTION_SET.has(section))) {
+    throw new HttpError(400, "sections must contain one to six unique supported report sections", code);
+  }
+  return REPORT_SHARE_SECTIONS.filter((section) => value.includes(section));
+}
+
+function reportShareSectionsFromRow(row) {
+  const sections = parseStoredJson(row.sections_json, null);
+  try {
+    return normalizeReportShareSections(sections, "report_share_invalid");
+  } catch {
+    throw reportShareFailure("stored report share sections are invalid");
+  }
+}
+
+function reportShareMetadata(row, origin = null, token = null) {
+  const expiresAt = Date.parse(`${String(row.expires_at).replace(" ", "T")}Z`);
+  if (!Number.isFinite(expiresAt)) throw reportShareFailure("stored report share expiry is invalid");
+  return {
+    id: row.id,
+    projectRevision: Number(row.project_revision),
+    reportSchemaVersion: Number(row.report_schema_version),
+    sections: reportShareSectionsFromRow(row),
+    expiresAt: row.expires_at,
+    revokedAt: row.revoked_at || null,
+    active: !row.revoked_at && expiresAt > Date.now(),
+    accessCount: Number(row.access_count || 0),
+    lastAccessedAt: row.last_accessed_at || null,
+    createdAt: row.created_at,
+    ...(origin && token ? { url: `${origin}/share/report#${token}` } : {}),
+  };
+}
+
+function normalizePublicReportShareRequest(body) {
+  if (!body || typeof body !== "object" || Array.isArray(body)
+      || Object.keys(body).length !== 1 || !Object.hasOwn(body, "token")) {
+    throw new HttpError(404, "shared report not found", "report_share_not_found");
+  }
+  if (typeof body.token !== "string" || !/^[A-Za-z0-9_-]{43}$/u.test(body.token)) {
+    throw new HttpError(404, "shared report not found", "report_share_not_found");
+  }
+  return body.token;
+}
+
+function normalizeReportShareRequest(body) {
+  const fields = ["projectRevision", "reportSchemaVersion", "expiresInDays", "sections"];
+  if (!body || typeof body !== "object" || Array.isArray(body)
+      || Object.keys(body).length !== fields.length
+      || fields.some((field) => !Object.hasOwn(body, field))) {
+    throw new HttpError(400, "report share must contain exactly projectRevision, reportSchemaVersion, expiresInDays, and sections", "invalid_report_share");
+  }
+  if (typeof body.projectRevision !== "number" || !Number.isInteger(body.projectRevision) || body.projectRevision < 1) {
+    throw new HttpError(400, "projectRevision must be a positive integer", "invalid_report_share");
+  }
+  if (typeof body.reportSchemaVersion !== "number" || body.reportSchemaVersion !== REPORT_VERSION) {
+    throw new HttpError(400, `reportSchemaVersion must be ${REPORT_VERSION}`, "invalid_report_share");
+  }
+  if (typeof body.expiresInDays !== "number" || ![1, 7, 30].includes(body.expiresInDays)) {
+    throw new HttpError(400, "report share expiry must be 1, 7, or 30 days", "invalid_report_share_expiry");
+  }
+  return {
+    projectRevision: body.projectRevision,
+    reportSchemaVersion: body.reportSchemaVersion,
+    expiresInDays: body.expiresInDays,
+    sections: normalizeReportShareSections(body.sections),
+  };
+}
+
+function validatedReportShareSource(row) {
+  const report = parseStoredJson(row?.content_json, null);
+  if (!report || typeof report !== "object" || Array.isArray(report)
+      || report.id !== row.source_report_id
+      || report.projectId !== row.project_id
+      || Number(report.version) !== REPORT_VERSION
+      || Number(row.report_schema_version) !== REPORT_VERSION
+      || report.inputHash !== row.input_hash
+      || report.generatedAt !== row.generated_at) {
+    throw reportShareFailure("shared report identity is invalid");
+  }
+  return report;
+}
+
+function publicReportShareProjection(report, sections) {
+  const projected = {};
+  for (const section of sections) {
+    if (section === "overview") {
+      const check = report.briefCheck;
+      if (!check || typeof check !== "object" || Array.isArray(check) || !BRIEF_CHECK_STATUSES.has(check.status)) {
+        throw reportShareFailure("shared report overview is invalid");
+      }
+      projected.overview = {
+        status: check.status,
+        label: {
+          insufficient_information: "Needs more information",
+          programme_tension: "Programme tension",
+          directionally_plausible: "Directionally plausible",
+        }[check.status],
+        headline: reportShareText(check.headline, "overview headline", 240),
+        summary: reportShareText(check.summary, "overview summary", 1_000),
+        disclaimer: "Concept-stage planning evidence only. A licensed local architect and engineer must verify the site, rules, structure, services, costs, drawings, and approvals before reliance.",
+      };
+    } else if (section === "programme") {
+      const summary = report.summary;
+      const programme = report.areaProgram;
+      if (!summary || typeof summary !== "object" || Array.isArray(summary)
+          || !programme || typeof programme !== "object" || Array.isArray(programme)) {
+        throw reportShareFailure("shared report programme is invalid");
+      }
+      projected.programme = {
+        plotSqft: reportShareNumber(summary.plotSqft, "plot area", 100_000_000),
+        targetBuiltUpSqft: reportShareNumber(summary.targetBuiltUpSqft, "target built-up area", 100_000_000),
+        floorCount: reportShareNumber(summary.floorCount, "floor count", 100, true),
+        bedrooms: reportShareNumber(summary.bedrooms, "bedroom count", 100, true),
+        bathrooms: reportShareNumber(summary.bathrooms, "bathroom count", 100, true),
+        estimatedFloorPlateSqft: reportShareNumber(programme.estimatedFloorPlateSqft, "floor-plate area", 100_000_000),
+        estimatedOpenAreaSqft: reportShareNumber(programme.estimatedOpenAreaSqft, "open area", 100_000_000),
+        suggestedSpaces: reportShareTextList(programme.suggestedSpaces, "suggested spaces", 16, 300),
+      };
+    } else if (section === "cost") {
+      const cost = report.costPlan;
+      if (!cost || typeof cost !== "object" || Array.isArray(cost)
+          || !Array.isArray(cost.categories) || cost.categories.length < 1 || cost.categories.length > 16) {
+        throw reportShareFailure("shared report cost plan is invalid");
+      }
+      projected.cost = {
+        currency: reportShareText(cost.currency, "cost currency", 8),
+        lowInr: reportShareNumber(cost.lowInr, "low cost", 10_000_000_000_000),
+        midpointInr: reportShareNumber(cost.midpointInr, "midpoint cost", 10_000_000_000_000),
+        highInr: reportShareNumber(cost.highInr, "high cost", 10_000_000_000_000),
+        assumedRateInrPerSqft: reportShareNumber(cost.assumedRateInrPerSqft, "assumed rate", 10_000_000, true),
+        categories: cost.categories.map((category, index) => {
+          if (!category || typeof category !== "object" || Array.isArray(category)) {
+            throw reportShareFailure(`shared report cost category ${index + 1} is invalid`);
+          }
+          return {
+            name: reportShareText(category.name, `cost category ${index + 1} name`, 120),
+            percent: reportShareNumber(category.percent, `cost category ${index + 1} percent`, 100),
+            amountInr: reportShareNumber(category.amountInr, `cost category ${index + 1} amount`, 10_000_000_000_000, true),
+          };
+        }),
+        disclaimer: reportShareText(cost.disclaimer, "cost disclaimer", 1_000),
+      };
+    } else if (section === "timeline") {
+      const timeline = report.deliveryPlan;
+      if (!timeline || typeof timeline !== "object" || Array.isArray(timeline)
+          || !Array.isArray(timeline.phases) || timeline.phases.length < 1 || timeline.phases.length > 16) {
+        throw reportShareFailure("shared report timeline is invalid");
+      }
+      projected.timeline = {
+        estimatedMonths: reportShareNumber(timeline.estimatedMonths, "estimated months", 240, true),
+        phases: timeline.phases.map((phase, index) => {
+          if (!phase || typeof phase !== "object" || Array.isArray(phase)) {
+            throw reportShareFailure(`shared report phase ${index + 1} is invalid`);
+          }
+          return {
+            name: reportShareText(phase.name, `phase ${index + 1} name`, 160),
+            weeks: reportShareNumber(phase.weeks, `phase ${index + 1} weeks`, 520, true),
+          };
+        }),
+      };
+    } else if (section === "risks") {
+      projected.risks = reportShareTextList(report.risks, "risks", 16, 1_000);
+    } else if (section === "next_actions") {
+      projected.nextActions = reportShareTextList(report.nextActions, "next actions", 16, 1_000);
+    }
+  }
+  return projected;
+}
+
+async function listReportShares(request, env, projectId) {
+  const db = requireDatabase(env);
+  const session = await getSession(request, env);
+  await ownedProject(db, projectId, session.user_id);
+  const result = await db.prepare(
+    `SELECT * FROM report_shares
+      WHERE project_id=? AND user_id=?
+      ORDER BY
+        CASE WHEN revoked_at IS NULL AND expires_at>datetime('now') THEN 0 ELSE 1 END,
+        created_at DESC,id DESC
+      LIMIT ?`,
+  ).bind(projectId, session.user_id, REPORT_SHARE_HISTORY_LIMIT).all();
+  return json({ shares: (result.results || []).map((row) => reportShareMetadata(row)) });
+}
+
+async function createReportShare(request, env, projectId) {
+  requireTrustedOrigin(request, env);
+  requireAbuseControl(env);
+  const db = requireDatabase(env);
+  const session = await getSession(request, env);
+  await requireCsrf(request, session);
+  await rateLimit(request, env, `report-share-create:${session.user_id}`, 20, 60 * 60);
+  await accountRateLimit(env, `report-share-user:${session.user_id}`, 20, 60 * 60);
+  const project = await ownedProject(db, projectId, session.user_id);
+  const normalized = normalizeReportShareRequest(await readJson(request));
+  const keyHash = await digestBase64(`report-share:${session.user_id}:${normalizeIdempotencyKey(request)}`);
+  const requestHash = await digestHex(stableStringify({ version: 1, projectId, ...normalized }));
+  const replay = await db.prepare(
+    "SELECT * FROM report_shares WHERE idempotency_key_hash=? AND user_id=?",
+  ).bind(keyHash, session.user_id).first();
+  if (replay) {
+    if (replay.project_id !== projectId || replay.request_hash !== requestHash) {
+      throw new HttpError(409, "this Idempotency-Key was already used for a different report share", "idempotency_conflict");
+    }
+    return json({ share: reportShareMetadata(replay), idempotentReplay: true });
+  }
+  requireActiveProject(project, "restore the project before creating a report share");
+  const source = await db.prepare(
+    `SELECT rr.*,p.user_id,p.status
+       FROM project_revision_reports rr
+       JOIN projects p ON p.id=rr.project_id
+      WHERE rr.project_id=? AND rr.project_revision=? AND rr.report_schema_version=?
+        AND p.user_id=?`,
+  ).bind(projectId, normalized.projectRevision, normalized.reportSchemaVersion, session.user_id).first();
+  if (!source) throw new HttpError(404, "report not found", "report_not_found");
+  validatedReportShareSource(source);
+  const origin = canonicalAppOrigin(env);
+  const token = randomToken(32);
+  const id = crypto.randomUUID();
+  const createdDate = new Date();
+  const createdAt = sqliteTimestamp(createdDate);
+  const expiresAt = sqliteTimestamp(new Date(createdDate.getTime() + normalized.expiresInDays * 24 * 60 * 60 * 1000));
+  const row = {
+    id,
+    project_id: projectId,
+    user_id: session.user_id,
+    project_revision: normalized.projectRevision,
+    report_schema_version: normalized.reportSchemaVersion,
+    sections_json: JSON.stringify(normalized.sections),
+    report_content_hash: await digestHex(source.content_json),
+    token_hash: await digestHex(token),
+    idempotency_key_hash: keyHash,
+    request_hash: requestHash,
+    expires_at: expiresAt,
+    revoked_at: null,
+    access_count: 0,
+    last_accessed_at: null,
+    created_at: createdAt,
+  };
+  try {
+    await db.prepare(
+      `INSERT INTO report_shares
+         (id,project_id,user_id,project_revision,report_schema_version,sections_json,
+          report_content_hash,token_hash,idempotency_key_hash,request_hash,expires_at,
+          revoked_at,access_count,last_accessed_at,created_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,NULL,0,NULL,?)`,
+    ).bind(
+      row.id, row.project_id, row.user_id, row.project_revision, row.report_schema_version,
+      row.sections_json, row.report_content_hash, row.token_hash, row.idempotency_key_hash,
+      row.request_hash, row.expires_at, row.created_at,
+    ).run();
+  } catch (error) {
+    const raced = await db.prepare(
+      "SELECT * FROM report_shares WHERE idempotency_key_hash=? AND user_id=?",
+    ).bind(keyHash, session.user_id).first();
+    if (raced) {
+      if (raced.project_id !== projectId || raced.request_hash !== requestHash) {
+        throw new HttpError(409, "this Idempotency-Key was already used for a different report share", "idempotency_conflict");
+      }
+      return json({ share: reportShareMetadata(raced), idempotentReplay: true });
+    }
+    const message = String(error?.message || error);
+    if (/report share active limit reached/iu.test(message)) {
+      throw new HttpError(409, `a project may have at most ${REPORT_SHARE_ACTIVE_LIMIT} active report shares`, "report_share_limit");
+    }
+    if (/archived project is read only/iu.test(message)) {
+      throw new HttpError(409, "restore the project before creating a report share", "project_archived");
+    }
+    if (/invalid report share source or sections|FOREIGN KEY constraint failed/iu.test(message)) {
+      throw new HttpError(409, "the report changed while its share was being created", "report_share_conflict");
+    }
+    throw error;
+  }
+  await reportShareEvent(db, "report_handoff_link_created", "report");
+  return json({ share: reportShareMetadata(row, origin, token) }, 201);
+}
+
+async function revokeReportShare(request, env, projectId, shareId) {
+  requireTrustedOrigin(request, env);
+  const db = requireDatabase(env);
+  const session = await getSession(request, env);
+  await requireCsrf(request, session);
+  await ownedProject(db, projectId, session.user_id);
+  const share = await db.prepare(
+    "SELECT id,revoked_at FROM report_shares WHERE id=? AND project_id=? AND user_id=?",
+  ).bind(shareId, projectId, session.user_id).first();
+  if (!share) throw new HttpError(404, "report share not found", "report_share_not_found");
+  if (!share.revoked_at) {
+    const revoked = await db.prepare(
+      `UPDATE report_shares SET revoked_at=?
+        WHERE id=? AND project_id=? AND user_id=? AND revoked_at IS NULL
+      RETURNING id`,
+    ).bind(sqliteTimestamp(), shareId, projectId, session.user_id).first();
+    if (revoked) await reportShareEvent(db, "report_handoff_link_revoked", "report");
+  }
+  return empty();
+}
+
+async function getSharedReport(request, env) {
+  requireAbuseControl(env);
+  await rateLimit(request, env, "public-report-share", REPORT_SHARE_READ_LIMIT, REPORT_SHARE_READ_WINDOW_SECONDS);
+  const db = requireDatabase(env);
+  await acquireReportShareReadAdmission(db, request);
+  let body;
+  try {
+    body = await readJson(request);
+  } catch {
+    throw new HttpError(404, "shared report not found", "report_share_not_found");
+  }
+  const token = normalizePublicReportShareRequest(body);
+  const row = await db.prepare(
+    `SELECT sh.*,rr.source_report_id,rr.input_hash,rr.content_json,rr.generated_at
+       FROM report_shares sh
+       JOIN project_revision_reports rr
+         ON rr.project_id=sh.project_id
+        AND rr.project_revision=sh.project_revision
+        AND rr.report_schema_version=sh.report_schema_version
+      WHERE sh.token_hash=?`,
+  ).bind(await digestHex(token)).first();
+  if (!row) throw new HttpError(404, "shared report not found", "report_share_not_found");
+  if (row.revoked_at) throw new HttpError(410, "this shared report is no longer available", "report_share_unavailable");
+  if (new Date(`${row.expires_at.replace(" ", "T")}Z`) <= new Date()) {
+    throw new HttpError(410, "this shared report has expired", "report_share_expired");
+  }
+  if (await digestHex(row.content_json) !== row.report_content_hash) {
+    throw reportShareFailure("shared report content did not match its immutable link");
+  }
+  const report = validatedReportShareSource(row);
+  const sections = reportShareSectionsFromRow(row);
+  const projection = publicReportShareProjection(report, sections);
+  let admitted;
+  try {
+    admitted = await db.prepare(
+      `UPDATE report_shares
+          SET access_count=access_count+1,last_accessed_at=?
+        WHERE id=? AND revoked_at IS NULL AND expires_at>datetime('now')
+      RETURNING id`,
+    ).bind(sqliteTimestamp(), row.id).first();
+  } catch (error) {
+    console.error("Professional Handoff access admission failed");
+    throw error;
+  }
+  if (!admitted) {
+    throw new HttpError(410, "this shared report is no longer available", "report_share_unavailable");
+  }
+  await reportShareEvent(db, "report_handoff_opened", "public_share");
+  return json({
+    share: {
+      expiresAt: row.expires_at,
+      report: {
+        schemaVersion: REPORT_VERSION,
+        generatedAt: row.generated_at,
+        sections: projection,
+      },
+    },
+  });
+}
+
 function publicDecisionText(value, maximum = 500) {
   return typeof value === "string" ? value.slice(0, maximum) : "";
 }
@@ -6255,6 +6710,7 @@ async function api(request, env, ctx, url) {
       let archiveSafetySchema = "unknown";
       let revisionSchema = "unknown";
       let reportFeedbackSchema = "unknown";
+      let reportShareSchema = "unknown";
       let projectCreationSchema = "unknown";
       let authSchema = "unknown";
       if (env.DB) {
@@ -6267,6 +6723,7 @@ async function api(request, env, ctx, url) {
                     SUM(CASE WHEN name IN ('family_alignment_rooms','family_alignment_responses') THEN 1 ELSE 0 END) AS family_alignment_count,
                     SUM(CASE WHEN name IN ('project_revisions','project_revision_requests','project_revision_reports') THEN 1 ELSE 0 END) AS revision_table_count,
                     SUM(CASE WHEN name='report_feedback' THEN 1 ELSE 0 END) AS report_feedback_count,
+                    SUM(CASE WHEN name IN ('report_shares','report_share_read_counters') THEN 1 ELSE 0 END) AS report_share_count,
                     SUM(CASE WHEN name IN
                       ('decision_comparisons','decision_selections','purchased_decision_snapshots',
                        'decision_shares','product_event_aggregates','decision_progress') THEN 1 ELSE 0 END) AS decision_table_count
@@ -6277,10 +6734,11 @@ async function api(request, env, ctx, url) {
                  'decision_selections','purchased_decision_snapshots','decision_shares','product_event_aggregates',
                  'decision_progress','payment_terminal_records','payment_reconciliation_cases',
                  'family_alignment_rooms','family_alignment_responses','project_revisions',
-                 'project_revision_requests','project_revision_reports','report_feedback')`,
+                 'project_revision_requests','project_revision_reports','report_feedback','report_shares',
+                 'report_share_read_counters')`,
           ).first();
           database = "ok";
-          const requiredTablesPresent = Number(result?.count) === 23;
+          const requiredTablesPresent = Number(result?.count) === 25;
           if (Number(result?.revision_table_count) === 3) {
             try {
               await env.DB.prepare(
@@ -6361,6 +6819,40 @@ async function api(request, env, ctx, url) {
             }
           } else {
             reportFeedbackSchema = "outdated";
+          }
+          if (Number(result?.report_share_count) === 2) {
+            try {
+              await env.DB.prepare(
+                `SELECT id,project_id,user_id,project_revision,report_schema_version,sections_json,
+                        report_content_hash,token_hash,idempotency_key_hash,request_hash,expires_at,
+                        revoked_at,access_count,last_accessed_at,created_at
+                   FROM report_shares LIMIT 0`,
+              ).first();
+              await env.DB.prepare(
+                `SELECT subject_hash,window_start,request_count,limit_count,updated_at
+                   FROM report_share_read_counters LIMIT 0`,
+              ).first();
+              const shareObjects = await env.DB.prepare(
+                `SELECT
+                   SUM(CASE WHEN type='trigger' AND name IN (
+                     'report_share_sections_insert_guard','report_share_identity_immutable',
+                     'archived_report_share_insert_guard','report_share_active_limit_insert'
+                   ) THEN 1 ELSE 0 END) AS trigger_count,
+                   SUM(CASE WHEN type='index' AND name IN (
+                     'idx_report_shares_owner_created','idx_report_shares_expiry',
+                     'idx_report_share_read_counters_updated'
+                   ) THEN 1 ELSE 0 END) AS index_count
+                 FROM sqlite_master WHERE type IN ('trigger','index')`,
+              ).first();
+              reportShareSchema = Number(shareObjects?.trigger_count) === 4
+                && Number(shareObjects?.index_count) === 3
+                ? "current"
+                : "outdated";
+            } catch {
+              reportShareSchema = "outdated";
+            }
+          } else {
+            reportShareSchema = "outdated";
           }
           try {
             await env.DB.prepare(
@@ -6557,7 +7049,8 @@ async function api(request, env, ctx, url) {
           schema = requiredTablesPresent && aiSchema === "current" && aiAbuseControl === "configured"
             && decisionSchema === "current" && paymentSchema === "current" && familyAlignmentSchema === "current"
             && archiveSafetySchema === "current" && revisionSchema === "current"
-            && reportFeedbackSchema === "current" && projectCreationSchema === "current"
+            && reportFeedbackSchema === "current" && reportShareSchema === "current"
+            && projectCreationSchema === "current"
             && authSchema === "current"
             ? "current"
             : "outdated";
@@ -6572,6 +7065,7 @@ async function api(request, env, ctx, url) {
           archiveSafetySchema = "unknown";
           revisionSchema = "unknown";
           reportFeedbackSchema = "unknown";
+          reportShareSchema = "unknown";
           projectCreationSchema = "unknown";
           authSchema = "unknown";
         }
@@ -6605,6 +7099,7 @@ async function api(request, env, ctx, url) {
           archiveSafetySchema,
           revisionSchema,
           reportFeedbackSchema,
+          reportShareSchema,
           projectCreationSchema,
           authSchema,
           ai: geminiConfigured ? "configured" : "unavailable",
@@ -6621,6 +7116,7 @@ async function api(request, env, ctx, url) {
           familyAlignment: freeReady && decisionSchema === "current" && familyAlignmentSchema === "current" && rateLimit === "configured",
           briefCheck: freeReady && revisionSchema === "current" && rateLimit === "configured",
           reportFeedback: freeReady && reportFeedbackSchema === "current" && rateLimit === "configured",
+          reportHandoff: freeReady && reportShareSchema === "current" && rateLimit === "configured",
           accountSecurity: freeReady && authSchema === "current" && rateLimit === "configured",
         },
         time: new Date().toISOString(),
@@ -6671,6 +7167,11 @@ async function api(request, env, ctx, url) {
     if (publicDecisionMatch) {
       const token = decodeResourcePathSegment(publicDecisionMatch[1], "shared decision not found", "share_not_found");
       return request.method === "GET" ? await getSharedDecision(request, env, token) : methodNotAllowed(["GET"]);
+    }
+    if (url.pathname === "/api/shared/report") {
+      return request.method === "POST"
+        ? await getSharedReport(request, env)
+        : methodNotAllowed(["POST"]);
     }
     if (url.pathname === "/api/auth/register") {
       return request.method === "POST" ? await register(request, env) : methodNotAllowed(["POST"]);
@@ -6771,6 +7272,21 @@ async function api(request, env, ctx, url) {
       const projectId = decodeProjectPathSegment(reportMatch[1]);
       if (request.method === "GET") return await getReport(request, env, projectId);
       if (request.method === "POST") return await generateReport(request, env, projectId);
+      return methodNotAllowed(["GET", "POST"]);
+    }
+    const reportShareMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/report-shares\/([^/]+)$/u);
+    if (reportShareMatch) {
+      const projectId = decodeProjectPathSegment(reportShareMatch[1]);
+      const shareId = decodeResourcePathSegment(reportShareMatch[2], "report share not found", "report_share_not_found");
+      return request.method === "DELETE"
+        ? await revokeReportShare(request, env, projectId, shareId)
+        : methodNotAllowed(["DELETE"]);
+    }
+    const reportSharesMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/report-shares$/u);
+    if (reportSharesMatch) {
+      const projectId = decodeProjectPathSegment(reportSharesMatch[1]);
+      if (request.method === "GET") return await listReportShares(request, env, projectId);
+      if (request.method === "POST") return await createReportShare(request, env, projectId);
       return methodNotAllowed(["GET", "POST"]);
     }
     const aiBriefMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/ai-brief$/u);
@@ -6889,12 +7405,13 @@ function isApiRoute(pathname) {
     "/api/orders",
     "/api/events",
     "/api/events/aggregate",
+    "/api/shared/report",
     "/api/payments/razorpay/webhook",
   ]).has(pathname)
     || /^\/api\/orders\/[^/]+(?:\/(?:fulfillment|artifact|progress))?$/u.test(pathname)
     || /^\/api\/shared\/decision-compare\/[^/]+$/u.test(pathname)
     || /^\/api\/family-alignment\/[^/]+(?:\/response)?$/u.test(pathname)
-    || /^\/api\/projects\/[^/]+(?:\/home|\/report|\/ai-brief|\/orders|\/revisions(?:\/preview|\/\d+(?:\/report|\/reports\/\d+\/feedback)?)?|\/family-alignment(?:\/[^/]+)?|\/decision-compare(?:\/choice|\/shares(?:\/[^/]+)?)?|\/files(?:\/[^/]+)?)?$/u.test(pathname);
+    || /^\/api\/projects\/[^/]+(?:\/home|\/report|\/report-shares(?:\/[^/]+)?|\/ai-brief|\/orders|\/revisions(?:\/preview|\/\d+(?:\/report|\/reports\/\d+\/feedback)?)?|\/family-alignment(?:\/[^/]+)?|\/decision-compare(?:\/choice|\/shares(?:\/[^/]+)?)?|\/files(?:\/[^/]+)?)?$/u.test(pathname);
 }
 
 function isAppNavigation(request, url) {
@@ -6909,9 +7426,11 @@ function isAppNavigation(request, url) {
 
 function operationalRoute(pathname) {
   if (/^\/api\/shared\/decision-compare\/[^/]+$/u.test(pathname)) return "/api/shared/decision-compare/:token";
+  if (pathname === "/api/shared/report") return "/api/shared/report";
   if (/^\/api\/family-alignment\/[^/]+\/response$/u.test(pathname)) return "/api/family-alignment/:token/response";
   if (/^\/api\/family-alignment\/[^/]+$/u.test(pathname)) return "/api/family-alignment/:token";
   if (/^\/share\/decision\/[^/]+$/u.test(pathname)) return "/share/decision/:token";
+  if (pathname === "/share/report") return "/share/report";
   if (/^\/align\/[^/]+$/u.test(pathname)) return "/align/:token";
   if (isApiRoute(pathname)) {
     return pathname
@@ -6920,6 +7439,7 @@ function operationalRoute(pathname) {
       .replace(/\/revisions\/\d+(?=\/|$)/u, "/revisions/:revision")
       .replace(/\/reports\/\d+(?=\/|$)/u, "/reports/:schemaVersion")
       .replace(/\/family-alignment\/[^/]+$/u, "/family-alignment/:roomId")
+      .replace(/\/report-shares\/[^/]+$/u, "/report-shares/:shareId")
       .replace(/\/files\/[^/]+$/u, "/files/:fileId")
       .replace(/\/shares\/[^/]+$/u, "/shares/:shareId");
   }
@@ -6939,6 +7459,17 @@ function withRequestId(response, requestId) {
   const headers = new Headers(response.headers);
   headers.delete(OPERATIONAL_OUTCOME_HEADER);
   headers.set("x-request-id", requestId);
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
+function protectPublicReportDocument(response) {
+  const headers = new Headers(response.headers);
+  headers.set("cache-control", "no-store");
+  headers.set("x-robots-tag", "noindex,nofollow,noarchive");
   return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,
@@ -6986,6 +7517,9 @@ export default {
         finalResponse = secure(await env.ASSETS.fetch(new Request(indexUrl, request)));
       }
     }
+    if (url.pathname === "/share/report" && ["GET", "HEAD"].includes(request.method)) {
+      finalResponse = protectPublicReportDocument(finalResponse);
+    }
     logOperationalRequest(request, env, finalResponse, startedAt, requestId);
     return withRequestId(finalResponse, requestId);
   },
@@ -7001,8 +7535,10 @@ export default {
       env.DB.prepare("DELETE FROM ai_generation_leases WHERE expires_at<=datetime('now')"),
       env.DB.prepare("DELETE FROM ai_generation_counters WHERE updated_at<datetime('now','-8 days')"),
       env.DB.prepare("DELETE FROM password_change_attempt_counters WHERE updated_at<datetime('now','-2 days')"),
+      env.DB.prepare("DELETE FROM report_share_read_counters WHERE updated_at<datetime('now','-2 days')"),
       env.DB.prepare("DELETE FROM decision_shares WHERE expires_at<datetime('now','-90 days') OR (revoked_at IS NOT NULL AND revoked_at<datetime('now','-90 days'))"),
       env.DB.prepare("DELETE FROM family_alignment_rooms WHERE expires_at<datetime('now','-90 days') OR (revoked_at IS NOT NULL AND revoked_at<datetime('now','-90 days'))"),
+      env.DB.prepare("DELETE FROM report_shares WHERE expires_at<datetime('now','-90 days') OR (revoked_at IS NOT NULL AND revoked_at<datetime('now','-90 days'))"),
       env.DB.prepare("DELETE FROM product_event_aggregates WHERE event_day<date('now','-400 days')"),
     ]));
   },
@@ -7012,6 +7548,7 @@ export default {
 // the default export above.
 export const __test = {
   acquirePasswordChangeAdmission,
+  acquireReportShareReadAdmission,
   acquireAiGenerationAdmission,
   aiBriefFromRow,
   aiModel,
@@ -7034,6 +7571,8 @@ export const __test = {
   normalizeDecisionInput,
   normalizeIdempotencyKey,
   normalizeProjectInput,
+  normalizeReportShareRequest,
+  normalizePublicReportShareRequest,
   normalizeRevisionPatch,
   operationalRoute,
   orderFromRow,
@@ -7044,6 +7583,8 @@ export const __test = {
   projectFromRow,
   prepareRevisionCandidate,
   reportFeedbackMetricsFromRow,
+  publicReportShareProjection,
+  reportShareMetadata,
   revisionFromRow,
   requireCsrf,
   ensureProjectDeletable,

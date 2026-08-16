@@ -293,6 +293,10 @@ Migrations currently run in this order:
     strongly consistent per-account attempt counter with a retention index.
     Existing rows remain generation one with a null legacy revision; counters
     start empty and scheduled maintenance removes rows older than two days.
+16. `0016_report_handoff_links.sql`: owner-scoped, version-bound Professional
+    Handoff bearer links; selected-section/content-hash binding; one-time token
+    and idempotency digests; expiry/revocation metadata; owner/expiry indexes;
+    section, immutability, archive and five-active-link D1 guards.
 
 Each schema-and-Worker release is one ordered change: audit and back up D1,
 apply the migration, verify the expanded schema and its compatibility with the
@@ -370,6 +374,17 @@ must remain equal through the migration. Readiness must
 report `reportFeedbackSchema=current`, `projectCreationSchema=current`,
 `authSchema=current`, `reportFeedback=true`, and `accountSecurity=true` while
 every paid and upload control remains closed.
+
+For `0016`, require newly created `report_shares` and
+`report_share_read_counters` tables to be empty and record both counts even on
+later releases. Verify all expected columns, both `idx_report_shares_*`
+indexes, `idx_report_share_read_counters_updated`, and the four named
+`report_share_*`/archived triggers. `PRAGMA foreign_key_check` must stay empty
+and canonical protected counts/hashes must not change. Readiness must report
+`reportShareSchema=current` and `reportHandoff=true`; paid checkout, paid
+fulfillment and uploads remain closed. Raw schema/count query files are mode
+0600 and must be deleted unconditionally from the runner after bounded evidence
+is produced.
 
 Password change uses KV only as the fail-closed IP perimeter. The authoritative
 five-attempt account limit is one conditional D1 UPSERT per fixed 15-minute
@@ -471,7 +486,7 @@ observation on the first matching event, and never enter release artifacts.
 Automation may roll the Worker back after a confirmed application regression
 when no migration ran. When a migration did run, rollback is eligible only if
 the pre-deploy old-Worker rehearsal completed against the expanded schema and
-its exact-ID cleanup proof passed. Otherwise the release stops for an explicit
+its exact-ID cleanup proof—including `report_shares`—passed. Otherwise the release stops for an explicit
 compatibility fix or incident response; it never blindly restores older code
 against a newer schema.
 
@@ -501,19 +516,28 @@ Then use the dedicated production canary account to verify:
    `404`, archived read/blocked-write, aggregate-only metrics, and exact cascade
    cleanup. Confirm a saved schema-v1 artifact renders only its persisted legacy
    bytes and exposes no feedback UI or API write path.
-5. Generate one sanitized AI brief, read the cached copy, and delete the project;
+5. When `0016` is in the release, require readiness
+   `reportShareSchema=current`/`reportHandoff=true`; create a 1-day share for
+   the exact canary revision with only overview, risks and next actions; require
+   the returned URL to have exact path `/share/report` and a valid capability
+   fragment without printing it; POST that capability to the constant public
+   API with no session cookie and prove only those sections appear; revoke, require `410`,
+   and retain no token/raw URL in evidence. The final direct D1 query for the
+   exact canary project IDs must report zero `report_shares` after project
+   deletion, even when the canary failed before normal revoke.
+6. Generate one sanitized AI brief, read the cached copy, and delete the project;
    confirm the provider is called only once and no synthetic rows remain.
-6. Create exactly two canary scenarios, issue/read a comparison under a test
+7. Create exactly two canary scenarios, issue/read a comparison under a test
    entitlement in staging, record a choice and confirm the frozen versions.
-7. Confirm one user cannot fetch another canary user's project, revision/history,
+8. Confirm one user cannot fetch another canary user's project, revision/history,
    AI brief,
    comparison, artifact, choice, order or share; expect
    ownership-safe `404`.
-8. Confirm production catalog accepts no plan before the launch record is
+9. Confirm production catalog accepts no plan before the launch record is
    signed; staging test mode may accept only `decision_compare`.
    Readiness must also report `paidFulfillment=false`,
    `privateUploads=false`, and `checks.privateStorage=unavailable`.
-9. Verify mobile and desktop landing, start, auth, dashboard, Brief Check,
+10. Verify mobile and desktop landing, start, auth, dashboard, Brief Check,
    revision history, comparison, print
    and return routes.
 
@@ -544,6 +568,7 @@ orders.
 | Daily while Brief Check is enabled | Authenticated preview → save → replay → history → explicit report v2 → delete | Preview is write-free; one revision/map/report snapshot exists; history/currentness is truthful; cleanup leaves no source, request or report rows |
 | Daily during pilot | Authenticated two-scenario comparison | Frozen A/B inputs and numeric deltas match fixture; choice is idempotent; cleanup leaves no rows |
 | Daily while Family Alignment is enabled | Synthetic room → public read → response update → owner summary → revoke | One room/receipt, redacted A/B projection, aggregate summary reconciles, revoked URL is `410`, cleanup leaves no rows or token in monitor output |
+| Daily while Professional Handoff is enabled | Exact report → selected share → unauthenticated public read → revoke | Only selected sections render, URL path is `/share/report` with an unlogged fragment capability, constant-path POST returns `410` after revoke, and project cleanup leaves no `report_shares` or token in output |
 | Daily during pilot | Paid fulfillment age | Every verified payment is issued or explicitly paused inside the published promise |
 | Daily while AI enabled | Sanitized AI generation + cached read | Valid advisory schema, one provider call, cached replay, cleanup leaves no rows |
 | Daily only after a future R2 launch | Private file round trip | Upload/download SHA-256 match/delete; anonymous fetch denied |
@@ -605,6 +630,14 @@ preference, reason, token, IP, user-agent, or client-time fields. Failure to
 write an aggregate must be logged with the fixed payload-free marker and must
 not change a room/read/response/revoke result.
 
+Professional Handoff events are likewise server-only and aggregate-only. The
+Worker may increment only `report_handoff_link_created`,
+`report_handoff_opened`, or `report_handoff_link_revoked` after the corresponding
+core action succeeds. Never attach owner/project/revision/share identity,
+selected sections, token, recipient, IP, user-agent or free text. Browser code
+must not post these events, and a metric-write failure must not turn a secure
+create/read/revoke result into a false `5xx`.
+
 ## 6. SLIs, SLOs, and alerts
 
 Initial targets are intentionally conservative and must be reviewed after four
@@ -629,6 +662,8 @@ weeks of real traffic.
 | Family Alignment active-room availability | 99.9% | Valid owner create/summary and bearer public-read/response synthetics, excluding deliberate validation/rate-limit `4xx` |
 | Family Alignment privacy and capacity | 100%; zero tolerance | Redaction/log canaries, cross-owner/token negative tests, at most one room per comparison and five receipts per room |
 | Family Alignment retention | 99% within 24 h after the 90-day closed-room boundary | D1 expiry/revocation query and successful scheduled cleanup |
+| Professional Handoff privacy and closure | 100%; zero tolerance | Selected-section redaction, fragment/print/log canaries, atomic D1 read admission, active-link discovery, owner isolation, revoke/expiry `410` and immutable-source tests |
+| Professional Handoff retention | 99% within 24 h after the 90-day closed-link boundary | D1 expiry/revocation query and successful scheduled cleanup |
 | Session cleanup | 99% within 24 h after expiry | D1 expiry query and cron invocation logs |
 | Backup recovery | RPO 24 h; RTO 4 h | Last verified backup and quarterly restore drill |
 
@@ -641,6 +676,10 @@ Page the on-call for:
   field exposure, response takeover/cross-room update, sixth receipt, response
   committed after closure, or Family Alignment action changing an order or
   entitlement;
+- any Professional Handoff token/raw URL in logs, analytics, referrers or
+  release evidence; any unselected/private field in a public response; access
+  after revoke/expiry; a sixth active link; or a link retargeted away from its
+  immutable report revision;
 - any fabricated/missing revision, two winners for one source revision, report
   served for the wrong source/schema, migrated v1 treated as current v2,
   revision that rewrites purchased/financial evidence, or Family response
@@ -655,8 +694,8 @@ Page the on-call for:
   quota crossing 90%, or any accepted advisory-boundary violation;
 - R2 upload/download errors above 2% for 10 minutes;
 - the daily cron missing twice, expired session backlog increasing for two
-  days, or retention-eligible Family Alignment rooms growing across two
-  successful invocations;
+  days, or retention-eligible Family Alignment rooms/report shares growing
+  across two successful invocations;
 - no valid backup within 26 hours or a failed restore drill.
 
 Create a ticket, not a page, for p95 latency degradation, storage/cost forecast
@@ -850,7 +889,7 @@ claiming account deletion is complete.
 
 ## 10. Cron verification
 
-The scheduled handler currently performs seven bounded operations:
+The scheduled handler performs ten bounded operations:
 
 ```sql
 DELETE FROM sessions WHERE expires_at < datetime('now');
@@ -858,12 +897,19 @@ UPDATE orders SET status='failed', ...
  WHERE status='created' AND created_at < datetime('now','-25 hours');
 DELETE FROM ai_generation_leases WHERE expires_at <= datetime('now');
 DELETE FROM ai_generation_counters WHERE updated_at < datetime('now','-8 days');
+DELETE FROM password_change_attempt_counters
+ WHERE updated_at < datetime('now','-2 days');
 DELETE FROM decision_shares
  WHERE expires_at < datetime('now','-90 days')
     OR (revoked_at IS NOT NULL AND revoked_at < datetime('now','-90 days'));
 DELETE FROM family_alignment_rooms
  WHERE expires_at < datetime('now','-90 days')
     OR (revoked_at IS NOT NULL AND revoked_at < datetime('now','-90 days'));
+DELETE FROM report_shares
+ WHERE expires_at < datetime('now','-90 days')
+    OR (revoked_at IS NOT NULL AND revoked_at < datetime('now','-90 days'));
+DELETE FROM report_share_read_counters
+ WHERE updated_at < datetime('now','-2 days');
 DELETE FROM product_event_aggregates WHERE event_day < date('now','-400 days');
 ```
 
@@ -887,16 +933,24 @@ remove the production trigger or attach staging to production D1 as a shortcut.
       SELECT COUNT(*) AS old_ai_counters FROM ai_generation_counters WHERE updated_at < datetime('now','-8 days');
       SELECT COUNT(*) AS old_family_rooms FROM family_alignment_rooms
        WHERE expires_at < datetime('now','-90 days')
-          OR (revoked_at IS NOT NULL AND revoked_at < datetime('now','-90 days'));"
+          OR (revoked_at IS NOT NULL AND revoked_at < datetime('now','-90 days'));
+      SELECT COUNT(*) AS old_report_shares FROM report_shares
+       WHERE expires_at < datetime('now','-90 days')
+          OR (revoked_at IS NOT NULL AND revoked_at < datetime('now','-90 days'));
+      SELECT COUNT(*) AS old_report_share_read_counters
+       FROM report_share_read_counters
+       WHERE updated_at < datetime('now','-2 days');"
    ```
 
 4. Deliberately expired synthetic sessions, checkout links, AI leases and
-   retention-eligible Family Alignment rooms in staging are removed by a tested
-   scheduled invocation; recent counters and active/recent rooms remain.
+   retention-eligible Family Alignment rooms/report shares and old hashed
+   report-read counters in staging are removed by a tested scheduled
+   invocation; recent counters and active/recent rooms/links remain.
 5. Before/after fixture counts prove each removed Family Alignment room's
    responses cascade while its project, comparison, owner selection, purchased
-   snapshot, order and payment ledger rows remain unchanged. Never put raw room
-   or response tokens in cron output.
+   snapshot, order and payment ledger rows remain unchanged. Removed report
+   shares must not alter their immutable source report, project or owner. Never
+   put raw room, response or report-share tokens in cron output.
 
 Alert after one missed run and page after two. The handler uses `ctx.waitUntil`;
 an invocation record without successful D1 completion is not evidence of cleanup.
@@ -1036,7 +1090,8 @@ updates. That compatibility is containment, not a normal operating mode:
   can perform health, auth, project/report CRUD and cleanup in isolated staging
   before selecting it for rollback; do not execute the old commit's harness;
 - query only the harness-reported synthetic project IDs and require no matching
-  project, project revision, current report, revision report or feedback row,
+  project, project revision, current report, revision report, feedback or
+  `report_shares` row,
   even when the rehearsal fails;
 - after roll-forward, require `revisionSchema=current`, regenerate v2 explicitly,
   and reconcile `projects.input_revision` to the maximum stored revision for
@@ -1058,6 +1113,17 @@ current Worker rejects it because generation/revision no longer match. A
 rollback never restores a deleted pre-change bearer or the previous password.
 Keep the rollback window quiet, keep paid/upload controls closed, and require a
 fresh login after roll-forward. Never remove the columns or weaken the guards.
+
+Migration `0016` is additive and readable by the previous Worker, which neither
+queries nor writes `report_shares`. The reviewed current harness therefore skips
+new readiness/share calls in legacy mode but must still complete old-Worker
+authentication, project/report CRUD, exact project cleanup and session
+revocation against the expanded schema. Automatic rollback is eligible only
+when the direct exact-ID residue proof—including `report_shares`—passes. The old
+Worker cannot serve or create Professional Handoff links; restore the current
+Worker and require `reportShareSchema=current`/`reportHandoff=true` before
+reopening that surface. Never drop the table or rewrite migration history to
+make an older Worker appear compatible.
 
 ```sql
 SELECT p.id,p.input_revision,MAX(r.revision) AS stored_revision
