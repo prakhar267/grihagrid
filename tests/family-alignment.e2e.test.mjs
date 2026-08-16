@@ -10,6 +10,10 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const wranglerCli = path.join(root, "node_modules", "wrangler", "bin", "wrangler.js");
+const localD1ApiPath = "/cdn-cgi/local/explorer/api/d1/database";
+const localD1TimeoutMs = 10_000;
+const localD1MaxRequestBytes = 1024 * 1024;
+const localD1MaxResponseBytes = 2 * 1024 * 1024;
 
 function reservePort() {
   return new Promise((resolve, reject) => {
@@ -28,6 +32,159 @@ function wait(milliseconds) {
 
 function appendLog(current, chunk) {
   return `${current}${String(chunk)}`.slice(-40_000);
+}
+
+function assertJsonObject(value, context) {
+  assert.ok(value && typeof value === "object" && !Array.isArray(value), `${context} must be an object`);
+}
+
+function assertExactKeys(value, expected, context) {
+  assertJsonObject(value, context);
+  assert.deepEqual(Object.keys(value).sort(), [...expected].sort(), `${context} has an unexpected shape`);
+}
+
+async function readLocalD1Json(response, context) {
+  const mediaType = response.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase();
+  assert.equal(mediaType, "application/json", `${context} must return application/json`);
+  const declaredLength = response.headers.get("content-length");
+  if (declaredLength !== null) {
+    assert.match(declaredLength, /^\d+$/u, `${context} returned an invalid content-length`);
+    assert.ok(Number(declaredLength) <= localD1MaxResponseBytes, `${context} exceeded the response limit`);
+  }
+  assert.ok(response.body, `${context} must return a response body`);
+  const reader = response.body.getReader();
+  const chunks = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > localD1MaxResponseBytes) {
+        await reader.cancel("local D1 response exceeded the limit");
+        assert.fail(`${context} exceeded the response limit`);
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    throw new Error(`${context} returned invalid JSON: ${error?.message || error}`);
+  }
+}
+
+function assertLocalD1Messages(value, context) {
+  assert.ok(Array.isArray(value), `${context} must be an array`);
+  for (const [index, message] of value.entries()) {
+    assertExactKeys(message, ["code", "message"], `${context}[${index}]`);
+    assert.ok(Number.isInteger(message.code) && message.code >= 1_000, `${context}[${index}].code is invalid`);
+    assert.equal(typeof message.message, "string", `${context}[${index}].message is invalid`);
+  }
+}
+
+function assertLocalD1Envelope(payload, expectedKeys, context) {
+  assertExactKeys(payload, expectedKeys, context);
+  assert.equal(payload.success, true, `${context} failed: ${JSON.stringify(payload.errors)}`);
+  assertLocalD1Messages(payload.errors, `${context}.errors`);
+  assertLocalD1Messages(payload.messages, `${context}.messages`);
+  assert.deepEqual(payload.errors, [], `${context} returned errors`);
+}
+
+async function discoverLocalD1Database(server) {
+  const context = "local D1 database discovery";
+  const response = await fetch(`${server.origin}${localD1ApiPath}`, {
+    headers: {
+      accept: "application/json",
+      "x-miniflare-explorer-no-aggregate": "true",
+    },
+    signal: AbortSignal.timeout(localD1TimeoutMs),
+  });
+  const payload = await readLocalD1Json(response, context);
+  assert.equal(response.status, 200, `${context} returned HTTP ${response.status}: ${JSON.stringify(payload)}`);
+  assertLocalD1Envelope(payload, ["success", "errors", "messages", "result", "result_info"], context);
+  assert.ok(Array.isArray(payload.result), `${context}.result must be an array`);
+  assertExactKeys(payload.result_info, ["count"], `${context}.result_info`);
+  assert.equal(payload.result_info.count, payload.result.length, `${context} returned an invalid count`);
+  const databases = payload.result.filter((database) => database?.name === "DB");
+  assert.equal(databases.length, 1, `${context} must find exactly one DB binding`);
+  const database = databases[0];
+  assertExactKeys(database, ["name", "uuid", "version"], `${context}.result[DB]`);
+  assert.match(database.uuid, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu, `${context} returned an invalid UUID`);
+  assert.equal(database.version, "production", `${context} returned an unexpected database version`);
+  return database.uuid;
+}
+
+async function localD1Raw(server, sql, context) {
+  assert.ok(server?.databaseId, `${context} requires a discovered database binding`);
+  assert.equal(typeof sql, "string", `${context} SQL must be a string`);
+  assert.ok(sql.trim(), `${context} SQL must not be empty`);
+  assert.ok(Buffer.byteLength(sql, "utf8") <= localD1MaxRequestBytes, `${context} SQL exceeded the request limit`);
+  let response;
+  try {
+    response = await fetch(
+      `${server.origin}${localD1ApiPath}/${encodeURIComponent(server.databaseId)}/raw`,
+      {
+        method: "POST",
+        headers: {
+          accept: "application/json",
+          "content-type": "application/json",
+          "x-miniflare-explorer-no-aggregate": "true",
+        },
+        body: JSON.stringify({ sql }),
+        signal: AbortSignal.timeout(localD1TimeoutMs),
+      },
+    );
+  } catch (error) {
+    throw new Error(`${context} request failed: ${error?.message || error}\n${server.logs()}`);
+  }
+  const payload = await readLocalD1Json(response, context);
+  assert.equal(response.status, 200, `${context} returned HTTP ${response.status}: ${JSON.stringify(payload)}`);
+  assertLocalD1Envelope(payload, ["success", "errors", "messages", "result"], context);
+  assert.ok(Array.isArray(payload.result) && payload.result.length > 0, `${context}.result must be non-empty`);
+  for (const [index, result] of payload.result.entries()) {
+    const resultContext = `${context}.result[${index}]`;
+    assertExactKeys(result, ["meta", "results", "success"], resultContext);
+    assert.equal(result.success, true, `${resultContext} was unsuccessful`);
+    assertJsonObject(result.meta, `${resultContext}.meta`);
+    assertExactKeys(result.results, ["columns", "rows"], `${resultContext}.results`);
+    assert.ok(Array.isArray(result.results.columns), `${resultContext}.results.columns must be an array`);
+    assert.ok(
+      result.results.columns.every((column) => typeof column === "string"),
+      `${resultContext}.results.columns must contain strings`,
+    );
+    assert.equal(
+      new Set(result.results.columns).size,
+      result.results.columns.length,
+      `${resultContext}.results.columns must be unique`,
+    );
+    assert.ok(Array.isArray(result.results.rows), `${resultContext}.results.rows must be an array`);
+    assert.ok(
+      result.results.rows.every((row) => Array.isArray(row) && row.length === result.results.columns.length),
+      `${resultContext}.results.rows must match the column width`,
+    );
+  }
+  return payload.result;
+}
+
+async function liveExecute(server, sql, context) {
+  await localD1Raw(server, sql, context);
+}
+
+async function liveQuery(server, sql, context = "local D1 query failed") {
+  const result = (await localD1Raw(server, sql, context)).at(-1).results;
+  return result.rows.map((row) => Object.fromEntries(
+    result.columns.map((column, index) => [column, row[index]]),
+  ));
 }
 
 async function startWorker(stateDirectory, assetsDirectory, port) {
@@ -83,15 +240,25 @@ async function startWorker(stateDirectory, assetsDirectory, port) {
       await stopWorker({ child, exited });
       throw new Error(`wrangler dev exited before readiness (${JSON.stringify(earlyExit)}):\n${logs}`);
     }
+    let response;
     try {
-      const response = await fetch(`${origin}/api/health`);
-      if (response.status === 200) {
-        await response.body?.cancel();
-        return { child, exited, origin, logs: () => logs };
-      }
-      await response.body?.cancel();
+      response = await fetch(`${origin}/api/health`);
     } catch {
       // workerd has not bound its local port yet.
+      continue;
+    }
+    if (response.status !== 200) {
+      await response.body?.cancel();
+      continue;
+    }
+    await response.body?.cancel();
+    const server = { child, exited, origin, logs: () => logs };
+    try {
+      server.databaseId = await discoverLocalD1Database(server);
+      return server;
+    } catch (error) {
+      await stopWorker(server);
+      throw new Error(`wrangler local D1 discovery failed:\n${error?.message || error}\n${logs}`);
     }
   }
   await stopWorker({ child, exited });
@@ -332,12 +499,12 @@ test("Family Alignment is redacted, bounded, owner-scoped, revocable, and retain
     });
     assert.equal(foreignRevoke.response.status, 404);
 
-    const initialExpiryState = query(stateDirectory, `
+    const initialExpiryState = (await liveQuery(server, `
       SELECT expires_at,
              length(expires_at)=19 AS canonical_length,
              strftime('%Y-%m-%d %H:%M:%S',julianday(expires_at))=expires_at AS canonical_value
         FROM family_alignment_rooms WHERE id=${sqlLiteral(mainRoom.id)};
-    `)[0];
+    `))[0];
     assert.deepEqual(
       [Number(initialExpiryState.canonical_length), Number(initialExpiryState.canonical_value)],
       [1, 1],
@@ -357,24 +524,24 @@ test("Family Alignment is redacted, bounded, owner-scoped, revocable, and retain
     for (const privateValue of [...main.privateValues, main.project.id, main.comparison.id, main.comparison.scenarios[0].id]) {
       assert.equal(publicJson.includes(privateValue), false, `public review leaked ${privateValue}`);
     }
-    const successfulReadState = query(stateDirectory, `
+    const successfulReadState = (await liveQuery(server, `
       SELECT access_count,last_accessed_at FROM family_alignment_rooms WHERE id=${sqlLiteral(mainRoom.id)};
-    `)[0];
+    `))[0];
     assert.equal(Number(successfulReadState.access_count), 1, "one admitted read must increment exactly once");
     assert.ok(successfulReadState.last_accessed_at, "one admitted read must record its access time");
 
     // The public comparison must not survive a dependency failure or a revoke
     // that wins after the initial token lookup but before final read admission.
     // These real-D1 triggers deterministically exercise both interleavings.
-    requireD1Success(d1(
-      stateDirectory,
-      "execute",
+    await liveExecute(
+      server,
       "DROP TRIGGER e2e_fail_family_analytics;",
-    ), "enabling aggregate observation for read admission failed");
-    const openedEventsBeforeAdmission = Number(query(
-      stateDirectory,
+      "enabling aggregate observation for read admission failed",
+    );
+    const openedEventsBeforeAdmission = Number((await liveQuery(
+      server,
       "SELECT COALESCE(SUM(event_count),0) AS count FROM product_event_aggregates WHERE event_name='family_alignment_review_opened';",
-    )[0].count);
+    ))[0].count);
     const readAdmission = await createDecision(server.origin, owner, "READ_ADMISSION", [39, 59], "Pune");
     const readAdmissionCreated = await createRoom(
       server.origin,
@@ -385,16 +552,16 @@ test("Family Alignment is redacted, bounded, owner-scoped, revocable, and retain
     assert.equal(readAdmissionCreated.response.status, 201, JSON.stringify(readAdmissionCreated.payload));
     const readAdmissionRoom = readAdmissionCreated.payload.room;
     const readAdmissionToken = roomToken(readAdmissionRoom);
-    requireD1Success(d1(
-      stateDirectory,
-      "execute",
+    await liveExecute(
+      server,
       `CREATE TRIGGER e2e_fail_family_read_admission
          BEFORE UPDATE OF access_count ON family_alignment_rooms
          WHEN OLD.id=${sqlLiteral(readAdmissionRoom.id)}
        BEGIN
          SELECT RAISE(ABORT, 'synthetic private read admission outage');
        END;`,
-    ), "installing the read-admission failure failed");
+      "installing the read-admission failure failed",
+    );
     const failedAdmission = await call(
       server.origin,
       `/api/family-alignment/${readAdmissionToken}`,
@@ -402,9 +569,8 @@ test("Family Alignment is redacted, bounded, owner-scoped, revocable, and retain
     assert.equal(failedAdmission.response.status, 503, JSON.stringify(failedAdmission.payload));
     assert.equal(Object.hasOwn(failedAdmission.payload, "room"), false);
     assert.equal(JSON.stringify(failedAdmission.payload).includes("synthetic private read admission outage"), false);
-    requireD1Success(d1(
-      stateDirectory,
-      "execute",
+    await liveExecute(
+      server,
       `DROP TRIGGER e2e_fail_family_read_admission;
        CREATE TRIGGER e2e_revoke_family_before_read_admission
          BEFORE UPDATE OF access_count ON family_alignment_rooms
@@ -413,7 +579,8 @@ test("Family Alignment is redacted, bounded, owner-scoped, revocable, and retain
          UPDATE family_alignment_rooms SET revoked_at=datetime('now') WHERE id=OLD.id;
          SELECT RAISE(IGNORE);
        END;`,
-    ), "installing the read-vs-revoke interleaving failed");
+      "installing the read-vs-revoke interleaving failed",
+    );
     const revokeWonAdmission = await call(
       server.origin,
       `/api/family-alignment/${readAdmissionToken}`,
@@ -421,18 +588,18 @@ test("Family Alignment is redacted, bounded, owner-scoped, revocable, and retain
     assert.equal(revokeWonAdmission.response.status, 410, JSON.stringify(revokeWonAdmission.payload));
     assert.equal(revokeWonAdmission.payload.code, "family_alignment_unavailable");
     assert.equal(Object.hasOwn(revokeWonAdmission.payload, "room"), false);
-    const readAdmissionState = query(stateDirectory, `
+    const readAdmissionState = (await liveQuery(server, `
       SELECT access_count,last_accessed_at,revoked_at
         FROM family_alignment_rooms WHERE id=${sqlLiteral(readAdmissionRoom.id)};
-    `)[0];
+    `))[0];
     assert.equal(Number(readAdmissionState.access_count), 0);
     assert.equal(readAdmissionState.last_accessed_at, null);
     assert.ok(readAdmissionState.revoked_at);
-    requireD1Success(d1(
-      stateDirectory,
-      "execute",
+    await liveExecute(
+      server,
       "DROP TRIGGER e2e_revoke_family_before_read_admission;",
-    ), "dropping the read-vs-revoke interleaving failed");
+      "dropping the read-vs-revoke interleaving failed",
+    );
     const deletedReadAdmissionProject = await call(
       server.origin,
       `/api/projects/${readAdmission.project.id}`,
@@ -450,9 +617,8 @@ test("Family Alignment is redacted, bounded, owner-scoped, revocable, and retain
     assert.equal(archiveAdmissionCreated.response.status, 201, JSON.stringify(archiveAdmissionCreated.payload));
     const archiveAdmissionRoom = archiveAdmissionCreated.payload.room;
     const archiveAdmissionToken = roomToken(archiveAdmissionRoom);
-    requireD1Success(d1(
-      stateDirectory,
-      "execute",
+    await liveExecute(
+      server,
       `CREATE TRIGGER e2e_archive_family_before_read_admission
          BEFORE UPDATE OF access_count ON family_alignment_rooms
          WHEN OLD.id=${sqlLiteral(archiveAdmissionRoom.id)}
@@ -460,7 +626,8 @@ test("Family Alignment is redacted, bounded, owner-scoped, revocable, and retain
          UPDATE projects SET status='archived' WHERE id=OLD.project_id;
          SELECT RAISE(IGNORE);
        END;`,
-    ), "installing the read-vs-archive interleaving failed");
+      "installing the read-vs-archive interleaving failed",
+    );
     const archiveWonAdmission = await call(
       server.origin,
       `/api/family-alignment/${archiveAdmissionToken}`,
@@ -468,20 +635,20 @@ test("Family Alignment is redacted, bounded, owner-scoped, revocable, and retain
     assert.equal(archiveWonAdmission.response.status, 410, JSON.stringify(archiveWonAdmission.payload));
     assert.equal(archiveWonAdmission.payload.code, "family_alignment_unavailable");
     assert.equal(Object.hasOwn(archiveWonAdmission.payload, "room"), false);
-    const archiveAdmissionState = query(stateDirectory, `
+    const archiveAdmissionState = (await liveQuery(server, `
       SELECT r.access_count,r.last_accessed_at,p.status AS project_status
         FROM family_alignment_rooms r
         JOIN projects p ON p.id=r.project_id
        WHERE r.id=${sqlLiteral(archiveAdmissionRoom.id)};
-    `)[0];
+    `))[0];
     assert.equal(Number(archiveAdmissionState.access_count), 0);
     assert.equal(archiveAdmissionState.last_accessed_at, null);
     assert.equal(archiveAdmissionState.project_status, "archived");
-    requireD1Success(d1(
-      stateDirectory,
-      "execute",
+    await liveExecute(
+      server,
       "DROP TRIGGER e2e_archive_family_before_read_admission;",
-    ), "dropping the read-vs-archive interleaving failed");
+      "dropping the read-vs-archive interleaving failed",
+    );
     const deletedArchiveAdmissionProject = await call(
       server.origin,
       `/api/projects/${archiveAdmission.project.id}`,
@@ -515,9 +682,8 @@ test("Family Alignment is redacted, bounded, owner-scoped, revocable, and retain
     assert.equal(expiryAdmissionCreated.response.status, 201, JSON.stringify(expiryAdmissionCreated.payload));
     const expiryAdmissionRoom = expiryAdmissionCreated.payload.room;
     const expiryAdmissionToken = roomToken(expiryAdmissionRoom);
-    requireD1Success(d1(
-      stateDirectory,
-      "execute",
+    await liveExecute(
+      server,
       `DROP TRIGGER family_alignment_room_identity_immutable;
        CREATE TRIGGER e2e_invalidate_family_expiry_before_read_admission
          BEFORE UPDATE OF access_count ON family_alignment_rooms
@@ -533,7 +699,8 @@ test("Family Alignment is redacted, bounded, owner-scoped, revocable, and retain
          UPDATE family_alignment_rooms SET expires_at=datetime('now','-1 second') WHERE id=OLD.id;
          SELECT RAISE(IGNORE);
        END;`,
-    ), "installing malformed and expired read-admission interleavings failed");
+      "installing malformed and expired read-admission interleavings failed",
+    );
     const invalidExpiryRead = await call(
       server.origin,
       `/api/family-alignment/${invalidExpiryToken}`,
@@ -541,12 +708,12 @@ test("Family Alignment is redacted, bounded, owner-scoped, revocable, and retain
     assert.equal(invalidExpiryRead.response.status, 503, JSON.stringify(invalidExpiryRead.payload));
     assert.equal(Object.hasOwn(invalidExpiryRead.payload, "room"), false);
     assert.equal(JSON.stringify(invalidExpiryRead.payload).includes("2027-02-30"), false);
-    requireD1Success(d1(
-      stateDirectory,
-      "execute",
+    await liveExecute(
+      server,
       `UPDATE family_alignment_rooms SET expires_at='2099-01-02T03:04:05'
         WHERE id=${sqlLiteral(invalidExpiryRoom.id)};`,
-    ), "installing a non-canonical stored expiry failed");
+      "installing a non-canonical stored expiry failed",
+    );
     const nonCanonicalExpiryRead = await call(
       server.origin,
       `/api/family-alignment/${invalidExpiryToken}`,
@@ -562,15 +729,14 @@ test("Family Alignment is redacted, bounded, owner-scoped, revocable, and retain
     assert.equal(expiryWonAdmission.payload.code, "family_alignment_expired");
     assert.equal(Object.hasOwn(expiryWonAdmission.payload, "room"), false);
     for (const fixture of [invalidExpiryRoom, expiryAdmissionRoom]) {
-      const state = query(stateDirectory, `
+      const state = (await liveQuery(server, `
         SELECT access_count,last_accessed_at FROM family_alignment_rooms WHERE id=${sqlLiteral(fixture.id)};
-      `)[0];
+      `))[0];
       assert.equal(Number(state.access_count), 0);
       assert.equal(state.last_accessed_at, null);
     }
-    requireD1Success(d1(
-      stateDirectory,
-      "execute",
+    await liveExecute(
+      server,
       `DROP TRIGGER e2e_invalidate_family_expiry_before_read_admission;
        DROP TRIGGER e2e_expire_family_before_read_admission;
        CREATE TRIGGER family_alignment_room_identity_immutable
@@ -587,7 +753,8 @@ test("Family Alignment is redacted, bounded, owner-scoped, revocable, and retain
        BEGIN
          SELECT RAISE(ABORT, 'family alignment room identity is immutable');
        END;`,
-    ), "restoring the immutable room identity fence failed");
+      "restoring the immutable room identity fence failed",
+    );
     for (const fixture of [invalidExpiryAdmission, expiryAdmission]) {
       const deletedFixture = await call(
         server.origin,
@@ -596,18 +763,18 @@ test("Family Alignment is redacted, bounded, owner-scoped, revocable, and retain
       );
       assert.equal(deletedFixture.response.status, 204, JSON.stringify(deletedFixture.payload));
     }
-    assert.equal(Number(query(
-      stateDirectory,
+    assert.equal(Number((await liveQuery(
+      server,
       "SELECT COALESCE(SUM(event_count),0) AS count FROM product_event_aggregates WHERE event_name='family_alignment_review_opened';",
-    )[0].count), openedEventsBeforeAdmission, "closed or failed reads must not emit successful-open events");
-    requireD1Success(d1(
-      stateDirectory,
-      "execute",
+    ))[0].count), openedEventsBeforeAdmission, "closed or failed reads must not emit successful-open events");
+    await liveExecute(
+      server,
       `CREATE TRIGGER e2e_fail_family_analytics
          BEFORE INSERT ON product_event_aggregates
          WHEN NEW.event_name LIKE 'family_alignment_%'
        BEGIN SELECT RAISE(ABORT, 'synthetic family analytics outage'); END;`,
-    ), "restoring the ancillary analytics failure failed");
+      "restoring the ancillary analytics failure failed",
+    );
 
     const invalidBody = await submitResponse(server.origin, mainToken, responseToken(), {
       role: "spouse",
@@ -682,9 +849,9 @@ test("Family Alignment is redacted, bounded, owner-scoped, revocable, and retain
     assertNoForbiddenPublicFields(afterChoicePublic.payload);
     assert.equal(JSON.stringify(afterChoicePublic.payload).includes(chosenScenarioId), false);
 
-    const ordersBeforeRevoke = query(stateDirectory, "SELECT COUNT(*) AS count FROM orders;");
+    const ordersBeforeRevoke = await liveQuery(server, "SELECT COUNT(*) AS count FROM orders;");
     assert.equal(Number(ordersBeforeRevoke[0].count), 0);
-    const selectionBeforeRevoke = query(stateDirectory, `SELECT scenario_id,locked_at FROM decision_selections WHERE comparison_id=${sqlLiteral(main.comparison.id)};`);
+    const selectionBeforeRevoke = await liveQuery(server, `SELECT scenario_id,locked_at FROM decision_selections WHERE comparison_id=${sqlLiteral(main.comparison.id)};`);
     assert.equal(selectionBeforeRevoke[0].scenario_id, chosenScenarioId);
     assert.equal(selectionBeforeRevoke[0].locked_at, null);
 
@@ -724,9 +891,8 @@ test("Family Alignment is redacted, bounded, owner-scoped, revocable, and retain
     assert.equal(mainV2Created.response.status, 201, JSON.stringify(mainV2Created.payload));
     const mainV2Room = mainV2Created.payload.room;
     const mainV2Token = roomToken(mainV2Room);
-    requireD1Success(d1(
-      stateDirectory,
-      "execute",
+    await liveExecute(
+      server,
       `DROP TRIGGER family_alignment_room_identity_immutable;
        UPDATE family_alignment_rooms
           SET created_at=(SELECT created_at FROM family_alignment_rooms WHERE id=${sqlLiteral(mainRoom.id)})
@@ -745,7 +911,8 @@ test("Family Alignment is redacted, bounded, owner-scoped, revocable, and retain
        BEGIN
          SELECT RAISE(ABORT, 'family alignment room identity is immutable');
        END;`,
-    ), "same-second room ordering fixture failed");
+      "same-second room ordering fixture failed",
+    );
     const orderedOwnerRead = await call(server.origin, `/api/projects/${main.project.id}/family-alignment`, { auth: owner });
     assert.equal(orderedOwnerRead.response.status, 200, JSON.stringify(orderedOwnerRead.payload));
     assert.equal(orderedOwnerRead.payload.room.id, mainV2Room.id);
@@ -765,21 +932,21 @@ test("Family Alignment is redacted, bounded, owner-scoped, revocable, and retain
     assert.ok([201, 410].includes(racedWrite.response.status), JSON.stringify(racedWrite.payload));
     const closedV2Read = await call(server.origin, `/api/family-alignment/${mainV2Token}`);
     assert.equal(closedV2Read.response.status, 410);
-    const racedState = query(stateDirectory, `
+    const racedState = (await liveQuery(server, `
       SELECT r.response_count,(SELECT COUNT(*) FROM family_alignment_responses f WHERE f.room_id=r.id) AS actual_count
         FROM family_alignment_rooms r WHERE r.id=${sqlLiteral(mainV2Room.id)};
-    `)[0];
+    `))[0];
     assert.equal(Number(racedState.response_count), Number(racedState.actual_count));
     assert.equal(Number(racedState.actual_count), racedWrite.response.status === 201 ? 1 : 0);
     const postRaceWrite = await submitResponse(server.origin, mainV2Token, raceReceipt, {
       role: "parent", preference: "B", confidence: "low", reasons: ["budget"],
     });
     assert.equal(postRaceWrite.response.status, 410);
-    requireD1Success(d1(
-      stateDirectory,
-      "execute",
+    await liveExecute(
+      server,
       `DELETE FROM family_alignment_responses WHERE room_id=${sqlLiteral(mainV2Room.id)};`,
-    ), "race fixture cleanup failed");
+      "race fixture cleanup failed",
+    );
 
     const concurrent = await createDecision(server.origin, owner, "CONCURRENT", [41, 63], "Pune");
     const idemMismatch = await createRoom(server.origin, owner, concurrent, "family-main-create");
@@ -842,13 +1009,13 @@ test("Family Alignment is redacted, bounded, owner-scoped, revocable, and retain
     }
     const deletedProject = await call(server.origin, `/api/projects/${deletable.project.id}`, { method: "DELETE", auth: owner });
     assert.equal(deletedProject.response.status, 204, JSON.stringify(deletedProject.payload));
-    const deletedRows = query(stateDirectory, `
+    const deletedRows = (await liveQuery(server, `
       SELECT
         (SELECT COUNT(*) FROM projects WHERE id=${sqlLiteral(deletable.project.id)}) AS project_count,
         (SELECT COUNT(*) FROM decision_comparisons WHERE id=${sqlLiteral(deletable.comparison.id)}) AS comparison_count,
         (SELECT COUNT(*) FROM family_alignment_rooms WHERE id=${sqlLiteral(deletableRoom.id)}) AS room_count,
         (SELECT COUNT(*) FROM family_alignment_responses WHERE room_id=${sqlLiteral(deletableRoom.id)}) AS response_count;
-    `)[0];
+    `))[0];
     assert.deepEqual(deletedRows, { project_count: 0, comparison_count: 0, room_count: 0, response_count: 0 });
 
     capturedLogs.push(server.logs());
@@ -917,7 +1084,7 @@ test("Family Alignment is redacted, bounded, owner-scoped, revocable, and retain
     const scheduledBody = await scheduled.text();
     const cleanupDeadline = Date.now() + 10_000;
     while (Date.now() < cleanupDeadline) {
-      const remaining = query(stateDirectory, "SELECT COUNT(*) AS count FROM family_alignment_rooms;");
+      const remaining = await liveQuery(server, "SELECT COUNT(*) AS count FROM family_alignment_rooms;");
       if (Number(remaining[0].count) === 3) break;
       await wait(250);
     }

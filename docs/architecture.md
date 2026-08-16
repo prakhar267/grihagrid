@@ -95,6 +95,12 @@ Separate `dev`, `staging` and `production` D1/R2/KV resources and secrets. Produ
 ## Reliability targets
 
 - Public calculator availability: 99.9% monthly.
+- Health, readiness, and deterministic estimate p95: under 500 ms. Readiness
+  folds the exact table/column/object contract into one metadata inventory and
+  keeps only the dynamic handoff switch as a second uncached D1 read. Releases
+  retain 20 serial exact-version samples per environment and block before the
+  authenticated canary unless nearest-rank readiness p95 is strictly below the
+  target with every capability/closure assertion intact.
 - Paid order creation: 99.9%; no duplicate fulfillment.
 - Report pipeline: 99% completed within plan SLA; p95 queue age under 5 minutes for instant plans.
 - RPO: 24 hours at launch, moving to 1 hour with scheduled D1 exports. RTO: 4 hours.

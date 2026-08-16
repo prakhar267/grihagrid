@@ -63,7 +63,13 @@ interleaved within their own real-D1 fixtures.
 - `GET /api/readiness`: 200 only with current D1 schema, including
   `projectCreationSchema=current`, and KV; otherwise 503,
   while separately reporting AI schema/admission/config validity and optional
-  upload and checkout capability.
+  upload and checkout capability. On the fully current path, assert exactly one
+  read-only metadata inventory plus at most one uncached Professional Handoff
+  control read—no application-row scan, D1 write, or per-object round trip.
+  Remove one required table, column, index, and trigger in turn; return the
+  corresponding granular `outdated` state. Malformed/duplicate/missing
+  inventory rows, query failure, and an absent or malformed control row must
+  fail closed without exposing schema SQL or control data.
 - `POST /api/estimate`: exact five-field allowlist; primitive finite width and
   length at inclusive 10/500 boundaries; missing/null optional defaults; every
   supported city/floor/finish; malformed JSON; wrong content type; scalar type
@@ -520,6 +526,10 @@ interleaved within their own real-D1 fixtures.
 Attach to the release record, without secrets or customer data:
 
 - commit SHA, Cloudflare version ID, applied migration list and operator;
+- both exact-version 20-sample readiness latency artifacts with 20/20 contract
+  success and nearest-rank p95 strictly below 500 ms; for a no-migration
+  release, the pre-deploy lists must also prove zero unexpected remote pending
+  migrations;
 - output of `npm ci`, `npm run check:migrations`, `npm run check`, both Worker
   dry-runs, and `npm audit --audit-level=high`;
 - staging and production read-only smoke JSON with timestamp and latency;

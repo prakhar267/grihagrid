@@ -10,6 +10,7 @@ const files = Object.freeze({
   deployWorkflow: new URL("../.github/workflows/deploy.yml", import.meta.url),
   smoke: new URL("./smoke.mjs", import.meta.url),
   waitForRelease: new URL("./wait-for-release.mjs", import.meta.url),
+  readinessLatency: new URL("./readiness-latency.mjs", import.meta.url),
   authenticatedSmoke: new URL("./authenticated-smoke.mjs", import.meta.url),
   releaseDbEvidence: new URL("./release-db-evidence.mjs", import.meta.url),
   worker: new URL("../worker/index.js", import.meta.url),
@@ -44,7 +45,7 @@ function workflowStep(source, name) {
 }
 
 export async function checkOpsConfig() {
-  const [wrangler, packageText, gitignore, ci, smokeWorkflow, deployWorkflow, smoke, waitForRelease, authenticatedSmoke, releaseDbEvidence, worker] = await Promise.all(
+  const [wrangler, packageText, gitignore, ci, smokeWorkflow, deployWorkflow, smoke, waitForRelease, readinessLatency, authenticatedSmoke, releaseDbEvidence, worker] = await Promise.all(
     Object.values(files).map((file) => readFile(file, "utf8")),
   );
   const packageJson = JSON.parse(packageText);
@@ -203,6 +204,19 @@ export async function checkOpsConfig() {
   assert.match(waitForRelease, /smoke\(origin, \{ expectedReleaseId, legacyWorker, expectReportHandoff \}\)/u, "release polling must pass legacy and handoff-control expectations to every smoke sample");
   assert.match(waitForRelease, /LEGACY_WORKER_COMPAT === "true"/u, "release polling CLI must expose legacy compatibility mode");
   assert.match(waitForRelease, /EXPECT_REPORT_HANDOFF !== "false"/u, "release polling CLI must expose closed-control propagation mode");
+  assert.match(readinessLatency, /const DEFAULT_SAMPLE_COUNT = 20/u, "readiness latency must retain twenty raw samples");
+  assert.match(readinessLatency, /const DEFAULT_MAX_P95_MS = 500/u, "readiness latency must gate p95 below 500 ms");
+  assert.match(readinessLatency, /nearestRankPercentile\(latencies, 0\.95\)/u, "readiness latency must use nearest-rank p95");
+  assert.match(readinessLatency, /if \(!\(p95Ms < maxP95Ms\)\)/u, "the p95 threshold must be strictly below its bound");
+  assert.match(readinessLatency, /"cache-control": "no-cache"/u, "readiness samples must bypass shared caches");
+  assert.match(readinessLatency, /response\.headers\.get\("cache-control"\), "no-store"/u, "readiness samples must require an uncacheable response");
+  for (const capability of ["privateUploads", "paidCheckout", "paidFulfillment"]) {
+    assert.match(readinessLatency, new RegExp(`"${capability}"`, "u"), `readiness latency must prove ${capability} remains closed`);
+  }
+  assert.equal((deployWorkflow.match(/^\s*id: readiness_latency$/gmu) || []).length, 2, "both environments must use an exact-version readiness latency gate");
+  assert.equal((deployWorkflow.match(/readiness-latency\.mjs/gu) || []).length, 2, "both environments must run the reviewed readiness sampler");
+  assert.match(deployWorkflow, /release-evidence\/staging\/readiness-latency\.json/u, "staging latency evidence must be preserved");
+  assert.match(deployWorkflow, /release-evidence\/production\/readiness-latency\.json/u, "production latency evidence must be preserved");
   assert.match(releaseDbEvidence, /buildCanaryResidueSql/u, "release evidence must build an exact canary-ID residue query");
   for (const table of ["projects", "project_revisions", "reports", "project_revision_reports", "report_feedback", "report_shares"]) {
     assert.match(
@@ -313,8 +327,35 @@ export async function checkOpsConfig() {
   assert.match(releaseDbEvidence, /report handoff control must contain exactly one row/u, "release evidence must require exactly one report-handoff control row");
   assert.match(releaseDbEvidence, /expectedEnabled: false/u, "post-migration evidence must require the report-handoff control to start disabled");
   assert.match(releaseDbEvidence, /the report handoff control must be enabled after release checks/u, "post-canary evidence must require the control to finish enabled on success");
-  assert.match(worker, /'report_handoff_enabled_insert_guard'/u, "readiness must inventory the enabled-control insert fence");
-  assert.match(worker, /Number\(shareObjects\?\.trigger_count\) === 5/u, "readiness must require all five report-handoff triggers");
+  const reportShareManifest = worker.match(
+    /reportShare:\s*readinessManifest\(\{(?<body>[\s\S]*?)\n\s*\}\),\n\s*projectCreation:/u,
+  )?.groups?.body;
+  assert.ok(reportShareManifest, "readiness must define the report-share manifest");
+  const reportShareTriggerSource = reportShareManifest.match(
+    /triggers:\s*\[(?<triggers>[\s\S]*?)\],\n\s*columns:/u,
+  )?.groups?.triggers;
+  assert.ok(reportShareTriggerSource, "readiness must inventory report-share triggers");
+  assert.deepEqual(
+    [...reportShareTriggerSource.matchAll(/"([a-z0-9_]+)"/gu)].map((match) => match[1]),
+    [
+      "report_share_sections_insert_guard",
+      "report_share_identity_immutable",
+      "archived_report_share_insert_guard",
+      "report_share_active_limit_insert",
+      "report_handoff_enabled_insert_guard",
+    ],
+    "readiness must require all five exact report-handoff triggers",
+  );
+  assert.match(
+    worker,
+    /const reportShareStructureCurrent = readinessInventoryHas\(inventory, READINESS_MANIFESTS\.reportShare\)/u,
+    "readiness must gate report sharing on its complete manifest",
+  );
+  assert.match(
+    worker,
+    /const reportShareSchema = reportShareStructureCurrent && reportHandoffControlState !== "unavailable"/u,
+    "readiness must fail report-share schema closed when the live control is unavailable",
+  );
   assert.match(
     worker,
     /DELETE FROM report_shares WHERE expires_at<datetime\('now','-90 days'\) OR \(revoked_at IS NOT NULL AND revoked_at<datetime\('now','-90 days'\)\)/u,
@@ -356,7 +397,7 @@ export async function checkOpsConfig() {
     "both migration-bearing environment releases must rehearse the previous Worker even when the remote migration was applied earlier",
   );
   assert.equal(
-    (deployWorkflow.match(/if: steps\.migrations\.outputs\.pending == 'true'/gu) || []).length,
+    (deployWorkflow.match(/^\s*if: steps\.migrations\.outputs\.pending == 'true'$/gmu) || []).length,
     6,
     "backup creation, encryption, and storage must remain keyed only to actual pending remote migrations",
   );
@@ -401,11 +442,51 @@ export async function checkOpsConfig() {
       );
     }
 
+    const migrationInspectionName = `Inspect pending ${environment} migrations and aggregate data state`;
+    const migrationDriftName = `Reject unexpected ${environment} migration drift`;
+    const migrationDrift = workflowStep(deployWorkflow, migrationDriftName);
+    assert.match(migrationDrift, /id: migration_drift_guard/u, `${environment} drift validation must expose a downstream gate`);
+    assert.match(migrationDrift, /AUTHORIZED_MIGRATIONS: \$\{\{ needs\.authorize\.outputs\.migrations \}\}/u, `${environment} drift validation must use the authorized release scope`);
+    assert.match(migrationDrift, /REMOTE_PENDING_MIGRATIONS: \$\{\{ steps\.migrations\.outputs\.pending \}\}/u, `${environment} drift validation must use the inspected remote state`);
+    assert.match(migrationDrift, /\[\[ "\$AUTHORIZED_MIGRATIONS" == "false" && "\$REMOTE_PENDING_MIGRATIONS" == "true" \]\]/u, `${environment} must reject remote migration drift outside a migration-bearing release`);
+    assert.doesNotMatch(migrationDrift, /continue-on-error/u, `${environment} migration drift rejection must be a hard stop`);
+    assert.match(migrationDrift, /exit 1/u, `${environment} migration drift rejection must fail before mutation`);
+    const migrationOrder = [
+      migrationInspectionName,
+      migrationDriftName,
+      `Create protected ${environment} export and recovery point`,
+      `Apply and verify ${environment} migrations`,
+      `Deploy authorized SHA to ${environment}`,
+    ].map((name) => deployWorkflow.indexOf(`      - name: ${name}`));
+    assert.ok(
+      migrationOrder.every((position, index) => position >= 0 && (index === 0 || position > migrationOrder[index - 1])),
+      `${environment} must reject unexpected drift before backup, migration, or deployment`,
+    );
+
     const propagation = workflowStep(deployWorkflow, `Wait for three exact ${environment} smoke samples`);
     assert.match(propagation, /EXPECT_REPORT_HANDOFF:\s*"false"/u, `${environment} exact-version propagation must run while report handoff remains closed`);
 
+    const latency = workflowStep(deployWorkflow, `Gate ${environment} readiness latency on the exact version`);
+    assert.match(latency, /if: steps\.propagation\.outcome == 'success'/u, `${environment} latency must follow exact-version propagation`);
+    assert.match(latency, /continue-on-error:\s*true/u, `${environment} latency failure must reach fail-closed rollback handling`);
+    assert.match(latency, /GRIHAGRID_READINESS_ORIGIN:\s*\$\{\{ env\.ORIGIN \}\}/u, `${environment} latency must use the configured release origin`);
+    assert.match(latency, /GRIHAGRID_RELEASE_ID:\s*\$\{\{ steps\.version\.outputs\.version_id \}\}/u, `${environment} latency must bind every sample to the deployed Worker version`);
+    assert.match(latency, /GRIHAGRID_RELEASE_SHA:\s*\$\{\{ env\.RELEASE_SHA \}\}/u, `${environment} latency evidence must identify the merged release SHA`);
+    assert.match(latency, /EXPECT_REPORT_HANDOFF:\s*"false"/u, `${environment} latency must run while report handoff is closed`);
+    assert.match(
+      latency,
+      new RegExp(`EXPECT_AI_PLANNING_BRIEF:\\s*"${environment === "production" ? "true" : "false"}"`, "u"),
+      `${environment} latency must assert the environment's reviewed AI capability`,
+    );
+    assert.match(latency, new RegExp(`release-evidence/${environment}/readiness-latency\\.json`, "u"), `${environment} must preserve every latency sample`);
+    assert.doesNotMatch(latency, /secrets\./u, `${environment} public latency sampling must not receive secrets`);
+
     const canary = workflowStep(deployWorkflow, `Run ${environment} authenticated canary under bounded handoff activation`);
-    assert.match(canary, /if: steps\.propagation\.outcome == 'success'/u, `${environment} handoff activation must follow closed exact-version propagation`);
+    assert.match(
+      canary,
+      /if: steps\.propagation\.outcome == 'success' && steps\.readiness_latency\.outcome == 'success'/u,
+      `${environment} handoff activation must follow closed exact-version propagation and latency evidence`,
+    );
     assert.match(canary, /trap reclose_report_handoff_after_canary EXIT/u, `${environment} authenticated canary must install its fail-closed EXIT trap before enabling`);
     assert.match(canary, /UPDATE report_handoff_controls SET enabled=1/u, `${environment} authenticated canary must activate handoff explicitly`);
     assert.match(canary, /UPDATE report_handoff_controls SET enabled=0/u, `${environment} authenticated canary EXIT trap must always re-close handoff`);
@@ -442,6 +523,7 @@ export async function checkOpsConfig() {
     assert.match(counts, /release-db-evidence\.mjs handoff-counts/u, `${environment} post-canary counts must pass bounded validation`);
     const orderedReleaseSteps = [
       `Wait for three exact ${environment} smoke samples`,
+      `Gate ${environment} readiness latency on the exact version`,
       `Run ${environment} authenticated canary under bounded handoff activation`,
       `Prove ${environment} canary left zero database residue`,
       `Prove ${environment} report handoff reclosed after authenticated canary`,
@@ -450,7 +532,7 @@ export async function checkOpsConfig() {
     ].map((name) => deployWorkflow.indexOf(`      - name: ${name}`));
     assert.ok(
       orderedReleaseSteps.every((position, index) => position >= 0 && (index === 0 || position > orderedReleaseSteps[index - 1])),
-      `${environment} must propagate closed, run a bounded canary, prove residue and closure, then restore and count`,
+      `${environment} must propagate closed, gate latency, run a bounded canary, prove residue and closure, then restore and count`,
     );
 
     const unverifiedFailClosed = workflowStep(deployWorkflow, `Disable ${environment} report handoff before unverified rollback`);
@@ -459,8 +541,9 @@ export async function checkOpsConfig() {
 
     const failClosed = workflowStep(deployWorkflow, `Fail closed ${environment} report handoff before regression handling`);
     assert.match(failClosed, /steps\.migrations\.outcome == 'success'/u, `${environment} report handoff failure handling may run only after a verified migration step`);
+    assert.match(failClosed, /steps\.migration_drift_guard\.outcome == 'success'/u, `${environment} drift rejection must not reach the later always() control mutation`);
     assert.match(failClosed, /steps\.version\.outcome != 'success'/u, `${environment} report handoff must close after an unverified or skipped activation`);
-    for (const gate of ["propagation", "canary", "residue", "handoff_reclosed", "handoff_restore", "handoff_counts"]) {
+    for (const gate of ["propagation", "readiness_latency", "canary", "residue", "handoff_reclosed", "handoff_restore", "handoff_counts"]) {
       assert.match(failClosed, new RegExp(`steps\\.${gate}\\.outcome != 'success'`, "u"), `${environment} report handoff must close when ${gate} is not successful`);
     }
     if (environment === "production") {
@@ -472,8 +555,21 @@ export async function checkOpsConfig() {
     const regressionRollback = workflowStep(deployWorkflow, `Roll back a confirmed compatible ${environment} regression`);
     assert.ok(deployWorkflow.indexOf(`Fail closed ${environment} report handoff before regression handling`) < deployWorkflow.indexOf(`Roll back a confirmed compatible ${environment} regression`), `${environment} report handoff must close before compatible rollback`);
     assert.match(regressionRollback, /steps\.handoff_reclosed\.outcome == 'failure'/u, `${environment} closed-control proof failure must trigger compatible rollback`);
+    assert.match(regressionRollback, /steps\.readiness_latency\.outcome == 'failure'/u, `${environment} latency failure must trigger compatible rollback`);
     assert.match(regressionRollback, /steps\.handoff_restore\.outcome == 'failure'/u, `${environment} restore proof failure must trigger compatible rollback`);
     assert.match(regressionRollback, /steps\.handoff_counts\.outcome == 'failure'/u, `${environment} bounded-count failure must trigger compatible rollback`);
+
+    const finalFailure = workflowStep(
+      deployWorkflow,
+      environment === "staging"
+        ? "Fail closed after a staging release regression"
+        : "Fail closed after a production release or monitoring failure",
+    );
+    assert.match(finalFailure, /steps\.readiness_latency\.outcome == 'failure'/u, `${environment} latency failure must fail the release job`);
+
+    const evidenceUpload = workflowStep(deployWorkflow, `Upload ${environment} release evidence`);
+    assert.match(evidenceUpload, new RegExp(`path: release-evidence/${environment}`, "u"), `${environment} latency JSON must enter the environment evidence artifact`);
+    assert.match(evidenceUpload, /retention-days:\s*30/u, `${environment} latency evidence must be retained for 30 days`);
 
     for (const rollback of ["unverified", "regression"]) {
       const rollbackVerification = workflowStep(

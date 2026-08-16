@@ -507,6 +507,18 @@ jobs:
             echo "login_attempt_fence_pending=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Reject unexpected staging migration drift
+        id: migration_drift_guard
+        env:
+          AUTHORIZED_MIGRATIONS: ${{ needs.authorize.outputs.migrations }}
+          REMOTE_PENDING_MIGRATIONS: ${{ steps.migrations.outputs.pending }}
+        run: |
+          set -euo pipefail
+          if [[ "$AUTHORIZED_MIGRATIONS" == "false" && "$REMOTE_PENDING_MIGRATIONS" == "true" ]]; then
+            echo "staging has pending migrations outside the authorized release diff" >&2
+            exit 1
+          fi
+
       - name: Create protected staging export and recovery point
         id: raw_backup
         if: steps.migrations.outputs.pending == 'true'
@@ -819,9 +831,24 @@ jobs:
           GRIHAGRID_RELEASE_ID: ${{ steps.version.outputs.version_id }}
         run: node scripts/wait-for-release.mjs "$ORIGIN" "$GRIHAGRID_RELEASE_ID" | tee release-evidence/staging/public-smoke.json
 
+      - name: Gate staging readiness latency on the exact version
+        id: readiness_latency
+        if: steps.propagation.outcome == 'success'
+        continue-on-error: true
+        env:
+          GRIHAGRID_READINESS_ORIGIN: ${{ env.ORIGIN }}
+          GRIHAGRID_RELEASE_ID: ${{ steps.version.outputs.version_id }}
+          GRIHAGRID_RELEASE_SHA: ${{ env.RELEASE_SHA }}
+          EXPECT_AI_PLANNING_BRIEF: "false"
+          EXPECT_REPORT_HANDOFF: "false"
+        run: |
+          set -euo pipefail
+          node scripts/readiness-latency.mjs "$GRIHAGRID_READINESS_ORIGIN" "$GRIHAGRID_RELEASE_ID" \
+            | tee release-evidence/staging/readiness-latency.json
+
       - name: Run staging authenticated canary under bounded handoff activation
         id: canary
-        if: steps.propagation.outcome == 'success'
+        if: steps.propagation.outcome == 'success' && steps.readiness_latency.outcome == 'success'
         continue-on-error: true
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -1048,8 +1075,10 @@ jobs:
         if: >-
           always() &&
           steps.migrations.outcome == 'success' &&
+          steps.migration_drift_guard.outcome == 'success' &&
           (steps.version.outcome != 'success' ||
            steps.propagation.outcome != 'success' ||
+           steps.readiness_latency.outcome != 'success' ||
            steps.canary.outcome != 'success' ||
            steps.residue.outcome != 'success' ||
            steps.handoff_reclosed.outcome != 'success' ||
@@ -1078,6 +1107,7 @@ jobs:
            (steps.rollback_compat.outcome == 'success' && steps.rollback_residue.outcome == 'success')) &&
           steps.version.outcome == 'success' &&
           (steps.propagation.outcome == 'failure' ||
+           steps.readiness_latency.outcome == 'failure' ||
            steps.canary.outcome == 'failure' ||
            steps.residue.outcome == 'failure' ||
            steps.handoff_reclosed.outcome == 'failure' ||
@@ -1116,6 +1146,7 @@ jobs:
         if: >-
           always() &&
           (steps.propagation.outcome == 'failure' ||
+           steps.readiness_latency.outcome == 'failure' ||
            steps.canary.outcome == 'failure' ||
            steps.residue.outcome == 'failure' ||
            steps.handoff_reclosed.outcome == 'failure' ||
@@ -1352,6 +1383,18 @@ jobs:
             echo "login_attempt_fence_pending=true" >> "$GITHUB_OUTPUT"
           else
             echo "login_attempt_fence_pending=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Reject unexpected production migration drift
+        id: migration_drift_guard
+        env:
+          AUTHORIZED_MIGRATIONS: ${{ needs.authorize.outputs.migrations }}
+          REMOTE_PENDING_MIGRATIONS: ${{ steps.migrations.outputs.pending }}
+        run: |
+          set -euo pipefail
+          if [[ "$AUTHORIZED_MIGRATIONS" == "false" && "$REMOTE_PENDING_MIGRATIONS" == "true" ]]; then
+            echo "production has pending migrations outside the authorized release diff" >&2
+            exit 1
           fi
 
       - name: Create protected production export and recovery point
@@ -1666,9 +1709,24 @@ jobs:
           GRIHAGRID_RELEASE_ID: ${{ steps.version.outputs.version_id }}
         run: node scripts/wait-for-release.mjs "$ORIGIN" "$GRIHAGRID_RELEASE_ID" | tee release-evidence/production/public-smoke.json
 
+      - name: Gate production readiness latency on the exact version
+        id: readiness_latency
+        if: steps.propagation.outcome == 'success'
+        continue-on-error: true
+        env:
+          GRIHAGRID_READINESS_ORIGIN: ${{ env.ORIGIN }}
+          GRIHAGRID_RELEASE_ID: ${{ steps.version.outputs.version_id }}
+          GRIHAGRID_RELEASE_SHA: ${{ env.RELEASE_SHA }}
+          EXPECT_AI_PLANNING_BRIEF: "true"
+          EXPECT_REPORT_HANDOFF: "false"
+        run: |
+          set -euo pipefail
+          node scripts/readiness-latency.mjs "$GRIHAGRID_READINESS_ORIGIN" "$GRIHAGRID_RELEASE_ID" \
+            | tee release-evidence/production/readiness-latency.json
+
       - name: Run production authenticated canary under bounded handoff activation
         id: canary
-        if: steps.propagation.outcome == 'success'
+        if: steps.propagation.outcome == 'success' && steps.readiness_latency.outcome == 'success'
         continue-on-error: true
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -2039,8 +2097,10 @@ jobs:
         if: >-
           always() &&
           steps.migrations.outcome == 'success' &&
+          steps.migration_drift_guard.outcome == 'success' &&
           (steps.version.outcome != 'success' ||
            steps.propagation.outcome != 'success' ||
+           steps.readiness_latency.outcome != 'success' ||
            steps.canary.outcome != 'success' ||
            steps.residue.outcome != 'success' ||
            steps.handoff_reclosed.outcome != 'success' ||
@@ -2070,6 +2130,7 @@ jobs:
            (steps.rollback_compat.outcome == 'success' && steps.rollback_residue.outcome == 'success')) &&
           steps.version.outcome == 'success' &&
           (steps.propagation.outcome == 'failure' ||
+           steps.readiness_latency.outcome == 'failure' ||
            steps.canary.outcome == 'failure' ||
            steps.residue.outcome == 'failure' ||
            steps.handoff_reclosed.outcome == 'failure' ||
@@ -2111,6 +2172,7 @@ jobs:
         if: >-
           always() &&
           (steps.propagation.outcome == 'failure' ||
+           steps.readiness_latency.outcome == 'failure' ||
            steps.canary.outcome == 'failure' ||
            steps.residue.outcome == 'failure' ||
            steps.handoff_reclosed.outcome == 'failure' ||

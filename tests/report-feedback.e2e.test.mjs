@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -12,6 +13,9 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const wranglerCli = path.join(root, "node_modules", "wrangler", "bin", "wrangler.js");
 const metricsToken = "report-feedback-e2e-metrics-token-2026";
 const reportShareAbuseHmacKey = "ab".repeat(32);
+const localD1ApiPath = "/cdn-cgi/local/explorer/api/d1/database";
+const localD1TimeoutMs = 10_000;
+const localD1MaxResponseBytes = 2 * 1024 * 1024;
 
 function reservePort() {
   return new Promise((resolve, reject) => {
@@ -140,6 +144,107 @@ function requireD1Success(result, context) {
 function query(stateDirectory, sql, context = "D1 query failed") {
   const result = requireD1Success(d1(stateDirectory, "query", sql), context);
   return JSON.parse(result.stdout).flatMap((entry) => entry.results || []);
+}
+
+async function readLocalD1Json(response, context) {
+  const contentType = response.headers.get("content-type") || "";
+  assert.match(contentType, /^application\/json(?:\s*;|$)/iu, `${context}: expected JSON, received ${contentType || "no content type"}`);
+  const contentLength = response.headers.get("content-length");
+  if (contentLength !== null) {
+    assert.match(contentLength, /^\d+$/u, `${context}: invalid content-length ${contentLength}`);
+    assert.ok(Number(contentLength) <= localD1MaxResponseBytes, `${context}: response exceeds ${localD1MaxResponseBytes} bytes`);
+  }
+  assert.ok(response.body, `${context}: response body is missing`);
+  const reader = response.body.getReader();
+  const chunks = [];
+  let bytes = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    bytes += value.byteLength;
+    if (bytes > localD1MaxResponseBytes) {
+      await reader.cancel();
+      assert.fail(`${context}: response exceeds ${localD1MaxResponseBytes} bytes`);
+    }
+    chunks.push(value);
+  }
+  assert.ok(bytes > 0, `${context}: response body is empty`);
+  const text = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), bytes).toString("utf8");
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    assert.fail(`${context}: invalid JSON (${error?.message || error})`);
+  }
+}
+
+function requireLocalD1Envelope(response, payload, context) {
+  assert.equal(response.status, 200, `${context}: HTTP ${response.status}\n${JSON.stringify(payload)}`);
+  assert.ok(payload && typeof payload === "object" && !Array.isArray(payload), `${context}: response must be an object`);
+  assert.equal(payload.success, true, `${context}: ${JSON.stringify(payload.errors || payload)}`);
+  assert.deepEqual(payload.errors, [], `${context}: response contained errors`);
+  assert.ok(Array.isArray(payload.messages), `${context}: messages must be an array`);
+  assert.ok(Array.isArray(payload.result), `${context}: result must be an array`);
+  return payload.result;
+}
+
+async function discoverLocalD1Database(server) {
+  const context = "Wrangler Local Explorer D1 discovery failed";
+  const response = await fetch(`${server.origin}${localD1ApiPath}`, {
+    redirect: "error",
+    headers: {
+      accept: "application/json",
+      "x-miniflare-explorer-no-aggregate": "true",
+    },
+    signal: AbortSignal.timeout(localD1TimeoutMs),
+  });
+  const payload = await readLocalD1Json(response, context);
+  const databases = requireLocalD1Envelope(response, payload, context);
+  assert.ok(payload.result_info && typeof payload.result_info === "object", `${context}: result_info must be an object`);
+  assert.equal(payload.result_info.count, databases.length, `${context}: result count mismatch`);
+  assert.equal(databases.length, 1, `${context}: expected exactly one D1 binding`);
+  const [database] = databases;
+  assert.ok(database && typeof database === "object" && !Array.isArray(database), `${context}: database must be an object`);
+  assert.equal(database.name, "DB", `${context}: unexpected D1 binding`);
+  assert.equal(database.version, "production", `${context}: unexpected D1 version`);
+  assert.match(database.uuid, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu, `${context}: invalid database UUID`);
+  return { origin: server.origin, databaseId: database.uuid };
+}
+
+async function localD1Raw(database, sql, context = "Wrangler Local Explorer D1 query failed") {
+  assert.equal(typeof sql, "string", `${context}: SQL must be a string`);
+  assert.ok(sql.trim(), `${context}: SQL must not be empty`);
+  const response = await fetch(
+    `${database.origin}${localD1ApiPath}/${encodeURIComponent(database.databaseId)}/raw`,
+    {
+      method: "POST",
+      redirect: "error",
+      headers: {
+        "content-type": "application/json",
+        "x-miniflare-explorer-no-aggregate": "true",
+      },
+      body: JSON.stringify({ sql }),
+      signal: AbortSignal.timeout(localD1TimeoutMs),
+    },
+  );
+  const payload = await readLocalD1Json(response, context);
+  const executions = requireLocalD1Envelope(response, payload, context);
+  assert.ok(executions.length > 0, `${context}: raw query returned no execution results`);
+  for (const [executionIndex, execution] of executions.entries()) {
+    assert.ok(execution && typeof execution === "object" && !Array.isArray(execution), `${context}: result ${executionIndex} must be an object`);
+    assert.equal(execution.success, true, `${context}: result ${executionIndex} failed`);
+    assert.ok(execution.meta && typeof execution.meta === "object" && !Array.isArray(execution.meta), `${context}: result ${executionIndex} metadata is missing`);
+    assert.ok(execution.results && typeof execution.results === "object" && !Array.isArray(execution.results), `${context}: result ${executionIndex} rows are missing`);
+    const { columns, rows } = execution.results;
+    assert.ok(Array.isArray(columns) && columns.every((column) => typeof column === "string"), `${context}: result ${executionIndex} columns are invalid`);
+    assert.equal(new Set(columns).size, columns.length, `${context}: result ${executionIndex} columns must be unique`);
+    assert.ok(Array.isArray(rows), `${context}: result ${executionIndex} rows must be an array`);
+    for (const [rowIndex, row] of rows.entries()) {
+      assert.ok(Array.isArray(row), `${context}: result ${executionIndex} row ${rowIndex} must be an array`);
+      assert.equal(row.length, columns.length, `${context}: result ${executionIndex} row ${rowIndex} width mismatch`);
+    }
+  }
+  const { columns, rows } = executions.at(-1).results;
+  return rows.map((row) => Object.fromEntries(columns.map((column, index) => [column, row[index]])));
 }
 
 function migrationFile(number) {
@@ -425,6 +530,7 @@ test("report feedback is exact, private, immutable-report-safe, and observable o
     );
 
     server = await startWorker(stateDirectory, assetsDirectory, port);
+    const liveD1 = await discoverLocalD1Database(server);
 
     const unauthenticatedGet = await call(server.origin, pathV1);
     assert.equal(unauthenticatedGet.response.status, 401);
@@ -619,8 +725,8 @@ test("report feedback is exact, private, immutable-report-safe, and observable o
     assert.equal(updateReplay.response.status, 200, JSON.stringify(updateReplay.payload));
     assert.deepEqual(updateReplay.payload, updated.payload, "canonical equivalent replay must preserve updatedAt");
 
-    const feedbackRows = query(
-      stateDirectory,
+    const feedbackRows = await localD1Raw(
+      liveD1,
       `SELECT project_id,project_revision,report_schema_version,user_id,outcome,sections_json,created_at,updated_at
          FROM report_feedback WHERE project_id=${sqlLiteral(project.id)}`,
       "stored feedback query failed",
@@ -631,8 +737,8 @@ test("report feedback is exact, private, immutable-report-safe, and observable o
     assert.deepEqual(JSON.parse(feedbackRows[0].sections_json), ["brief_check", "next_actions"]);
     assert.equal(feedbackRows[0].created_at, created.payload.feedback.createdAt);
     assert.equal(feedbackRows[0].updated_at, updated.payload.feedback.updatedAt);
-    const reportAfterFeedback = query(
-      stateDirectory,
+    const reportAfterFeedback = await localD1Raw(
+      liveD1,
       `SELECT hex(content_json) AS content_bytes,source_content_hash,input_hash,generated_at
          FROM project_revision_reports
         WHERE project_id=${sqlLiteral(project.id)}
@@ -667,8 +773,8 @@ test("report feedback is exact, private, immutable-report-safe, and observable o
     const wrongRevision = await call(server.origin, feedbackPath(project.id, 3, schemaVersion), { auth: owner });
     assert.equal(wrongRevision.response.status, 404);
     assert.equal(wrongRevision.payload.code, "report_not_found");
-    const reportAfterRevision = query(
-      stateDirectory,
+    const reportAfterRevision = await localD1Raw(
+      liveD1,
       `SELECT hex(content_json) AS content_bytes,source_content_hash,input_hash,generated_at
          FROM project_revision_reports
         WHERE project_id=${sqlLiteral(project.id)}
@@ -718,7 +824,7 @@ test("report feedback is exact, private, immutable-report-safe, and observable o
         '["assumptions"]',datetime('now'),datetime('now')
       );
     `;
-    requireD1Success(d1(stateDirectory, "execute", oldReportSeed), "old report cohort fixture failed");
+    await localD1Raw(liveD1, oldReportSeed, "old report cohort fixture failed");
 
     const hiddenMetrics = await call(server.origin, "/api/events/aggregate?days=30", {
       headers: { authorization: "Bearer wrong-report-feedback-metrics-token" },
@@ -750,8 +856,9 @@ test("report feedback is exact, private, immutable-report-safe, and observable o
     ]) {
       assert.equal(metricsJson.includes(privateValue), false, `aggregate leaked ${privateValue}`);
     }
-    requireD1Success(
-      d1(stateDirectory, "execute", `DELETE FROM projects WHERE id=${sqlLiteral(oldProjectId)};`),
+    await localD1Raw(
+      liveD1,
+      `DELETE FROM projects WHERE id=${sqlLiteral(oldProjectId)};`,
       "old report cohort fixture cleanup failed",
     );
 
@@ -803,7 +910,7 @@ test("report feedback is exact, private, immutable-report-safe, and observable o
         );
       `).join("\n")}
     `;
-    requireD1Success(d1(stateDirectory, "execute", aggregateSeed), "above-threshold feedback cohort seed failed");
+    await localD1Raw(liveD1, aggregateSeed, "above-threshold feedback cohort seed failed");
     const aggregateMetrics = await call(server.origin, "/api/events/aggregate?days=30", {
       headers: { authorization: `Bearer ${metricsToken}` },
     });
@@ -819,12 +926,9 @@ test("report feedback is exact, private, immutable-report-safe, and observable o
       byOutcomeSection: [],
     });
     assertNoAggregateIdentifiers(aggregateMetrics.payload);
-    requireD1Success(
-      d1(
-        stateDirectory,
-        "execute",
-        `PRAGMA foreign_keys=ON; DELETE FROM projects WHERE id IN (${aggregateCohort.map((entry) => sqlLiteral(entry.projectId)).join(",")});`,
-      ),
+    await localD1Raw(
+      liveD1,
+      `PRAGMA foreign_keys=ON; DELETE FROM projects WHERE id IN (${aggregateCohort.map((entry) => sqlLiteral(entry.projectId)).join(",")});`,
       "above-threshold feedback cohort cleanup failed",
     );
 
@@ -845,8 +949,8 @@ test("report feedback is exact, private, immutable-report-safe, and observable o
     });
     assert.equal(archivedWrite.response.status, 409, JSON.stringify(archivedWrite.payload));
     assert.equal(archivedWrite.payload.code, "project_archived");
-    const archivedRows = query(
-      stateDirectory,
+    const archivedRows = await localD1Raw(
+      liveD1,
       `SELECT outcome,sections_json,created_at,updated_at FROM report_feedback WHERE project_id=${sqlLiteral(project.id)}`,
       "archived feedback preservation query failed",
     );
@@ -863,14 +967,14 @@ test("report feedback is exact, private, immutable-report-safe, and observable o
     });
     assert.equal(deleted.response.status, 204, JSON.stringify(deleted.payload));
     assert.equal(deleted.payload, null);
-    const cascade = query(
-      stateDirectory,
+    const cascade = (await localD1Raw(
+      liveD1,
       `SELECT
         (SELECT COUNT(*) FROM projects WHERE id=${sqlLiteral(project.id)}) AS projects,
         (SELECT COUNT(*) FROM project_revision_reports WHERE project_id=${sqlLiteral(project.id)}) AS reports,
         (SELECT COUNT(*) FROM report_feedback WHERE project_id=${sqlLiteral(project.id)}) AS feedback`,
       "feedback deletion cascade query failed",
-    )[0];
+    ))[0];
     assert.deepEqual(
       [Number(cascade.projects), Number(cascade.reports), Number(cascade.feedback)],
       [0, 0, 0],
@@ -1008,6 +1112,7 @@ test("0012 through 0014 upgrade populated history, preserve legacy bytes, and en
     });
 
     server = await startWorker(stateDirectory, assetsDirectory, port);
+    const liveD1 = await discoverLocalD1Database(server);
     const auth = {
       cookie: `__Host-grihagrid_session=${sessionToken}; grihagrid_csrf=${csrfToken}`,
       csrf: csrfToken,
@@ -1036,8 +1141,8 @@ test("0012 through 0014 upgrade populated history, preserve legacy bytes, and en
     });
     assert.equal(canonicalized.response.status, 201, JSON.stringify(canonicalized.payload));
     assert.equal(canonicalized.payload.revision.revision, 2);
-    const revisionInputs = query(
-      stateDirectory,
+    const revisionInputs = await localD1Raw(
+      liveD1,
       `SELECT revision,input_json FROM project_revisions
         WHERE project_id=${sqlLiteral(projectId)} ORDER BY revision`,
       "canonicalized revision query failed",
@@ -1045,11 +1150,11 @@ test("0012 through 0014 upgrade populated history, preserve legacy bytes, and en
     assert.equal(revisionInputs.length, 2);
     assert.equal(JSON.parse(revisionInputs[0].input_json).legacyPrivateField, "PRESERVE_ONLY_IN_IMMUTABLE_REVISION_ONE");
     assert.equal(Object.hasOwn(JSON.parse(revisionInputs[1].input_json), "legacyPrivateField"), false);
-    const currentInput = JSON.parse(query(
-      stateDirectory,
+    const currentInput = JSON.parse((await localD1Raw(
+      liveD1,
       `SELECT input_json FROM projects WHERE id=${sqlLiteral(projectId)}`,
       "canonical current input query failed",
-    )[0].input_json);
+    ))[0].input_json);
     assert.equal(Object.hasOwn(currentInput, "legacyPrivateField"), false);
     await stopWorker(server);
     server = null;

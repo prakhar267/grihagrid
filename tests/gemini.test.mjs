@@ -970,54 +970,25 @@ test("AI provider configuration fails closed while model fallback is stable", as
 });
 
 test("readiness reports AI capability without exposing the configured secret", async () => {
-  const readinessDb = (counts = {
-    count: 27,
-    ai_brief_count: 1,
-    ai_abuse_count: 2,
-    decision_table_count: 6,
-    payment_hardening_count: 2,
-    family_alignment_count: 2,
-    revision_table_count: 3,
-    report_feedback_count: 1,
-    report_share_count: 4,
-  }, withBatch = true, staleDecisionColumns = false, stalePaymentColumns = false, staleFamilyColumns = false, staleFamilyObjects = false, staleArchiveSafety = false, staleRevisionObjects = false, staleProjectCreation = false) => ({
-    ...(withBatch ? { batch: async () => [] } : {}),
-    prepare(sql) {
-      return {
-        first: async () => {
-          if (sql.includes("family_alignment_trigger_count")) {
-            return staleFamilyObjects
-              ? { family_alignment_trigger_count: 6, family_alignment_index_count: 3 }
-              : { family_alignment_trigger_count: 7, family_alignment_index_count: 3 };
-          }
-          if (sql.includes("archived_decision_comparison_insert_guard")) {
-            return { count: staleArchiveSafety ? 12 : 13 };
-          }
-          if (sql.includes("AS trigger_count") && sql.includes("project_revision_capture_insert")) {
-            return staleRevisionObjects ? { trigger_count: 13, index_count: 2 } : { trigger_count: 14, index_count: 3 };
-          }
-          if (sql.includes("AS trigger_count") && sql.includes("report_feedback_insert_guard")) {
-            return { trigger_count: 5, index_count: 2 };
-          }
-          if (sql.includes("AS trigger_count") && sql.includes("report_share_sections_insert_guard")) {
-            return { trigger_count: 5, index_count: 5 };
-          }
-          if (sql.includes("idx_projects_user_creation_key")) {
-            return { count: staleProjectCreation ? 0 : 1 };
-          }
-          if (sql.includes("FROM report_handoff_controls")) return { enabled: 1 };
-          if (sql.includes("users_auth_state_update_guard")) {
-            return { trigger_count: 2, index_count: 2 };
-          }
-          if (sql.includes("FROM sqlite_master")) return counts;
-          if (staleFamilyColumns && sql.includes("FROM family_alignment_rooms")) throw new Error("no such column: request_hash");
-          if (staleDecisionColumns && sql.includes("FROM decision_shares")) throw new Error("no such column: request_hash");
-          if (stalePaymentColumns && sql.includes("FROM payment_terminal_records")) throw new Error("no such table: payment_terminal_records");
-          return null;
-        },
-      };
-    },
-  });
+  const inventoryRows = __test.readinessInventoryRowsForTest();
+  const readinessDb = ({ omitKeys = [], withBatch = true, controlRow = { enabled: 1 } } = {}) => {
+    const omitted = new Set(omitKeys);
+    return {
+      ...(withBatch ? { batch: async () => [] } : {}),
+      prepare(sql) {
+        return {
+          all: async () => ({
+            success: true,
+            results: inventoryRows.filter((row) => !omitted.has(`${row.kind}:${row.scope}:${row.name}`)),
+          }),
+          first: async () => {
+            if (sql.includes("FROM report_handoff_controls")) return controlRow;
+            return null;
+          },
+        };
+      },
+    };
+  };
   const response = await worker.fetch(request("/api/readiness"), {
     ASSETS: assets,
     DB: readinessDb(),
@@ -1046,7 +1017,7 @@ test("readiness reports AI capability without exposing the configured secret", a
 
   const staleDecision = await worker.fetch(request("/api/readiness"), {
     ASSETS: assets,
-    DB: readinessDb(undefined, true, true),
+    DB: readinessDb({ omitKeys: ["column:decision_shares:request_hash"] }),
     GRIHAGRID_CACHE: new MemoryKv(),
     GEMINI_API_KEY: API_KEY,
     REPORT_SHARE_ABUSE_HMAC_KEY,
@@ -1058,7 +1029,7 @@ test("readiness reports AI capability without exposing the configured secret", a
 
   const stalePayment = await worker.fetch(request("/api/readiness"), {
     ASSETS: assets,
-    DB: readinessDb(undefined, true, false, true),
+    DB: readinessDb({ omitKeys: ["column:payment_terminal_records:provider_state"] }),
     GRIHAGRID_CACHE: new MemoryKv(),
     GEMINI_API_KEY: API_KEY,
     REPORT_SHARE_ABUSE_HMAC_KEY,
@@ -1070,7 +1041,7 @@ test("readiness reports AI capability without exposing the configured secret", a
 
   const staleFamily = await worker.fetch(request("/api/readiness"), {
     ASSETS: assets,
-    DB: readinessDb(undefined, true, false, false, true),
+    DB: readinessDb({ omitKeys: ["column:family_alignment_rooms:request_hash"] }),
     GRIHAGRID_CACHE: new MemoryKv(),
     GEMINI_API_KEY: API_KEY,
     REPORT_SHARE_ABUSE_HMAC_KEY,
@@ -1082,7 +1053,7 @@ test("readiness reports AI capability without exposing the configured secret", a
 
   const staleFamilyObjects = await worker.fetch(request("/api/readiness"), {
     ASSETS: assets,
-    DB: readinessDb(undefined, true, false, false, false, true),
+    DB: readinessDb({ omitKeys: ["object:trigger:family_alignment_response_count_delete"] }),
     GRIHAGRID_CACHE: new MemoryKv(),
     GEMINI_API_KEY: API_KEY,
     REPORT_SHARE_ABUSE_HMAC_KEY,
@@ -1094,7 +1065,7 @@ test("readiness reports AI capability without exposing the configured secret", a
 
   const staleArchiveSafety = await worker.fetch(request("/api/readiness"), {
     ASSETS: assets,
-    DB: readinessDb(undefined, true, false, false, false, false, true),
+    DB: readinessDb({ omitKeys: ["object:trigger:archived_family_response_update_guard"] }),
     GRIHAGRID_CACHE: new MemoryKv(),
     GEMINI_API_KEY: API_KEY,
     REPORT_SHARE_ABUSE_HMAC_KEY,
@@ -1106,7 +1077,7 @@ test("readiness reports AI capability without exposing the configured secret", a
 
   const staleRevisionObjectsResponse = await worker.fetch(request("/api/readiness"), {
     ASSETS: assets,
-    DB: readinessDb(undefined, true, false, false, false, false, false, true),
+    DB: readinessDb({ omitKeys: ["object:trigger:project_revision_capture_insert"] }),
     GRIHAGRID_CACHE: new MemoryKv(),
     GEMINI_API_KEY: API_KEY,
     REPORT_SHARE_ABUSE_HMAC_KEY,
@@ -1119,7 +1090,7 @@ test("readiness reports AI capability without exposing the configured secret", a
 
   const staleProjectCreationResponse = await worker.fetch(request("/api/readiness"), {
     ASSETS: assets,
-    DB: readinessDb(undefined, true, false, false, false, false, false, false, true),
+    DB: readinessDb({ omitKeys: ["object:index:idx_projects_user_creation_key"] }),
     GRIHAGRID_CACHE: new MemoryKv(),
     GEMINI_API_KEY: API_KEY,
     REPORT_SHARE_ABUSE_HMAC_KEY,
@@ -1131,8 +1102,8 @@ test("readiness reports AI capability without exposing the configured secret", a
 
   for (const [label, overrides] of [
     ["invalid model", { DB: readinessDb(), GEMINI_API_KEY: API_KEY, GEMINI_MODEL: "bad/model" }],
-    ["missing AI table", { DB: readinessDb({ count: 24, ai_brief_count: 0, ai_abuse_count: 2, decision_table_count: 6, payment_hardening_count: 2, family_alignment_count: 2, revision_table_count: 3, report_feedback_count: 1, report_share_count: 4 }), GEMINI_API_KEY: API_KEY }],
-    ["missing atomic batch", { DB: readinessDb(undefined, false), GEMINI_API_KEY: API_KEY }],
+    ["missing AI table", { DB: readinessDb({ omitKeys: ["object:table:ai_planning_briefs"] }), GEMINI_API_KEY: API_KEY }],
+    ["missing atomic batch", { DB: readinessDb({ withBatch: false }), GEMINI_API_KEY: API_KEY }],
     ["invalid key", { DB: readinessDb(), GEMINI_API_KEY: "short" }],
   ]) {
     const unavailable = await worker.fetch(request("/api/readiness"), {
