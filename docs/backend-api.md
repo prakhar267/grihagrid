@@ -14,7 +14,10 @@ are only streamed after a D1 ownership check.
    npx wrangler d1 migrations apply DB --remote --env staging
    ```
 
-2. Keep the existing `DB` D1 and `GRIHAGRID_CACHE` KV bindings.
+2. Keep the existing `DB` D1 and `GRIHAGRID_CACHE` KV bindings. Registration,
+   login, and password verification fail closed when their KV perimeter is
+   missing or unhealthy; D1 is the strongly consistent per-account admission
+   boundary.
 3. Create the R2 bucket and enable its Worker binding before using file APIs:
 
    ```toml
@@ -84,9 +87,12 @@ async function api(path, options = {}) {
 ```
 
 The Worker rejects cross-origin writes unless their origin was explicitly
-configured. Authenticated responses never use wildcard CORS. Login attempts
-(12 per IP per 15 minutes) and registrations (8 per IP per 15 minutes) receive
-best-effort KV rate limiting when `GRIHAGRID_CACHE` is configured.
+configured. Authenticated responses never use wildcard CORS. Login requires a
+healthy `GRIHAGRID_CACHE`: KV admits at most 12 attempts per IP in each fixed
+15-minute window and fails closed if absent or unhealthy. D1 independently
+admits at most 12 credential checks for a real account in a fixed, non-sliding
+15-minute window. Registration has its separate 8-per-IP/15-minute KV perimeter
+and also fails closed when KV is missing or unhealthy.
 
 ## Error shape
 
@@ -120,7 +126,9 @@ paid-checkout capabilities, including `authSchema`, `decisionSchema`,
 `projectCreationSchema`, plus `reportShareSchema`.
 `authSchema=current` requires migration 0015's account/session
 generation-and-revision columns, password-change timestamp, atomic password-
-attempt table/index and both D1 authentication-state guards.
+attempt table/index and both D1 authentication-state guards, plus migration
+0017's `login_attempt_fences` columns and expiry index. Readiness inventories
+that complete contract in the existing bounded schema query.
 `capabilities.accountSecurity` is true only when that schema and KV abuse
 control are ready.
 `projectCreationSchema=current` requires migration 0014's two nullable project
@@ -252,6 +260,14 @@ No prior session or CSRF required, but origin validation applies.
 }
 ```
 
+The root JSON object allows only required primitive-string `email` and
+`password` plus optional primitive-string `name`. Missing required fields,
+unknown fields, or null/array/object/boolean/number values in those positions
+return `400 invalid_registration`. A supplied non-empty normalized name is
+2–80 characters. Email is trimmed, lower-cased, syntax-checked and at most 254
+characters; its value failures return `400 invalid_email`. Password value
+failures return `400 invalid_password`.
+
 Passwords support 10–128 characters and are stored as independently salted
 PBKDF2-SHA256 records (100,000 iterations, the current Workers Web Crypto
 limit). Response `201`:
@@ -268,11 +284,60 @@ limit). Response `201`:
 }
 ```
 
+An existing normalized email still returns `409 email_in_use`. This is an
+explicit residual registration-enumeration surface; login's generic response
+does not remove it.
+
 ### `POST /api/auth/login`
 
-Body `{ "email": "...", "password": "..." }`. Invalid accounts and invalid
-passwords share `401 invalid_credentials`. Successful login rotates to a new
-session and returns `{ user, csrfToken }`.
+The exact root object is:
+
+```json
+{ "email": "ananya@example.com", "password": "the submitted password" }
+```
+
+Both fields are required primitive strings and no other field is supported.
+Missing/extra/non-string fields return `400 invalid_login`; a syntactically
+invalid email string returns `400 invalid_email`. A primitive password shorter
+than 10 or longer than 128 characters deliberately enters the credential-
+failure path instead of returning a distinguishable shape error.
+
+Login executes in this order:
+
+1. require trusted origin and healthy KV, then reserve one of 12 fixed-window
+   attempts for the source IP; missing/failing KV is
+   `503 abuse_control_unavailable`, while an exhausted IP window is
+   `429 rate_limited`;
+2. validate the strict body/email contract and look up active candidate
+   credential state. Unknown and soft-deleted emails both run the same D1
+   reservation statement with a null subject and insert no row;
+3. before PBKDF2, atomically reserve the real `user_id` in
+   `login_attempt_fences`. The first request starts a non-sliding 15-minute
+   window, requests 1–12 advance it, an expired row resets atomically, and
+   request 13 is fenced without extending expiry. Missing/failing D1 admission
+   is `503 abuse_control_unavailable`;
+4. perform exactly one PBKDF2-SHA256 derivation: a valid admitted active account
+   uses its stored versioned record; invalid length, unknown/deleted account,
+   malformed stored record, wrong password, or closed account fence uses the
+   dummy record; and
+5. return the same `401 invalid_credentials` status, code and message for every
+   credential/fence failure. A valid credential instead commits one D1 batch:
+   insert a session fenced by the exact authentication generation and opaque
+   revision, then delete the account fence only when that
+   exact session exists.
+
+Success returns `{ user, csrfToken }` and replaces both secure cookies. A batch
+failure or stale authentication race creates no usable session and cannot clear
+another request's fence. The D1 fence stores only `user_id`, canonical window
+timestamps, count and limit—never email, IP, password-derived data or free
+text—and authentication logs remain route/status aggregates without those
+dimensions.
+
+This design bounds distributed password checks but leaves a targeted denial
+risk: someone who knows a registered email can consume its 12 slots and keep
+repeating that attack in later fixed windows. The window never slides, and an
+admitted successful login or authenticated password rotation clears it, but no
+support bypass or verified recovery flow exists.
 
 ### `POST /api/auth/logout`
 
@@ -308,8 +373,10 @@ The current password is verified with the stored versioned PBKDF2 record; the
 new value must differ.
 Success advances the account authentication generation plus opaque revision,
 writes a newly salted password record, revokes all older sessions and creates
-one replacement session in one D1 transaction. It returns `{ user, csrfToken }`
-and replaces both cookies. A concurrent login that verified stale
+one replacement session in one D1 transaction. The batch also deletes that
+user's login-attempt fence, gated by the exact replacement session inserted by
+this request. It returns `{ user, csrfToken }` and replaces both cookies. A
+concurrent login that verified stale
 authentication state cannot insert a usable session. See
 `docs/account-security.md` for the race, accessibility and rollback contract.
 This is not password recovery: a customer who no longer knows the current
@@ -1041,8 +1108,9 @@ Requires CSRF. Removes the private R2 object and its D1 metadata. Returns `204`.
 
 ## Operations and known external dependencies
 
-The configured daily cron deletes expired D1 sessions, expires stale checkout
-links, removes expired AI generation leases, prunes old AI counters, removes
+The configured daily cron deletes expired D1 sessions and expired login-attempt
+fences, expires stale checkout links, removes expired AI generation leases,
+prunes old AI counters, removes
 Decision, Family Alignment, and Professional Handoff records 90 days after
 expiry/revocation, and removes product-event aggregates
 older than 400 days. The Worker applies CSP, HSTS, frame denial, MIME sniffing
@@ -1064,3 +1132,8 @@ Before selling, also add email verification/password reset, legal-copy review,
 alerting on 5xx/D1/payment errors, remote backup/restore drills, and a
 malware-scanning workflow before any future product accepts files from
 untrusted third parties.
+
+Login hardening does not close registration enumeration or prevent repeated
+targeted account-window exhaustion. Treat a sustained aggregate rise in generic
+login 401s as an abuse signal without adding email/IP/fence identifiers to logs;
+verified recovery and a customer-safe challenge/unlock design remain required.

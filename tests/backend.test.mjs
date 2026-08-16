@@ -13,12 +13,37 @@ class MemoryD1 {
   constructor() {
     this.users = [];
     this.sessions = [];
+    this.loginAttemptFences = [];
     this.projects = [];
     this.failSessionDelete = false;
   }
 
   prepare(sql) {
     return new MemoryStatement(this, sql.replace(/\s+/gu, " ").trim());
+  }
+
+  async batch(statements) {
+    const snapshot = {
+      sessions: structuredClone(this.sessions),
+      loginAttemptFences: structuredClone(this.loginAttemptFences),
+    };
+    try {
+      const results = [];
+      for (const statement of statements) {
+        if (statement.sql.startsWith("DELETE FROM login_attempt_fences")) {
+          await statement.run();
+          results.push({ success: true, results: [] });
+        } else {
+          const row = await statement.first();
+          results.push({ success: true, results: row ? [row] : [] });
+        }
+      }
+      return results;
+    } catch (error) {
+      this.sessions = snapshot.sessions;
+      this.loginAttemptFences = snapshot.loginAttemptFences;
+      throw error;
+    }
   }
 }
 
@@ -49,6 +74,28 @@ class MemoryStatement {
   }
 
   async first() {
+    if (this.sql.startsWith("INSERT INTO login_attempt_fences")) {
+      const [user_id, window_started_at, expires_at, limit_count, updated_at] = this.values;
+      if (!user_id || !this.db.users.some((user) => user.id === user_id && !user.deleted_at)) return null;
+      let fence = this.db.loginAttemptFences.find((candidate) => candidate.user_id === user_id);
+      if (!fence) {
+        fence = { user_id, window_started_at, expires_at, request_count: 1, limit_count, updated_at };
+        this.db.loginAttemptFences.push(fence);
+      } else if (fence.expires_at <= updated_at) {
+        Object.assign(fence, { window_started_at, expires_at, request_count: 1, limit_count, updated_at });
+      } else if (fence.limit_count === limit_count && fence.request_count < fence.limit_count) {
+        fence.request_count += 1;
+        fence.updated_at = updated_at;
+      } else {
+        return null;
+      }
+      return { ...fence };
+    }
+    if (this.sql.startsWith("SELECT fence.user_id,fence.window_started_at,fence.expires_at,")
+        && this.sql.includes("FROM login_attempt_fences fence")) {
+      const fence = this.db.loginAttemptFences.find((candidate) => candidate.user_id === this.values[0]);
+      return fence ? { ...fence } : null;
+    }
     if (this.sql.startsWith("SELECT id,email,name,created_at,password_hash,password_salt,password_iterations,password_algorithm,")) {
       const user = this.db.users.find((candidate) => candidate.email === this.values[0] && !candidate.deleted_at);
       return user ? { ...user } : null;
@@ -96,6 +143,12 @@ class MemoryStatement {
   }
 
   async run() {
+    if (this.sql.startsWith("DELETE FROM login_attempt_fences")) {
+      const [userId, sessionId] = this.values;
+      const sessionExists = this.db.sessions.some((session) => session.id === sessionId && session.user_id === userId);
+      if (sessionExists) this.db.loginAttemptFences = this.db.loginAttemptFences.filter((fence) => fence.user_id !== userId);
+      return { success: true };
+    }
     if (this.sql.startsWith("INSERT INTO users")) {
       const [id, email, name, created_at, password_hash, password_salt, password_iterations, password_algorithm, password_changed_at] = this.values;
       this.db.users.push({
@@ -151,7 +204,7 @@ async function registerAuth(DB, email = "logout-owner@example.test") {
     method: "POST",
     headers: { origin: ORIGIN, "content-type": "application/json" },
     body: JSON.stringify({ email, password: "correct horse battery staple" }),
-  }), { ASSETS: assets, DB });
+  }), { ASSETS: assets, DB, GRIHAGRID_CACHE: new MemoryKv() });
   assert.equal(response.status, 201);
   return { body: await response.json(), cookies: cookieHeader(response) };
 }
@@ -161,7 +214,7 @@ async function loginAuth(DB, email = "logout-owner@example.test") {
     method: "POST",
     headers: { origin: ORIGIN, "content-type": "application/json" },
     body: JSON.stringify({ email, password: "correct horse battery staple" }),
-  }), { ASSETS: assets, DB });
+  }), { ASSETS: assets, DB, GRIHAGRID_CACHE: new MemoryKv() });
   assert.equal(response.status, 200);
   return { body: await response.json(), cookies: cookieHeader(response) };
 }
@@ -185,6 +238,18 @@ test("password records use salted PBKDF2 and verify without storing plaintext", 
     password_iterations: first.iterations,
     password_algorithm: first.algorithm,
   }), false);
+  for (const malformed of [
+    { password_hash: first.hash, password_salt: "%%%" },
+    { password_hash: "%%%", password_salt: first.salt },
+    { password_hash: first.hash, password_salt: {} },
+    { password_hash: first.hash.slice(1), password_salt: first.salt },
+  ]) {
+    assert.equal(await __test.verifyPassword("wrong password", {
+      ...malformed,
+      password_iterations: first.iterations,
+      password_algorithm: first.algorithm,
+    }), false);
+  }
 });
 
 test("stable report inputs hash independently of object insertion order", () => {

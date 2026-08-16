@@ -20,6 +20,74 @@ paid-closed product release. They remain concept-stage planning aids rather than
 feasibility, code, design, structural or construction approval. Paid checkout,
 fulfillment, the paid-plan allowlist and private uploads remain closed.
 
+## Login-attempt fence release gate
+
+Distributed account login fencing is **not recorded as live until the protected
+release finishes**. The candidate adds migration
+`0017_login_attempt_fence.sql`; it does not add recovery, MFA, email
+verification, account deletion, payment, fulfillment, upload or professional
+capability.
+
+- [ ] Registration accepts only required primitive-string email/password and
+  optional primitive-string name. Login accepts exactly primitive-string
+  email/password. Structural failures are `invalid_registration` or
+  `invalid_login`; email/password/name value contracts remain explicit and
+  unsupported fields never reach account lookup.
+- [ ] Login requires healthy KV, admits at most 12 requests per IP in a fixed
+  15-minute window, and fails closed with `503 abuse_control_unavailable` on
+  missing/failing KV. The separate IP-exhaustion result remains `429`; account
+  fencing is never exposed as 429.
+- [ ] Before PBKDF2, one atomic D1 reservation admits no more than 12 requests
+  for a real `user_id` in one fixed, non-sliding 15-minute window across
+  concurrent IPs. Unknown and deleted accounts create no fence row; request 13
+  does not extend expiry; an expired row resets without cron; malformed or
+  unavailable D1 admission is a fail-closed 503.
+- [ ] Short/long password, unknown, deleted, malformed credential record,
+  wrong password and account-fenced fixtures each perform exactly one real-or-
+  dummy PBKDF2 derivation and return the identical
+  `401 invalid_credentials` status/code/message. Call-count/path evidence, not
+  noisy wall-clock comparison, proves this invariant.
+- [ ] A successful login inserts an authentication-generation/opaque-revision-
+  fenced session and deletes its account fence in one D1 batch, with the delete
+  gated by that exact session. A successful password rotation clears the fence
+  only through its exact replacement-session batch. Failure injection and
+  login-versus-rotation races leave no stale session or unrelated fence clear.
+- [ ] D1 exposes only `login_attempt_fences(user_id,window_started_at,expires_at,
+  request_count,limit_count,updated_at)` plus
+  `idx_login_attempt_fences_expires`; the first apply starts empty, foreign-key
+  check is empty, no migration remains pending, and canonical users/sessions
+  plus every protected count/hash are unchanged. Evidence records bounded
+  `loginAttemptFenceRows` and `loginAttemptFenceMigrationPending` only.
+- [ ] Readiness reports `authSchema=current` only with the complete 0015+0017
+  auth inventory, in the existing folded query, and free readiness still
+  requires KV. The scheduled handler deletes only rows with
+  `expires_at<=datetime('now')`; active fences remain and expiry/reset does not
+  depend on cleanup.
+- [ ] D1 fence rows contain only `user_id` and canonical window/count/limit
+  state, never email, IP or password-derived data. Responses, logs, analytics,
+  backup/release manifests, monitors and screenshots contain no email, IP,
+  account/fence identifier, password shape or password-derived value.
+  Operational measurement is aggregate by templated route, bounded status/
+  outcome, version and latency.
+- [ ] The exact merged SHA and PR pass CI, CodeQL, fresh migrations, Worker
+  dry-runs, audit and adversarial tests; encrypted backup/Time Travel evidence,
+  old-Worker rehearsal, staging migration/canary/cleanup, production migration,
+  normal login/session canary, exact Worker version, public smoke and 30-minute
+  exact-version observation are recorded. Checkout, fulfillment, allowlist and
+  private uploads remain closed throughout.
+- [ ] Rollback evidence says plainly that migration 0017 is additive but the
+  previous Worker ignores it, removing the per-account fence and exact clears.
+  Any rollback is a time-bounded incident-authorized security downgrade, never
+  proof of equivalent protection; existing rows are retained and roll-forward
+  is required.
+- [ ] Founder/security sign-off accepts two residual risks: registration still
+  exposes `409 email_in_use`, and an attacker with a known email can consume 12
+  reservations and repeat targeted lockout in later fixed windows. No manual
+  D1 unlock is offered to an unverified requester.
+
+Until exact dated evidence replaces this gate, the existing production login
+must not be described as having the migration 0017 per-account guarantee.
+
 ## Professional Handoff release gate
 
 Selective report handoff is **not recorded as live until the protected release
@@ -505,17 +573,24 @@ new paid capability.
 
 ## Account Security release gate
 
-- [ ] Migration `0015` preserves every existing credential and session at
+- [ ] Migrations `0015` and `0017` preserve every existing credential and session at
   authentication generation one with its legacy null revision, changes no
   protected row count or canonical user/session/project/report bytes, and
-  reports `authSchema=current` in both environments.
+  report `authSchema=current` in both environments. A first 0017 application
+  creates an empty `login_attempt_fences` table and its exact expiry index.
+- [ ] Registration/login enforce their strict primitive-string allowlists;
+  missing/failing KV or D1 login admission fails closed before PBKDF2/session
+  mutation. Twelve distributed account reservations are the maximum in one
+  fixed non-sliding window, and every credential/fence failure has one
+  real-or-dummy derivation plus the generic 401 envelope.
 - [ ] The current-password endpoint enforces exact input, trusted origin, live
   session, CSRF, fail-closed IP KV and an atomic five-attempt D1 account limit
   before credential mutation; no password, bearer, hash, generation or session
   identifier reaches output, analytics or operational logs.
 - [ ] One successful D1 batch changes the independently salted password record,
   advances the generation, revokes every older session and returns one working
-  replacement session; old password and retained old cookies all fail.
+  replacement session; old password and retained old cookies all fail. The
+  exact replacement-session batch also clears the login-attempt fence.
 - [ ] Concurrent password changes produce one winner, a stale verified login
   cannot insert a surviving session, and injected failures roll back credentials
   plus sessions without split state.

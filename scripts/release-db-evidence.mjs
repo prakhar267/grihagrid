@@ -56,6 +56,11 @@ const REQUIRED_0016_OBJECTS = Object.freeze([
   "trigger:report_handoff_enabled_insert_guard",
 ]);
 
+const REQUIRED_0017_OBJECTS = Object.freeze([
+  "table:login_attempt_fences",
+  "index:idx_login_attempt_fences_expires",
+]);
+
 const REQUIRED_BASELINE_OBJECTS = Object.freeze([
   "table:users",
   "table:projects",
@@ -74,6 +79,8 @@ const REQUIRED_COLUMNS = Object.freeze([
   "password_change_attempt_counters:user_id", "password_change_attempt_counters:window_start",
   "password_change_attempt_counters:request_count", "password_change_attempt_counters:limit_count",
   "password_change_attempt_counters:updated_at",
+  "login_attempt_fences:user_id", "login_attempt_fences:window_started_at", "login_attempt_fences:expires_at",
+  "login_attempt_fences:request_count", "login_attempt_fences:limit_count", "login_attempt_fences:updated_at",
   "projects:id", "projects:user_id", "projects:status", "projects:input_json", "projects:input_revision", "projects:input_hash", "projects:brief_check_json",
   "projects:creation_key_hash", "projects:creation_request_hash",
   "orders:id", "orders:project_id", "orders:plan", "orders:status", "orders:product_code", "orders:request_hash",
@@ -101,6 +108,7 @@ const REQUIRED_SCHEMA_OBJECTS = Object.freeze([
   ...REQUIRED_0014_OBJECTS,
   ...REQUIRED_0015_OBJECTS,
   ...REQUIRED_0016_OBJECTS,
+  ...REQUIRED_0017_OBJECTS,
 ]);
 
 function stableStringify(value) {
@@ -293,9 +301,11 @@ export function verifyPostMigrationEvidence({
   reportShareCountPayload,
   reportShareReadCounterCountPayload,
   reportShareCreateCounterCountPayload,
+  loginAttemptFenceCountPayload,
   reportHandoffControlPayload,
   feedbackMigrationPending,
   reportShareMigrationPending,
+  loginAttemptFenceMigrationPending,
 }) {
   assert.equal(pre.environment, environment, "pre/post environment mismatch");
   const foreignKeyBatches = Array.isArray(foreignKeysPayload) ? foreignKeysPayload : [];
@@ -356,6 +366,17 @@ export function verifyPostMigrationEvidence({
     assert.equal(reportShareCreateCounters, 0, "new report_share_create_counters table must start empty");
   }
 
+  const loginAttemptFenceRows = d1Rows(loginAttemptFenceCountPayload, "login attempt fence count");
+  assert.equal(loginAttemptFenceRows.length, 1, "login attempt fence count must return one row");
+  const loginAttemptFences = Number(loginAttemptFenceRows[0].row_count);
+  assert.ok(
+    Number.isSafeInteger(loginAttemptFences) && loginAttemptFences >= 0,
+    "invalid login attempt fence row count",
+  );
+  if (loginAttemptFenceMigrationPending) {
+    assert.equal(loginAttemptFences, 0, "new login_attempt_fences table must start empty");
+  }
+
   const reportHandoffControl = verifyReportHandoffControlEvidence({
     environment,
     controlPayload: reportHandoffControlPayload,
@@ -375,9 +396,11 @@ export function verifyPostMigrationEvidence({
     reportShareRows: reportShares,
     reportShareReadCounterRows: reportShareReadCounters,
     reportShareCreateCounterRows: reportShareCreateCounters,
+    loginAttemptFenceRows: loginAttemptFences,
     reportHandoffControlRows: reportHandoffControl.controlRows,
     reportHandoffControlEnabled: reportHandoffControl.enabled,
     reportShareMigrationPending: Boolean(reportShareMigrationPending),
+    loginAttemptFenceMigrationPending: Boolean(loginAttemptFenceMigrationPending),
     requiredSchemaObjects: [...REQUIRED_SCHEMA_OBJECTS],
     requiredColumns: [...REQUIRED_COLUMNS],
   };
@@ -459,8 +482,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       projectsPayload: readJson(projects),
       reportsPayload: readJson(reports),
     }));
-  } else if (mode === "post" && files.length === 15) {
-    const [pre, foreignKeys, schema, columns, counts, users, sessions, projects, reports, feedbackCount, reportShareCount, reportShareReadCounterCount, reportShareCreateCounterCount, reportHandoffControl, output] = files;
+  } else if (mode === "post" && files.length === 16) {
+    const [pre, foreignKeys, schema, columns, counts, users, sessions, projects, reports, feedbackCount, reportShareCount, reportShareReadCounterCount, reportShareCreateCounterCount, loginAttemptFenceCount, reportHandoffControl, output] = files;
     writeJson(output, verifyPostMigrationEvidence({
       environment,
       pre: readJson(pre),
@@ -476,9 +499,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       reportShareCountPayload: readJson(reportShareCount),
       reportShareReadCounterCountPayload: readJson(reportShareReadCounterCount),
       reportShareCreateCounterCountPayload: readJson(reportShareCreateCounterCount),
+      loginAttemptFenceCountPayload: readJson(loginAttemptFenceCount),
       reportHandoffControlPayload: readJson(reportHandoffControl),
       feedbackMigrationPending: process.env.FEEDBACK_MIGRATION_PENDING === "true",
       reportShareMigrationPending: process.env.REPORT_SHARE_MIGRATION_PENDING === "true",
+      loginAttemptFenceMigrationPending: process.env.LOGIN_ATTEMPT_FENCE_MIGRATION_PENDING === "true",
     }));
   } else if (mode === "residue-sql" && files.length === 2) {
     const [canary, output] = files;

@@ -131,6 +131,7 @@ test("release database evidence hard-gates legacy safety and proves migration da
     "trigger:report_share_sections_insert_guard", "trigger:report_share_identity_immutable",
     "trigger:archived_report_share_insert_guard", "trigger:report_share_active_limit_insert",
     "trigger:report_handoff_enabled_insert_guard",
+    "table:login_attempt_fences", "index:idx_login_attempt_fences_expires",
   ].map((entry) => {
     const separator = entry.indexOf(":");
     return { type: entry.slice(0, separator), name: entry.slice(separator + 1) };
@@ -142,6 +143,8 @@ test("release database evidence hard-gates legacy safety and proves migration da
     "password_change_attempt_counters:user_id", "password_change_attempt_counters:window_start",
     "password_change_attempt_counters:request_count", "password_change_attempt_counters:limit_count",
     "password_change_attempt_counters:updated_at",
+    "login_attempt_fences:user_id", "login_attempt_fences:window_started_at", "login_attempt_fences:expires_at",
+    "login_attempt_fences:request_count", "login_attempt_fences:limit_count", "login_attempt_fences:updated_at",
     "projects:id", "projects:user_id", "projects:status", "projects:input_json", "projects:input_revision", "projects:input_hash", "projects:brief_check_json",
     "projects:creation_key_hash", "projects:creation_request_hash",
     "orders:id", "orders:project_id", "orders:plan", "orders:status", "orders:product_code", "orders:request_hash",
@@ -183,9 +186,11 @@ test("release database evidence hard-gates legacy safety and proves migration da
     reportShareCountPayload: d1([{ row_count: 0 }]),
     reportShareReadCounterCountPayload: d1([{ row_count: 0 }]),
     reportShareCreateCounterCountPayload: d1([{ row_count: 0 }]),
+    loginAttemptFenceCountPayload: d1([{ row_count: 0 }]),
     reportHandoffControlPayload: d1([{ control_key: "report_handoff", enabled: 0 }]),
     feedbackMigrationPending: true,
     reportShareMigrationPending: true,
+    loginAttemptFenceMigrationPending: true,
   };
   const post = verifyPostMigrationEvidence(postInput);
   assert.equal(post.coreDataUnchanged, true);
@@ -194,6 +199,11 @@ test("release database evidence hard-gates legacy safety and proves migration da
   assert.equal(post.reportShareRows, 0);
   assert.equal(post.reportShareReadCounterRows, 0);
   assert.equal(post.reportShareCreateCounterRows, 0);
+  assert.equal(post.loginAttemptFenceRows, 0);
+  assert.equal(post.loginAttemptFenceMigrationPending, true);
+  assert.ok(post.requiredSchemaObjects.includes("table:login_attempt_fences"));
+  assert.ok(post.requiredSchemaObjects.includes("index:idx_login_attempt_fences_expires"));
+  assert.ok(post.requiredColumns.includes("login_attempt_fences:expires_at"));
   assert.equal(post.reportHandoffControlRows, 1);
   assert.equal(post.reportHandoffControlEnabled, false);
   const residue = verifyCanaryResidueEvidence({
@@ -275,6 +285,36 @@ test("release database evidence hard-gates legacy safety and proves migration da
       reportShareCreateCounterCountPayload: d1([{ row_count: 1 }]),
     }),
     /new report_share_create_counters table must start empty/u,
+  );
+  assert.throws(
+    () => verifyPostMigrationEvidence({
+      ...postInput,
+      loginAttemptFenceCountPayload: d1([{ row_count: 1 }]),
+    }),
+    /new login_attempt_fences table must start empty/u,
+  );
+  const laterReleasePost = verifyPostMigrationEvidence({
+    ...postInput,
+    loginAttemptFenceCountPayload: d1([{ row_count: 3 }]),
+    loginAttemptFenceMigrationPending: false,
+  });
+  assert.equal(laterReleasePost.loginAttemptFenceRows, 3);
+  assert.equal(laterReleasePost.loginAttemptFenceMigrationPending, false);
+  assert.throws(
+    () => verifyPostMigrationEvidence({
+      ...postInput,
+      schemaPayload: d1(schemaNames.filter(({ name }) => name !== "idx_login_attempt_fences_expires")),
+    }),
+    /required schema object is missing: index:idx_login_attempt_fences_expires/u,
+  );
+  assert.throws(
+    () => verifyPostMigrationEvidence({
+      ...postInput,
+      columnsPayload: d1(columns.filter(({ table_name, name }) => (
+        table_name !== "login_attempt_fences" || name !== "expires_at"
+      ))),
+    }),
+    /required schema column is missing: login_attempt_fences:expires_at/u,
   );
   assert.throws(
     () => verifyPostMigrationEvidence({

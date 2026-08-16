@@ -28,6 +28,8 @@ const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30;
 // The per-user salt and versioned algorithm fields permit a future managed-
 // identity or Argon2 migration without invalidating existing accounts.
 const PASSWORD_ITERATIONS = 100_000;
+const LOGIN_ACCOUNT_LIMIT = 12;
+const LOGIN_ACCOUNT_WINDOW_SECONDS = 15 * 60;
 const PASSWORD_CHANGE_ACCOUNT_LIMIT = 5;
 const PASSWORD_CHANGE_WINDOW_SECONDS = 15 * 60;
 const MAX_JSON_BYTES = 64 * 1024;
@@ -303,7 +305,11 @@ function requireTrustedOrigin(request, env) {
 }
 
 async function readJson(request) {
-  if (!request.headers.get("content-type")?.toLowerCase().includes("application/json")) {
+  const mediaType = String(request.headers.get("content-type") || "")
+    .split(";", 1)[0]
+    .trim()
+    .toLowerCase();
+  if (mediaType !== "application/json") {
     throw new HttpError(415, "content-type must be application/json", "unsupported_media_type");
   }
   const declaredLength = Number(request.headers.get("content-length") || 0);
@@ -322,6 +328,22 @@ async function readJson(request) {
     throw new HttpError(400, "JSON body must be an object", "invalid_json");
   }
   return data;
+}
+
+function requireStrictStringObject(value, requiredFields, optionalFields, message, code) {
+  const required = new Set(requiredFields);
+  const allowed = new Set([...requiredFields, ...optionalFields]);
+  const keys = value && typeof value === "object" ? Object.keys(value) : [];
+  if (!value
+      || typeof value !== "object"
+      || Array.isArray(value)
+      || Object.getPrototypeOf(value) !== Object.prototype
+      || keys.some((field) => !allowed.has(field))
+      || [...required].some((field) => !Object.hasOwn(value, field))
+      || keys.some((field) => typeof value[field] !== "string")) {
+    throw new HttpError(400, message, code);
+  }
+  return value;
 }
 
 function requireDatabase(env) {
@@ -482,18 +504,32 @@ async function makePasswordRecord(password) {
 }
 
 async function verifyPassword(password, user) {
-  const validRecord = user.password_hash && user.password_salt && user.password_algorithm === "PBKDF2-SHA256";
+  const validRecord = typeof user.password_hash === "string"
+    && typeof user.password_salt === "string"
+    && user.password_algorithm === "PBKDF2-SHA256";
   const iterations = Number(user.password_iterations);
   if (!validRecord || !Number.isSafeInteger(iterations) || iterations < 100_000 || iterations > 2_000_000) {
     await derivePassword(password, new TextEncoder().encode("grihagrid-invalid-password-record"));
     return false;
   }
+  let salt;
+  let expected;
   try {
-    const candidate = await derivePassword(password, fromBase64Url(user.password_salt), iterations);
-    return constantTimeEqual(candidate, fromBase64Url(user.password_hash));
+    salt = fromBase64Url(user.password_salt);
+    expected = fromBase64Url(user.password_hash);
   } catch {
+    await derivePassword(password, new TextEncoder().encode("grihagrid-invalid-password-record"));
     return false;
   }
+  if (salt.length !== 16
+      || expected.length !== 32
+      || toBase64Url(salt) !== user.password_salt
+      || toBase64Url(expected) !== user.password_hash) {
+    await derivePassword(password, new TextEncoder().encode("grihagrid-invalid-password-record"));
+    return false;
+  }
+  const candidate = await derivePassword(password, salt, iterations);
+  return constantTimeEqual(candidate, expected);
 }
 
 function sqliteTimestamp(date = new Date()) {
@@ -544,12 +580,26 @@ async function rateLimit(request, env, scope, limit, windowSeconds, hmacKey = nu
   const key = `rate:${scope}:${window}:${identity}`;
   let attempts;
   try {
-    attempts = Number(await env.GRIHAGRID_CACHE.get(key) || 0) + 1;
+    const stored = await env.GRIHAGRID_CACHE.get(key);
+    let previous = 0;
+    if (stored !== null) {
+      if (typeof stored !== "string" || !/^(?:0|[1-9]\d*)$/u.test(stored)) {
+        throw new Error("invalid abuse-control state");
+      }
+      previous = Number(stored);
+      if (!Number.isSafeInteger(previous) || previous < 0) {
+        throw new Error("invalid abuse-control state");
+      }
+      if (previous >= limit) {
+        throw new HttpError(429, "too many attempts; please try again later", "rate_limited");
+      }
+    }
+    attempts = previous + 1;
     await env.GRIHAGRID_CACHE.put(key, String(attempts), { expirationTtl: windowSeconds * 2 });
-  } catch {
+  } catch (error) {
+    if (error instanceof HttpError) throw error;
     throw new HttpError(503, "abuse controls are temporarily unavailable", "abuse_control_unavailable");
   }
-  if (attempts > limit) throw new HttpError(429, "too many attempts; please try again later", "rate_limited");
 }
 
 async function accountRateLimit(env, scope, limit, windowSeconds) {
@@ -650,6 +700,129 @@ async function requireReportHandoffEnabled(db) {
   if (await reportHandoffControl(db) !== "enabled") {
     throw new HttpError(503, "professional handoff is temporarily unavailable", "report_handoff_disabled");
   }
+}
+
+function loginFenceUnavailable() {
+  return new HttpError(503, "abuse controls are temporarily unavailable", "abuse_control_unavailable");
+}
+
+function validLoginFenceState(row, userId, date, limit) {
+  if (!row || typeof row !== "object" || row.user_id !== userId) return false;
+  if (!Number.isSafeInteger(row.request_count)
+      || !Number.isSafeInteger(row.limit_count)
+      || row.request_count < 1
+      || row.limit_count !== limit
+      || row.request_count > row.limit_count) return false;
+  const windowStartedAt = parseCanonicalSqliteTimestamp(row.window_started_at);
+  const expiresAt = parseCanonicalSqliteTimestamp(row.expires_at);
+  const updatedAt = parseCanonicalSqliteTimestamp(row.updated_at);
+  const now = date.getTime();
+  return windowStartedAt !== null
+    && expiresAt !== null
+    && updatedAt !== null
+    && expiresAt - windowStartedAt === LOGIN_ACCOUNT_WINDOW_SECONDS * 1000
+    && windowStartedAt <= updatedAt
+    && updatedAt < expiresAt
+    && windowStartedAt <= now
+    && updatedAt <= now
+    && now < expiresAt;
+}
+
+async function acquireLoginAdmission(
+  db,
+  userId,
+  date = new Date(),
+  limit = LOGIN_ACCOUNT_LIMIT,
+) {
+  if ((userId !== null && (typeof userId !== "string" || !userId))
+      || !(date instanceof Date)
+      || Number.isNaN(date.valueOf())
+      || !Number.isSafeInteger(limit)
+      || limit < 1
+      || limit > LOGIN_ACCOUNT_LIMIT
+      || typeof db?.batch !== "function") {
+    throw loginFenceUnavailable();
+  }
+  const now = sqliteTimestamp(date);
+  const expiresAt = sqliteTimestamp(new Date(date.getTime() + LOGIN_ACCOUNT_WINDOW_SECONDS * 1000));
+  let results;
+  try {
+    results = await db.batch([
+      db.prepare(
+        `INSERT INTO login_attempt_fences
+           (user_id,window_started_at,expires_at,request_count,limit_count,updated_at)
+         SELECT ?,?,?,1,?,?
+          WHERE ? IS NOT NULL
+            AND EXISTS (SELECT 1 FROM users WHERE id=? AND deleted_at IS NULL)
+         ON CONFLICT(user_id) DO UPDATE SET
+           window_started_at=CASE
+             WHEN login_attempt_fences.expires_at<=excluded.updated_at
+             THEN excluded.window_started_at ELSE login_attempt_fences.window_started_at END,
+           expires_at=CASE
+             WHEN login_attempt_fences.expires_at<=excluded.updated_at
+             THEN excluded.expires_at ELSE login_attempt_fences.expires_at END,
+           request_count=CASE
+             WHEN login_attempt_fences.expires_at<=excluded.updated_at
+             THEN 1 ELSE login_attempt_fences.request_count+1 END,
+           limit_count=excluded.limit_count,
+           updated_at=excluded.updated_at
+         WHERE typeof(login_attempt_fences.request_count)='integer'
+           AND typeof(login_attempt_fences.limit_count)='integer'
+           AND login_attempt_fences.request_count BETWEEN 1 AND login_attempt_fences.limit_count
+           AND login_attempt_fences.limit_count=excluded.limit_count
+           AND login_attempt_fences.window_started_at=strftime('%Y-%m-%d %H:%M:%S',login_attempt_fences.window_started_at)
+           AND login_attempt_fences.expires_at=strftime('%Y-%m-%d %H:%M:%S',login_attempt_fences.expires_at)
+           AND login_attempt_fences.updated_at=strftime('%Y-%m-%d %H:%M:%S',login_attempt_fences.updated_at)
+           AND login_attempt_fences.window_started_at<=login_attempt_fences.updated_at
+           AND login_attempt_fences.updated_at<login_attempt_fences.expires_at
+           AND (
+             login_attempt_fences.expires_at<=excluded.updated_at
+             OR login_attempt_fences.request_count<login_attempt_fences.limit_count
+           )
+         RETURNING user_id,window_started_at,expires_at,request_count,limit_count,updated_at`,
+      ).bind(userId, now, expiresAt, limit, now, userId, userId),
+      db.prepare(
+        `SELECT fence.user_id,fence.window_started_at,fence.expires_at,
+                fence.request_count,fence.limit_count,fence.updated_at
+           FROM login_attempt_fences fence
+           JOIN users ON users.id=fence.user_id AND users.deleted_at IS NULL
+          WHERE fence.user_id IS ?`,
+      ).bind(userId),
+    ]);
+  } catch {
+    throw loginFenceUnavailable();
+  }
+
+  const admissionRows = Array.isArray(results?.[0]?.results) ? results[0].results : null;
+  const stateRows = Array.isArray(results?.[1]?.results) ? results[1].results : null;
+  if (!admissionRows || !stateRows || admissionRows.length > 1 || stateRows.length > 1) {
+    throw loginFenceUnavailable();
+  }
+  const admitted = admissionRows[0] || null;
+  const state = stateRows[0] || null;
+  if (userId === null) {
+    if (admitted || state) throw loginFenceUnavailable();
+    return false;
+  }
+  // A user can be deleted between the credential lookup and this transaction.
+  // That race is indistinguishable from an unknown account and creates no row.
+  if (!state) {
+    if (admitted) throw loginFenceUnavailable();
+    return false;
+  }
+  if (!validLoginFenceState(state, userId, date, limit)) throw loginFenceUnavailable();
+  if (admitted) {
+    if (!validLoginFenceState(admitted, userId, date, limit)
+        || admitted.request_count !== state.request_count
+        || admitted.window_started_at !== state.window_started_at
+        || admitted.expires_at !== state.expires_at
+        || admitted.updated_at !== state.updated_at) {
+      throw loginFenceUnavailable();
+    }
+    return true;
+  }
+  if (state.request_count === limit) return false;
+  throw loginFenceUnavailable();
 }
 
 async function acquirePasswordChangeAdmission(db, userId, date = new Date(), limit = PASSWORD_CHANGE_ACCOUNT_LIMIT) {
@@ -2100,9 +2273,17 @@ async function requireCsrf(request, session) {
 
 async function register(request, env) {
   requireTrustedOrigin(request, env);
+  requireAbuseControl(env);
   await rateLimit(request, env, "register", 8, 15 * 60);
   const db = requireDatabase(env);
   const body = await readJson(request);
+  requireStrictStringObject(
+    body,
+    ["email", "password"],
+    ["name"],
+    "email and password strings, plus an optional name string, are the only supported fields",
+    "invalid_registration",
+  );
   const email = normalizeEmail(body.email);
   const password = normalizePassword(body.password);
   const name = normalizeName(body.name);
@@ -2139,11 +2320,51 @@ async function register(request, env) {
   return withCookies(response, sessionCookies(session.sessionToken, session.csrfToken));
 }
 
+async function createLoginSession(db, user) {
+  const session = await sessionRecord(user.id, user.auth_generation, user.auth_revision_id);
+  let results;
+  try {
+    results = await db.batch([
+      insertSessionStatement(db, session),
+      db.prepare(
+        `DELETE FROM login_attempt_fences
+          WHERE user_id=?
+            AND EXISTS (
+              SELECT 1 FROM sessions
+               WHERE id=? AND user_id=?
+                 AND auth_generation=? AND auth_revision_id IS ?
+            )`,
+      ).bind(
+        user.id,
+        session.id,
+        user.id,
+        session.authGeneration,
+        session.authRevisionId,
+      ),
+    ]);
+  } catch {
+    throw loginFenceUnavailable();
+  }
+  const inserted = results?.[0]?.results?.[0];
+  if (!inserted) {
+    throw new HttpError(401, "email or password is incorrect", "invalid_credentials");
+  }
+  return session;
+}
+
 async function login(request, env) {
   requireTrustedOrigin(request, env);
+  requireAbuseControl(env);
   await rateLimit(request, env, "login", 12, 15 * 60);
   const db = requireDatabase(env);
   const body = await readJson(request);
+  requireStrictStringObject(
+    body,
+    ["email", "password"],
+    [],
+    "email and password strings are the only supported fields",
+    "invalid_login",
+  );
   const email = normalizeEmail(body.email);
   const suppliedPassword = typeof body.password === "string" ? body.password : "";
   const passwordShapeValid = suppliedPassword.length >= 10 && suppliedPassword.length <= 128;
@@ -2153,18 +2374,20 @@ async function login(request, env) {
             auth_generation,auth_revision_id
        FROM users WHERE email=? AND deleted_at IS NULL`,
   ).bind(email).first();
+  const admitted = await acquireLoginAdmission(db, user?.id || null);
   // Perform one PBKDF2 derivation even when the account or submitted password
-  // shape is invalid so response timing does not become an account oracle.
+  // shape is invalid or its account fence is closed, so response timing and
+  // error shape do not become account-discovery oracles.
   let passwordValid = false;
-  if (user && passwordShapeValid) {
+  if (user && admitted && passwordShapeValid) {
     passwordValid = await verifyPassword(password, user);
   } else {
     await derivePassword(password, new TextEncoder().encode("grihagrid-login-dummy-salt"));
   }
-  if (!user || !passwordValid) {
+  if (!user || !admitted || !passwordValid) {
     throw new HttpError(401, "email or password is incorrect", "invalid_credentials");
   }
-  const session = await createSession(db, user.id, user.auth_generation, user.auth_revision_id);
+  const session = await createLoginSession(db, user);
   const response = json({ user: publicUser(user), csrfToken: session.csrfToken });
   return withCookies(response, sessionCookies(session.sessionToken, session.csrfToken));
 }
@@ -2280,6 +2503,21 @@ async function changePassword(request, env) {
       // losing compare-and-swap therefore commits only no-ops and cannot remove
       // or replace the winner's session.
       insertSessionStatement(db, replacement, credentials.hash),
+      db.prepare(
+        `DELETE FROM login_attempt_fences
+          WHERE user_id=?
+            AND EXISTS (
+              SELECT 1 FROM sessions
+               WHERE id=? AND user_id=?
+                 AND auth_generation=? AND auth_revision_id IS ?
+            )`,
+      ).bind(
+        currentSession.user_id,
+        replacement.id,
+        currentSession.user_id,
+        nextGeneration,
+        nextRevisionId,
+      ),
   ]);
 
   const inserted = results?.[2]?.results?.[0];
@@ -7135,20 +7373,28 @@ async function api(request, env, ctx, url) {
               "SELECT auth_generation,auth_revision_id FROM sessions LIMIT 0",
             ).first();
             await env.DB.prepare(
-              `SELECT user_id,window_start,request_count,limit_count,updated_at
-                 FROM password_change_attempt_counters LIMIT 0`,
+              `SELECT * FROM (
+                 SELECT user_id,window_start AS window_started_at,NULL AS expires_at,
+                        request_count,limit_count,updated_at
+                   FROM password_change_attempt_counters
+                 UNION ALL
+                 SELECT user_id,window_started_at,expires_at,request_count,limit_count,updated_at
+                   FROM login_attempt_fences
+               ) LIMIT 0`,
             ).first();
             const authObjects = await env.DB.prepare(
               `SELECT
                  SUM(CASE WHEN type='trigger' AND name IN (
                    'users_auth_state_update_guard','session_auth_state_immutable'
                  ) THEN 1 ELSE 0 END) AS trigger_count,
-                 SUM(CASE WHEN type='index' AND name='idx_password_change_attempts_updated'
+                 SUM(CASE WHEN type='index' AND name IN (
+                   'idx_password_change_attempts_updated','idx_login_attempt_fences_expires'
+                 )
                           THEN 1 ELSE 0 END) AS index_count
                  FROM sqlite_master WHERE type IN ('trigger','index')`,
             ).first();
             authSchema = Number(authObjects?.trigger_count) === 2
-              && Number(authObjects?.index_count) === 1
+              && Number(authObjects?.index_count) === 2
               ? "current"
               : "outdated";
           } catch {
@@ -7806,6 +8052,7 @@ export default {
       ),
       env.DB.prepare("DELETE FROM ai_generation_leases WHERE expires_at<=datetime('now')"),
       env.DB.prepare("DELETE FROM ai_generation_counters WHERE updated_at<datetime('now','-8 days')"),
+      env.DB.prepare("DELETE FROM login_attempt_fences WHERE expires_at<=datetime('now')"),
       env.DB.prepare("DELETE FROM password_change_attempt_counters WHERE updated_at<datetime('now','-2 days')"),
       env.DB.prepare("DELETE FROM report_share_read_counters WHERE updated_at<datetime('now','-2 days')"),
       env.DB.prepare("DELETE FROM report_share_create_counters WHERE updated_at<datetime('now','-2 days')"),
@@ -7820,6 +8067,7 @@ export default {
 // Narrowly exported for deterministic unit tests; the production entrypoint is
 // the default export above.
 export const __test = {
+  acquireLoginAdmission,
   acquirePasswordChangeAdmission,
   acquireReportShareCreateAdmission,
   acquireReportShareReadAdmission,
@@ -7864,6 +8112,7 @@ export const __test = {
   reportShareAbuseHmacKey,
   revisionFromRow,
   requireCsrf,
+  requireStrictStringObject,
   ensureProjectDeletable,
   familyAlignmentPublicProjection,
   familyAlignmentSummary,

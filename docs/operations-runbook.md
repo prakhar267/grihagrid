@@ -17,7 +17,7 @@ Uploads and any product that promises them stay closed while R2 is absent.
 | Staging Worker | `grihagrid-staging` | Synthetic pre-production journeys | Deployed at `https://grihagrid-staging.prakhargupta267.workers.dev`; dedicated D1/KV; smoke and secrets remain release-specific |
 | Canonical launch origin | `https://grihagrid.prakhargupta267.workers.dev` until a custom domain is attached | Same-origin UI, API, cookies, and Razorpay callback | Must also be set as `APP_ORIGIN` before checkout works |
 | D1 binding | `DB` → `grihagrid-db` (`42a75a83-ab24-4e3f-93f1-b80c51284f1e`) | Users, sessions, projects, reports, file metadata, orders, webhook ledger | Bound; remote application of all migrations must be verified |
-| KV binding | `GRIHAGRID_CACHE` → `c5044339222a4172ad7c91724b98d4fb` | Best-effort abuse/rate limiting | Bound; never a money or entitlement ledger |
+| KV binding | `GRIHAGRID_CACHE` → `c5044339222a4172ad7c91724b98d4fb` | Fail-closed authentication IP perimeter; other abuse/rate limiting | Bound; D1 is the strict account/money/entitlement authority |
 | R2 binding | `FILES` → intended bucket `grihagrid-files` | Future private user uploads | **Deferred:** not required for no-upload Decision Compare; all upload promises remain disabled |
 | Razorpay | Payment Links API and signed webhook | Checkout and paid-state confirmation | **Not active:** live account configuration, secrets, webhook registration, and reconciliation evidence are absent |
 | Google Gemini | Structured Interactions API | Optional sanitized planning brief | Active for sanitized beta; shared free-tier project must be isolated before material customer volume |
@@ -300,6 +300,11 @@ Migrations currently run in this order:
     and idempotency digests; expiry/revocation metadata; owner/expiry indexes;
     section, immutability, archive and five-active-link D1 guards; an insert-time
     enabled-control fence; and a single operations control that starts disabled.
+17. `0017_login_attempt_fence.sql`: a `user_id`-only, fixed non-sliding
+    15-minute login fence with a 12-reservation cap, strict canonical state
+    constraints, owner-delete cascade and expiry index. It adds no email, IP or
+    password-derived column and starts empty without rewriting existing users,
+    sessions or product/commerce data.
 
 Each schema-and-Worker release is one ordered change: audit and back up D1,
 apply the migration, verify the expanded schema and its compatibility with the
@@ -420,6 +425,27 @@ table, failed D1 admission, missing KV or failed KV operation is
 mutation. The scheduled two-day cleanup is retention only and must never be
 used to make a release with a broken admission query appear healthy.
 
+Login also requires healthy KV, with 12 attempts per IP in a fixed 15-minute
+window. Its separate D1 authority reserves at most 12 password checks for a
+real `user_id` in one non-sliding 15-minute window before PBKDF2. Unknown,
+wrong-password, deleted, malformed-record, invalid-password-length and fenced
+credentials each execute one real-or-dummy derivation and return the same
+`401 invalid_credentials`; an account-fenced response is never `429`. Missing
+or failing KV/D1 admission is `503 abuse_control_unavailable` before PBKDF2 or
+session mutation. A successful login inserts its exact generation/revision-
+fenced session and clears the fence in one batch; successful password rotation
+clears it through the exact replacement-session batch.
+
+For `0017`, require `login_attempt_fences` to be empty only when the migration
+is first applied and record `loginAttemptFenceRows` plus
+`loginAttemptFenceMigrationPending`. Verify the exact six columns
+`user_id`, `window_started_at`, `expires_at`, `request_count`, `limit_count`,
+`updated_at`, index `idx_login_attempt_fences_expires`, empty foreign-key check,
+no pending migration and byte-equivalent canonical users/sessions plus protected
+counts/hashes. Readiness must report `authSchema=current` through its folded
+0015+0017 inventory and the free product must still require configured KV.
+Evidence must contain no email, IP, account/fence ID or password-derived value.
+
 Before deploying the candidate, run the reviewed **current** authenticated
 smoke harness against the still-active previous Worker with legacy-Worker mode
 enabled and its exact version ID required. Do not execute a smoke script from
@@ -527,7 +553,13 @@ npm run smoke -- "$GG_ORIGIN"
 
 Then use the dedicated production canary account to verify:
 
-1. Login and session restoration after reload.
+1. Login and session restoration after reload. For a release containing
+   `0017`, require `authSchema=current`, prove a normal exact-session login
+   leaves no fence for the synthetic canary user, and prove password rotation
+   clears a seeded synthetic fence without emitting its user/email/IP/password
+   or row details. Exercise the 12→13 distributed cap, fixed expiry reset,
+   generic failure envelope and KV/D1 failure injection in local and isolated
+   staging fixtures—not against a real production account.
 2. Create, read, update, report-generate, and delete one canary project.
 3. When `0012` is in the release, open Brief Check, preview one synthetic
    change, prove the preview does not change any row, accept and save it, retry
@@ -596,6 +628,7 @@ orders.
 | 1 minute | `GET /api/readiness` | `200`, JSON `status=ready`, D1/schema/KV checks healthy |
 | 5 minutes | `POST /api/estimate` fixture | `200`, expected schema and fixed numeric fixture |
 | 15 minutes | Canary login + `GET /api/projects` | Session succeeds and only canary-owned data appears |
+| Daily while login fencing is enabled | Synthetic login → session restore → logout, plus isolated staging 12→13 fence fixture | Normal login leaves no fence; the fixture admits at most 12, request 13 is generic 401, expiry does not slide, cleanup is exact, and output contains no account/IP/credential value |
 | Daily | Full canary project/report CRUD | Create/read/update/report/delete completes without residue |
 | Daily while Brief Check is enabled | Authenticated preview → save → replay → history → explicit report v2 → delete | Preview is write-free; one revision/map/report snapshot exists; history/currentness is truthful; cleanup leaves no source, request or report rows |
 | Daily during pilot | Authenticated two-scenario comparison | Frozen A/B inputs and numeric deltas match fixture; choice is idempotent; cleanup leaves no rows |
@@ -922,7 +955,7 @@ claiming account deletion is complete.
 
 ## 10. Cron verification
 
-The scheduled handler performs eleven bounded operations:
+The scheduled handler performs twelve bounded operations:
 
 ```sql
 DELETE FROM sessions WHERE expires_at < datetime('now');
@@ -932,6 +965,7 @@ DELETE FROM ai_generation_leases WHERE expires_at <= datetime('now');
 DELETE FROM ai_generation_counters WHERE updated_at < datetime('now','-8 days');
 DELETE FROM password_change_attempt_counters
  WHERE updated_at < datetime('now','-2 days');
+DELETE FROM login_attempt_fences WHERE expires_at<=datetime('now');
 DELETE FROM decision_shares
  WHERE expires_at < datetime('now','-90 days')
     OR (revoked_at IS NOT NULL AND revoked_at < datetime('now','-90 days'));
@@ -966,6 +1000,8 @@ remove the production trigger or attach staging to production D1 as a shortcut.
      "SELECT COUNT(*) AS expired_sessions FROM sessions WHERE expires_at < datetime('now');
       SELECT COUNT(*) AS expired_ai_leases FROM ai_generation_leases WHERE expires_at <= datetime('now');
       SELECT COUNT(*) AS old_ai_counters FROM ai_generation_counters WHERE updated_at < datetime('now','-8 days');
+      SELECT COUNT(*) AS expired_login_attempt_fences
+       FROM login_attempt_fences WHERE expires_at<=datetime('now');
       SELECT COUNT(*) AS old_family_rooms FROM family_alignment_rooms
        WHERE expires_at < datetime('now','-90 days')
           OR (revoked_at IS NOT NULL AND revoked_at < datetime('now','-90 days'));
@@ -980,10 +1016,13 @@ remove the production trigger or attach staging to production D1 as a shortcut.
        WHERE updated_at < datetime('now','-2 days');"
    ```
 
-4. Deliberately expired synthetic sessions, checkout links, AI leases and
+4. Deliberately expired synthetic sessions, login-attempt fences, checkout links, AI leases and
    retention-eligible Family Alignment rooms/report shares and old pseudonymous
    read/create counters in staging are removed by a tested scheduled
-   invocation; recent counters and active/recent rooms/links remain.
+   invocation; active login fences, recent counters and active/recent rooms/links
+   remain. Independently prove that an expired login-fence row resets on the
+   next admitted request before cron, so cleanup is retention rather than an
+   availability dependency.
 5. Before/after fixture counts prove each removed Family Alignment room's
    responses cascade while its project, comparison, owner selection, purchased
    snapshot, order and payment ledger rows remain unchanged. Removed report
@@ -1004,8 +1043,9 @@ at 50%, 75%, and 90% of each approved budget or quota.
 - **D1:** watch database size, rows read/written, query latency, lock/error rate,
   and full scans. Keep list endpoints bounded; archive only under an approved
   retention policy.
-- **KV:** authentication/checkout read-then-write limiting is best effort and
-  can race under concurrency; it is an abuse brake, not a money/spend ledger.
+- **KV:** authentication uses KV as a fail-closed per-IP perimeter, but its
+  read-then-write counter can race. Login's strongly consistent per-account cap
+  is D1; checkout KV remains an abuse brake, never a money/spend ledger.
 - **Gemini:** D1 is the strict spend boundary: six admitted generations per
   user per UTC hour and 200 reserved provider attempts per UTC day. Each call
   reserves up to two attempts, failures are not refunded, cache hits are free,
@@ -1052,6 +1092,14 @@ lost-password reset/recovery, account-deletion workflow, immutable audit-event
 table, or malware scanning.
 Documented manual support is not an enterprise substitute; implement and test
 these controls before broad public sales.
+
+Registration still returns `email_in_use`, so it remains an account-enumeration
+surface. Login's D1 fence also permits targeted denial: someone who knows an
+email can consume 12 account reservations and repeat that attack after each
+fixed window. Do not create an operator bypass by editing fence rows for an
+unverified requester. Investigate only privacy-bounded aggregate route/status
+signals; a customer-safe challenge/unlock and verified recovery flow require a
+separate reviewed design.
 
 In particular, direct `DELETE FROM users` is not an account-erasure operation:
 the original finance-retention schema sets `projects.user_id` to null, so raw
@@ -1166,6 +1214,19 @@ the independently verified final enable. Require `reportShareSchema=current`,
 `reportShareAbuseHashing=configured`, and `reportHandoff=true` before reopening
 that surface. Never drop the table or rewrite migration history to make an older
 Worker appear compatible.
+
+Migration `0017` is also additive and readable by the previous Worker, but the
+old application ignores `login_attempt_fences`: it does not reserve the strict
+per-account limit and neither exact login nor password rotation clears a row.
+Rolling back therefore restores runtime compatibility while removing a security
+control. Treat it as an explicit security downgrade: require incident authority,
+a quiet bounded window, closed checkout/fulfillment/uploads, the reviewed
+current harness against the exact old version, aggregate authentication
+monitoring and prompt roll-forward. Existing fence rows remain in D1, expire by
+their original timestamps and are honored when the current Worker returns; do
+not delete them merely to ease rollback. After roll-forward require
+`authSchema=current`, healthy KV, a synthetic successful-login fence clear and
+no pending migration. Never drop the table or rewrite migration history.
 
 ```sql
 SELECT p.id,p.input_revision,MAX(r.revision) AS stored_revision

@@ -1007,7 +1007,7 @@ test("readiness reports AI capability without exposing the configured secret", a
           }
           if (sql.includes("FROM report_handoff_controls")) return { enabled: 1 };
           if (sql.includes("users_auth_state_update_guard")) {
-            return { trigger_count: 2, index_count: 1 };
+            return { trigger_count: 2, index_count: 2 };
           }
           if (sql.includes("FROM sqlite_master")) return counts;
           if (staleFamilyColumns && sql.includes("FROM family_alignment_rooms")) throw new Error("no such column: request_hash");

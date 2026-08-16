@@ -179,6 +179,7 @@ function staleLoginDatabase(db, userId) {
   return {
     prepare(sql) {
       const prepared = db.prepare(sql);
+      if (!sql.includes("FROM users WHERE email=?")) return prepared;
       return {
         bind(...values) {
           const bound = prepared.bind(...values);
@@ -302,6 +303,7 @@ test("password change is strict, fail-closed, atomic, revoking, and race-safe on
     "0001_initial.sql",
     "0002_backend.sql",
     "0015_account_security.sql",
+    "0017_login_attempt_fence.sql",
   ].includes(name)));
   const kv = new MemoryKv();
   const env = {
@@ -436,10 +438,22 @@ test("password change is strict, fail-closed, atomic, revoking, and race-safe on
      END`,
   ).run();
   kv.clear();
+  const seededBeforeFailure = await login(env, email, "wrong current password");
+  assert.equal(seededBeforeFailure.response.status, 401);
+  const fenceBeforeFailure = await db.prepare(
+    "SELECT * FROM login_attempt_fences WHERE user_id=?",
+  ).bind(primary.user.id).first();
+  assert.equal(fenceBeforeFailure.request_count, 1);
+  kv.clear();
   const injectedFailure = await call(env, "/api/auth/password", passwordRequest(primary, INITIAL_PASSWORD, SECOND_PASSWORD));
   assert.equal(injectedFailure.response.status, 500, JSON.stringify(injectedFailure.payload));
   assert.equal(injectedFailure.payload.code, "internal_error");
   assert.deepEqual(await accountSnapshot(db, primary.user.id), baseline, "D1 must roll back credentials, generation, delete, and insert together");
+  assert.deepEqual(
+    await db.prepare("SELECT * FROM login_attempt_fences WHERE user_id=?").bind(primary.user.id).first(),
+    fenceBeforeFailure,
+    "a rolled-back password change must retain the existing login fence",
+  );
   await db.prepare("DROP TRIGGER e2e_fail_password_replacement").run();
 
   await clearPasswordAttempts(db, primary.user.id);
@@ -459,6 +473,11 @@ test("password change is strict, fail-closed, atomic, revoking, and race-safe on
   assert.equal(committed.sessions[0].auth_revision_id, committed.user.auth_revision_id);
   assert.notEqual(committed.user.password_hash, baseline.user.password_hash);
   assert.notEqual(committed.user.password_salt, baseline.user.password_salt);
+  assert.equal(
+    await db.prepare("SELECT user_id FROM login_attempt_fences WHERE user_id=?").bind(primary.user.id).first(),
+    null,
+    "the exact committed replacement session must clear the prior login fence",
+  );
 
   for (const revoked of [primary, otherDevice]) {
     const me = await call(env, "/api/auth/me", { auth: revoked });
@@ -482,6 +501,12 @@ test("password change is strict, fail-closed, atomic, revoking, and race-safe on
   ).run();
   await clearPasswordAttempts(db, primary.user.id);
   kv.clear();
+  const seededBeforeRace = await login(env, email, "wrong current password");
+  assert.equal(seededBeforeRace.response.status, 401);
+  assert.equal((await db.prepare(
+    "SELECT request_count FROM login_attempt_fences WHERE user_id=?",
+  ).bind(primary.user.id).first()).request_count, 1);
+  kv.clear();
   const race = await Promise.all([
     call(env, "/api/auth/password", passwordRequest(replacement, SECOND_PASSWORD, THIRD_PASSWORD)),
     call(env, "/api/auth/password", passwordRequest(replacement, SECOND_PASSWORD, FOURTH_PASSWORD)),
@@ -497,6 +522,11 @@ test("password change is strict, fail-closed, atomic, revoking, and race-safe on
   assert.equal(afterRace.sessions.length, 1);
   assert.equal(afterRace.sessions[0].auth_generation, 3);
   assert.equal(afterRace.sessions[0].auth_revision_id, afterRace.user.auth_revision_id);
+  assert.equal(
+    await db.prepare("SELECT user_id FROM login_attempt_fences WHERE user_id=?").bind(primary.user.id).first(),
+    null,
+    "one winning rotation must clear the fence while the losing batch remains a no-op",
+  );
   const winningPassword = race[0].response.status === 200 ? THIRD_PASSWORD : FOURTH_PASSWORD;
   const losingPassword = race[0].response.status === 200 ? FOURTH_PASSWORD : THIRD_PASSWORD;
   assert.equal((await login(env, email, winningPassword)).response.status, 200);
@@ -510,8 +540,11 @@ test("password change is strict, fail-closed, atomic, revoking, and race-safe on
     staleEmail,
     INITIAL_PASSWORD,
   );
-  assert.equal(staleResult.response.status, 409, JSON.stringify(staleResult.payload));
-  assert.equal(staleResult.payload.code, "auth_state_changed");
+  assert.equal(staleResult.response.status, 401, JSON.stringify(staleResult.payload));
+  assert.deepEqual(staleResult.payload, {
+    error: "email or password is incorrect",
+    code: "invalid_credentials",
+  });
   assert.deepEqual(staleResult.response.headers.getSetCookie(), []);
   const afterStaleLogin = await accountSnapshot(db, staleOwner.user.id);
   assert.equal(afterStaleLogin.user.auth_generation, 2);
