@@ -236,9 +236,13 @@ export async function checkOpsConfig() {
     for (const artifact of [
       "pre-migration-counts.json",
       "pre-migration-audit.json",
+      "pre-migration-users.json",
+      "pre-migration-sessions.json",
       "pre-migration-projects.json",
       "pre-migration-reports.json",
       "post-migration-counts.json",
+      "post-migration-users.json",
+      "post-migration-sessions.json",
       "post-migration-projects.json",
       "post-migration-reports.json",
       "post-migration-feedback-count.json",

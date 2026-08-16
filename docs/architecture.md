@@ -45,6 +45,10 @@ External boundaries: Google Gemini, email provider, Razorpay, and architect oper
 ## Security and privacy controls
 
 - Magic-link/session tokens are random, one-time or hashed at rest, rotated after use, `HttpOnly`, `Secure` and `SameSite=Lax`.
+- Password changes require the current password, advance an account authentication
+  generation plus opaque revision, and replace every earlier session atomically.
+  A login verified against stale authentication state cannot insert a surviving
+  session.
 - Per-IP and per-account rate limits on login, project creation, uploads and checkout.
 - File type is verified by signature, not extension; size/count limits are applied before R2 persistence.
 - Strict CSP, HSTS, `X-Content-Type-Options`, `Referrer-Policy` and frame protections at the edge.

@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 
 const COUNTED_ENTITIES = Object.freeze([
   "users",
+  "sessions",
   "projects",
   "reports",
   "orders",
@@ -27,6 +28,13 @@ const REQUIRED_0014_OBJECTS = Object.freeze([
   "index:idx_projects_user_creation_key",
 ]);
 
+const REQUIRED_0015_OBJECTS = Object.freeze([
+  "table:password_change_attempt_counters",
+  "index:idx_password_change_attempts_updated",
+  "trigger:users_auth_state_update_guard",
+  "trigger:session_auth_state_immutable",
+]);
+
 const REQUIRED_BASELINE_OBJECTS = Object.freeze([
   "table:users",
   "table:projects",
@@ -40,6 +48,11 @@ const REQUIRED_BASELINE_OBJECTS = Object.freeze([
 
 const REQUIRED_COLUMNS = Object.freeze([
   "users:id", "users:email", "users:password_hash", "users:password_salt", "users:password_iterations", "users:password_algorithm",
+  "users:auth_generation", "users:auth_revision_id", "users:password_changed_at",
+  "sessions:id", "sessions:user_id", "sessions:token_hash", "sessions:csrf_hash", "sessions:auth_generation", "sessions:auth_revision_id",
+  "password_change_attempt_counters:user_id", "password_change_attempt_counters:window_start",
+  "password_change_attempt_counters:request_count", "password_change_attempt_counters:limit_count",
+  "password_change_attempt_counters:updated_at",
   "projects:id", "projects:user_id", "projects:status", "projects:input_json", "projects:input_revision", "projects:input_hash", "projects:brief_check_json",
   "projects:creation_key_hash", "projects:creation_request_hash",
   "orders:id", "orders:project_id", "orders:plan", "orders:status", "orders:product_code", "orders:request_hash",
@@ -93,7 +106,38 @@ function canonicalProjects(payload, expectedCount) {
   return { rowCount: rows.length, sha256: sha256(stableStringify(canonicalRows)) };
 }
 
-export function buildPreMigrationEvidence({ environment, countsPayload, auditPayload, projectsPayload, reportsPayload }) {
+function canonicalUsers(payload, expectedCount) {
+  const rows = d1Rows(payload, "users canonical rows");
+  assert.equal(rows.length, expectedCount, "users canonical query was truncated or inconsistent");
+  const canonicalRows = rows.map((row) => ({
+    ...row,
+    auth_generation: row.auth_generation ?? 1,
+    auth_revision_id: row.auth_revision_id ?? null,
+    password_changed_at: row.password_changed_at ?? null,
+  }));
+  return { rowCount: rows.length, sha256: sha256(stableStringify(canonicalRows)) };
+}
+
+function canonicalSessions(payload, expectedCount) {
+  const rows = d1Rows(payload, "sessions canonical rows");
+  assert.equal(rows.length, expectedCount, "sessions canonical query was truncated or inconsistent");
+  const canonicalRows = rows.map((row) => ({
+    ...row,
+    auth_generation: row.auth_generation ?? 1,
+    auth_revision_id: row.auth_revision_id ?? null,
+  }));
+  return { rowCount: rows.length, sha256: sha256(stableStringify(canonicalRows)) };
+}
+
+export function buildPreMigrationEvidence({
+  environment,
+  countsPayload,
+  auditPayload,
+  usersPayload,
+  sessionsPayload,
+  projectsPayload,
+  reportsPayload,
+}) {
   assert.match(String(environment), /^(?:staging|production)$/u, "invalid release environment");
   const counts = exactCounts(countsPayload);
   const auditRows = d1Rows(auditPayload, "legacy safety audit");
@@ -116,6 +160,8 @@ export function buildPreMigrationEvidence({ environment, countsPayload, auditPay
     counts,
     legacySafety: audit,
     canonical: {
+      users: canonicalUsers(usersPayload, counts.users),
+      sessions: canonicalSessions(sessionsPayload, counts.sessions),
       projects: canonicalProjects(projectsPayload, counts.projects),
       reports: canonicalTable(reportsPayload, counts.reports, "reports"),
     },
@@ -129,6 +175,8 @@ export function verifyPostMigrationEvidence({
   schemaPayload,
   columnsPayload,
   countsPayload,
+  usersPayload,
+  sessionsPayload,
   projectsPayload,
   reportsPayload,
   feedbackCountPayload,
@@ -143,7 +191,7 @@ export function verifyPostMigrationEvidence({
   );
 
   const schemaNames = new Set(d1Rows(schemaPayload, "schema objects").map((row) => `${row.type}:${row.name}`));
-  for (const name of [...REQUIRED_BASELINE_OBJECTS, ...REQUIRED_0013_OBJECTS, ...REQUIRED_0014_OBJECTS]) {
+  for (const name of [...REQUIRED_BASELINE_OBJECTS, ...REQUIRED_0013_OBJECTS, ...REQUIRED_0014_OBJECTS, ...REQUIRED_0015_OBJECTS]) {
     assert.ok(schemaNames.has(name), `required schema object is missing: ${name}`);
   }
   const columns = new Set(d1Rows(columnsPayload, "schema columns").map((row) => `${row.table_name}:${row.name}`));
@@ -152,10 +200,12 @@ export function verifyPostMigrationEvidence({
   const counts = exactCounts(countsPayload);
   assert.deepEqual(counts, pre.counts, "migration changed protected table row counts");
   const canonical = {
+    users: canonicalUsers(usersPayload, counts.users),
+    sessions: canonicalSessions(sessionsPayload, counts.sessions),
     projects: canonicalProjects(projectsPayload, counts.projects),
     reports: canonicalTable(reportsPayload, counts.reports, "reports"),
   };
-  assert.deepEqual(canonical, pre.canonical, "migration changed canonical projects or reports bytes");
+  assert.deepEqual(canonical, pre.canonical, "migration changed canonical users, sessions, projects, or reports bytes");
 
   const feedbackRows = d1Rows(feedbackCountPayload, "report feedback count");
   assert.equal(feedbackRows.length, 1, "report feedback count must return one row");
@@ -169,10 +219,11 @@ export function verifyPostMigrationEvidence({
     counts,
     canonical,
     coreDataUnchanged: true,
+    credentialsAndSessionsUnchanged: true,
     foreignKeyCheckRows: 0,
     reportFeedbackRows,
     feedbackMigrationPending: Boolean(feedbackMigrationPending),
-    requiredSchemaObjects: [...REQUIRED_BASELINE_OBJECTS, ...REQUIRED_0013_OBJECTS, ...REQUIRED_0014_OBJECTS],
+    requiredSchemaObjects: [...REQUIRED_BASELINE_OBJECTS, ...REQUIRED_0013_OBJECTS, ...REQUIRED_0014_OBJECTS, ...REQUIRED_0015_OBJECTS],
     requiredColumns: [...REQUIRED_COLUMNS],
   };
 }
@@ -241,17 +292,19 @@ function usage() {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const [mode, environment, ...files] = process.argv.slice(2);
-  if (mode === "pre" && files.length === 5) {
-    const [counts, audit, projects, reports, output] = files;
+  if (mode === "pre" && files.length === 7) {
+    const [counts, audit, users, sessions, projects, reports, output] = files;
     writeJson(output, buildPreMigrationEvidence({
       environment,
       countsPayload: readJson(counts),
       auditPayload: readJson(audit),
+      usersPayload: readJson(users),
+      sessionsPayload: readJson(sessions),
       projectsPayload: readJson(projects),
       reportsPayload: readJson(reports),
     }));
-  } else if (mode === "post" && files.length === 9) {
-    const [pre, foreignKeys, schema, columns, counts, projects, reports, feedbackCount, output] = files;
+  } else if (mode === "post" && files.length === 11) {
+    const [pre, foreignKeys, schema, columns, counts, users, sessions, projects, reports, feedbackCount, output] = files;
     writeJson(output, verifyPostMigrationEvidence({
       environment,
       pre: readJson(pre),
@@ -259,6 +312,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       schemaPayload: readJson(schema),
       columnsPayload: readJson(columns),
       countsPayload: readJson(counts),
+      usersPayload: readJson(users),
+      sessionsPayload: readJson(sessions),
       projectsPayload: readJson(projects),
       reportsPayload: readJson(reports),
       feedbackCountPayload: readJson(feedbackCount),

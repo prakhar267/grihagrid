@@ -36,6 +36,7 @@ class PaymentD1 {
   prepare(sql) {
     const normalized = sql.replace(/\s+/gu, " ").trim();
     if (normalized.startsWith("DELETE FROM ai_generation_")
+      || normalized.startsWith("DELETE FROM password_change_attempt_counters")
       || normalized.startsWith("DELETE FROM family_alignment_rooms")) this.maintenanceStatements.push(normalized);
     return new PaymentStatement(this, normalized);
   }
@@ -283,6 +284,7 @@ class PaymentStatement {
     if (this.sql.startsWith("DELETE FROM sessions WHERE expires_at")) return { success: true };
     if (this.sql.startsWith("DELETE FROM ai_generation_leases WHERE expires_at")) return { success: true };
     if (this.sql.startsWith("DELETE FROM ai_generation_counters WHERE updated_at")) return { success: true };
+    if (this.sql.startsWith("DELETE FROM password_change_attempt_counters WHERE updated_at")) return { success: true };
     if (this.sql.startsWith("DELETE FROM decision_shares WHERE")) return { success: true };
     if (this.sql.startsWith("DELETE FROM family_alignment_rooms WHERE")) return { success: true };
     if (this.sql.startsWith("DELETE FROM product_event_aggregates WHERE")) return { success: true };
@@ -831,6 +833,7 @@ test("daily maintenance expires stale checkout links and covers new retention ta
   assert.equal(DB.orders[0].checkout_url, null);
   assert.equal(DB.maintenanceStatements.some((sql) => sql.startsWith("DELETE FROM ai_generation_leases")), true);
   assert.equal(DB.maintenanceStatements.some((sql) => sql.startsWith("DELETE FROM ai_generation_counters")), true);
+  assert.equal(DB.maintenanceStatements.some((sql) => sql.startsWith("DELETE FROM password_change_attempt_counters")), true);
   assert.equal(DB.maintenanceStatements.some((sql) => sql.startsWith("DELETE FROM family_alignment_rooms")), true);
 });
 

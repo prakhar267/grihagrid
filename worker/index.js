@@ -27,6 +27,8 @@ const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30;
 // The per-user salt and versioned algorithm fields permit a future managed-
 // identity or Argon2 migration without invalidating existing accounts.
 const PASSWORD_ITERATIONS = 100_000;
+const PASSWORD_CHANGE_ACCOUNT_LIMIT = 5;
+const PASSWORD_CHANGE_WINDOW_SECONDS = 15 * 60;
 const MAX_JSON_BYTES = 64 * 1024;
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_WEBHOOK_BYTES = 256 * 1024;
@@ -572,6 +574,33 @@ function requireAbuseControl(env) {
     throw new HttpError(503, "abuse controls are temporarily unavailable", "abuse_control_unavailable");
   }
   return env.GRIHAGRID_CACHE;
+}
+
+async function acquirePasswordChangeAdmission(db, userId, date = new Date(), limit = PASSWORD_CHANGE_ACCOUNT_LIMIT) {
+  if (!Number.isSafeInteger(limit) || limit < 1 || !(date instanceof Date) || Number.isNaN(date.valueOf())) {
+    throw new HttpError(503, "abuse controls are temporarily unavailable", "abuse_control_unavailable");
+  }
+  const windowMs = PASSWORD_CHANGE_WINDOW_SECONDS * 1000;
+  const windowStart = sqliteTimestamp(new Date(Math.floor(date.getTime() / windowMs) * windowMs));
+  const now = sqliteTimestamp(date);
+  let admitted;
+  try {
+    admitted = await db.prepare(
+      `INSERT INTO password_change_attempt_counters
+         (user_id,window_start,request_count,limit_count,updated_at)
+       VALUES (?,?,1,?,?)
+       ON CONFLICT(user_id,window_start) DO UPDATE SET
+         request_count=password_change_attempt_counters.request_count+1,
+         limit_count=excluded.limit_count,
+         updated_at=excluded.updated_at
+       WHERE password_change_attempt_counters.limit_count=excluded.limit_count
+         AND password_change_attempt_counters.request_count<password_change_attempt_counters.limit_count
+       RETURNING request_count`,
+    ).bind(userId, windowStart, limit, now).first();
+  } catch {
+    throw new HttpError(503, "abuse controls are temporarily unavailable", "abuse_control_unavailable");
+  }
+  if (!admitted) throw new HttpError(429, "too many attempts; please try again later", "rate_limited");
 }
 
 function paymentPlan(value) {
@@ -1806,24 +1835,64 @@ function normalizeName(value) {
   return name;
 }
 
-async function createSession(db, userId) {
+async function sessionRecord(userId, authGeneration = 1, authRevisionId = null) {
   const sessionToken = randomToken();
   const csrfToken = randomToken();
   const now = new Date();
   const expires = new Date(now.getTime() + SESSION_TTL_SECONDS * 1000);
   const id = crypto.randomUUID();
-  await db.prepare(
-    "INSERT INTO sessions (id,user_id,token_hash,csrf_hash,expires_at,created_at,last_seen_at) VALUES (?,?,?,?,?,?,?)",
-  ).bind(
+  return {
     id,
     userId,
-    await digestBase64(sessionToken),
-    await digestBase64(csrfToken),
-    sqliteTimestamp(expires),
-    sqliteTimestamp(now),
-    sqliteTimestamp(now),
-  ).run();
-  return { id, sessionToken, csrfToken, expiresAt: sqliteTimestamp(expires) };
+    sessionToken,
+    csrfToken,
+    tokenHash: await digestBase64(sessionToken),
+    csrfHash: await digestBase64(csrfToken),
+    expiresAt: sqliteTimestamp(expires),
+    createdAt: sqliteTimestamp(now),
+    authGeneration: Number(authGeneration),
+    authRevisionId: authRevisionId || null,
+  };
+}
+
+function insertSessionStatement(db, session, expectedPasswordHash = null) {
+  const passwordFence = expectedPasswordHash ? "AND u.password_hash=?" : "";
+  const statement = db.prepare(
+    `INSERT INTO sessions
+       (id,user_id,token_hash,csrf_hash,expires_at,created_at,last_seen_at,auth_generation,auth_revision_id)
+     SELECT ?,?,?,?,?,?,?,?,?
+      WHERE EXISTS (
+        SELECT 1 FROM users u
+         WHERE u.id=? AND u.deleted_at IS NULL
+           AND u.auth_generation=? AND u.auth_revision_id IS ?
+           ${passwordFence}
+      )
+     RETURNING id`,
+  ).bind(
+    session.id,
+    session.userId,
+    session.tokenHash,
+    session.csrfHash,
+    session.expiresAt,
+    session.createdAt,
+    session.createdAt,
+    session.authGeneration,
+    session.authRevisionId,
+    session.userId,
+    session.authGeneration,
+    session.authRevisionId,
+    ...(expectedPasswordHash ? [expectedPasswordHash] : []),
+  );
+  return statement;
+}
+
+async function createSession(db, userId, authGeneration = 1, authRevisionId = null) {
+  const session = await sessionRecord(userId, authGeneration, authRevisionId);
+  const inserted = await insertSessionStatement(db, session).first();
+  if (!inserted) {
+    throw new HttpError(409, "authentication state changed; retry the request", "auth_state_changed");
+  }
+  return session;
 }
 
 async function getSession(request, env, required = true) {
@@ -1836,16 +1905,31 @@ async function getSession(request, env, required = true) {
   const tokenHash = await digestBase64(token);
   const row = await db.prepare(
     `SELECT s.id AS session_id,s.user_id,s.csrf_hash,s.expires_at,
+            s.auth_generation,s.auth_revision_id,
             u.email,u.name,u.created_at AS user_created_at
        FROM sessions s
        JOIN users u ON u.id=s.user_id
-      WHERE s.token_hash=? AND s.expires_at>datetime('now') AND u.deleted_at IS NULL`,
+      WHERE s.token_hash=? AND s.expires_at>datetime('now') AND u.deleted_at IS NULL
+        AND s.auth_generation=u.auth_generation
+        AND s.auth_revision_id IS u.auth_revision_id`,
   ).bind(tokenHash).first();
   if (!row) {
     if (required) throw new HttpError(401, "authentication required", "unauthenticated");
     return null;
   }
   return row;
+}
+
+async function currentPasswordRecord(db, session) {
+  const record = await db.prepare(
+    `SELECT password_hash,password_salt,password_iterations,password_algorithm,
+            auth_generation,auth_revision_id,password_changed_at
+       FROM users
+      WHERE id=? AND deleted_at IS NULL
+        AND auth_generation=? AND auth_revision_id IS ?`,
+  ).bind(session.user_id, session.auth_generation, session.auth_revision_id || null).first();
+  if (!record) throw new HttpError(401, "authentication required", "unauthenticated");
+  return record;
 }
 
 async function requireCsrf(request, session) {
@@ -1880,8 +1964,9 @@ async function register(request, env) {
   const credentials = await makePasswordRecord(password);
   try {
     await db.prepare(
-      `INSERT INTO users (id,email,name,created_at,password_hash,password_salt,password_iterations,password_algorithm)
-       VALUES (?,?,?,?,?,?,?,?)`,
+      `INSERT INTO users
+         (id,email,name,created_at,password_hash,password_salt,password_iterations,password_algorithm,password_changed_at)
+       VALUES (?,?,?,?,?,?,?,?,?)`,
     ).bind(
       id,
       email,
@@ -1891,6 +1976,7 @@ async function register(request, env) {
       credentials.salt,
       credentials.iterations,
       credentials.algorithm,
+      createdAt,
     ).run();
   } catch (error) {
     if (String(error?.message || error).toLowerCase().includes("unique")) {
@@ -1913,7 +1999,8 @@ async function login(request, env) {
   const passwordShapeValid = suppliedPassword.length >= 10 && suppliedPassword.length <= 128;
   const password = suppliedPassword.slice(0, 128) || "\0";
   const user = await db.prepare(
-    `SELECT id,email,name,created_at,password_hash,password_salt,password_iterations,password_algorithm
+    `SELECT id,email,name,created_at,password_hash,password_salt,password_iterations,password_algorithm,
+            auth_generation,auth_revision_id
        FROM users WHERE email=? AND deleted_at IS NULL`,
   ).bind(email).first();
   // Perform one PBKDF2 derivation even when the account or submitted password
@@ -1927,7 +2014,7 @@ async function login(request, env) {
   if (!user || !passwordValid) {
     throw new HttpError(401, "email or password is incorrect", "invalid_credentials");
   }
-  const session = await createSession(db, user.id);
+  const session = await createSession(db, user.id, user.auth_generation, user.auth_revision_id);
   const response = json({ user: publicUser(user), csrfToken: session.csrfToken });
   return withCookies(response, sessionCookies(session.sessionToken, session.csrfToken));
 }
@@ -1947,6 +2034,111 @@ async function me(request, env) {
   const session = await getSession(request, env);
   const csrfToken = parseCookies(request)[CSRF_COOKIE] || null;
   return json({ user: publicUser(session), csrfToken });
+}
+
+async function changePassword(request, env) {
+  requireTrustedOrigin(request, env);
+  const db = requireDatabase(env);
+  const currentSession = await getSession(request, env);
+  await requireCsrf(request, currentSession);
+
+  // Password verification is an online credential check even for an already
+  // authenticated browser. KV is the fail-closed IP perimeter; D1 provides the
+  // atomic per-account admission boundary that parallel KV requests cannot.
+  requireAbuseControl(env);
+  await rateLimit(request, env, "password-change", 10, 15 * 60);
+
+  const body = await readJson(request);
+  if (Object.keys(body).length !== 2
+      || !Object.hasOwn(body, "currentPassword")
+      || !Object.hasOwn(body, "newPassword")
+      || typeof body.currentPassword !== "string"
+      || typeof body.newPassword !== "string") {
+    throw new HttpError(400, "currentPassword and newPassword are the only supported fields", "invalid_password_change");
+  }
+  await acquirePasswordChangeAdmission(db, currentSession.user_id);
+  const passwordRecord = await currentPasswordRecord(db, currentSession);
+  const suppliedCurrentPassword = body.currentPassword;
+  const currentPasswordShapeValid = suppliedCurrentPassword.length >= 10 && suppliedCurrentPassword.length <= 128;
+  const currentPassword = suppliedCurrentPassword.slice(0, 128) || "\0";
+  let currentPasswordValid = false;
+  if (currentPasswordShapeValid) {
+    currentPasswordValid = await verifyPassword(currentPassword, passwordRecord);
+  } else {
+    await derivePassword(currentPassword, new TextEncoder().encode("grihagrid-password-change-dummy-salt"));
+  }
+  if (!currentPasswordValid) {
+    throw new HttpError(401, "current password is incorrect", "current_password_incorrect");
+  }
+
+  const newPassword = normalizePassword(body.newPassword);
+  if (newPassword === currentPassword) {
+    throw new HttpError(400, "new password must differ from the current password", "password_reuse");
+  }
+  const credentials = await makePasswordRecord(newPassword);
+  const currentGeneration = Number(passwordRecord.auth_generation);
+  if (!Number.isSafeInteger(currentGeneration) || currentGeneration < 1 || currentGeneration >= 2_147_483_647) {
+    throw new HttpError(409, "authentication state changed; retry the request", "auth_state_changed");
+  }
+  const nextGeneration = currentGeneration + 1;
+  const nextRevisionId = crypto.randomUUID();
+  const passwordChangedAt = sqliteTimestamp();
+  const replacement = await sessionRecord(currentSession.user_id, nextGeneration, nextRevisionId);
+
+  const results = await db.batch([
+      db.prepare(
+        `UPDATE users
+            SET password_hash=?,password_salt=?,password_iterations=?,password_algorithm=?,
+                auth_generation=?,auth_revision_id=?,password_changed_at=?
+          WHERE id=? AND deleted_at IS NULL
+            AND auth_generation=? AND auth_revision_id IS ?
+            AND password_hash=? AND password_salt=?
+            AND password_iterations=? AND password_algorithm=?`,
+      ).bind(
+        credentials.hash,
+        credentials.salt,
+        credentials.iterations,
+        credentials.algorithm,
+        nextGeneration,
+        nextRevisionId,
+        passwordChangedAt,
+        currentSession.user_id,
+        currentGeneration,
+        passwordRecord.auth_revision_id || null,
+        passwordRecord.password_hash,
+        passwordRecord.password_salt,
+        passwordRecord.password_iterations,
+        passwordRecord.password_algorithm,
+      ),
+      db.prepare(
+        `DELETE FROM sessions
+          WHERE user_id=?
+            AND EXISTS (
+              SELECT 1 FROM users u
+               WHERE u.id=? AND u.deleted_at IS NULL
+                 AND u.auth_generation=? AND u.auth_revision_id IS ?
+                 AND u.password_hash=?
+            )`,
+      ).bind(
+        currentSession.user_id,
+        currentSession.user_id,
+        nextGeneration,
+        nextRevisionId,
+        credentials.hash,
+      ),
+      // Both this insert and the preceding delete are request-specific. A
+      // losing compare-and-swap therefore commits only no-ops and cannot remove
+      // or replace the winner's session.
+      insertSessionStatement(db, replacement, credentials.hash),
+  ]);
+
+  const inserted = results?.[2]?.results?.[0];
+  if (!inserted || inserted.id !== replacement.id) {
+    throw new HttpError(409, "authentication state changed; sign in and retry", "auth_state_changed");
+  }
+
+  const response = json({ user: publicUser(currentSession), csrfToken: replacement.csrfToken });
+  return withCookies(response, sessionCookies(replacement.sessionToken, replacement.csrfToken));
 }
 
 function validateJsonValue(value, depth = 0) {
@@ -6064,6 +6256,7 @@ async function api(request, env, ctx, url) {
       let revisionSchema = "unknown";
       let reportFeedbackSchema = "unknown";
       let projectCreationSchema = "unknown";
+      let authSchema = "unknown";
       if (env.DB) {
         try {
           const result = await env.DB.prepare(
@@ -6180,6 +6373,33 @@ async function api(request, env, ctx, url) {
             projectCreationSchema = Number(projectCreationObjects?.count) === 1 ? "current" : "outdated";
           } catch {
             projectCreationSchema = "outdated";
+          }
+          try {
+            await env.DB.prepare(
+              "SELECT auth_generation,auth_revision_id,password_changed_at FROM users LIMIT 0",
+            ).first();
+            await env.DB.prepare(
+              "SELECT auth_generation,auth_revision_id FROM sessions LIMIT 0",
+            ).first();
+            await env.DB.prepare(
+              `SELECT user_id,window_start,request_count,limit_count,updated_at
+                 FROM password_change_attempt_counters LIMIT 0`,
+            ).first();
+            const authObjects = await env.DB.prepare(
+              `SELECT
+                 SUM(CASE WHEN type='trigger' AND name IN (
+                   'users_auth_state_update_guard','session_auth_state_immutable'
+                 ) THEN 1 ELSE 0 END) AS trigger_count,
+                 SUM(CASE WHEN type='index' AND name='idx_password_change_attempts_updated'
+                          THEN 1 ELSE 0 END) AS index_count
+                 FROM sqlite_master WHERE type IN ('trigger','index')`,
+            ).first();
+            authSchema = Number(authObjects?.trigger_count) === 2
+              && Number(authObjects?.index_count) === 1
+              ? "current"
+              : "outdated";
+          } catch {
+            authSchema = "outdated";
           }
           if (Number(result?.family_alignment_count) === 2) {
             try {
@@ -6338,6 +6558,7 @@ async function api(request, env, ctx, url) {
             && decisionSchema === "current" && paymentSchema === "current" && familyAlignmentSchema === "current"
             && archiveSafetySchema === "current" && revisionSchema === "current"
             && reportFeedbackSchema === "current" && projectCreationSchema === "current"
+            && authSchema === "current"
             ? "current"
             : "outdated";
         } catch {
@@ -6352,6 +6573,7 @@ async function api(request, env, ctx, url) {
           revisionSchema = "unknown";
           reportFeedbackSchema = "unknown";
           projectCreationSchema = "unknown";
+          authSchema = "unknown";
         }
       }
       const rateLimit = env.GRIHAGRID_CACHE ? "configured" : "missing";
@@ -6384,6 +6606,7 @@ async function api(request, env, ctx, url) {
           revisionSchema,
           reportFeedbackSchema,
           projectCreationSchema,
+          authSchema,
           ai: geminiConfigured ? "configured" : "unavailable",
           privateStorage: env.FILES ? "configured" : "unavailable",
           acceptingPaidPlans: acceptingPlans,
@@ -6398,6 +6621,7 @@ async function api(request, env, ctx, url) {
           familyAlignment: freeReady && decisionSchema === "current" && familyAlignmentSchema === "current" && rateLimit === "configured",
           briefCheck: freeReady && revisionSchema === "current" && rateLimit === "configured",
           reportFeedback: freeReady && reportFeedbackSchema === "current" && rateLimit === "configured",
+          accountSecurity: freeReady && authSchema === "current" && rateLimit === "configured",
         },
         time: new Date().toISOString(),
       }, freeReady ? 200 : 503);
@@ -6459,6 +6683,9 @@ async function api(request, env, ctx, url) {
     }
     if (url.pathname === "/api/auth/me") {
       return request.method === "GET" ? await me(request, env) : methodNotAllowed(["GET"]);
+    }
+    if (url.pathname === "/api/auth/password") {
+      return request.method === "PUT" ? await changePassword(request, env) : methodNotAllowed(["PUT"]);
     }
     if (url.pathname === "/api/projects") {
       if (request.method === "GET") return await listProjects(request, env, url);
@@ -6657,6 +6884,7 @@ function isApiRoute(pathname) {
     "/api/auth/login",
     "/api/auth/logout",
     "/api/auth/me",
+    "/api/auth/password",
     "/api/projects",
     "/api/orders",
     "/api/events",
@@ -6772,6 +7000,7 @@ export default {
       ),
       env.DB.prepare("DELETE FROM ai_generation_leases WHERE expires_at<=datetime('now')"),
       env.DB.prepare("DELETE FROM ai_generation_counters WHERE updated_at<datetime('now','-8 days')"),
+      env.DB.prepare("DELETE FROM password_change_attempt_counters WHERE updated_at<datetime('now','-2 days')"),
       env.DB.prepare("DELETE FROM decision_shares WHERE expires_at<datetime('now','-90 days') OR (revoked_at IS NOT NULL AND revoked_at<datetime('now','-90 days'))"),
       env.DB.prepare("DELETE FROM family_alignment_rooms WHERE expires_at<datetime('now','-90 days') OR (revoked_at IS NOT NULL AND revoked_at<datetime('now','-90 days'))"),
       env.DB.prepare("DELETE FROM product_event_aggregates WHERE event_day<date('now','-400 days')"),
@@ -6782,6 +7011,7 @@ export default {
 // Narrowly exported for deterministic unit tests; the production entrypoint is
 // the default export above.
 export const __test = {
+  acquirePasswordChangeAdmission,
   acquireAiGenerationAdmission,
   aiBriefFromRow,
   aiModel,

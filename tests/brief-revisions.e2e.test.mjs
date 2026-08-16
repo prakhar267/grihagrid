@@ -478,10 +478,10 @@ test("Brief Check revisions are truthful, immutable, owner-scoped, and race safe
   let server = null;
   const capturedLogs = [];
   try {
-    requireD1Success(d1(stateDirectory, "migrate"), "fresh 0001-0014 migration chain failed");
+    requireD1Success(d1(stateDirectory, "migrate"), "fresh 0001-0015 migration chain failed");
     const applied = rowsFor(stateDirectory, "SELECT name FROM d1_migrations ORDER BY id", "migration ledger query failed");
-    assert.equal(applied.length, 14, JSON.stringify(applied));
-    assert.equal(applied.at(-1)?.name, "0014_project_creation_idempotency.sql");
+    assert.equal(applied.length, 15, JSON.stringify(applied));
+    assert.equal(applied.at(-1)?.name, "0015_account_security.sql");
 
     server = await startWorker(stateDirectory, assetsDirectory, port);
     const readiness = await call(server.origin, "/api/readiness");
@@ -492,21 +492,23 @@ test("Brief Check revisions are truthful, immutable, owner-scoped, and race safe
       readiness.payload.checks,
       [
         "database", "schema", "rateLimit", "aiSchema", "aiAbuseControl", "decisionSchema",
-        "paymentSchema", "familyAlignmentSchema", "archiveSafetySchema", "revisionSchema", "reportFeedbackSchema", "projectCreationSchema", "ai",
+        "paymentSchema", "familyAlignmentSchema", "archiveSafetySchema", "revisionSchema", "reportFeedbackSchema", "projectCreationSchema", "authSchema", "ai",
         "privateStorage", "acceptingPaidPlans",
       ],
       "readiness.checks",
     );
     assertExactKeys(
       readiness.payload.capabilities,
-      ["freePlanning", "privateUploads", "paidCheckout", "paidFulfillment", "aiPlanningBrief", "decisionCompare", "familyAlignment", "briefCheck", "reportFeedback"],
+      ["freePlanning", "privateUploads", "paidCheckout", "paidFulfillment", "aiPlanningBrief", "decisionCompare", "familyAlignment", "briefCheck", "reportFeedback", "accountSecurity"],
       "readiness.capabilities",
     );
     assert.equal(readiness.payload.checks.revisionSchema, "current");
     assert.equal(readiness.payload.checks.reportFeedbackSchema, "current");
     assert.equal(readiness.payload.checks.projectCreationSchema, "current");
+    assert.equal(readiness.payload.checks.authSchema, "current");
     assert.equal(readiness.payload.capabilities.briefCheck, true);
     assert.equal(readiness.payload.capabilities.reportFeedback, true);
+    assert.equal(readiness.payload.capabilities.accountSecurity, true);
     assert.equal(readiness.payload.capabilities.paidCheckout, false);
     assert.equal(readiness.payload.capabilities.paidFulfillment, false);
     assert.equal(readiness.payload.capabilities.privateUploads, false);
@@ -1050,6 +1052,12 @@ test("migration 0012 starts legacy history honestly and remains usable across an
     requireD1Success(d1(stateDirectory, "execute", legacySeed), "legacy revision-4 seed failed");
     const migration12 = path.join(root, "migrations", "0012_brief_check_revision_history.sql");
     requireD1Success(d1(stateDirectory, "file", migration12), "legacy 0012 upgrade failed");
+    // This fixture intentionally stops the project-history schema at 0012 so
+    // it can exercise the legacy rollback triggers in isolation. The current
+    // Worker still requires the additive 0015 authentication fence for every
+    // authenticated route, so apply only that independent prerequisite here.
+    const migration15 = path.join(root, "migrations", "0015_account_security.sql");
+    requireD1Success(d1(stateDirectory, "file", migration15), "account-security prerequisite failed");
 
     const migratedRevisions = rowsFor(
       stateDirectory,

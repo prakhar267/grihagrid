@@ -121,10 +121,20 @@ class MemoryStatement {
         user_id: user.id,
         csrf_hash: session.csrf_hash,
         expires_at: session.expires_at,
+        auth_generation: session.auth_generation,
+        auth_revision_id: session.auth_revision_id,
         email: user.email,
         name: user.name,
         user_created_at: user.created_at,
       } : null;
+    }
+    if (this.sql.startsWith("INSERT INTO sessions")) {
+      const [id, user_id, token_hash, csrf_hash, expires_at, created_at, last_seen_at, auth_generation, auth_revision_id] = this.values;
+      const user = this.db.users.find((candidate) => candidate.id === user_id
+        && candidate.auth_generation === auth_generation && candidate.auth_revision_id === auth_revision_id);
+      if (!user) return null;
+      this.db.sessions.push({ id, user_id, token_hash, csrf_hash, expires_at, created_at, last_seen_at, auth_generation, auth_revision_id });
+      return { id };
     }
     if (this.sql.startsWith("SELECT p.*,EXISTS(") && this.sql.includes("FROM projects p WHERE p.id=? AND p.user_id=?")) {
       const project = this.db.projects.find((candidate) => candidate.id === this.values[0] && candidate.user_id === this.values[1]);
@@ -213,13 +223,25 @@ class MemoryStatement {
 
   async run() {
     if (this.sql.startsWith("INSERT INTO users")) {
-      const [id, email, name, created_at, password_hash, password_salt, password_iterations, password_algorithm] = this.values;
-      this.db.users.push({ id, email, name, created_at, password_hash, password_salt, password_iterations, password_algorithm });
+      const [id, email, name, created_at, password_hash, password_salt, password_iterations, password_algorithm, password_changed_at] = this.values;
+      this.db.users.push({
+        id,
+        email,
+        name,
+        created_at,
+        password_hash,
+        password_salt,
+        password_iterations,
+        password_algorithm,
+        password_changed_at,
+        auth_generation: 1,
+        auth_revision_id: null,
+      });
       return { success: true };
     }
     if (this.sql.startsWith("INSERT INTO sessions")) {
-      const [id, user_id, token_hash, csrf_hash, expires_at, created_at, last_seen_at] = this.values;
-      this.db.sessions.push({ id, user_id, token_hash, csrf_hash, expires_at, created_at, last_seen_at });
+      const [id, user_id, token_hash, csrf_hash, expires_at, created_at, last_seen_at, auth_generation, auth_revision_id] = this.values;
+      this.db.sessions.push({ id, user_id, token_hash, csrf_hash, expires_at, created_at, last_seen_at, auth_generation, auth_revision_id });
       return { success: true };
     }
     if (this.sql.startsWith("INSERT INTO projects")) {
@@ -350,6 +372,9 @@ class MemoryStatement {
       return { success: true };
     }
     if (this.sql.startsWith("DELETE FROM ai_generation_counters WHERE updated_at<")) {
+      return { success: true };
+    }
+    if (this.sql.startsWith("DELETE FROM password_change_attempt_counters WHERE updated_at<")) {
       return { success: true };
     }
     throw new Error(`Unhandled MemoryD1 run(): ${this.sql}`);
@@ -733,6 +758,7 @@ test("real D1 rejects a Gemini result when a legitimate brief revision wins duri
     "0012_brief_check_revision_history.sql",
     "0013_report_feedback_and_intake_hardening.sql",
     "0014_project_creation_idempotency.sql",
+    "0015_account_security.sql",
   ];
   for (const migration of migrations) {
     const source = await readFile(new URL(`../migrations/${migration}`, import.meta.url), "utf8");
@@ -973,6 +999,9 @@ test("readiness reports AI capability without exposing the configured secret", a
           }
           if (sql.includes("idx_projects_user_creation_key")) {
             return { count: staleProjectCreation ? 0 : 1 };
+          }
+          if (sql.includes("users_auth_state_update_guard")) {
+            return { trigger_count: 2, index_count: 1 };
           }
           if (sql.includes("FROM sqlite_master")) return counts;
           if (staleFamilyColumns && sql.includes("FROM family_alignment_rooms")) throw new Error("no such column: request_hash");

@@ -45,8 +45,8 @@ test("read-only smoke verifies health, readiness, estimate and fail-closed catal
       return Response.json({
         status: "ready",
         releaseId: "11111111-1111-4111-8111-111111111111",
-        checks: { familyAlignmentSchema: "current", reportFeedbackSchema: "current", projectCreationSchema: "current", privateStorage: "unavailable", acceptingPaidPlans: [] },
-        capabilities: { freePlanning: true, familyAlignment: true, reportFeedback: true, privateUploads: false, paidCheckout: false, paidFulfillment: false },
+        checks: { familyAlignmentSchema: "current", reportFeedbackSchema: "current", projectCreationSchema: "current", authSchema: "current", privateStorage: "unavailable", acceptingPaidPlans: [] },
+        capabilities: { freePlanning: true, familyAlignment: true, reportFeedback: true, accountSecurity: true, privateUploads: false, paidCheckout: false, paidFulfillment: false },
         time: new Date().toISOString(),
       }, { headers: { ...securityHeaders, "cache-control": "no-store" } });
     }

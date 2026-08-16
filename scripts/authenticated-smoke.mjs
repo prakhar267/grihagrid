@@ -137,6 +137,8 @@ export async function runAuthenticatedSmoke(rawOrigin, credentials, options = {}
     assert.equal(readiness?.capabilities?.privateUploads, false, "authenticated canary requires uploads to remain closed");
     if (!legacyWorker) {
       assert.equal(readiness?.capabilities?.reportFeedback, true, "authenticated canary requires report feedback to be ready");
+      assert.equal(readiness?.checks?.authSchema, "current", "authenticated canary requires account-security schema to be current");
+      assert.equal(readiness?.capabilities?.accountSecurity, true, "authenticated canary requires account security to be ready");
     }
 
     const me = await call("/api/auth/me");

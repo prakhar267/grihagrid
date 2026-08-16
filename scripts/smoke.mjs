@@ -91,11 +91,13 @@ export async function runSmoke(rawOrigin, options = {}) {
     assert.equal(body.checks?.familyAlignmentSchema, "current");
     assert.equal(body.checks?.reportFeedbackSchema, "current");
     assert.equal(body.checks?.projectCreationSchema, "current");
+    assert.equal(body.checks?.authSchema, "current");
     assert.equal(body.checks?.privateStorage, "unavailable");
     assert.deepEqual(body.checks?.acceptingPaidPlans, expectCheckout ? ["decision_compare"] : []);
     assert.equal(body.capabilities?.freePlanning, true);
     assert.equal(body.capabilities?.familyAlignment, true);
     assert.equal(body.capabilities?.reportFeedback, true);
+    assert.equal(body.capabilities?.accountSecurity, true);
     assert.equal(body.capabilities?.privateUploads, false);
     assert.equal(body.capabilities?.paidCheckout, expectCheckout);
     assert.notEqual(body.capabilities?.paidFulfillment, true, "fulfillment is unexpectedly open");
