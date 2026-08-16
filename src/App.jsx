@@ -161,6 +161,12 @@ function reportShareCapabilityToken(location=window.location) {
   return location.hash.slice(1);
 }
 
+function scrubClosedReportShareCapability(token) {
+  if(typeof token!=="string"||!token)return;
+  if(window.location.pathname!=="/share/report"||window.location.search||window.location.hash!==`#${token}`)return;
+  window.history.replaceState(window.history.state,"","/share/report");
+}
+
 function safeDecodePathSegment(value) {
   try { return decodeURIComponent(value); } catch { return value; }
 }
@@ -245,9 +251,8 @@ function publicReportStrings(value) {
 
 function normalizePublicReportShare(value) {
   const share=value&&typeof value==="object"&&!Array.isArray(value)?value:null;
-  const report=share?.report&&typeof share.report==="object"&&!Array.isArray(share.report)?share.report:null;
-  const rawSections=report?.sections&&typeof report.sections==="object"&&!Array.isArray(report.sections)?report.sections:null;
-  if(!share||!report||Number(report.schemaVersion)!==2||!publicReportText(share.expiresAt)||!rawSections)return null;
+  const rawSections=share?.sections&&typeof share.sections==="object"&&!Array.isArray(share.sections)?share.sections:null;
+  if(!share||!publicReportText(share.expiresAt)||!rawSections)return null;
   const overview=rawSections.overview&&typeof rawSections.overview==="object"&&!Array.isArray(rawSections.overview)?{
     status:publicReportText(rawSections.overview.status),
     label:publicReportText(rawSections.overview.label),
@@ -299,7 +304,7 @@ function normalizePublicReportShare(value) {
     nextActions:publicReportStrings(rawSections.nextActions),
   };
   if(!Object.values(sections).some(value=>Array.isArray(value)?value.length>0:Boolean(value)))return null;
-  return {expiresAt:share.expiresAt,generatedAt:publicReportText(report.generatedAt),sections};
+  return {expiresAt:share.expiresAt,sections};
 }
 
 function Brand({ inverted = false, disabled = false, onHome = null }) {
@@ -827,10 +832,10 @@ const projectHomeActions = {
     Icon: SealCheck,
   },
   open_handoff: {
-    target: "compare",
-    label: "Open handoff material",
-    title: "Take one decision into the room.",
-    copy: "Your direction is recorded. Open the current comparison, architect questions, and printable working copy for the professional conversation.",
+    target: "report",
+    label: "Open professional handoff",
+    title: "Put the current report in the room.",
+    copy: "Your direction is recorded. Choose the exact planning-report sections to share with a licensed architect or engineer.",
     Icon: ArrowRight,
   },
   view_archived: {
@@ -908,6 +913,7 @@ function projectHomePath(projectId, action) {
   const definition = projectHomeActions[action?.code];
   if (!definition || (action?.target && action.target !== definition.target)) return null;
   const encodedProjectId=encodeURIComponent(projectId);
+  if (action?.code === "open_handoff") return `/report/${encodedProjectId}#professional-handoff`;
   if (definition.target === "report") return `/report/${encodedProjectId}`;
   if (definition.target === "compare") return `/projects/${encodedProjectId}/compare`;
   if (definition.target === "dashboard") return "/dashboard";
@@ -2141,6 +2147,7 @@ function SharedReportPage() {
       setState(share?{phase:"ready",share}:{phase:"error",share:null});
     } catch(err) {
       if(signal?.aborted||revision!==requestRevision.current||token!==capabilityRef.current)return;
+      if(err instanceof ApiError&&[404,410].includes(err.status))scrubClosedReportShareCapability(token);
       setState({phase:err instanceof ApiError&&err.status===410?"closed":err instanceof ApiError&&err.status===404?"missing":"error",share:null});
     }
   }
@@ -2175,7 +2182,7 @@ function SharedReportPage() {
   useEffect(()=>{const controller=new AbortController();load(controller.signal);return()=>controller.abort()},[capabilityRevision]);
   if(state.phase==="loading")return <main className="shared-state shared-report-state" aria-busy="true"><Brand/><div role="status"><Eye/><span className="kicker">Professional handoff</span><h1>Opening a shared report…</h1><p>Validating this expiring, read-only link.</p></div></main>;
   if(state.phase!=="ready")return <SharedReportState phase={state.phase} onRetry={()=>load()}/>;
-  const {expiresAt,generatedAt,sections}=state.share;
+  const {expiresAt,sections}=state.share;
   const overview=sections.overview;
   const programme=sections.programme;
   const cost=sections.cost;
@@ -2191,8 +2198,8 @@ function SharedReportPage() {
   ].filter(([,value])=>value!==null):[];
   return <main className="shared-report"><header><Brand inverted/><span><LockKey/> Read only · expires {formatDateTime(expiresAt)}</span><button onClick={printSharedReportWithoutCapability}><DownloadSimple/> Print</button></header>
     <article className="shared-report__document" aria-label="Shared professional handoff report">
-      <header className="shared-report__cover"><div><span className="kicker">GrihaGrid · professional handoff</span><h1>A planning report for professional review.</h1><p>Selected concept-stage evidence · no account required</p></div><div><span>Read-only bearer link</span><strong>Expires {formatDateTime(expiresAt)}</strong>{generatedAt&&<small>Report generated {formatDateTime(generatedAt)}</small>}</div></header>
-      {overview&&<section className="shared-report__overview" aria-labelledby="shared-report-overview"><span className="kicker">Report overview{overview.label?` · ${overview.label}`:""}</span><h2 id="shared-report-overview">{overview.headline||"Review the saved planning evidence."}</h2>{overview.summary&&<p>{overview.summary}</p>}{overview.disclaimer&&<small>{overview.disclaimer}</small>}</section>}
+      <header className="shared-report__cover"><div><span className="kicker">GrihaGrid · professional handoff</span><h1>Planning evidence for a professional conversation.</h1><p>Selected concept-stage evidence · no account required</p></div><div><span>Read-only bearer link</span><strong>Expires {formatDateTime(expiresAt)}</strong></div></header>
+      {overview&&<section className="shared-report__overview" aria-labelledby="shared-report-overview"><span className="kicker">Report overview{overview.label?` · ${overview.label}`:""}</span><h2 id="shared-report-overview">{overview.headline||"Read the saved planning evidence."}</h2>{overview.summary&&<p>{overview.summary}</p>}{overview.disclaimer&&<small>{overview.disclaimer}</small>}</section>}
       {programme&&<section className="shared-report__section shared-report__programme" aria-labelledby="shared-report-programme"><header><span className="kicker">Programme</span><h2 id="shared-report-programme">What the brief is trying to hold.</h2></header>{programmeFacts.length>0&&<dl>{programmeFacts.map(([label,value,suffix])=><div key={label}><dt>{label}</dt><dd>{Number(value).toLocaleString("en-IN")}{suffix?` ${suffix}`:""}</dd></div>)}</dl>}{programme.suggestedSpaces.length>0&&<div className="shared-report__spaces"><h3>Suggested spaces</h3><ul>{programme.suggestedSpaces.map((space,index)=><li key={`${space}-${index}`}><CheckCircle/>{space}</li>)}</ul></div>}</section>}
       {cost&&<section className="shared-report__section shared-report__cost" aria-labelledby="shared-report-cost"><header><span className="kicker">Planning cost</span><h2 id="shared-report-cost">An indicative range, not a quotation.</h2></header>{cost.lowInr!==null&&cost.highInr!==null&&<div className="shared-report__range"><span>Concept-stage planning range</span><strong>{formatLakh(cost.lowInr)}–{formatLakh(cost.highInr)}</strong>{cost.midpointInr!==null&&<small>Working midpoint {formatLakh(cost.midpointInr)}</small>}</div>}{cost.assumedRateInrPerSqft!==null&&<p className="shared-report__rate">Assumed rate · ₹{cost.assumedRateInrPerSqft.toLocaleString("en-IN")} per sq ft</p>}{cost.categories.length>0&&<div className="shared-report__categories">{cost.categories.map((category,index)=><div key={`${category.name}-${index}`}><span>{category.name}</span>{category.percent!==null&&<i aria-hidden="true"><b style={{width:`${Math.min(100,category.percent)}%`}}/></i>}<strong>{category.amountInr!==null?formatLakh(category.amountInr):category.percent!==null?`${category.percent}%`:"—"}</strong></div>)}</div>}{cost.disclaimer&&<p className="shared-report__section-note">{cost.disclaimer}</p>}</section>}
       {timeline&&<section className="shared-report__section shared-report__timeline" aria-labelledby="shared-report-timeline"><header><span className="kicker">Planning timeline</span><h2 id="shared-report-timeline">Sequence before certainty.</h2>{timeline.estimatedMonths!==null&&<p><strong>{timeline.estimatedMonths} months</strong> · indicative total</p>}</header>{timeline.phases.length>0&&<ol>{timeline.phases.map((phase,index)=><li key={`${phase.name}-${index}`}><span>{String(index+1).padStart(2,"0")}</span><div><h3>{phase.name}</h3>{(phase.duration||phase.weeks!==null||phase.months!==null)&&<strong>{phase.duration||(phase.weeks!==null?`${phase.weeks} week${phase.weeks===1?"":"s"}`:`${phase.months} month${phase.months===1?"":"s"}`)}</strong>}{phase.detail&&<p>{phase.detail}</p>}</div></li>)}</ol>}</section>}
@@ -2511,8 +2518,21 @@ function ReportHandoffPanel({ projectId, projectRevision, reportSchemaVersion, a
   const [error,setError]=useState("");
   const titleId=useId();
   const selectionId=useId();
+  const bearerWarningId=useId();
   const messageRef=useRef(null);
   const secretRef=useRef(null);
+  const panelRef=useRef(null);
+
+  useEffect(()=>{
+    if(window.location.hash!=="#professional-handoff")return undefined;
+    const frame=window.requestAnimationFrame(()=>{
+      const panel=panelRef.current;
+      if(!panel)return;
+      panel.focus({preventScroll:true});
+      panel.scrollIntoView({block:"start"});
+    });
+    return()=>window.cancelAnimationFrame(frame);
+  },[projectId,projectRevision,reportSchemaVersion]);
 
   function announce(value,focus=false) {
     setMessage(value);
@@ -2570,7 +2590,7 @@ function ReportHandoffPanel({ projectId, projectRevision, reportSchemaVersion, a
   async function copySecret() {
     if(archived||!secret?.url)return;
     setError("");setMessage("");
-    try{await copyText(secret.url);announce("Private handoff link copied. Share it only with the intended professional.")}
+    try{await copyText(secret.url);announce("Private handoff link copied. Share it only with the intended licensed architect or engineer.")}
     catch(err){setError(err?.message||"Copy is unavailable in this browser. Select the one-time address and copy it manually.")}
   }
 
@@ -2589,20 +2609,30 @@ function ReportHandoffPanel({ projectId, projectRevision, reportSchemaVersion, a
   }
 
   const selectedCount=sections.length;
-  return <section className={`report-handoff ${historical?"report-handoff--historical":""} ${archived?"report-handoff--archived":""}`} aria-labelledby={titleId} aria-busy={phase==="loading"||Boolean(busy)}>
-    <header className="report-handoff__heading"><div><span className="kicker">Professional handoff · secure link</span><h2 id={titleId}>{archived?(historical?"Review this archived revision’s handoff history.":"Review this archived report’s handoff history."):historical?"Share this exact saved revision.":"Put this report in the room."}</h2><p>{archived?"This saved report remains readable, while link creation and copying are closed. Active bearer links can still be revoked below.":historical?"A link from this page is permanently attributed to this historical report revision. It never becomes the current project record.":"Create a read-only bearer link for an architect, engineer, or contractor. Only the sections you choose leave the private workspace."}</p></div><div className="report-handoff__folio" aria-label={`Report revision ${projectRevision}, schema version ${reportSchemaVersion}`}><span>Report revision</span><strong>{String(projectRevision).padStart(2,"0")}</strong><small>Schema v{reportSchemaVersion}</small></div></header>
+  return <section ref={panelRef} id="professional-handoff" tabIndex="-1" className={`report-handoff ${historical?"report-handoff--historical":""} ${archived?"report-handoff--archived":""}`} aria-labelledby={titleId} aria-busy={phase==="loading"||Boolean(busy)}>
+    <header className="report-handoff__heading"><div><span className="kicker">Professional handoff · secure link</span><h2 id={titleId}>{archived?(historical?"Review this archived revision’s handoff history.":"Review this archived report’s handoff history."):historical?"Share this exact saved revision.":"Put this report in the room."}</h2><p>{archived?"This saved report remains readable, while link creation and copying are closed. Active bearer links can still be revoked below.":historical?"A link from this page is permanently attributed to this historical report revision. It never becomes the current project record.":"Create a read-only bearer link for a licensed architect or engineer. Only the sections you choose leave the private workspace."}</p></div><div className="report-handoff__folio" aria-label={`Report revision ${projectRevision}, schema version ${reportSchemaVersion}`}><span>Report revision</span><strong>{String(projectRevision).padStart(2,"0")}</strong><small>Schema v{reportSchemaVersion}</small></div></header>
     <div className="report-handoff__privacy"><ShieldCheck/><p><strong>Your account stays private.</strong> Links never include account details, project files, feedback, AI briefs, comparisons, orders, or another report revision.</p></div>
     {phase==="loading"&&<p className="report-handoff__loading" role="status"><ArrowClockwise/> Checking professional handoff history…</p>}
     {phase==="unavailable"&&<div className="report-handoff__notice"><LockKey/><div><strong>Professional handoff is not available right now.</strong><p>This report remains private and unchanged.</p></div></div>}
     {phase==="error"&&<div className="report-handoff__notice report-handoff__notice--error"><WarningCircle/><div><strong>We could not open handoff history.</strong><p role="alert">{error}</p><button className="underlined-action" onClick={()=>load()}>Try again <ArrowClockwise/></button></div></div>}
     {phase==="ready"&&<>
-      {archived?<div className="report-handoff__notice"><LockKey/><div><strong>Archived handoff history · read only.</strong><p>New links and copying are closed. Any still-active link can be revoked to reduce access.</p></div></div>:<form className="report-handoff__form" onSubmit={createShare}>
+      {archived?<div className="report-handoff__notice"><LockKey/><div><strong>Archived handoff history · read only.</strong><p>New links and copying are closed. Any still-active link can be revoked to reduce access.</p></div></div>:<><div id={bearerWarningId} className="report-handoff__bearer-warning"><WarningCircle/><p><strong>Anyone with this link can read the sections you select.</strong> Send it only to the licensed architect or engineer you intend to involve. The link does not verify their identity or document their involvement.</p></div><form className="report-handoff__form" aria-describedby={bearerWarningId} onSubmit={createShare}>
         <fieldset aria-describedby={selectionId} disabled={Boolean(busy)}><legend>Choose what the professional can see</legend><div className="report-handoff__sections">{reportHandoffSectionOptions.map(([value,label,copy])=><label key={value}><input type="checkbox" value={value} checked={sections.includes(value)} onChange={()=>toggleSection(value)}/><span><strong>{label}</strong><small>{copy}</small></span></label>)}</div><p id={selectionId} className="report-handoff__selection" aria-live="polite">{selectedCount} of {reportHandoffSectionOptions.length} sections selected{selectedCount===0?" · choose at least one":""}</p></fieldset>
-        <div className="report-handoff__create"><label>Link expires<select value={days} disabled={Boolean(busy)} onChange={event=>setDays(event.target.value)}><option value="1">In 24 hours</option><option value="7">In 7 days</option><option value="30">In 30 days</option></select></label><button className="copper-button" type="submit" disabled={Boolean(busy)||selectedCount===0}>{busy==="create"?"Creating private link…":"Create private link"} <ShareNetwork/></button><small>The address is displayed once. Anyone holding it can read the selected sections until expiry or revocation.</small></div>
-      </form>}
+        <div className="report-handoff__create"><label>Link expires<select value={days} disabled={Boolean(busy)} onChange={event=>setDays(event.target.value)}><option value="1">In 24 hours</option><option value="7">In 7 days</option><option value="30">In 30 days</option></select></label><button className="copper-button" type="submit" disabled={Boolean(busy)||selectedCount===0}>{busy==="create"?"Creating private link…":"Create private link"} <ShareNetwork/></button><small>The one-time address remains readable until expiry or revocation.</small></div>
+      </form></>}
       {secret&&!archived&&<div ref={secretRef} className="report-handoff__secret" tabIndex="-1" role="status" aria-live="polite"><div><span className="kicker">One-time private address</span><h3>Copy this link now.</h3><p>GrihaGrid will not show this address again after you leave or refresh.</p></div><div><input aria-label="One-time professional handoff link" readOnly value={secret.url} onFocus={event=>event.currentTarget.select()}/><button className="outline-button" type="button" onClick={copySecret}><Copy/> Copy link</button></div></div>}
       <div ref={messageRef} className="report-handoff__message" tabIndex="-1" aria-live="polite">{message&&<p className="success-message" role="status"><CheckCircle/>{message}</p>}{error&&<p className="form-error" role="alert">{error}</p>}</div>
-      <section className="report-handoff__history" aria-labelledby={`${titleId}-history`}><header><div><span className="kicker">Link history</span><h3 id={`${titleId}-history`}>Active links first. Recent history follows.</h3></div><p>{shares.length?`${shares.length===50?"Showing 50":"Showing "+shares.length} handoff link${shares.length===1?"":"s"}${shares.length===50?"; active links first, followed by recent closed history":""}. Page loads may include previews or scanners; they are not unique people or proof of review.`:"No professional handoff links have been created for this project."}</p></header>{shares.length>0&&<div>{shares.map(share=>{const state=reportHandoffShareState(share);const isThisReport=share.projectRevision===projectRevision&&share.reportSchemaVersion===reportSchemaVersion;const sectionLabels=reportHandoffSectionOptions.filter(([value])=>share.sections.includes(value)).map(([,label])=>label);return <article key={share.id} className={`report-handoff__link report-handoff__link--${state}`}><LinkSimple/><div><strong>{state==="active"?"Active private link":state==="revoked"?"Revoked link":"Expired link"} · Revision {share.projectRevision}{isThisReport?" · this report":" · another saved report"}</strong><span>{state==="revoked"?`Revoked ${formatDateTime(share.revokedAt)}`:state==="expired"?`Expired ${formatDateTime(share.expiresAt)}`:`Expires ${formatDateTime(share.expiresAt)}`} · {share.accessCount} page load{share.accessCount===1?"":"s"} (not unique people) · {share.lastAccessedAt?`Last loaded ${formatDateTime(share.lastAccessedAt)}`:"Not loaded yet"}</span><small>{sectionLabels.length?sectionLabels.join(" · "):"Selected section record unavailable"}</small></div><div>{!archived&&state==="active"&&secret?.shareId===share.id&&<button type="button" onClick={copySecret}><Copy/> Copy</button>}{state==="active"&&<button className="report-handoff__revoke" type="button" disabled={Boolean(busy)} onClick={()=>revokeShare(share)}><XCircle/> {busy===share.id?"Revoking…":"Revoke"}</button>}</div></article>})}</div>}</section>
+      <section className="report-handoff__history" aria-labelledby={`${titleId}-history`}>
+        <header><div><span className="kicker">Link history</span><h3 id={`${titleId}-history`}>Active links first. Recent history follows.</h3></div><p>{shares.length?`${shares.length===50?"Showing 50":"Showing "+shares.length} handoff link${shares.length===1?"":"s"}${shares.length===50?"; active links first, followed by recent closed history":""}. Page loads may include previews or scanners; they are not unique people or proof of review.`:"No professional handoff links have been created for this project."}</p></header>
+        {shares.length>0&&<ol className="report-handoff__history-list" role="list">{shares.map(share=>{
+          const state=reportHandoffShareState(share);
+          const isThisReport=share.projectRevision===projectRevision&&share.reportSchemaVersion===reportSchemaVersion;
+          const sectionLabels=reportHandoffSectionOptions.filter(([value])=>share.sections.includes(value)).map(([,label])=>label);
+          const createdAt=formatDateTime(share.createdAt);
+          const linkContext=`professional handoff link for report revision ${share.projectRevision}, created ${createdAt}`;
+          return <li key={share.id}><article className={`report-handoff__link report-handoff__link--${state}`}><LinkSimple aria-hidden="true"/><div><strong>{state==="active"?"Active private link":state==="revoked"?"Revoked link":"Expired link"} · Revision {share.projectRevision}{isThisReport?" · this report":" · another saved report"}</strong><span>Created {createdAt} · {state==="revoked"?`Revoked ${formatDateTime(share.revokedAt)}`:state==="expired"?`Expired ${formatDateTime(share.expiresAt)}`:`Expires ${formatDateTime(share.expiresAt)}`} · {share.accessCount} page load{share.accessCount===1?"":"s"} (not unique people) · {share.lastAccessedAt?`Last loaded ${formatDateTime(share.lastAccessedAt)}`:"Not loaded yet"}</span><small>{sectionLabels.length?sectionLabels.join(" · "):"Selected section record unavailable"}</small></div><div>{!archived&&state==="active"&&secret?.shareId===share.id&&<button type="button" aria-label={`Copy ${linkContext}`} onClick={copySecret}><Copy/> Copy</button>}{state==="active"&&<button className="report-handoff__revoke" type="button" aria-label={`${busy===share.id?"Revoking":"Revoke"} ${linkContext}`} disabled={Boolean(busy)} onClick={()=>revokeShare(share)}><XCircle/> {busy===share.id?"Revoking…":"Revoke"}</button>}</div></article></li>;
+        })}</ol>}
+      </section>
     </>}
   </section>;
 }

@@ -23,6 +23,10 @@ invocation_logs = false
 [version_metadata]
 binding = "CF_VERSION_METADATA"
 
+# Professional Handoff also requires a distinct 64-hex
+# REPORT_SHARE_ABUSE_HMAC_KEY Worker secret in each environment. Enter it only
+# through `wrangler secret put`; never define it in this file or reuse it.
+
 [vars]
 APP_ENV = "production"
 APP_ORIGIN = "https://grihagrid.prakhargupta267.workers.dev"

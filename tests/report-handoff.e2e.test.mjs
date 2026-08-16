@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const wranglerCli = path.join(root, "node_modules", "wrangler", "bin", "wrangler.js");
+const reportShareAbuseHmacKey = "ab".repeat(32);
 
 function reservePort() {
   return new Promise((resolve, reject) => {
@@ -37,13 +38,21 @@ async function stopWorker(server) {
   server.child.stderr?.destroy();
 }
 
-async function startWorker(stateDirectory, assetsDirectory, port) {
+async function startWorker(
+  stateDirectory,
+  assetsDirectory,
+  port,
+  configuredReportShareKey = reportShareAbuseHmacKey,
+) {
   const child = spawn(process.execPath, [wranglerCli,
     "dev", "worker/index.js", "--config", "wrangler.toml", "--local",
     "--persist-to", stateDirectory, "--assets", assetsDirectory,
     "--ip", "127.0.0.1", "--port", String(port), "--test-scheduled",
     "--log-level", "log", "--show-interactive-dev-session=false",
     "--var", "APP_ENV:test", "--var", "APP_ORIGIN:https://app.example.test",
+    ...(configuredReportShareKey === null
+      ? []
+      : ["--var", `REPORT_SHARE_ABUSE_HMAC_KEY:${configuredReportShareKey}`]),
     "--var", "PAID_CHECKOUT_ENABLED:false",
     "--var", "DECISION_COMPARE_FULFILLMENT_ENABLED:false",
     "--var", "ENABLED_PAYMENT_PLANS:", "--var", "GEMINI_API_KEY:",
@@ -102,6 +111,44 @@ function query(stateDirectory, sql) {
     .flatMap((entry) => entry.results || []);
 }
 
+function ownerHandoffWriteState(stateDirectory, userId) {
+  const row = query(stateDirectory, `
+    SELECT
+      (SELECT COALESCE(SUM(request_count),0)
+         FROM report_share_create_counters WHERE user_id='${userId}') AS quota_count,
+      (SELECT COUNT(*) FROM report_shares WHERE user_id='${userId}') AS share_count,
+      (SELECT COALESCE(SUM(event_count),0)
+         FROM product_event_aggregates
+        WHERE event_name IN (
+          'report_handoff_link_created','report_handoff_opened','report_handoff_link_revoked'
+        )) AS event_count;
+  `)[0];
+  return {
+    quotaCount: Number(row.quota_count),
+    shareCount: Number(row.share_count),
+    eventCount: Number(row.event_count),
+  };
+}
+
+function handoffEventCounts(stateDirectory) {
+  const counts = {
+    report_handoff_link_created: 0,
+    report_handoff_opened: 0,
+    report_handoff_link_revoked: 0,
+  };
+  for (const row of query(stateDirectory, `
+    SELECT event_name,COALESCE(SUM(event_count),0) AS event_count
+      FROM product_event_aggregates
+     WHERE event_name IN (
+       'report_handoff_link_created','report_handoff_opened','report_handoff_link_revoked'
+     )
+     GROUP BY event_name;
+  `)) {
+    counts[row.event_name] = Number(row.event_count);
+  }
+  return counts;
+}
+
 function extractCookies(response, csrf) {
   const values = typeof response.headers.getSetCookie === "function"
     ? response.headers.getSetCookie()
@@ -151,13 +198,13 @@ async function register(origin, suffix) {
   };
 }
 
-async function createReport(origin, auth, suffix) {
+async function createReport(origin, auth, suffix, projectName = `PRIVATE_PROJECT_${suffix}_owner@example.test`) {
   const created = await call(origin, "/api/projects", {
     method: "POST",
     auth,
     headers: { "idempotency-key": `handoff-project-${suffix}` },
     body: {
-      name: `PRIVATE_PROJECT_${suffix}_owner@example.test`,
+      name: projectName,
       input: {
         width: 30,
         length: 50,
@@ -241,7 +288,7 @@ function assertPublicRedaction(payload) {
   }
 }
 
-test("Professional Handoff links preserve one redacted immutable report across owner, race, archive, and cleanup boundaries", { timeout: 180_000 }, async () => {
+test("Professional Handoff links preserve one redacted immutable report across owner, race, archive, and cleanup boundaries", { timeout: 240_000 }, async () => {
   const stateDirectory = mkdtempSync(path.join(tmpdir(), "grihagrid-report-handoff-"));
   const assetsDirectory = path.join(stateDirectory, "assets");
   mkdirSync(assetsDirectory, { recursive: true });
@@ -249,11 +296,54 @@ test("Professional Handoff links preserve one redacted immutable report across o
   let server = null;
   try {
     requireD1(d1(stateDirectory, "migrate"), "fresh migrations failed");
+    assert.deepEqual(
+      query(stateDirectory, "SELECT control_key,enabled FROM report_handoff_controls;"),
+      [{ control_key: "report_handoff", enabled: 0 }],
+      "a fresh migration must keep Professional Handoff closed until release validation enables it",
+    );
+    assert.deepEqual(
+      query(
+        stateDirectory,
+        `SELECT name FROM sqlite_master
+          WHERE type='trigger' AND name IN (
+            'report_handoff_enabled_insert_guard','report_share_sections_insert_guard',
+            'archived_report_share_insert_guard','report_share_active_limit_insert',
+            'report_share_identity_immutable'
+          ) ORDER BY name`,
+      ).map((row) => row.name),
+      [
+        "archived_report_share_insert_guard",
+        "report_handoff_enabled_insert_guard",
+        "report_share_active_limit_insert",
+        "report_share_identity_immutable",
+        "report_share_sections_insert_guard",
+      ],
+    );
+    const cleanupPlan = query(stateDirectory, `
+      EXPLAIN QUERY PLAN
+      DELETE FROM report_shares
+       WHERE expires_at<datetime('now','-90 days')
+          OR (revoked_at IS NOT NULL AND revoked_at<datetime('now','-90 days'));
+    `);
+    const cleanupPlanText = cleanupPlan.map((row) => row.detail || JSON.stringify(row)).join("\n");
+    assert.match(cleanupPlanText, /idx_report_shares_expiry/u);
+    assert.match(cleanupPlanText, /idx_report_shares_revoked/u);
+    assert.doesNotMatch(cleanupPlanText, /SCAN report_shares(?:\s|$)/u);
     server = await startWorker(stateDirectory, assetsDirectory, port);
 
+    const defaultReadiness = await call(server.origin, "/api/readiness");
+    assert.equal(defaultReadiness.response.status, 200, JSON.stringify(defaultReadiness.payload));
+    assert.equal(defaultReadiness.payload.checks.reportShareSchema, "current");
+    assert.equal(defaultReadiness.payload.checks.reportHandoffControl, "disabled");
+    assert.equal(defaultReadiness.payload.capabilities.reportHandoff, false);
+    requireD1(d1(stateDirectory, "execute", `
+      UPDATE report_handoff_controls
+         SET enabled=1,updated_at=datetime('now')
+       WHERE control_key='report_handoff';
+    `), "initial report handoff enable failed");
     const readiness = await call(server.origin, "/api/readiness");
     assert.equal(readiness.response.status, 200, JSON.stringify(readiness.payload));
-    assert.equal(readiness.payload.checks.reportShareSchema, "current");
+    assert.equal(readiness.payload.checks.reportHandoffControl, "enabled");
     assert.equal(readiness.payload.capabilities.reportHandoff, true);
 
     const wrongPublicMethod=await call(server.origin,"/api/shared/report");
@@ -266,10 +356,106 @@ test("Professional Handoff links preserve one redacted immutable report across o
       assert.deepEqual(invalidPublic.payload,{error:"shared report not found",code:"report_share_not_found"});
       assert.equal(JSON.stringify(invalidPublic.payload).includes(malformedBearer),false);
     }
+    const untrustedJson = await call(server.origin, "/api/shared/report", {
+      method: "POST",
+      originHeader: "https://evil.example.test",
+      body: { token: malformedBearer },
+    });
+    assert.equal(untrustedJson.response.status, 403);
+    assert.equal(untrustedJson.payload.code, "origin_rejected");
+    const crossSiteText = await fetch(`${server.origin}/api/shared/report`, {
+      method: "POST",
+      headers: { origin: "https://evil.example.test", "content-type": "text/plain" },
+      body: JSON.stringify({ token: malformedBearer }),
+    });
+    assert.equal(crossSiteText.status, 403);
+    const sameSiteText = await fetch(`${server.origin}/api/shared/report`, {
+      method: "POST",
+      headers: { origin: server.origin, "content-type": "text/plain; charset=utf-8" },
+      body: JSON.stringify({ token: malformedBearer }),
+    });
+    assert.equal(sameSiteText.status, 404);
+    assert.deepEqual(await sameSiteText.json(), {
+      error: "shared report not found",
+      code: "report_share_not_found",
+    });
+    const oversizedChunks = [
+      new TextEncoder().encode(`{"token":"${malformedBearer}","padding":"`),
+      new TextEncoder().encode("x".repeat(600)),
+      new TextEncoder().encode('"}'),
+    ];
+    const oversizedStream = new ReadableStream({
+      pull(controller) {
+        const chunk = oversizedChunks.shift();
+        if (chunk) controller.enqueue(chunk);
+        else controller.close();
+      },
+    });
+    const oversizedPublic = await fetch(`${server.origin}/api/shared/report`, {
+      method: "POST",
+      headers: { origin: server.origin, "content-type": "application/json" },
+      body: oversizedStream,
+      duplex: "half",
+    });
+    assert.equal(oversizedPublic.status, 404);
+    assert.deepEqual(await oversizedPublic.json(), {
+      error: "shared report not found",
+      code: "report_share_not_found",
+    });
+    const parameterizedJson = await fetch(`${server.origin}/api/shared/report`, {
+      method: "POST",
+      headers: {
+        origin: "https://app.example.test",
+        "content-type": "Application/JSON; charset=utf-8",
+      },
+      body: JSON.stringify({ token: malformedBearer }),
+    });
+    assert.equal(
+      parameterizedJson.status,
+      404,
+      `unexpected parameterized JSON response: ${await parameterizedJson.clone().text()}\n${server.logs()}`,
+    );
+    assert.deepEqual(await parameterizedJson.json(), {
+      error: "shared report not found",
+      code: "report_share_not_found",
+    });
 
     const owner = await register(server.origin, "owner");
     const other = await register(server.origin, "other");
     const source = await createReport(server.origin, owner, "MAIN");
+
+    const stateBeforeInvalidSecrets = ownerHandoffWriteState(stateDirectory, owner.user.id);
+    assert.deepEqual(stateBeforeInvalidSecrets, {
+      quotaCount: 0,
+      shareCount: 0,
+      eventCount: 0,
+    });
+    for (const [label, configuredKey] of [
+      ["missing", null],
+      ["malformed", "not-a-hex-key"],
+    ]) {
+      await stopWorker(server);
+      server = await startWorker(stateDirectory, assetsDirectory, port, configuredKey);
+      const rejectedCreate = await createShare(
+        server.origin,
+        owner,
+        source,
+        `${label}-secret-must-not-mutate`,
+        { sections: ["overview"] },
+      );
+      assert.equal(rejectedCreate.response.status, 503, JSON.stringify(rejectedCreate.payload));
+      assert.deepEqual(rejectedCreate.payload, {
+        error: "abuse controls are temporarily unavailable",
+        code: "abuse_control_unavailable",
+      });
+      assert.deepEqual(
+        ownerHandoffWriteState(stateDirectory, owner.user.id),
+        stateBeforeInvalidSecrets,
+        `${label} handoff key mutated quota, share, or aggregate state`,
+      );
+    }
+    await stopWorker(server);
+    server = await startWorker(stateDirectory, assetsDirectory, port);
 
     const foreignList = await call(server.origin, `/api/projects/${source.project.id}/report-shares`, { auth: other });
     assert.equal(foreignList.response.status, 404);
@@ -330,15 +516,238 @@ test("Professional Handoff links preserve one redacted immutable report across o
     assert.equal(opened.response.status, 200, JSON.stringify(opened.payload));
     assert.equal(opened.response.headers.get("cache-control"), "no-store");
     assert.equal(opened.response.headers.get("referrer-policy"), "no-referrer");
-    assert.equal(opened.payload.share.report.schemaVersion, 2);
-    assert.equal(opened.payload.share.report.generatedAt, source.report.generatedAt);
-    assert.deepEqual(Object.keys(opened.payload.share.report.sections), [
+    assert.deepEqual(Object.keys(opened.payload.share).sort(), ["expiresAt", "sections"]);
+    assert.equal(opened.payload.share.expiresAt, mainShare.expiresAt);
+    assert.deepEqual(Object.keys(opened.payload.share.sections), [
       "overview", "programme", "cost", "timeline", "risks", "nextActions",
     ]);
     assertPublicRedaction(opened.payload);
     const afterOpen = await call(server.origin, `/api/projects/${source.project.id}/report-shares`, { auth: owner });
     assert.equal(afterOpen.payload.shares[0].accessCount, 1);
     assert.ok(afterOpen.payload.shares[0].lastAccessedAt);
+
+    const canaryOwner = await register(server.origin, "aggregate-canary");
+    const canaryMarker = `Release canary ${randomUUID()}`;
+    const canarySource = await createReport(
+      server.origin,
+      canaryOwner,
+      "AGGREGATE_CANARY",
+      canaryMarker,
+    );
+    const eventsBeforeCanary = handoffEventCounts(stateDirectory);
+    const canaryCreated = await createShare(
+      server.origin,
+      canaryOwner,
+      canarySource,
+      "aggregate-canary-share",
+      { sections: ["overview"] },
+    );
+    assert.equal(canaryCreated.response.status, 201, JSON.stringify(canaryCreated.payload));
+    assert.equal(JSON.stringify(canaryCreated.payload).includes(canaryMarker), false);
+    const canaryToken = tokenFromShare(canaryCreated.payload.share);
+    const canaryOpened = await openShare(server.origin, canaryToken);
+    assert.equal(canaryOpened.response.status, 200, JSON.stringify(canaryOpened.payload));
+    assert.equal(JSON.stringify(canaryOpened.payload).includes(canaryMarker), false);
+    const canaryListed = await call(
+      server.origin,
+      `/api/projects/${canarySource.project.id}/report-shares`,
+      { auth: canaryOwner },
+    );
+    assert.equal(canaryListed.response.status, 200, JSON.stringify(canaryListed.payload));
+    assert.equal(JSON.stringify(canaryListed.payload).includes(canaryMarker), false);
+    const canaryRevoked = await call(
+      server.origin,
+      `/api/projects/${canarySource.project.id}/report-shares/${canaryCreated.payload.share.id}`,
+      { method: "DELETE", auth: canaryOwner },
+    );
+    assert.equal(canaryRevoked.response.status, 204, JSON.stringify(canaryRevoked.payload));
+    assert.deepEqual(
+      handoffEventCounts(stateDirectory),
+      eventsBeforeCanary,
+      "the release canary lifecycle must not inflate customer handoff aggregates",
+    );
+
+    const metricsOwner = await register(server.origin, "aggregate-customer");
+    const metricsSource = await createReport(
+      server.origin,
+      metricsOwner,
+      "AGGREGATE_CUSTOMER",
+      "Customer aggregate project",
+    );
+    const eventsBeforeCustomer = handoffEventCounts(stateDirectory);
+    const customerCreated = await createShare(
+      server.origin,
+      metricsOwner,
+      metricsSource,
+      "aggregate-customer-share",
+      { sections: ["overview"] },
+    );
+    assert.equal(customerCreated.response.status, 201, JSON.stringify(customerCreated.payload));
+    const customerOpened = await openShare(server.origin, tokenFromShare(customerCreated.payload.share));
+    assert.equal(customerOpened.response.status, 200, JSON.stringify(customerOpened.payload));
+    const customerRevoked = await call(
+      server.origin,
+      `/api/projects/${metricsSource.project.id}/report-shares/${customerCreated.payload.share.id}`,
+      { method: "DELETE", auth: metricsOwner },
+    );
+    assert.equal(customerRevoked.response.status, 204, JSON.stringify(customerRevoked.payload));
+    assert.deepEqual(handoffEventCounts(stateDirectory), {
+      report_handoff_link_created: eventsBeforeCustomer.report_handoff_link_created + 1,
+      report_handoff_opened: eventsBeforeCustomer.report_handoff_opened + 1,
+      report_handoff_link_revoked: eventsBeforeCustomer.report_handoff_link_revoked + 1,
+    });
+
+    // Force the switch closed after the Worker's early create check but before
+    // its report_shares insert. The production BEFORE INSERT guard is the
+    // authoritative linearization point and must map to the stable public 503.
+    const createRaceOwner = await register(server.origin, "create-disable-race");
+    const createRaceSource = await createReport(server.origin, createRaceOwner, "CREATE_DISABLE_RACE");
+    requireD1(d1(stateDirectory, "execute", `
+      CREATE TRIGGER test_disable_handoff_after_create_admission
+      AFTER INSERT ON report_share_create_counters
+      WHEN NEW.user_id='${createRaceOwner.user.id}'
+      BEGIN
+        UPDATE report_handoff_controls
+           SET enabled=0,updated_at=datetime('now')
+         WHERE control_key='report_handoff';
+      END;
+    `), "create-race trigger install failed");
+    const createAcrossDisable = await createShare(
+      server.origin,
+      createRaceOwner,
+      createRaceSource,
+      "create-cross-disable-linearization",
+      { sections: ["overview"] },
+    );
+    assert.equal(createAcrossDisable.response.status, 503, JSON.stringify(createAcrossDisable.payload));
+    assert.deepEqual(createAcrossDisable.payload, {
+      error: "professional handoff is temporarily unavailable",
+      code: "report_handoff_disabled",
+    });
+    assert.equal(Number(query(
+      stateDirectory,
+      `SELECT COUNT(*) AS count FROM report_shares WHERE user_id='${createRaceOwner.user.id}';`,
+    )[0].count), 0);
+    assert.deepEqual(query(
+      stateDirectory,
+      "SELECT enabled FROM report_handoff_controls WHERE control_key='report_handoff';",
+    ), [{ enabled: 0 }]);
+    requireD1(d1(stateDirectory, "execute", `
+      DROP TRIGGER test_disable_handoff_after_create_admission;
+      UPDATE report_handoff_controls
+         SET enabled=1,updated_at=datetime('now')
+       WHERE control_key='report_handoff';
+    `), "create-race trigger cleanup failed");
+
+    // Force the switch closed after the Worker's early redemption check by
+    // flipping it from the strongly-consistent read-admission insert. The final
+    // conditional access update must not increment or return report content.
+    requireD1(d1(stateDirectory, "execute", `
+      CREATE TRIGGER test_disable_handoff_after_read_admission
+      AFTER INSERT ON report_share_read_counters
+      BEGIN
+        UPDATE report_handoff_controls
+           SET enabled=0,updated_at=datetime('now')
+         WHERE control_key='report_handoff';
+      END;
+    `), "redemption-race trigger install failed");
+    const accessCountBeforeDisableRace = Number(query(
+      stateDirectory,
+      `SELECT access_count FROM report_shares WHERE id='${mainShare.id}';`,
+    )[0].access_count);
+    const openEventsBeforeDisableRace = Number(query(
+      stateDirectory,
+      `SELECT COALESCE(SUM(event_count),0) AS count
+         FROM product_event_aggregates
+        WHERE event_name='report_handoff_opened';`,
+    )[0].count);
+    const redemptionAcrossDisable = await openShare(server.origin, mainToken, {
+      headers: { "cf-connecting-ip": "203.0.113.208" },
+    });
+    assert.equal(redemptionAcrossDisable.response.status, 503, JSON.stringify(redemptionAcrossDisable.payload));
+    assert.deepEqual(redemptionAcrossDisable.payload, {
+      error: "professional handoff is temporarily unavailable",
+      code: "report_handoff_disabled",
+    });
+    assert.equal(Object.hasOwn(redemptionAcrossDisable.payload, "share"), false);
+    assert.equal(Number(query(
+      stateDirectory,
+      `SELECT access_count FROM report_shares WHERE id='${mainShare.id}';`,
+    )[0].access_count), accessCountBeforeDisableRace);
+    assert.equal(Number(query(
+      stateDirectory,
+      `SELECT COALESCE(SUM(event_count),0) AS count
+         FROM product_event_aggregates
+        WHERE event_name='report_handoff_opened';`,
+    )[0].count), openEventsBeforeDisableRace);
+    requireD1(d1(stateDirectory, "execute", `
+      DROP TRIGGER test_disable_handoff_after_read_admission;
+      UPDATE report_handoff_controls
+         SET enabled=1,updated_at=datetime('now')
+       WHERE control_key='report_handoff';
+    `), "redemption-race trigger cleanup failed");
+
+    const controlShareResult = await createShare(
+      server.origin,
+      owner,
+      source,
+      "kill-switch-revocable-share",
+      { sections: ["overview"] },
+    );
+    assert.equal(controlShareResult.response.status, 201, JSON.stringify(controlShareResult.payload));
+    const controlShare = controlShareResult.payload.share;
+    const controlToken = tokenFromShare(controlShare);
+    const ownerCreateQuotaBeforeDisable = Number(query(
+      stateDirectory,
+      `SELECT COALESCE(SUM(request_count),0) AS count FROM report_share_create_counters WHERE user_id='${owner.user.id}';`,
+    )[0].count);
+    requireD1(d1(stateDirectory, "execute", `
+      UPDATE report_handoff_controls
+         SET enabled=0,updated_at=datetime('now')
+       WHERE control_key='report_handoff';
+    `), "report handoff kill switch disable failed");
+    const disabledReadiness = await call(server.origin, "/api/readiness");
+    assert.equal(disabledReadiness.payload.checks.reportHandoffControl, "disabled");
+    assert.equal(disabledReadiness.payload.capabilities.reportHandoff, false);
+    const listWhileDisabled = await call(
+      server.origin,
+      `/api/projects/${source.project.id}/report-shares`,
+      { auth: owner },
+    );
+    assert.equal(listWhileDisabled.response.status, 200, JSON.stringify(listWhileDisabled.payload));
+    assert.ok(listWhileDisabled.payload.shares.some((share) => share.id === controlShare.id));
+    const createWhileDisabled = await createShare(
+      server.origin,
+      owner,
+      source,
+      "kill-switch-blocked-create",
+      { sections: ["overview"] },
+    );
+    assert.equal(createWhileDisabled.response.status, 503);
+    assert.equal(createWhileDisabled.payload.code, "report_handoff_disabled");
+    const openWhileDisabled = await openShare(server.origin, controlToken);
+    assert.equal(openWhileDisabled.response.status, 503);
+    assert.equal(openWhileDisabled.payload.code, "report_handoff_disabled");
+    const revokeWhileDisabled = await call(
+      server.origin,
+      `/api/projects/${source.project.id}/report-shares/${controlShare.id}`,
+      { method: "DELETE", auth: owner },
+    );
+    assert.equal(revokeWhileDisabled.response.status, 204);
+    assert.equal(Number(query(
+      stateDirectory,
+      `SELECT COALESCE(SUM(request_count),0) AS count FROM report_share_create_counters WHERE user_id='${owner.user.id}';`,
+    )[0].count), ownerCreateQuotaBeforeDisable);
+    requireD1(d1(stateDirectory, "execute", `
+      UPDATE report_handoff_controls
+         SET enabled=1,updated_at=datetime('now')
+       WHERE control_key='report_handoff';
+    `), "report handoff kill switch re-enable failed");
+    const restoredReadiness = await call(server.origin, "/api/readiness");
+    assert.equal(restoredReadiness.response.status, 200, JSON.stringify(restoredReadiness.payload));
+    assert.equal(restoredReadiness.payload.checks.reportHandoffControl, "enabled");
+    assert.equal(restoredReadiness.payload.capabilities.reportHandoff, true);
+    assert.equal((await openShare(server.origin, controlToken)).response.status, 410);
 
     const admissionIp="198.51.100.77";
     const accessCountBeforeAdmissionRace=Number(query(stateDirectory, `SELECT access_count FROM report_shares WHERE id='${mainShare.id}';`)[0].access_count);
@@ -348,10 +757,18 @@ test("Professional Handoff links preserve one redacted immutable report across o
     const admissionStatuses=admissionRace.map(result=>result.response.status);
     assert.equal(admissionStatuses.filter(status=>status===200).length,120);
     assert.equal(admissionStatuses.filter(status=>status===429).length,1);
-    const counterRows=query(stateDirectory,"SELECT subject_hash,request_count,limit_count FROM report_share_read_counters;");
-    const admissionSubjectHash=createHash("sha256").update(`report-share-read:${admissionIp}`).digest("hex");
-    const admissionCounter=counterRows.find(row=>row.subject_hash===admissionSubjectHash);
-    assert.deepEqual(admissionCounter,{subject_hash:admissionSubjectHash,request_count:120,limit_count:120});
+    const counterRows=query(stateDirectory,"SELECT subject_hash,window_start,request_count,limit_count FROM report_share_read_counters;");
+    const admissionCounter=counterRows.find((row) => row.subject_hash === createHmac(
+      "sha256",
+      reportShareAbuseHmacKey,
+    ).update(`report-share-read:${row.window_start}:${admissionIp}`).digest("hex"));
+    assert.ok(admissionCounter);
+    assert.equal(Number(admissionCounter.request_count),120);
+    assert.equal(Number(admissionCounter.limit_count),120);
+    assert.notEqual(
+      admissionCounter.subject_hash,
+      createHash("sha256").update(`report-share-read:${admissionIp}`).digest("hex"),
+    );
     assert.equal(JSON.stringify(counterRows).includes(admissionIp),false);
     assert.equal(JSON.stringify(counterRows).includes(mainToken),false);
     const accessCountAfterAdmissionRace=Number(query(stateDirectory, `SELECT access_count FROM report_shares WHERE id='${mainShare.id}';`)[0].access_count);
@@ -366,7 +783,7 @@ test("Professional Handoff links preserve one redacted immutable report across o
     assert.equal(revised.response.status, 201, JSON.stringify(revised.payload));
     const oldStillOpen = await openShare(server.origin, mainToken);
     assert.equal(oldStillOpen.response.status, 200, JSON.stringify(oldStillOpen.payload));
-    assert.deepEqual(oldStillOpen.payload.share.report.sections, opened.payload.share.report.sections);
+    assert.deepEqual(oldStillOpen.payload.share.sections, opened.payload.share.sections);
 
     const historical = await createShare(server.origin, owner, source, "historical-report-share", { sections: ["overview", "risks"] });
     assert.equal(historical.response.status, 201, JSON.stringify(historical.payload));
@@ -451,6 +868,61 @@ test("Professional Handoff links preserve one redacted immutable report across o
     assert.ok(afterClosure.every(result=>result.response.status===410));
     assert.equal(Number(query(stateDirectory, `SELECT access_count FROM report_shares WHERE id='${mainShare.id}';`)[0].access_count),closedAccessCount);
 
+    const quotaOwner = await register(server.origin, "quota-owner");
+    const quotaSource = await createReport(server.origin, quotaOwner, "QUOTA");
+    let quotaReplay = null;
+    for (let wave = 0; wave < 4; wave += 1) {
+      const waveCreates = await Promise.all(Array.from({ length: 5 }, (_, index) => createShare(
+        server.origin,
+        quotaOwner,
+        quotaSource,
+        `quota-wave-${wave}-${index}`,
+        { sections: ["overview"] },
+      )));
+      assert.ok(
+        waveCreates.every((result) => result.response.status === 201),
+        JSON.stringify(waveCreates.map((result) => ({ status: result.response.status, payload: result.payload }))),
+      );
+      if (wave === 0) quotaReplay = waveCreates[0];
+      const waveRevokes = await Promise.all(waveCreates.map((result) => call(
+        server.origin,
+        `/api/projects/${quotaSource.project.id}/report-shares/${result.payload.share.id}`,
+        { method: "DELETE", auth: quotaOwner },
+      )));
+      assert.ok(waveRevokes.every((result) => result.response.status === 204));
+    }
+    const quotaRows = query(
+      stateDirectory,
+      `SELECT window_start,request_count,limit_count FROM report_share_create_counters WHERE user_id='${quotaOwner.user.id}';`,
+    );
+    assert.equal(quotaRows.length, 1);
+    assert.equal(Number(quotaRows[0].request_count), 20);
+    assert.equal(Number(quotaRows[0].limit_count), 20);
+    assert.match(quotaRows[0].window_start, / 00:00:00$/u);
+    const quotaExceeded = await createShare(
+      server.origin,
+      quotaOwner,
+      quotaSource,
+      "quota-wave-over-limit",
+      { sections: ["overview"] },
+    );
+    assert.equal(quotaExceeded.response.status, 429, JSON.stringify(quotaExceeded.payload));
+    assert.equal(quotaExceeded.payload.code, "rate_limited");
+    const quotaReplayAfterLimit = await createShare(
+      server.origin,
+      quotaOwner,
+      quotaSource,
+      "quota-wave-0-0",
+      { sections: ["overview"] },
+    );
+    assert.equal(quotaReplayAfterLimit.response.status, 200, JSON.stringify(quotaReplayAfterLimit.payload));
+    assert.equal(quotaReplayAfterLimit.payload.share.id, quotaReplay.payload.share.id);
+    assert.equal(quotaReplayAfterLimit.payload.idempotentReplay, true);
+    assert.equal(Number(query(
+      stateDirectory,
+      `SELECT request_count FROM report_share_create_counters WHERE user_id='${quotaOwner.user.id}';`,
+    )[0].request_count), 20);
+
     const expiredToken = "e".repeat(43);
     const expiredTokenHash = createHash("sha256").update(expiredToken).digest("hex");
     requireD1(d1(stateDirectory, "execute", `
@@ -483,6 +955,11 @@ test("Professional Handoff links preserve one redacted immutable report across o
       VALUES (
         '${"9".repeat(64)}',datetime('now','-73 hours'),1,120,datetime('now','-73 hours')
       );
+      INSERT INTO report_share_create_counters
+        (user_id,window_start,request_count,limit_count,updated_at)
+      VALUES (
+        '${other.user.id}',datetime('now','-3 days'),1,20,datetime('now','-3 days')
+      );
     `), "retention fixture insert failed");
     const scheduled = await fetch(`${server.origin}/__scheduled?cron=17+2+*+*+*`);
     assert.equal(scheduled.status, 200);
@@ -498,6 +975,14 @@ test("Professional Handoff links preserve one redacted immutable report across o
     assert.equal(Number(query(stateDirectory, "SELECT COUNT(*) AS count FROM report_shares WHERE id='retention-old';")[0].count), 0);
     assert.equal(Number(query(stateDirectory, `SELECT COUNT(*) AS count FROM report_share_read_counters WHERE subject_hash='${"9".repeat(64)}';`)[0].count), 0);
     assert.ok(Number(query(stateDirectory, "SELECT COUNT(*) AS count FROM report_share_read_counters;")[0].count)>0);
+    assert.equal(Number(query(
+      stateDirectory,
+      `SELECT COUNT(*) AS count FROM report_share_create_counters WHERE user_id='${other.user.id}';`,
+    )[0].count), 0);
+    assert.deepEqual(query(
+      stateDirectory,
+      `SELECT request_count,limit_count FROM report_share_create_counters WHERE user_id='${quotaOwner.user.id}';`,
+    ), [{ request_count: 20, limit_count: 20 }]);
     let historicalAfterCleanup;
     try {
       historicalAfterCleanup = await openShare(server.origin, historicalToken);

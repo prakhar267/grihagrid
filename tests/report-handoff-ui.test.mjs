@@ -52,12 +52,20 @@ test("one-time report addresses never come from list metadata or token reconstru
 test("current, historical, and archived report handoff states preserve evidence semantics",async()=>{
   const {app,owner}=await sources();
   const report=app.slice(app.indexOf("function ReportPage("),app.indexOf("function LegalPage("));
+  const homePath=app.slice(app.indexOf("function projectHomePath("),app.indexOf("function EvidenceCard("));
+  assert.match(homePath,/action\?\.code === "open_handoff"[\s\S]*?`\/report\/\$\{encodedProjectId\}#professional-handoff`/u);
+  assert.match(owner,/id="professional-handoff"/u);
+  assert.match(owner,/window\.location\.hash!=="#professional-handoff"[\s\S]*?panel\.focus\(\{preventScroll:true\}\);[\s\S]*?panel\.scrollIntoView\(\{block:"start"\}\)/u,"the late-mounted handoff panel must honor the Project Home anchor");
+  assert.match(owner,/ref=\{panelRef\} id="professional-handoff" tabIndex="-1"/u);
   assert.match(report,/reportSchemaVersion===2&&<ReportHandoffPanel/u);
   assert.match(report,/projectRevision=\{projectRevision\} reportSchemaVersion=\{reportSchemaVersion\} archived=\{archived\} historical=\{historical\}/u);
   assert.match(owner,/archived\?\(historical\?"Review this archived revision’s handoff history\.":"Review this archived report’s handoff history\."\):historical\?"Share this exact saved revision\.":"Put this report in the room\."/u);
+  assert.match(owner,/Create a read-only bearer link for a licensed architect or engineer\./u);
+  assert.doesNotMatch(owner,/architect, engineer, or contractor/iu);
+  assert.doesNotMatch(owner,/professional review/iu);
   assert.match(owner,/This saved report remains readable, while link creation and copying are closed\. Active bearer links can still be revoked below\./u);
   assert.match(owner,/if\(archived\)setSecret\(null\)/u);
-  assert.match(owner,/archived\?<div className="report-handoff__notice"[\s\S]*?:<form className="report-handoff__form"/u);
+  assert.match(owner,/archived\?<div className="report-handoff__notice"[\s\S]*?:<><div id=\{bearerWarningId\} className="report-handoff__bearer-warning"[\s\S]*?<form className="report-handoff__form"/u);
   assert.match(owner,/New links and copying are closed\. Any still-active link can be revoked/u);
   assert.match(owner,/state==="active"&&<button className="report-handoff__revoke"/u,"revocation must remain available while archived");
   assert.match(owner,/The saved report is not deleted\. This cannot be undone\./u);
@@ -72,11 +80,14 @@ test("public handoff route is anonymous, exact, identity-free, and handles stabl
   assert.match(app,/path==='\/share\/report'\?'Professional handoff — GrihaGrid'/u);
   assert.match(publicPage,/publicApi\("\/api\/shared\/report",\{method:"POST",body:\{token\},signal\}\)/u);
   assert.doesNotMatch(publicPage,/publicApi\([^\n]*token\)/u,"the capability must never occur in a requested URL");
+  assert.match(publicPage,/if\(err instanceof ApiError&&\[404,410\]\.includes\(err\.status\)\)scrubClosedReportShareCapability\(token\)/u,"terminal links must be removed from the local address bar");
+  assert.match(app,/window\.location\.hash!==`#\$\{token\}`[\s\S]*?window\.history\.replaceState\(window\.history\.state,"","\/share\/report"\)/u);
   assert.match(publicPage,/err instanceof ApiError&&err\.status===410\?"closed":err instanceof ApiError&&err\.status===404\?"missing":"error"/u);
   assert.match(publicPage,/Link expired or revoked/u);
   assert.match(publicPage,/Handoff link unavailable/u);
   assert.match(publicPage,/Secure sharing unavailable/u);
-  assert.match(publicPage,/A planning report for professional review\./u);
+  assert.match(publicPage,/Planning evidence for a professional conversation\./u);
+  assert.doesNotMatch(publicPage,/for professional review|Report generated|generatedAt|schemaVersion/iu);
   assert.match(publicPage,/This page contains only the report sections the owner selected\./u);
   assert.match(appComponent,/useState\(\(\)=>isPublicReportSharePath\(window\.location\.pathname\)\?null:undefined\)/u);
   assert.match(appComponent,/if\(isPublicReportSharePath\(path\)\)\{[\s\S]*?authenticatedSession\.current=false;setUser\(null\);return\}[\s\S]*?api\('\/api\/auth\/me'\)/u,"initial public report loads must not bootstrap a credentialed session");
@@ -91,6 +102,8 @@ test("public handoff route is anonymous, exact, identity-free, and handles stabl
 test("public renderer allowlists selected report sections and preserves week-based timeline facts",async()=>{
   const {app,publicPage}=await sources();
   const normalizer=app.slice(app.indexOf("function normalizePublicReportShare("),app.indexOf("function Brand("));
+  assert.match(normalizer,/rawSections=share\?\.sections/u);
+  assert.doesNotMatch(normalizer,/share\?\.report|schemaVersion|generatedAt/u,"the public contract is expiresAt plus selected sections only");
   for(const key of ["overview","programme","cost","timeline","risks","nextActions"]){
     assert.match(normalizer,new RegExp(`\\b${key}\\b`,"u"));
   }
@@ -114,10 +127,19 @@ test("handoff controls and public report reflow, announce state, and print witho
   assert.match(owner,/tabIndex="-1"/u);
   assert.match(owner,/messageRef\.current\?\.focus\(\)/u);
   assert.match(owner,/secretRef\.current\?\.focus\(\)/u);
+  assert.match(owner,/className="report-handoff__bearer-warning"/u);
+  assert.match(owner,/Anyone with this link can read the sections you select\./u);
+  assert.match(owner,/<form className="report-handoff__form" aria-describedby=\{bearerWarningId\}/u);
+  assert.match(owner,/<ol className="report-handoff__history-list" role="list">/u);
+  assert.match(owner,/Created \{createdAt\}/u);
+  assert.match(owner,/aria-label=\{`Copy \$\{linkContext\}`\}/u);
+  assert.match(owner,/aria-label=\{`\$\{busy===share\.id\?"Revoking":"Revoke"\} \$\{linkContext\}`\}/u);
   assert.match(publicPage,/aria-busy="true"/u);
   assert.match(publicPage,/role="alert"[\s\S]*?<h1 ref=\{headingRef\} tabIndex="-1">/u);
   assert.match(publicPage,/<button onClick=\{printSharedReportWithoutCapability\}/u);
   assert.match(styles,/\.report-handoff__link button\s*\{[\s\S]*?min-width: 48px;[\s\S]*?min-height: 48px;/u);
+  assert.match(styles,/\.report-handoff__bearer-warning\s*\{[\s\S]*?border-left: 4px solid var\(--copper-dark\);[\s\S]*?font-size: 0\.82rem;/u);
+  assert.match(styles,/\.report-handoff__history-list\s*\{[\s\S]*?list-style: none;/u);
   assert.match(styles,/\.report-handoff__secret:focus-visible,[\s\S]*?outline: 2px solid var\(--copper\);/u);
   assert.match(styles,/\.report-handoff\s*\{[\s\S]*?overflow-wrap: anywhere;/u);
   assert.match(styles,/\.shared-report\s*\{[\s\S]*?overflow-wrap: anywhere;/u);

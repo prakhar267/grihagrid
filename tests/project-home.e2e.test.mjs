@@ -471,7 +471,7 @@ test("Project Decision Home is owner-only, zero-write, lifecycle-correct, and pa
     assert.equal(selected.response.status, 201, JSON.stringify(selected.payload));
     homeResult = await call(server.origin, homePath, { auth: owner });
     assertHomeEnvelope(homeResult.payload, project.id, {
-      stage: "decision_ready", completed: 3, action: "open_handoff", target: "compare",
+      stage: "decision_ready", completed: 3, action: "open_handoff", target: "report",
     });
     assert.equal(homeResult.payload.current.selection.available, true);
     assert.equal(homeResult.payload.current.selection.scenarioId, selectedScenarioId);
@@ -493,7 +493,7 @@ test("Project Decision Home is owner-only, zero-write, lifecycle-correct, and pa
     assert.equal(familyResponse.response.status, 201, JSON.stringify(familyResponse.payload));
     homeResult = await call(server.origin, homePath, { auth: owner });
     assertHomeEnvelope(homeResult.payload, project.id, {
-      stage: "decision_ready", completed: 3, action: "open_handoff", target: "compare",
+      stage: "decision_ready", completed: 3, action: "open_handoff", target: "report",
     });
     assert.equal(homeResult.payload.current.family.available, true);
     const serializedFamilyHome = JSON.stringify(homeResult.payload);

@@ -15,6 +15,7 @@ permissions:
   contents: read
   actions: read
   checks: read
+  security-events: read
   pull-requests: read
 
 concurrency:
@@ -192,11 +193,98 @@ jobs:
             exit 1
           }
 
+          codeql_analysis_ready=false
+          for attempt in $(seq 1 12); do
+            gh api --paginate --slurp --method GET \
+              "repos/$GITHUB_REPOSITORY/code-scanning/analyses" \
+              -f ref=refs/heads/main -f tool_name=CodeQL -F per_page=100 \
+              > "$RUNNER_TEMP/codeql-analyses.json"
+            if CODEQL_RELEASE_SHA="$RELEASE_SHA" node --input-type=module - "$RUNNER_TEMP/codeql-analyses.json" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const pages = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          const analyses = pages.flatMap((page) => Array.isArray(page) ? page : []);
+          const exact = analyses.find((analysis) => (
+            analysis.commit_sha === process.env.CODEQL_RELEASE_SHA
+            && analysis.ref === "refs/heads/main"
+            && analysis.tool?.name === "CodeQL"
+            && /(?:^|\/)language:javascript-typescript$/u.test(String(analysis.category || ""))
+          ));
+          if (!exact) process.exit(1);
+          NODE
+            then
+              codeql_analysis_ready=true
+              break
+            fi
+            sleep 5
+          done
+          test "$codeql_analysis_ready" = true || {
+            echo "exact-SHA JavaScript/TypeScript CodeQL analysis was not available" >&2
+            exit 1
+          }
+
+          gh api --paginate --slurp --method GET \
+            "repos/$GITHUB_REPOSITORY/code-scanning/alerts" \
+            -f state=open -f ref=refs/heads/main -f tool_name=CodeQL -F per_page=100 \
+            > "$RUNNER_TEMP/codeql-open-alerts.json"
+          mkdir -p release-evidence/authorization
+          umask 077
+          CODEQL_RELEASE_SHA="$RELEASE_SHA" node --input-type=module \
+            - "$RUNNER_TEMP/codeql-analyses.json" "$RUNNER_TEMP/codeql-open-alerts.json" \
+            release-evidence/authorization/codeql-gate.json <<'NODE'
+          import assert from "node:assert/strict";
+          import { readFileSync, writeFileSync } from "node:fs";
+          const [analysesFile, alertsFile, output] = process.argv.slice(2);
+          const flattenPages = (filename) => JSON.parse(readFileSync(filename, "utf8"))
+            .flatMap((page) => Array.isArray(page) ? page : []);
+          const analyses = flattenPages(analysesFile).filter((analysis) => (
+            analysis.commit_sha === process.env.CODEQL_RELEASE_SHA
+            && analysis.ref === "refs/heads/main"
+            && analysis.tool?.name === "CodeQL"
+            && /(?:^|\/)language:javascript-typescript$/u.test(String(analysis.category || ""))
+          ));
+          assert.ok(analyses.length > 0, "missing exact-SHA JavaScript/TypeScript CodeQL analysis");
+          const exact = analyses.sort((left, right) => String(right.created_at).localeCompare(String(left.created_at)))[0];
+          const alerts = flattenPages(alertsFile);
+          for (const alert of alerts) {
+            assert.equal(alert.state, "open", "code-scanning alert query returned a non-open alert");
+            assert.equal(alert.tool?.name, "CodeQL", "code-scanning alert query returned a non-CodeQL alert");
+            assert.equal(alert.most_recent_instance?.ref, "refs/heads/main", "code-scanning alert query escaped main");
+          }
+          assert.equal(alerts.length, 0, "main has open CodeQL alerts after the exact-SHA JavaScript/TypeScript analysis");
+          const resultsCount = Number(exact.results_count);
+          const rulesCount = Number(exact.rules_count);
+          assert.ok(Number.isSafeInteger(resultsCount) && resultsCount >= 0, "invalid CodeQL result count");
+          assert.equal(resultsCount, 0, "exact-SHA JavaScript/TypeScript CodeQL analysis contains results");
+          assert.ok(Number.isSafeInteger(rulesCount) && rulesCount >= 0, "invalid CodeQL rule count");
+          writeFileSync(output, `${JSON.stringify({
+            checkedAt: new Date().toISOString(),
+            commitSha: process.env.CODEQL_RELEASE_SHA,
+            ref: "refs/heads/main",
+            workflowPath: "dynamic/github-code-scanning/codeql",
+            workflowConclusion: "success",
+            language: "javascript-typescript",
+            analysisId: exact.id,
+            category: exact.category,
+            resultsCount,
+            rulesCount,
+            openAlertCount: 0,
+          }, null, 2)}\n`);
+          NODE
+          rm -f -- "$RUNNER_TEMP/codeql-analyses.json" "$RUNNER_TEMP/codeql-open-alerts.json"
+
           {
             echo "release_sha=$RELEASE_SHA"
             echo "base_sha=$base_sha"
             echo "pull_request=$pull_request"
           } >> "$GITHUB_OUTPUT"
+
+      - name: Store bounded CodeQL release evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: codeql-release-evidence-${{ steps.gate.outputs.release_sha }}
+          path: release-evidence/authorization/codeql-gate.json
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Classify the release scope
         id: scope
@@ -502,6 +590,15 @@ jobs:
           if [ "${{ steps.migrations.outputs.pending }}" = "true" ]; then
             wrangler d1 migrations apply DB --remote --env staging
           fi
+          if [ "${{ steps.migrations.outputs.report_share_pending }}" != "true" ]; then
+            wrangler d1 execute DB --remote --env staging --json --command \
+              "UPDATE report_handoff_controls SET enabled=0,updated_at=datetime('now') WHERE control_key='report_handoff' RETURNING control_key,enabled;" \
+              > "$RUNNER_TEMP/staging-report-handoff-pre-activation-close.json"
+            REPORT_HANDOFF_EXPECTED_ENABLED=false \
+              node scripts/release-db-evidence.mjs handoff-control staging \
+                "$RUNNER_TEMP/staging-report-handoff-pre-activation-close.json" \
+                release-evidence/staging/pre-activation-report-handoff-closed.json
+          fi
           wrangler d1 migrations list DB --remote --env staging \
             | tee release-evidence/staging/post-migration-list.txt
           grep -Fq "No migrations to apply!" release-evidence/staging/post-migration-list.txt
@@ -511,7 +608,7 @@ jobs:
             "SELECT type,name FROM sqlite_schema WHERE type IN ('table','index','trigger') AND name NOT LIKE 'sqlite_%' ORDER BY type,name;" \
             > release-evidence/staging/schema-objects.json
           wrangler d1 execute DB --remote --env staging --json --command \
-            "WITH target_tables(table_name) AS (VALUES ('users'),('sessions'),('password_change_attempt_counters'),('report_share_read_counters'),('projects'),('orders'),('project_revisions'),('report_feedback'),('report_shares')) SELECT target_tables.table_name,columns.name FROM target_tables JOIN pragma_table_info(target_tables.table_name) AS columns ORDER BY target_tables.table_name,columns.name;" \
+            "WITH target_tables(table_name) AS (VALUES ('users'),('sessions'),('password_change_attempt_counters'),('report_share_read_counters'),('report_share_create_counters'),('report_handoff_controls'),('projects'),('orders'),('project_revisions'),('report_feedback'),('report_shares')) SELECT target_tables.table_name,columns.name FROM target_tables JOIN pragma_table_info(target_tables.table_name) AS columns ORDER BY target_tables.table_name,columns.name;" \
             > "$RUNNER_TEMP/staging-schema-columns.json"
           wrangler d1 execute DB --remote --env staging --json --command \
             "WITH entities(entity) AS (VALUES ('users'),('sessions'),('projects'),('reports'),('orders'),('payment_webhook_events')) SELECT entity,CASE entity WHEN 'users' THEN (SELECT COUNT(*) FROM users) WHEN 'sessions' THEN (SELECT COUNT(*) FROM sessions) WHEN 'projects' THEN (SELECT COUNT(*) FROM projects) WHEN 'reports' THEN (SELECT COUNT(*) FROM reports) WHEN 'orders' THEN (SELECT COUNT(*) FROM orders) WHEN 'payment_webhook_events' THEN (SELECT COUNT(*) FROM payment_webhook_events) END AS row_count FROM entities;" \
@@ -530,6 +627,10 @@ jobs:
             "SELECT COUNT(*) AS row_count FROM report_shares;" > "$RUNNER_TEMP/staging-post-migration-report-share-count.json"
           wrangler d1 execute DB --remote --env staging --json --command \
             "SELECT COUNT(*) AS row_count FROM report_share_read_counters;" > "$RUNNER_TEMP/staging-post-migration-report-share-read-counter-count.json"
+          wrangler d1 execute DB --remote --env staging --json --command \
+            "SELECT COUNT(*) AS row_count FROM report_share_create_counters;" > "$RUNNER_TEMP/staging-post-migration-report-share-create-counter-count.json"
+          wrangler d1 execute DB --remote --env staging --json --command \
+            "SELECT control_key,enabled FROM report_handoff_controls ORDER BY control_key;" > "$RUNNER_TEMP/staging-post-migration-report-handoff-control.json"
           FEEDBACK_MIGRATION_PENDING="${{ steps.migrations.outputs.feedback_pending }}" \
             REPORT_SHARE_MIGRATION_PENDING="${{ steps.migrations.outputs.report_share_pending }}" \
             node scripts/release-db-evidence.mjs post staging \
@@ -545,6 +646,8 @@ jobs:
               "$RUNNER_TEMP/staging-post-migration-feedback-count.json" \
               "$RUNNER_TEMP/staging-post-migration-report-share-count.json" \
               "$RUNNER_TEMP/staging-post-migration-report-share-read-counter-count.json" \
+              "$RUNNER_TEMP/staging-post-migration-report-share-create-counter-count.json" \
+              "$RUNNER_TEMP/staging-post-migration-report-handoff-control.json" \
               release-evidence/staging/post-migration-proof.json
 
       - name: Rehearse rollback Worker against migrated staging schema
@@ -639,6 +742,28 @@ jobs:
           NODE
           echo "version_id=$version_id" >> "$GITHUB_OUTPUT"
 
+      - name: Disable staging report handoff before unverified rollback
+        id: handoff_unverified_fail_closed
+        if: >-
+          always() &&
+          (steps.migrations.outputs.pending == 'false' ||
+           (steps.rollback_compat.outcome == 'success' && steps.rollback_residue.outcome == 'success')) &&
+          steps.version.outcome == 'failure'
+        continue-on-error: true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          umask 077
+          wrangler d1 execute DB --remote --env staging --json --command \
+            "UPDATE report_handoff_controls SET enabled=0,updated_at=datetime('now') WHERE control_key='report_handoff' RETURNING control_key,enabled;" \
+            > "$RUNNER_TEMP/staging-report-handoff-unverified-disable.json"
+          REPORT_HANDOFF_EXPECTED_ENABLED=false \
+            node scripts/release-db-evidence.mjs handoff-control staging \
+              "$RUNNER_TEMP/staging-report-handoff-unverified-disable.json" \
+              release-evidence/staging/unverified-rollback-report-handoff-disabled.json
+
       - name: Roll back an unverified compatible staging activation
         id: rollback_unverified
         if: >-
@@ -657,32 +782,89 @@ jobs:
       - name: Verify the exact staging version after unverified rollback
         if: always() && steps.rollback_unverified.outcome == 'success'
         env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           EXPECT_PAID_CHECKOUT: "false"
+          LEGACY_WORKER_COMPAT: "true"
           GRIHAGRID_RELEASE_ID: ${{ steps.previous.outputs.previous_version }}
-        run: node scripts/wait-for-release.mjs "$ORIGIN" "$GRIHAGRID_RELEASE_ID" > release-evidence/staging/unverified-deploy-rollback.json
+        run: |
+          set -euo pipefail
+          umask 077
+          node scripts/wait-for-release.mjs "$ORIGIN" "$GRIHAGRID_RELEASE_ID" \
+            > release-evidence/staging/unverified-deploy-rollback.json
+          wrangler d1 execute DB --remote --env staging --json --command \
+            "SELECT control_key,enabled FROM report_handoff_controls ORDER BY control_key;" \
+            > "$RUNNER_TEMP/staging-unverified-rollback-report-handoff-control.json"
+          REPORT_HANDOFF_EXPECTED_ENABLED=false \
+            node scripts/release-db-evidence.mjs handoff-control staging \
+              "$RUNNER_TEMP/staging-unverified-rollback-report-handoff-control.json" \
+              release-evidence/staging/unverified-rollback-report-handoff-control.json
 
       - name: Wait for three exact staging smoke samples
         id: propagation
         continue-on-error: true
         env:
           EXPECT_PAID_CHECKOUT: "false"
+          EXPECT_REPORT_HANDOFF: "false"
           GRIHAGRID_RELEASE_ORIGIN: ${{ env.ORIGIN }}
           GRIHAGRID_RELEASE_ID: ${{ steps.version.outputs.version_id }}
         run: node scripts/wait-for-release.mjs "$ORIGIN" "$GRIHAGRID_RELEASE_ID" | tee release-evidence/staging/public-smoke.json
 
-      - name: Run staging authenticated canary
+      - name: Run staging authenticated canary under bounded handoff activation
         id: canary
         if: steps.propagation.outcome == 'success'
         continue-on-error: true
         env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           EXPECT_RELEASE_ID: ${{ steps.version.outputs.version_id }}
           GRIHAGRID_CANARY_EMAIL: ${{ secrets.GRIHAGRID_CANARY_EMAIL }}
           GRIHAGRID_CANARY_PASSWORD: ${{ secrets.GRIHAGRID_CANARY_PASSWORD }}
         run: |
           set -euo pipefail
+          umask 077
           test -n "$GRIHAGRID_CANARY_EMAIL"
           test -n "$GRIHAGRID_CANARY_PASSWORD"
-          node scripts/authenticated-smoke.mjs "$ORIGIN" | tee release-evidence/staging/authenticated-smoke.json
+          reclose_report_handoff_after_canary() {
+            status=$?
+            trap - EXIT
+            set +e
+            env -u GRIHAGRID_CANARY_EMAIL -u GRIHAGRID_CANARY_PASSWORD \
+              wrangler d1 execute DB --remote --env staging --json --command \
+              "UPDATE report_handoff_controls SET enabled=0,updated_at=datetime('now') WHERE control_key='report_handoff' RETURNING control_key,enabled;" \
+              > "$RUNNER_TEMP/staging-report-handoff-canary-reclose.json"
+            reclose_status=$?
+            if [ "$reclose_status" -eq 0 ]; then
+              env -u CLOUDFLARE_API_TOKEN -u CLOUDFLARE_ACCOUNT_ID \
+                -u GRIHAGRID_CANARY_EMAIL -u GRIHAGRID_CANARY_PASSWORD \
+                REPORT_HANDOFF_EXPECTED_ENABLED=false \
+                node scripts/release-db-evidence.mjs handoff-control staging \
+                  "$RUNNER_TEMP/staging-report-handoff-canary-reclose.json" \
+                  release-evidence/staging/report-handoff-canary-reclosed.json
+              proof_status=$?
+            else
+              proof_status=1
+              echo "failed to re-close staging report handoff after the authenticated canary" >&2
+            fi
+            if [ "$status" -eq 0 ] && { [ "$reclose_status" -ne 0 ] || [ "$proof_status" -ne 0 ]; }; then
+              status=1
+            fi
+            exit "$status"
+          }
+          trap reclose_report_handoff_after_canary EXIT
+          env -u GRIHAGRID_CANARY_EMAIL -u GRIHAGRID_CANARY_PASSWORD \
+            wrangler d1 execute DB --remote --env staging --json --command \
+            "UPDATE report_handoff_controls SET enabled=1,updated_at=datetime('now') WHERE control_key='report_handoff' RETURNING control_key,enabled;" \
+            > "$RUNNER_TEMP/staging-report-handoff-canary-enable.json"
+          env -u CLOUDFLARE_API_TOKEN -u CLOUDFLARE_ACCOUNT_ID \
+            -u GRIHAGRID_CANARY_EMAIL -u GRIHAGRID_CANARY_PASSWORD \
+            REPORT_HANDOFF_EXPECTED_ENABLED=true \
+            node scripts/release-db-evidence.mjs handoff-control staging \
+              "$RUNNER_TEMP/staging-report-handoff-canary-enable.json" \
+              release-evidence/staging/report-handoff-canary-enabled.json
+          env -u CLOUDFLARE_API_TOKEN -u CLOUDFLARE_ACCOUNT_ID \
+            node scripts/authenticated-smoke.mjs "$ORIGIN" \
+            | tee release-evidence/staging/authenticated-smoke.json
 
       - name: Prove staging canary left zero database residue
         id: residue
@@ -706,6 +888,179 @@ jobs:
             "$RUNNER_TEMP/staging-canary-residue.json" \
             release-evidence/staging/post-canary-residue-proof.json
 
+      - name: Prove staging report handoff reclosed after authenticated canary
+        id: handoff_reclosed
+        if: always() && steps.canary.outcome != 'skipped'
+        continue-on-error: true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          EXPECTED_RELEASE_ID: ${{ steps.version.outputs.version_id }}
+        run: |
+          set -euo pipefail
+          umask 077
+          wrangler d1 execute DB --remote --env staging --json --command \
+            "SELECT control_key,enabled FROM report_handoff_controls ORDER BY control_key;" \
+            > "$RUNNER_TEMP/staging-report-handoff-reclosed.json"
+          REPORT_HANDOFF_EXPECTED_ENABLED=false \
+            node scripts/release-db-evidence.mjs handoff-control staging \
+              "$RUNNER_TEMP/staging-report-handoff-reclosed.json" \
+              release-evidence/staging/report-handoff-reclosed-control.json
+          node --input-type=module > release-evidence/staging/report-handoff-disabled-http.json <<'NODE'
+          import assert from "node:assert/strict";
+          const origin = new URL(process.env.ORIGIN);
+          const request = async (path, init, expectedStatus) => {
+            const response = await fetch(new URL(path, origin), {
+              ...init,
+              redirect: "error",
+              signal: AbortSignal.timeout(15_000),
+            });
+            assert.equal(response.status, expectedStatus, `${path} returned ${response.status}`);
+            return response.json();
+          };
+          const readiness = await request("/api/readiness", {}, 200);
+          assert.equal(readiness.releaseId, process.env.EXPECTED_RELEASE_ID);
+          assert.equal(readiness.checks?.reportShareSchema, "current");
+          assert.equal(readiness.checks?.reportHandoffControl, "disabled");
+          assert.equal(readiness.checks?.reportShareAbuseHashing, "configured");
+          assert.equal(readiness.capabilities?.reportHandoff, false);
+          const redemption = await request("/api/shared/report", {
+            method: "POST",
+            headers: { "content-type": "application/json", origin: origin.origin },
+            body: JSON.stringify({ token: "A".repeat(43) }),
+          }, 503);
+          assert.equal(redemption.code, "report_handoff_disabled");
+          process.stdout.write(`${JSON.stringify({
+            checkedAt: new Date().toISOString(),
+            releaseId: readiness.releaseId,
+            control: readiness.checks.reportHandoffControl,
+            reportHandoff: readiness.capabilities.reportHandoff,
+            redemptionStatus: 503,
+            redemptionCode: redemption.code,
+          }, null, 2)}\n`);
+          NODE
+
+      - name: Restore and verify staging report handoff control
+        id: handoff_restore
+        if: >-
+          always() &&
+          steps.canary.outcome == 'success' &&
+          steps.residue.outcome == 'success' &&
+          steps.handoff_reclosed.outcome == 'success'
+        continue-on-error: true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          EXPECTED_RELEASE_ID: ${{ steps.version.outputs.version_id }}
+        run: |
+          set -euo pipefail
+          umask 077
+          reclose_report_handoff_on_failure() {
+            status=$?
+            if [ "$status" -ne 0 ]; then
+              set +e
+              wrangler d1 execute DB --remote --env staging --json --command \
+                "UPDATE report_handoff_controls SET enabled=0,updated_at=datetime('now') WHERE control_key='report_handoff' RETURNING control_key,enabled;" \
+                > "$RUNNER_TEMP/staging-report-handoff-restore-failure-disable.json"
+              reclose_status=$?
+              if [ "$reclose_status" -eq 0 ]; then
+                REPORT_HANDOFF_EXPECTED_ENABLED=false \
+                  node scripts/release-db-evidence.mjs handoff-control staging \
+                    "$RUNNER_TEMP/staging-report-handoff-restore-failure-disable.json" \
+                    release-evidence/staging/report-handoff-restore-failure-control.json
+              else
+                echo "failed to re-close staging report handoff after restoration proof failure" >&2
+              fi
+            fi
+            exit "$status"
+          }
+          trap reclose_report_handoff_on_failure EXIT
+          wrangler d1 execute DB --remote --env staging --json --command \
+            "UPDATE report_handoff_controls SET enabled=1,updated_at=datetime('now') WHERE control_key='report_handoff' RETURNING control_key,enabled;" \
+            > "$RUNNER_TEMP/staging-report-handoff-enable.json"
+          REPORT_HANDOFF_EXPECTED_ENABLED=true \
+            node scripts/release-db-evidence.mjs handoff-control staging \
+              "$RUNNER_TEMP/staging-report-handoff-enable.json" \
+              release-evidence/staging/report-handoff-enabled-control.json
+          node --input-type=module > release-evidence/staging/report-handoff-enabled-http.json <<'NODE'
+          import assert from "node:assert/strict";
+          const origin = new URL(process.env.ORIGIN);
+          const request = async (path, init, expectedStatus) => {
+            const response = await fetch(new URL(path, origin), {
+              ...init,
+              redirect: "error",
+              signal: AbortSignal.timeout(15_000),
+            });
+            assert.equal(response.status, expectedStatus, `${path} returned ${response.status}`);
+            return response.json();
+          };
+          const readiness = await request("/api/readiness", {}, 200);
+          assert.equal(readiness.releaseId, process.env.EXPECTED_RELEASE_ID);
+          assert.equal(readiness.checks?.reportShareSchema, "current");
+          assert.equal(readiness.checks?.reportHandoffControl, "enabled");
+          assert.equal(readiness.checks?.reportShareAbuseHashing, "configured");
+          assert.equal(readiness.capabilities?.reportHandoff, true);
+          const redemption = await request("/api/shared/report", {
+            method: "POST",
+            headers: { "content-type": "application/json", origin: origin.origin },
+            body: JSON.stringify({ token: "A".repeat(43) }),
+          }, 404);
+          assert.equal(redemption.code, "report_share_not_found");
+          process.stdout.write(`${JSON.stringify({
+            checkedAt: new Date().toISOString(),
+            releaseId: readiness.releaseId,
+            control: readiness.checks.reportHandoffControl,
+            reportHandoff: readiness.capabilities.reportHandoff,
+            missingTokenStatus: 404,
+            missingTokenCode: redemption.code,
+          }, null, 2)}\n`);
+          NODE
+          trap - EXIT
+
+      - name: Record staging post-canary report handoff counts
+        id: handoff_counts
+        if: steps.handoff_restore.outcome == 'success'
+        continue-on-error: true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          umask 077
+          wrangler d1 execute DB --remote --env staging --json --command \
+            "SELECT (SELECT COUNT(*) FROM report_shares) AS report_shares,(SELECT COUNT(*) FROM report_share_read_counters) AS report_share_read_counters,(SELECT COUNT(*) FROM report_share_create_counters) AS report_share_create_counters,(SELECT COUNT(*) FROM report_handoff_controls) AS report_handoff_controls,(SELECT COUNT(*) FROM report_handoff_controls WHERE control_key='report_handoff' AND enabled=1) AS enabled_report_handoff_controls;" \
+            > "$RUNNER_TEMP/staging-post-canary-report-handoff-counts.json"
+          node scripts/release-db-evidence.mjs handoff-counts staging \
+            "$RUNNER_TEMP/staging-post-canary-report-handoff-counts.json" \
+            release-evidence/staging/post-canary-report-handoff-counts.json
+
+      - name: Fail closed staging report handoff before regression handling
+        id: handoff_fail_closed
+        if: >-
+          always() &&
+          steps.migrations.outcome == 'success' &&
+          (steps.version.outcome != 'success' ||
+           steps.propagation.outcome != 'success' ||
+           steps.canary.outcome != 'success' ||
+           steps.residue.outcome != 'success' ||
+           steps.handoff_reclosed.outcome != 'success' ||
+           steps.handoff_restore.outcome != 'success' ||
+           steps.handoff_counts.outcome != 'success')
+        continue-on-error: true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          umask 077
+          wrangler d1 execute DB --remote --env staging --json --command \
+            "UPDATE report_handoff_controls SET enabled=0,updated_at=datetime('now') WHERE control_key='report_handoff' RETURNING control_key,enabled;" \
+            > "$RUNNER_TEMP/staging-report-handoff-failure-disable.json"
+          REPORT_HANDOFF_EXPECTED_ENABLED=false \
+            node scripts/release-db-evidence.mjs handoff-control staging \
+              "$RUNNER_TEMP/staging-report-handoff-failure-disable.json" \
+              release-evidence/staging/regression-report-handoff-disabled.json
+
       - name: Roll back a confirmed compatible staging regression
         id: rollback_regression
         if: >-
@@ -715,7 +1070,10 @@ jobs:
           steps.version.outcome == 'success' &&
           (steps.propagation.outcome == 'failure' ||
            steps.canary.outcome == 'failure' ||
-           steps.residue.outcome == 'failure')
+           steps.residue.outcome == 'failure' ||
+           steps.handoff_reclosed.outcome == 'failure' ||
+           steps.handoff_restore.outcome == 'failure' ||
+           steps.handoff_counts.outcome == 'failure')
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -727,16 +1085,34 @@ jobs:
       - name: Verify the exact staging version after regression rollback
         if: always() && steps.rollback_regression.outcome == 'success'
         env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           EXPECT_PAID_CHECKOUT: "false"
+          LEGACY_WORKER_COMPAT: "true"
           GRIHAGRID_RELEASE_ID: ${{ steps.previous.outputs.previous_version }}
-        run: node scripts/wait-for-release.mjs "$ORIGIN" "$GRIHAGRID_RELEASE_ID" > release-evidence/staging/regression-rollback.json
+        run: |
+          set -euo pipefail
+          umask 077
+          node scripts/wait-for-release.mjs "$ORIGIN" "$GRIHAGRID_RELEASE_ID" \
+            > release-evidence/staging/regression-rollback.json
+          wrangler d1 execute DB --remote --env staging --json --command \
+            "SELECT control_key,enabled FROM report_handoff_controls ORDER BY control_key;" \
+            > "$RUNNER_TEMP/staging-regression-rollback-report-handoff-control.json"
+          REPORT_HANDOFF_EXPECTED_ENABLED=false \
+            node scripts/release-db-evidence.mjs handoff-control staging \
+              "$RUNNER_TEMP/staging-regression-rollback-report-handoff-control.json" \
+              release-evidence/staging/regression-rollback-report-handoff-control.json
 
       - name: Fail closed after a staging release regression
         if: >-
           always() &&
           (steps.propagation.outcome == 'failure' ||
            steps.canary.outcome == 'failure' ||
-           steps.residue.outcome == 'failure')
+           steps.residue.outcome == 'failure' ||
+           steps.handoff_reclosed.outcome == 'failure' ||
+           steps.handoff_restore.outcome == 'failure' ||
+           steps.handoff_counts.outcome == 'failure' ||
+           steps.handoff_fail_closed.outcome == 'failure')
         run: exit 1
 
       - name: Remove staging backup material from the runner
@@ -759,6 +1135,19 @@ jobs:
             "$RUNNER_TEMP/staging-post-migration-feedback-count.json" \
             "$RUNNER_TEMP/staging-post-migration-report-share-count.json" \
             "$RUNNER_TEMP/staging-post-migration-report-share-read-counter-count.json" \
+            "$RUNNER_TEMP/staging-post-migration-report-share-create-counter-count.json" \
+            "$RUNNER_TEMP/staging-post-migration-report-handoff-control.json" \
+            "$RUNNER_TEMP/staging-report-handoff-pre-activation-close.json" \
+            "$RUNNER_TEMP/staging-report-handoff-canary-enable.json" \
+            "$RUNNER_TEMP/staging-report-handoff-canary-reclose.json" \
+            "$RUNNER_TEMP/staging-report-handoff-reclosed.json" \
+            "$RUNNER_TEMP/staging-report-handoff-enable.json" \
+            "$RUNNER_TEMP/staging-report-handoff-restore-failure-disable.json" \
+            "$RUNNER_TEMP/staging-report-handoff-unverified-disable.json" \
+            "$RUNNER_TEMP/staging-unverified-rollback-report-handoff-control.json" \
+            "$RUNNER_TEMP/staging-report-handoff-failure-disable.json" \
+            "$RUNNER_TEMP/staging-regression-rollback-report-handoff-control.json" \
+            "$RUNNER_TEMP/staging-post-canary-report-handoff-counts.json" \
             "$RUNNER_TEMP/staging-rollback-residue.sql" \
             "$RUNNER_TEMP/staging-rollback-residue.json" \
             "$RUNNER_TEMP/staging-canary-residue.sql" \
@@ -1038,6 +1427,15 @@ jobs:
           if [ "${{ steps.migrations.outputs.pending }}" = "true" ]; then
             wrangler d1 migrations apply DB --remote --env=""
           fi
+          if [ "${{ steps.migrations.outputs.report_share_pending }}" != "true" ]; then
+            wrangler d1 execute DB --remote --env="" --json --command \
+              "UPDATE report_handoff_controls SET enabled=0,updated_at=datetime('now') WHERE control_key='report_handoff' RETURNING control_key,enabled;" \
+              > "$RUNNER_TEMP/production-report-handoff-pre-activation-close.json"
+            REPORT_HANDOFF_EXPECTED_ENABLED=false \
+              node scripts/release-db-evidence.mjs handoff-control production \
+                "$RUNNER_TEMP/production-report-handoff-pre-activation-close.json" \
+                release-evidence/production/pre-activation-report-handoff-closed.json
+          fi
           wrangler d1 migrations list DB --remote --env="" \
             | tee release-evidence/production/post-migration-list.txt
           grep -Fq "No migrations to apply!" release-evidence/production/post-migration-list.txt
@@ -1047,7 +1445,7 @@ jobs:
             "SELECT type,name FROM sqlite_schema WHERE type IN ('table','index','trigger') AND name NOT LIKE 'sqlite_%' ORDER BY type,name;" \
             > release-evidence/production/schema-objects.json
           wrangler d1 execute DB --remote --env="" --json --command \
-            "WITH target_tables(table_name) AS (VALUES ('users'),('sessions'),('password_change_attempt_counters'),('report_share_read_counters'),('projects'),('orders'),('project_revisions'),('report_feedback'),('report_shares')) SELECT target_tables.table_name,columns.name FROM target_tables JOIN pragma_table_info(target_tables.table_name) AS columns ORDER BY target_tables.table_name,columns.name;" \
+            "WITH target_tables(table_name) AS (VALUES ('users'),('sessions'),('password_change_attempt_counters'),('report_share_read_counters'),('report_share_create_counters'),('report_handoff_controls'),('projects'),('orders'),('project_revisions'),('report_feedback'),('report_shares')) SELECT target_tables.table_name,columns.name FROM target_tables JOIN pragma_table_info(target_tables.table_name) AS columns ORDER BY target_tables.table_name,columns.name;" \
             > "$RUNNER_TEMP/production-schema-columns.json"
           wrangler d1 execute DB --remote --env="" --json --command \
             "WITH entities(entity) AS (VALUES ('users'),('sessions'),('projects'),('reports'),('orders'),('payment_webhook_events')) SELECT entity,CASE entity WHEN 'users' THEN (SELECT COUNT(*) FROM users) WHEN 'sessions' THEN (SELECT COUNT(*) FROM sessions) WHEN 'projects' THEN (SELECT COUNT(*) FROM projects) WHEN 'reports' THEN (SELECT COUNT(*) FROM reports) WHEN 'orders' THEN (SELECT COUNT(*) FROM orders) WHEN 'payment_webhook_events' THEN (SELECT COUNT(*) FROM payment_webhook_events) END AS row_count FROM entities;" \
@@ -1066,6 +1464,10 @@ jobs:
             "SELECT COUNT(*) AS row_count FROM report_shares;" > "$RUNNER_TEMP/production-post-migration-report-share-count.json"
           wrangler d1 execute DB --remote --env="" --json --command \
             "SELECT COUNT(*) AS row_count FROM report_share_read_counters;" > "$RUNNER_TEMP/production-post-migration-report-share-read-counter-count.json"
+          wrangler d1 execute DB --remote --env="" --json --command \
+            "SELECT COUNT(*) AS row_count FROM report_share_create_counters;" > "$RUNNER_TEMP/production-post-migration-report-share-create-counter-count.json"
+          wrangler d1 execute DB --remote --env="" --json --command \
+            "SELECT control_key,enabled FROM report_handoff_controls ORDER BY control_key;" > "$RUNNER_TEMP/production-post-migration-report-handoff-control.json"
           FEEDBACK_MIGRATION_PENDING="${{ steps.migrations.outputs.feedback_pending }}" \
             REPORT_SHARE_MIGRATION_PENDING="${{ steps.migrations.outputs.report_share_pending }}" \
             node scripts/release-db-evidence.mjs post production \
@@ -1081,6 +1483,8 @@ jobs:
               "$RUNNER_TEMP/production-post-migration-feedback-count.json" \
               "$RUNNER_TEMP/production-post-migration-report-share-count.json" \
               "$RUNNER_TEMP/production-post-migration-report-share-read-counter-count.json" \
+              "$RUNNER_TEMP/production-post-migration-report-share-create-counter-count.json" \
+              "$RUNNER_TEMP/production-post-migration-report-handoff-control.json" \
               release-evidence/production/post-migration-proof.json
 
       - name: Rehearse rollback Worker against migrated production schema
@@ -1175,6 +1579,28 @@ jobs:
           NODE
           echo "version_id=$version_id" >> "$GITHUB_OUTPUT"
 
+      - name: Disable production report handoff before unverified rollback
+        id: handoff_unverified_fail_closed
+        if: >-
+          always() &&
+          (steps.migrations.outputs.pending == 'false' ||
+           (steps.rollback_compat.outcome == 'success' && steps.rollback_residue.outcome == 'success')) &&
+          steps.version.outcome == 'failure'
+        continue-on-error: true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          umask 077
+          wrangler d1 execute DB --remote --env="" --json --command \
+            "UPDATE report_handoff_controls SET enabled=0,updated_at=datetime('now') WHERE control_key='report_handoff' RETURNING control_key,enabled;" \
+            > "$RUNNER_TEMP/production-report-handoff-unverified-disable.json"
+          REPORT_HANDOFF_EXPECTED_ENABLED=false \
+            node scripts/release-db-evidence.mjs handoff-control production \
+              "$RUNNER_TEMP/production-report-handoff-unverified-disable.json" \
+              release-evidence/production/unverified-rollback-report-handoff-disabled.json
+
       - name: Roll back an unverified compatible production activation
         id: rollback_unverified
         if: >-
@@ -1193,32 +1619,89 @@ jobs:
       - name: Verify the exact production version after unverified rollback
         if: always() && steps.rollback_unverified.outcome == 'success'
         env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           EXPECT_PAID_CHECKOUT: "false"
+          LEGACY_WORKER_COMPAT: "true"
           GRIHAGRID_RELEASE_ID: ${{ steps.previous.outputs.previous_version }}
-        run: node scripts/wait-for-release.mjs "$ORIGIN" "$GRIHAGRID_RELEASE_ID" > release-evidence/production/unverified-deploy-rollback.json
+        run: |
+          set -euo pipefail
+          umask 077
+          node scripts/wait-for-release.mjs "$ORIGIN" "$GRIHAGRID_RELEASE_ID" \
+            > release-evidence/production/unverified-deploy-rollback.json
+          wrangler d1 execute DB --remote --env="" --json --command \
+            "SELECT control_key,enabled FROM report_handoff_controls ORDER BY control_key;" \
+            > "$RUNNER_TEMP/production-unverified-rollback-report-handoff-control.json"
+          REPORT_HANDOFF_EXPECTED_ENABLED=false \
+            node scripts/release-db-evidence.mjs handoff-control production \
+              "$RUNNER_TEMP/production-unverified-rollback-report-handoff-control.json" \
+              release-evidence/production/unverified-rollback-report-handoff-control.json
 
       - name: Wait for three exact production smoke samples
         id: propagation
         continue-on-error: true
         env:
           EXPECT_PAID_CHECKOUT: "false"
+          EXPECT_REPORT_HANDOFF: "false"
           GRIHAGRID_RELEASE_ORIGIN: ${{ env.ORIGIN }}
           GRIHAGRID_RELEASE_ID: ${{ steps.version.outputs.version_id }}
         run: node scripts/wait-for-release.mjs "$ORIGIN" "$GRIHAGRID_RELEASE_ID" | tee release-evidence/production/public-smoke.json
 
-      - name: Run production authenticated canary
+      - name: Run production authenticated canary under bounded handoff activation
         id: canary
         if: steps.propagation.outcome == 'success'
         continue-on-error: true
         env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           EXPECT_RELEASE_ID: ${{ steps.version.outputs.version_id }}
           GRIHAGRID_CANARY_EMAIL: ${{ secrets.GRIHAGRID_CANARY_EMAIL }}
           GRIHAGRID_CANARY_PASSWORD: ${{ secrets.GRIHAGRID_CANARY_PASSWORD }}
         run: |
           set -euo pipefail
+          umask 077
           test -n "$GRIHAGRID_CANARY_EMAIL"
           test -n "$GRIHAGRID_CANARY_PASSWORD"
-          node scripts/authenticated-smoke.mjs "$ORIGIN" | tee release-evidence/production/authenticated-smoke.json
+          reclose_report_handoff_after_canary() {
+            status=$?
+            trap - EXIT
+            set +e
+            env -u GRIHAGRID_CANARY_EMAIL -u GRIHAGRID_CANARY_PASSWORD \
+              wrangler d1 execute DB --remote --env="" --json --command \
+              "UPDATE report_handoff_controls SET enabled=0,updated_at=datetime('now') WHERE control_key='report_handoff' RETURNING control_key,enabled;" \
+              > "$RUNNER_TEMP/production-report-handoff-canary-reclose.json"
+            reclose_status=$?
+            if [ "$reclose_status" -eq 0 ]; then
+              env -u CLOUDFLARE_API_TOKEN -u CLOUDFLARE_ACCOUNT_ID \
+                -u GRIHAGRID_CANARY_EMAIL -u GRIHAGRID_CANARY_PASSWORD \
+                REPORT_HANDOFF_EXPECTED_ENABLED=false \
+                node scripts/release-db-evidence.mjs handoff-control production \
+                  "$RUNNER_TEMP/production-report-handoff-canary-reclose.json" \
+                  release-evidence/production/report-handoff-canary-reclosed.json
+              proof_status=$?
+            else
+              proof_status=1
+              echo "failed to re-close production report handoff after the authenticated canary" >&2
+            fi
+            if [ "$status" -eq 0 ] && { [ "$reclose_status" -ne 0 ] || [ "$proof_status" -ne 0 ]; }; then
+              status=1
+            fi
+            exit "$status"
+          }
+          trap reclose_report_handoff_after_canary EXIT
+          env -u GRIHAGRID_CANARY_EMAIL -u GRIHAGRID_CANARY_PASSWORD \
+            wrangler d1 execute DB --remote --env="" --json --command \
+            "UPDATE report_handoff_controls SET enabled=1,updated_at=datetime('now') WHERE control_key='report_handoff' RETURNING control_key,enabled;" \
+            > "$RUNNER_TEMP/production-report-handoff-canary-enable.json"
+          env -u CLOUDFLARE_API_TOKEN -u CLOUDFLARE_ACCOUNT_ID \
+            -u GRIHAGRID_CANARY_EMAIL -u GRIHAGRID_CANARY_PASSWORD \
+            REPORT_HANDOFF_EXPECTED_ENABLED=true \
+            node scripts/release-db-evidence.mjs handoff-control production \
+              "$RUNNER_TEMP/production-report-handoff-canary-enable.json" \
+              release-evidence/production/report-handoff-canary-enabled.json
+          env -u CLOUDFLARE_API_TOKEN -u CLOUDFLARE_ACCOUNT_ID \
+            node scripts/authenticated-smoke.mjs "$ORIGIN" \
+            | tee release-evidence/production/authenticated-smoke.json
 
       - name: Prove production canary left zero database residue
         id: residue
@@ -1242,9 +1725,155 @@ jobs:
             "$RUNNER_TEMP/production-canary-residue.json" \
             release-evidence/production/post-canary-residue-proof.json
 
+      - name: Prove production report handoff reclosed after authenticated canary
+        id: handoff_reclosed
+        if: always() && steps.canary.outcome != 'skipped'
+        continue-on-error: true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          EXPECTED_RELEASE_ID: ${{ steps.version.outputs.version_id }}
+        run: |
+          set -euo pipefail
+          umask 077
+          wrangler d1 execute DB --remote --env="" --json --command \
+            "SELECT control_key,enabled FROM report_handoff_controls ORDER BY control_key;" \
+            > "$RUNNER_TEMP/production-report-handoff-reclosed.json"
+          REPORT_HANDOFF_EXPECTED_ENABLED=false \
+            node scripts/release-db-evidence.mjs handoff-control production \
+              "$RUNNER_TEMP/production-report-handoff-reclosed.json" \
+              release-evidence/production/report-handoff-reclosed-control.json
+          node --input-type=module > release-evidence/production/report-handoff-disabled-http.json <<'NODE'
+          import assert from "node:assert/strict";
+          const origin = new URL(process.env.ORIGIN);
+          const request = async (path, init, expectedStatus) => {
+            const response = await fetch(new URL(path, origin), {
+              ...init,
+              redirect: "error",
+              signal: AbortSignal.timeout(15_000),
+            });
+            assert.equal(response.status, expectedStatus, `${path} returned ${response.status}`);
+            return response.json();
+          };
+          const readiness = await request("/api/readiness", {}, 200);
+          assert.equal(readiness.releaseId, process.env.EXPECTED_RELEASE_ID);
+          assert.equal(readiness.checks?.reportShareSchema, "current");
+          assert.equal(readiness.checks?.reportHandoffControl, "disabled");
+          assert.equal(readiness.checks?.reportShareAbuseHashing, "configured");
+          assert.equal(readiness.capabilities?.reportHandoff, false);
+          const redemption = await request("/api/shared/report", {
+            method: "POST",
+            headers: { "content-type": "application/json", origin: origin.origin },
+            body: JSON.stringify({ token: "A".repeat(43) }),
+          }, 503);
+          assert.equal(redemption.code, "report_handoff_disabled");
+          process.stdout.write(`${JSON.stringify({
+            checkedAt: new Date().toISOString(),
+            releaseId: readiness.releaseId,
+            control: readiness.checks.reportHandoffControl,
+            reportHandoff: readiness.capabilities.reportHandoff,
+            redemptionStatus: 503,
+            redemptionCode: redemption.code,
+          }, null, 2)}\n`);
+          NODE
+
+      - name: Restore and verify production report handoff control
+        id: handoff_restore
+        if: >-
+          always() &&
+          steps.canary.outcome == 'success' &&
+          steps.residue.outcome == 'success' &&
+          steps.handoff_reclosed.outcome == 'success'
+        continue-on-error: true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          EXPECTED_RELEASE_ID: ${{ steps.version.outputs.version_id }}
+        run: |
+          set -euo pipefail
+          umask 077
+          reclose_report_handoff_on_failure() {
+            status=$?
+            if [ "$status" -ne 0 ]; then
+              set +e
+              wrangler d1 execute DB --remote --env="" --json --command \
+                "UPDATE report_handoff_controls SET enabled=0,updated_at=datetime('now') WHERE control_key='report_handoff' RETURNING control_key,enabled;" \
+                > "$RUNNER_TEMP/production-report-handoff-restore-failure-disable.json"
+              reclose_status=$?
+              if [ "$reclose_status" -eq 0 ]; then
+                REPORT_HANDOFF_EXPECTED_ENABLED=false \
+                  node scripts/release-db-evidence.mjs handoff-control production \
+                    "$RUNNER_TEMP/production-report-handoff-restore-failure-disable.json" \
+                    release-evidence/production/report-handoff-restore-failure-control.json
+              else
+                echo "failed to re-close production report handoff after restoration proof failure" >&2
+              fi
+            fi
+            exit "$status"
+          }
+          trap reclose_report_handoff_on_failure EXIT
+          wrangler d1 execute DB --remote --env="" --json --command \
+            "UPDATE report_handoff_controls SET enabled=1,updated_at=datetime('now') WHERE control_key='report_handoff' RETURNING control_key,enabled;" \
+            > "$RUNNER_TEMP/production-report-handoff-enable.json"
+          REPORT_HANDOFF_EXPECTED_ENABLED=true \
+            node scripts/release-db-evidence.mjs handoff-control production \
+              "$RUNNER_TEMP/production-report-handoff-enable.json" \
+              release-evidence/production/report-handoff-enabled-control.json
+          node --input-type=module > release-evidence/production/report-handoff-enabled-http.json <<'NODE'
+          import assert from "node:assert/strict";
+          const origin = new URL(process.env.ORIGIN);
+          const request = async (path, init, expectedStatus) => {
+            const response = await fetch(new URL(path, origin), {
+              ...init,
+              redirect: "error",
+              signal: AbortSignal.timeout(15_000),
+            });
+            assert.equal(response.status, expectedStatus, `${path} returned ${response.status}`);
+            return response.json();
+          };
+          const readiness = await request("/api/readiness", {}, 200);
+          assert.equal(readiness.releaseId, process.env.EXPECTED_RELEASE_ID);
+          assert.equal(readiness.checks?.reportShareSchema, "current");
+          assert.equal(readiness.checks?.reportHandoffControl, "enabled");
+          assert.equal(readiness.checks?.reportShareAbuseHashing, "configured");
+          assert.equal(readiness.capabilities?.reportHandoff, true);
+          const redemption = await request("/api/shared/report", {
+            method: "POST",
+            headers: { "content-type": "application/json", origin: origin.origin },
+            body: JSON.stringify({ token: "A".repeat(43) }),
+          }, 404);
+          assert.equal(redemption.code, "report_share_not_found");
+          process.stdout.write(`${JSON.stringify({
+            checkedAt: new Date().toISOString(),
+            releaseId: readiness.releaseId,
+            control: readiness.checks.reportHandoffControl,
+            reportHandoff: readiness.capabilities.reportHandoff,
+            missingTokenStatus: 404,
+            missingTokenCode: redemption.code,
+          }, null, 2)}\n`);
+          NODE
+          trap - EXIT
+
+      - name: Record production post-canary report handoff counts
+        id: handoff_counts
+        if: steps.handoff_restore.outcome == 'success'
+        continue-on-error: true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          umask 077
+          wrangler d1 execute DB --remote --env="" --json --command \
+            "SELECT (SELECT COUNT(*) FROM report_shares) AS report_shares,(SELECT COUNT(*) FROM report_share_read_counters) AS report_share_read_counters,(SELECT COUNT(*) FROM report_share_create_counters) AS report_share_create_counters,(SELECT COUNT(*) FROM report_handoff_controls) AS report_handoff_controls,(SELECT COUNT(*) FROM report_handoff_controls WHERE control_key='report_handoff' AND enabled=1) AS enabled_report_handoff_controls;" \
+            > "$RUNNER_TEMP/production-post-canary-report-handoff-counts.json"
+          node scripts/release-db-evidence.mjs handoff-counts production \
+            "$RUNNER_TEMP/production-post-canary-report-handoff-counts.json" \
+            release-evidence/production/post-canary-report-handoff-counts.json
+
       - name: Observe the exact production version for 30 minutes
         id: observe
-        if: steps.residue.outcome == 'success'
+        if: steps.handoff_counts.outcome == 'success'
         continue-on-error: true
         env:
           CF_DEPLOY_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -1386,6 +2015,34 @@ jobs:
           if (regression || infrastructureFailure) process.exit(1);
           NODE
 
+      - name: Fail closed production report handoff before regression handling
+        id: handoff_fail_closed
+        if: >-
+          always() &&
+          steps.migrations.outcome == 'success' &&
+          (steps.version.outcome != 'success' ||
+           steps.propagation.outcome != 'success' ||
+           steps.canary.outcome != 'success' ||
+           steps.residue.outcome != 'success' ||
+           steps.handoff_reclosed.outcome != 'success' ||
+           steps.handoff_restore.outcome != 'success' ||
+           steps.handoff_counts.outcome != 'success' ||
+           steps.observe.outcome != 'success')
+        continue-on-error: true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          umask 077
+          wrangler d1 execute DB --remote --env="" --json --command \
+            "UPDATE report_handoff_controls SET enabled=0,updated_at=datetime('now') WHERE control_key='report_handoff' RETURNING control_key,enabled;" \
+            > "$RUNNER_TEMP/production-report-handoff-failure-disable.json"
+          REPORT_HANDOFF_EXPECTED_ENABLED=false \
+            node scripts/release-db-evidence.mjs handoff-control production \
+              "$RUNNER_TEMP/production-report-handoff-failure-disable.json" \
+              release-evidence/production/regression-report-handoff-disabled.json
+
       - name: Roll back a confirmed compatible production regression
         id: rollback_regression
         if: >-
@@ -1396,6 +2053,9 @@ jobs:
           (steps.propagation.outcome == 'failure' ||
            steps.canary.outcome == 'failure' ||
            steps.residue.outcome == 'failure' ||
+           steps.handoff_reclosed.outcome == 'failure' ||
+           steps.handoff_restore.outcome == 'failure' ||
+           steps.handoff_counts.outcome == 'failure' ||
            steps.observe.outputs.public_regression == 'true' ||
            steps.observe.outputs.tail_regression == 'true' ||
            steps.observe.outputs.regression == 'true')
@@ -1410,9 +2070,23 @@ jobs:
       - name: Verify the exact production version after regression rollback
         if: always() && steps.rollback_regression.outcome == 'success'
         env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           EXPECT_PAID_CHECKOUT: "false"
+          LEGACY_WORKER_COMPAT: "true"
           GRIHAGRID_RELEASE_ID: ${{ steps.previous.outputs.previous_version }}
-        run: node scripts/wait-for-release.mjs "$ORIGIN" "$GRIHAGRID_RELEASE_ID" > release-evidence/production/regression-rollback.json
+        run: |
+          set -euo pipefail
+          umask 077
+          node scripts/wait-for-release.mjs "$ORIGIN" "$GRIHAGRID_RELEASE_ID" \
+            > release-evidence/production/regression-rollback.json
+          wrangler d1 execute DB --remote --env="" --json --command \
+            "SELECT control_key,enabled FROM report_handoff_controls ORDER BY control_key;" \
+            > "$RUNNER_TEMP/production-regression-rollback-report-handoff-control.json"
+          REPORT_HANDOFF_EXPECTED_ENABLED=false \
+            node scripts/release-db-evidence.mjs handoff-control production \
+              "$RUNNER_TEMP/production-regression-rollback-report-handoff-control.json" \
+              release-evidence/production/regression-rollback-report-handoff-control.json
 
       - name: Fail closed after a production release or monitoring failure
         if: >-
@@ -1420,7 +2094,11 @@ jobs:
           (steps.propagation.outcome == 'failure' ||
            steps.canary.outcome == 'failure' ||
            steps.residue.outcome == 'failure' ||
-           steps.observe.outcome == 'failure')
+           steps.handoff_reclosed.outcome == 'failure' ||
+           steps.handoff_restore.outcome == 'failure' ||
+           steps.handoff_counts.outcome == 'failure' ||
+           steps.observe.outcome == 'failure' ||
+           steps.handoff_fail_closed.outcome == 'failure')
         run: exit 1
 
       - name: Remove production backup material from the runner
@@ -1443,6 +2121,19 @@ jobs:
             "$RUNNER_TEMP/production-post-migration-feedback-count.json" \
             "$RUNNER_TEMP/production-post-migration-report-share-count.json" \
             "$RUNNER_TEMP/production-post-migration-report-share-read-counter-count.json" \
+            "$RUNNER_TEMP/production-post-migration-report-share-create-counter-count.json" \
+            "$RUNNER_TEMP/production-post-migration-report-handoff-control.json" \
+            "$RUNNER_TEMP/production-report-handoff-pre-activation-close.json" \
+            "$RUNNER_TEMP/production-report-handoff-canary-enable.json" \
+            "$RUNNER_TEMP/production-report-handoff-canary-reclose.json" \
+            "$RUNNER_TEMP/production-report-handoff-reclosed.json" \
+            "$RUNNER_TEMP/production-report-handoff-enable.json" \
+            "$RUNNER_TEMP/production-report-handoff-restore-failure-disable.json" \
+            "$RUNNER_TEMP/production-report-handoff-unverified-disable.json" \
+            "$RUNNER_TEMP/production-unverified-rollback-report-handoff-control.json" \
+            "$RUNNER_TEMP/production-report-handoff-failure-disable.json" \
+            "$RUNNER_TEMP/production-regression-rollback-report-handoff-control.json" \
+            "$RUNNER_TEMP/production-post-canary-report-handoff-counts.json" \
             "$RUNNER_TEMP/production-rollback-residue.sql" \
             "$RUNNER_TEMP/production-rollback-residue.json" \
             "$RUNNER_TEMP/production-canary-residue.sql" \

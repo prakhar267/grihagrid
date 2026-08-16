@@ -158,11 +158,16 @@ interleaved within their own real-D1 fixtures.
   cross-owner `404`, malformed/missing public `404`, closed-link `410`, project
   cascade, and create/delete/revoke races. Parallel same-IP public reads must be
   capped by the strongly consistent D1 admission counter before bearer lookup,
-  with only a digest stored. Public reads must omit session cookies
-  and expose exactly expiry, schema/generated time, and the selected redacted
+  with only an hourly keyed pseudonym stored. Cross-origin `text/plain`, invalid
+  JSON/token shapes and streamed bodies over 512 bytes must consume no admission;
+  a malformed/missing HMAC key must fail closed. Repeated create/revoke churn and
+  parallel distinct idempotency keys must admit at most 20 creations per account
+  per 24-hour window. Public reads must omit session cookies
+  and expose exactly expiry and the selected redacted
   sections—never account/project/share IDs, inputs, feedback, AI, files, orders,
   hashes or unselected fields. Logs/referrers/analytics/artifacts must contain no
-  bearer token or raw URL.
+  bearer token or raw URL. Disabling the D1 handoff control must block create and
+  redemption while list/revoke remain available; re-enable must restore capability.
 - Revision side effects: saving a revision permanently closes active Family
   rooms, while old comparisons, choices, orders and purchased snapshots remain
   byte-for-byte unchanged and are not presented as current. Paid, upload,
@@ -442,10 +447,11 @@ interleaved within their own real-D1 fixtures.
 | Exact source | Share current and historical schema-v2 reports, then change the project | Each link remains pinned to its original immutable revision/content hash; v1 and nonexistent reports are rejected |
 | Redaction | Select every allowed subset and inspect API, page, print, network and browser storage | Only selected public sections appear; no account/project/share identity, input, feedback, AI, file, order, hash or unselected section leaks |
 | Secret lifecycle | Create, replay, copy, refresh, print, revoke and revisit after closure | Fragment URL appears only on first `201`, never on replay/list; no HTTP/referrer/NEL/print URL contains the token; revoked/expired POSTs are `410`; malformed/missing values are indistinguishable `404` |
-| Ownership and abuse | Repeat as another owner, from foreign/missing origin/CSRF, with missing/failing KV, 121 concurrent same-IP reads, six active links, and more than 50 closed history rows | Owner routes are isolation-safe; writes fail closed; D1 admits exactly 120 reads before lookup; SQL prevents a sixth active link; every active link remains listed and revocable |
-| Retention | Seed active, recent closed and over-90-day expired/revoked rows, then run scheduled maintenance | Only retention-eligible closed rows are removed; active/recent links and source projects/reports remain unchanged |
+| Ownership and abuse | Repeat as another owner, from foreign/missing origin/CSRF, with wrong MIME/oversize body, missing/failing KV/HMAC, 121 concurrent same-IP reads, 21 create/revoke cycles, six active links, and more than 50 closed history rows | Invalid public requests consume no admission; owner routes are isolation-safe; D1 admits exactly 120 reads and 20 creates; SQL prevents a sixth active link; every active link remains listed and revocable |
+| Kill switch | Disable, list/revoke, attempt create/read, re-enable and read readiness throughout | Create/read fail closed while disabled; list/revoke remain safe; capability flips false/true without a deploy |
+| Retention | Seed active, recent closed and over-90-day expired/revoked rows plus old read/create counters, then run scheduled maintenance and inspect the query plan | Only retention-eligible rows are removed; cleanup uses expiry and partial revoked indexes; active/recent links and source projects/reports remain unchanged |
 | Accessibility | Keyboard, screen reader, 390 px, 200% zoom/text spacing, high contrast, reduced motion and print | Section/expiry controls, one-time secret warning, status/errors and revoke action are named, announced, focused and overflow-free |
-| Operations | Inspect `0016`, readiness, current/legacy canaries, raw logs and D1 residue | Required table/columns/indexes/triggers exist; `reportShareSchema=current`, `reportHandoff=true`; token-free templated logs; exact-project residue is zero; rollback is compatibility-gated |
+| Operations | Inspect `0016`, readiness, HMAC key state, default-disabled propagation, bounded trap-protected activation, current/legacy canaries, final restoration, counts, raw logs and D1 residue | Four tables, five indexes, five triggers and one disabled control exist; the exact Worker propagates with `reportHandoff=false`; the canary EXIT trap re-closes on success/failure; residue and public `503` pass while closed; only final restoration produces `reportHandoff=true`; token-free templated logs and compatibility-gated rollback remain intact |
 
 ## Required release evidence
 
@@ -480,8 +486,10 @@ Attach to the release record, without secrets or customer data:
 - Professional Handoff exact-report/section fixtures, one-time-secret replay,
   owner/CSRF/origin/KV/cap/race evidence, public redaction diff, revoke/expiry
   `410`, token/referrer/log canaries, 90-day scheduled-retention proof,
-  `0016` schema/readiness inventory, current and legacy canary evidence,
-  exact-ID `report_shares` cleanup, and keyboard/screen-reader/reflow/print results;
+  `0016` four-table/five-index/five-trigger/default-disabled inventory,
+  closed exact-version propagation, trap-protected current canary and legacy
+  canary evidence, closed-state `503`, exact-ID `report_shares` cleanup, final
+  verified activation, and keyboard/screen-reader/reflow/print results;
 - account-security strict-schema/origin/CSRF/KV fixtures, old-password and
   pre-change-bearer rejection, concurrent-change and stale-login race evidence,
   D1 rollback injection, populated migration/old-Worker compatibility, bounded

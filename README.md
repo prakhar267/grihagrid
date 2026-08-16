@@ -77,7 +77,8 @@ The public calculator, authentication, private projects, deterministic report, s
 
 Professional Handoff creates a revocable, expiring bearer link to only the
 owner-selected sections of one immutable schema-v2 report. It exposes no account
-or project workspace and never represents professional approval; see
+or project workspace, never represents professional approval, and fails closed
+behind a dynamic D1 operations switch plus a keyed abuse-control secret; see
 `docs/report-handoff.md`.
 
 The estimator-to-account journey also uses a stable, user-scoped project-create

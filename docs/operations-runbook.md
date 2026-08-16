@@ -35,9 +35,9 @@ The Worker currently reads these runtime values:
 - Non-secret configuration: `APP_ENV`, `APP_ORIGIN`, `GEMINI_MODEL`,
   `PAID_CHECKOUT_ENABLED`, `DECISION_COMPARE_FULFILLMENT_ENABLED`,
   `ENABLED_PAYMENT_PLANS`, and optional comma-separated `ALLOWED_ORIGINS`.
-- Secrets: `GEMINI_API_KEY`, `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, and
-  `RAZORPAY_WEBHOOK_SECRET`; `METRICS_READ_TOKEN` protects private aggregate
-  product metrics.
+- Secrets: `GEMINI_API_KEY`, `REPORT_SHARE_ABUSE_HMAC_KEY`,
+  `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, and `RAZORPAY_WEBHOOK_SECRET`;
+  `METRICS_READ_TOKEN` protects private aggregate product metrics.
 
 ## 2. Ownership and incident authority
 
@@ -110,6 +110,7 @@ npx wrangler secret put RAZORPAY_KEY_SECRET --env=""
 npx wrangler secret put RAZORPAY_WEBHOOK_SECRET --env=""
 npx wrangler secret put GEMINI_API_KEY --env=""
 npx wrangler secret put METRICS_READ_TOKEN --env=""
+npx wrangler secret put REPORT_SHARE_ABUSE_HMAC_KEY --env=""
 npx wrangler secret list --env=""
 
 # Use distinct test-mode values in staging; never copy production secrets.
@@ -118,6 +119,7 @@ npx wrangler secret put RAZORPAY_KEY_SECRET --env staging
 npx wrangler secret put RAZORPAY_WEBHOOK_SECRET --env staging
 npx wrangler secret put GEMINI_API_KEY --env staging
 npx wrangler secret put METRICS_READ_TOKEN --env staging
+npx wrangler secret put REPORT_SHARE_ABUSE_HMAC_KEY --env staging
 npx wrangler secret list --env staging
 ```
 
@@ -296,7 +298,8 @@ Migrations currently run in this order:
 16. `0016_report_handoff_links.sql`: owner-scoped, version-bound Professional
     Handoff bearer links; selected-section/content-hash binding; one-time token
     and idempotency digests; expiry/revocation metadata; owner/expiry indexes;
-    section, immutability, archive and five-active-link D1 guards.
+    section, immutability, archive and five-active-link D1 guards; an insert-time
+    enabled-control fence; and a single operations control that starts disabled.
 
 Each schema-and-Worker release is one ordered change: audit and back up D1,
 apply the migration, verify the expanded schema and its compatibility with the
@@ -375,16 +378,38 @@ report `reportFeedbackSchema=current`, `projectCreationSchema=current`,
 `authSchema=current`, `reportFeedback=true`, and `accountSecurity=true` while
 every paid and upload control remains closed.
 
-For `0016`, require newly created `report_shares` and
-`report_share_read_counters` tables to be empty and record both counts even on
-later releases. Verify all expected columns, both `idx_report_shares_*`
-indexes, `idx_report_share_read_counters_updated`, and the four named
-`report_share_*`/archived triggers. `PRAGMA foreign_key_check` must stay empty
+For `0016`, require newly created `report_shares`,
+`report_share_read_counters`, and `report_share_create_counters` tables to be
+empty and record all three counts even on later releases. Require exactly one
+disabled `report_handoff_controls` row immediately after a new migration. On a
+later release, automation must explicitly close the existing row before the
+candidate activation. Verify all expected columns,
+`idx_report_shares_owner_created`, `idx_report_shares_expiry`, the partial
+`idx_report_shares_revoked`, both counter-retention indexes, and all five named
+handoff triggers, including `report_handoff_enabled_insert_guard`.
+`PRAGMA foreign_key_check` must stay empty
 and canonical protected counts/hashes must not change. Readiness must report
-`reportShareSchema=current` and `reportHandoff=true`; paid checkout, paid
-fulfillment and uploads remain closed. Raw schema/count query files are mode
-0600 and must be deleted unconditionally from the runner after bounded evidence
-is produced.
+`reportShareSchema=current`, `reportHandoffControl=disabled`,
+`reportShareAbuseHashing=configured`, and `reportHandoff=false` during initial
+exact-version propagation; paid checkout, paid fulfillment and uploads remain
+closed. Each environment's 64-hex
+`REPORT_SHARE_ABUSE_HMAC_KEY` must be generated independently and entered only
+through the secret prompt. Raw schema/count query files are mode 0600 and must
+be deleted unconditionally from the runner after bounded evidence is produced.
+
+Keep the D1 switch closed through three exact candidate-version public smoke
+samples. The authenticated canary step may then enable `report_handoff` only
+inside one bounded shell scope with an EXIT trap that always writes and verifies
+disabled state, regardless of canary success or failure. After the canary,
+verify exact-ID cleanup, read the already-closed row without masking a failed
+trap, require readiness capability false and a structurally valid nonexistent
+bearer request to return `503 report_handoff_disabled`. Only when propagation,
+canary, residue and closed-state evidence all pass may the final restoration
+enable the row; that restoration has its own failure trap, and must require
+capability true plus `404 report_share_not_found`. Any failed or skipped gate
+leaves the switch closed and enters the compatibility-gated rollback path.
+Record only bounded aggregate row counts for shares, read counters, create
+counters and enabled control state after final restoration.
 
 Password change uses KV only as the fail-closed IP perimeter. The authoritative
 five-attempt account limit is one conditional D1 UPSERT per fixed 15-minute
@@ -516,15 +541,22 @@ Then use the dedicated production canary account to verify:
    `404`, archived read/blocked-write, aggregate-only metrics, and exact cascade
    cleanup. Confirm a saved schema-v1 artifact renders only its persisted legacy
    bytes and exposes no feedback UI or API write path.
-5. When `0016` is in the release, require readiness
-   `reportShareSchema=current`/`reportHandoff=true`; create a 1-day share for
-   the exact canary revision with only overview, risks and next actions; require
+5. When `0016` is in the release, first require three exact-version readiness
+   samples with `reportShareSchema=current`, `reportHandoffControl=disabled`,
+   `reportShareAbuseHashing=configured`, and `reportHandoff=false`. Inside the
+   bounded, trap-protected canary activation, require the control enabled and
+   `reportHandoff=true`; create a 1-day share for the exact canary revision with
+   only overview, risks and next actions; require
    the returned URL to have exact path `/share/report` and a valid capability
    fragment without printing it; POST that capability to the constant public
    API with no session cookie and prove only those sections appear; revoke, require `410`,
    and retain no token/raw URL in evidence. The final direct D1 query for the
    exact canary project IDs must report zero `report_shares` after project
-   deletion, even when the canary failed before normal revoke.
+   deletion, even when the canary failed before normal revoke. Prove the canary
+   EXIT trap reclosed the control and public redemption returns `503`; only then
+   perform the final fail-closed restore, require missing-token `404`, and
+   capture bounded post-canary row counts. Never emit the bearer, raw URL, IP
+   pseudonym, account, or project ID.
 6. Generate one sanitized AI brief, read the cached copy, and delete the project;
    confirm the provider is called only once and no synthetic rows remain.
 7. Create exactly two canary scenarios, issue/read a comparison under a test
@@ -662,7 +694,7 @@ weeks of real traffic.
 | Family Alignment active-room availability | 99.9% | Valid owner create/summary and bearer public-read/response synthetics, excluding deliberate validation/rate-limit `4xx` |
 | Family Alignment privacy and capacity | 100%; zero tolerance | Redaction/log canaries, cross-owner/token negative tests, at most one room per comparison and five receipts per room |
 | Family Alignment retention | 99% within 24 h after the 90-day closed-room boundary | D1 expiry/revocation query and successful scheduled cleanup |
-| Professional Handoff privacy and closure | 100%; zero tolerance | Selected-section redaction, fragment/print/log canaries, atomic D1 read admission, active-link discovery, owner isolation, revoke/expiry `410` and immutable-source tests |
+| Professional Handoff privacy and closure | 100%; zero tolerance | Selected-section redaction, fragment/print/log canaries, keyed atomic D1 read admission, 20/day create admission, kill-switch exercise, active-link discovery, owner isolation, revoke/expiry `410` and immutable-source tests |
 | Professional Handoff retention | 99% within 24 h after the 90-day closed-link boundary | D1 expiry/revocation query and successful scheduled cleanup |
 | Session cleanup | 99% within 24 h after expiry | D1 expiry query and cron invocation logs |
 | Backup recovery | RPO 24 h; RTO 4 h | Last verified backup and quarterly restore drill |
@@ -679,7 +711,8 @@ Page the on-call for:
 - any Professional Handoff token/raw URL in logs, analytics, referrers or
   release evidence; any unselected/private field in a public response; access
   after revoke/expiry; a sixth active link; or a link retargeted away from its
-  immutable report revision;
+  immutable report revision; any missing/malformed abuse HMAC secret; or a
+  handoff control whose state cannot be read or safely changed;
 - any fabricated/missing revision, two winners for one source revision, report
   served for the wrong source/schema, migrated v1 treated as current v2,
   revision that rewrites purchased/financial evidence, or Family response
@@ -889,7 +922,7 @@ claiming account deletion is complete.
 
 ## 10. Cron verification
 
-The scheduled handler performs ten bounded operations:
+The scheduled handler performs eleven bounded operations:
 
 ```sql
 DELETE FROM sessions WHERE expires_at < datetime('now');
@@ -909,6 +942,8 @@ DELETE FROM report_shares
  WHERE expires_at < datetime('now','-90 days')
     OR (revoked_at IS NOT NULL AND revoked_at < datetime('now','-90 days'));
 DELETE FROM report_share_read_counters
+ WHERE updated_at < datetime('now','-2 days');
+DELETE FROM report_share_create_counters
  WHERE updated_at < datetime('now','-2 days');
 DELETE FROM product_event_aggregates WHERE event_day < date('now','-400 days');
 ```
@@ -939,12 +974,15 @@ remove the production trigger or attach staging to production D1 as a shortcut.
           OR (revoked_at IS NOT NULL AND revoked_at < datetime('now','-90 days'));
       SELECT COUNT(*) AS old_report_share_read_counters
        FROM report_share_read_counters
+       WHERE updated_at < datetime('now','-2 days');
+      SELECT COUNT(*) AS old_report_share_create_counters
+       FROM report_share_create_counters
        WHERE updated_at < datetime('now','-2 days');"
    ```
 
 4. Deliberately expired synthetic sessions, checkout links, AI leases and
-   retention-eligible Family Alignment rooms/report shares and old hashed
-   report-read counters in staging are removed by a tested scheduled
+   retention-eligible Family Alignment rooms/report shares and old pseudonymous
+   read/create counters in staging are removed by a tested scheduled
    invocation; recent counters and active/recent rooms/links remain.
 5. Before/after fixture counts prove each removed Family Alignment room's
    responses cascade while its project, comparison, owner selection, purchased
@@ -1115,15 +1153,19 @@ Keep the rollback window quiet, keep paid/upload controls closed, and require a
 fresh login after roll-forward. Never remove the columns or weaken the guards.
 
 Migration `0016` is additive and readable by the previous Worker, which neither
-queries nor writes `report_shares`. The reviewed current harness therefore skips
-new readiness/share calls in legacy mode but must still complete old-Worker
+queries nor writes the new handoff tables. The reviewed current harness therefore skips
+new handoff document/readiness/share calls in `LEGACY_WORKER_COMPAT=true` mode but must still complete old-Worker
 authentication, project/report CRUD, exact project cleanup and session
 revocation against the expanded schema. Automatic rollback is eligible only
-when the direct exact-ID residue proof—including `report_shares`—passes. The old
+when the direct exact-ID residue proof—including `report_shares`—passes. The D1
+handoff control should remain disabled throughout any rollback window. The old
 Worker cannot serve or create Professional Handoff links; restore the current
-Worker and require `reportShareSchema=current`/`reportHandoff=true` before
-reopening that surface. Never drop the table or rewrite migration history to
-make an older Worker appear compatible.
+Worker, prove its exact version while the control is still disabled, repeat the
+bounded trap-protected canary and residue/closed-state gates, and only then run
+the independently verified final enable. Require `reportShareSchema=current`,
+`reportShareAbuseHashing=configured`, and `reportHandoff=true` before reopening
+that surface. Never drop the table or rewrite migration history to make an older
+Worker appear compatible.
 
 ```sql
 SELECT p.id,p.input_revision,MAX(r.revision) AS stored_revision

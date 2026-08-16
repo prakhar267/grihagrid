@@ -185,6 +185,7 @@ test("Project Home lifecycle follows the authoritative core-stage precedence", a
     assert.equal(result.lifecycle.completedCoreSteps, item.completed, item.name);
     assert.equal(result.lifecycle.totalCoreSteps, 3, item.name);
     assert.equal(result.lifecycle.nextAction.code, item.action, item.name);
+    if (item.action === "open_handoff") assert.equal(result.lifecycle.nextAction.target, "report", item.name);
     assert.deepEqual(result.lifecycle.steps.map((step) => step.id), ["feasibility", "comparison", "family", "direction"]);
     const currentSteps = result.lifecycle.steps.filter((step) => step.status === "current").map((step) => step.id);
     assert.deepEqual(currentSteps, item.currentStep ? [item.currentStep] : [], `${item.name}: single-current semantics`);

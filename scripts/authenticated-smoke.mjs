@@ -159,6 +159,8 @@ export async function runAuthenticatedSmoke(rawOrigin, credentials, options = {}
       assert.equal(readiness?.checks?.authSchema, "current", "authenticated canary requires account-security schema to be current");
       assert.equal(readiness?.capabilities?.accountSecurity, true, "authenticated canary requires account security to be ready");
       assert.equal(readiness?.checks?.reportShareSchema, "current", "authenticated canary requires report-share schema to be current");
+      assert.equal(readiness?.checks?.reportHandoffControl, "enabled", "authenticated canary requires the report-handoff control to be enabled");
+      assert.equal(readiness?.checks?.reportShareAbuseHashing, "configured", "authenticated canary requires report-share abuse hashing");
       assert.equal(readiness?.capabilities?.reportHandoff, true, "authenticated canary requires professional report handoff to be ready");
     }
 
@@ -285,15 +287,10 @@ export async function runAuthenticatedSmoke(rawOrigin, credentials, options = {}
         anonymous: true,
         body: JSON.stringify({ token: reportShareToken }),
       });
-      assert.deepEqual(Object.keys(publicShare?.share || {}).sort(), ["expiresAt", "report"], "public handoff exposed owner metadata");
+      assert.deepEqual(Object.keys(publicShare?.share || {}).sort(), ["expiresAt", "sections"], "public handoff exposed owner metadata or report internals");
+      assert.equal(publicShare?.share?.expiresAt, reportShare?.expiresAt, "public handoff changed the share expiry");
       assert.deepEqual(
-        Object.keys(publicShare?.share?.report || {}).sort(),
-        ["generatedAt", "schemaVersion", "sections"],
-        "public handoff exposed report internals outside the redacted envelope",
-      );
-      assert.equal(publicShare?.share?.report?.schemaVersion, reportSchemaVersion, "public handoff changed the report schema version");
-      assert.deepEqual(
-        Object.keys(publicShare?.share?.report?.sections || {}).sort(),
+        Object.keys(publicShare?.share?.sections || {}).sort(),
         ["nextActions", "overview", "risks"],
         "public handoff did not enforce the selected-section allowlist",
       );

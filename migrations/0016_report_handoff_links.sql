@@ -41,11 +41,13 @@ CREATE INDEX idx_report_shares_owner_created
   ON report_shares(user_id,project_id,created_at DESC,id DESC);
 CREATE INDEX idx_report_shares_expiry
   ON report_shares(expires_at,revoked_at);
+CREATE INDEX idx_report_shares_revoked
+  ON report_shares(revoked_at) WHERE revoked_at IS NOT NULL;
 
 -- The public bearer endpoint retains the KV perimeter and also uses this
--- strongly consistent hourly admission counter. The subject is a SHA-256
--- digest of the request IP with a fixed domain separator; raw IPs and bearer
--- tokens are never stored here.
+-- strongly consistent hourly admission counter. The subject is a keyed HMAC
+-- over the hour and request IP; raw IPs and bearer tokens are never stored,
+-- and the pseudonym cannot be linked across hourly windows.
 CREATE TABLE report_share_read_counters (
   subject_hash TEXT NOT NULL
     CHECK(length(subject_hash) = 64)
@@ -59,6 +61,46 @@ CREATE TABLE report_share_read_counters (
 
 CREATE INDEX idx_report_share_read_counters_updated
   ON report_share_read_counters(updated_at);
+
+-- A strongly consistent account quota bounds create/revoke churn even when
+-- eventually consistent KV increments race. Replays are reconciled before this
+-- admission is consumed, and account deletion cascades its quota rows.
+CREATE TABLE report_share_create_counters (
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  window_start TEXT NOT NULL CHECK(datetime(window_start) IS NOT NULL),
+  request_count INTEGER NOT NULL CHECK(request_count BETWEEN 1 AND limit_count),
+  limit_count INTEGER NOT NULL CHECK(limit_count BETWEEN 1 AND 20),
+  updated_at TEXT NOT NULL CHECK(datetime(updated_at) IS NOT NULL),
+  PRIMARY KEY(user_id,window_start)
+);
+
+CREATE INDEX idx_report_share_create_counters_updated
+  ON report_share_create_counters(updated_at);
+
+-- Operations can stop new external sharing and public redemption immediately
+-- with one D1 update, without a Worker deploy. Listing and revocation remain
+-- available while this switch is closed. Missing or malformed state fails shut.
+CREATE TABLE report_handoff_controls (
+  control_key TEXT PRIMARY KEY CHECK(control_key = 'report_handoff'),
+  enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),
+  updated_at TEXT NOT NULL CHECK(datetime(updated_at) IS NOT NULL)
+);
+
+INSERT INTO report_handoff_controls(control_key,enabled,updated_at)
+VALUES ('report_handoff',0,datetime('now'));
+
+-- The control check that precedes a create request is only an early rejection.
+-- This trigger is the write-time linearization point: once an operations
+-- disable commits, no later report-share insert can cross it.
+CREATE TRIGGER report_handoff_enabled_insert_guard
+BEFORE INSERT ON report_shares
+WHEN NOT EXISTS (
+  SELECT 1 FROM report_handoff_controls
+   WHERE control_key='report_handoff' AND enabled=1
+)
+BEGIN
+  SELECT RAISE(ABORT, 'report handoff is disabled');
+END;
 
 -- The source and selected sections are checked again at SQL time. Historical
 -- schema-v2 revisions remain intentionally shareable while their project is

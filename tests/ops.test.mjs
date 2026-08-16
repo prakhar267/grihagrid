@@ -22,6 +22,8 @@ test("read-only smoke verifies health, readiness, estimate and fail-closed catal
   const originalFetch = globalThis.fetch;
   const requested = [];
   let readinessAttempts = 0;
+  let legacyReadiness = false;
+  let handoffEnabled = true;
   const securityHeaders = {
     "strict-transport-security": "max-age=31536000; includeSubDomains",
     "x-content-type-options": "nosniff",
@@ -56,8 +58,29 @@ test("read-only smoke verifies health, readiness, estimate and fail-closed catal
       return Response.json({
         status: "ready",
         releaseId: "11111111-1111-4111-8111-111111111111",
-        checks: { familyAlignmentSchema: "current", reportFeedbackSchema: "current", reportShareSchema: "current", projectCreationSchema: "current", authSchema: "current", privateStorage: "unavailable", acceptingPaidPlans: [] },
-        capabilities: { freePlanning: true, familyAlignment: true, reportFeedback: true, reportHandoff: true, accountSecurity: true, privateUploads: false, paidCheckout: false, paidFulfillment: false },
+        checks: {
+          familyAlignmentSchema: "current",
+          reportFeedbackSchema: "current",
+          ...(legacyReadiness ? {} : {
+            reportShareSchema: "current",
+            reportHandoffControl: handoffEnabled ? "enabled" : "disabled",
+            reportShareAbuseHashing: "configured",
+          }),
+          projectCreationSchema: "current",
+          authSchema: "current",
+          privateStorage: "unavailable",
+          acceptingPaidPlans: [],
+        },
+        capabilities: {
+          freePlanning: true,
+          familyAlignment: true,
+          reportFeedback: true,
+          ...(legacyReadiness ? {} : { reportHandoff: handoffEnabled }),
+          accountSecurity: true,
+          privateUploads: false,
+          paidCheckout: false,
+          paidFulfillment: false,
+        },
         time: new Date().toISOString(),
       }, { headers: { ...securityHeaders, "cache-control": "no-store" } });
     }
@@ -114,6 +137,27 @@ test("read-only smoke verifies health, readiness, estimate and fail-closed catal
       { path: "/api/estimate", method: "POST" },
       { path: "/api/commerce/catalog", method: "GET" },
     ]);
+
+    requested.length = 0;
+    readinessAttempts = 0;
+    handoffEnabled = false;
+    const closed = await runSmoke("https://worker.example.test", {
+      expectedReleaseId: "11111111-1111-4111-8111-111111111111",
+      expectReportHandoff: false,
+    });
+    assert.equal(closed.expectReportHandoff, false);
+    assert.equal(closed.checks.length, 7);
+
+    requested.length = 0;
+    readinessAttempts = 0;
+    legacyReadiness = true;
+    const legacy = await runSmoke("https://worker.example.test", {
+      expectedReleaseId: "11111111-1111-4111-8111-111111111111",
+      legacyWorker: true,
+    });
+    assert.equal(legacy.legacyWorker, true);
+    assert.equal(legacy.checks.length, 5);
+    assert.equal(requested.some((request) => request.path === "/share/report"), false);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -223,5 +267,9 @@ test("scheduled hygiene retains active report handoffs and deletes only 90-day e
   assert.equal(
     statements.find((sql) => sql.includes("DELETE FROM report_share_read_counters")),
     "DELETE FROM report_share_read_counters WHERE updated_at<datetime('now','-2 days')",
+  );
+  assert.equal(
+    statements.find((sql) => sql.includes("DELETE FROM report_share_create_counters")),
+    "DELETE FROM report_share_create_counters WHERE updated_at<datetime('now','-2 days')",
   );
 });

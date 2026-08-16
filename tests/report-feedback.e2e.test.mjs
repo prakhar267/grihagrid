@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const wranglerCli = path.join(root, "node_modules", "wrangler", "bin", "wrangler.js");
 const metricsToken = "report-feedback-e2e-metrics-token-2026";
+const reportShareAbuseHmacKey = "ab".repeat(32);
 
 function reservePort() {
   return new Promise((resolve, reject) => {
@@ -53,6 +54,8 @@ async function startWorker(stateDirectory, assetsDirectory, port) {
     "APP_ENV:test",
     "--var",
     "APP_ORIGIN:https://app.example.test",
+    "--var",
+    `REPORT_SHARE_ABUSE_HMAC_KEY:${reportShareAbuseHmacKey}`,
     "--var",
     "PAID_CHECKOUT_ENABLED:false",
     "--var",
@@ -359,9 +362,11 @@ test("report feedback is exact, private, immutable-report-safe, and observable o
     assert.equal(readiness.payload.status, "ready");
     assert.equal(readiness.payload.checks.reportFeedbackSchema, "current");
     assert.equal(readiness.payload.checks.reportShareSchema, "current");
+    assert.equal(readiness.payload.checks.reportHandoffControl, "disabled");
+    assert.equal(readiness.payload.checks.reportShareAbuseHashing, "configured");
     assert.equal(readiness.payload.checks.projectCreationSchema, "current");
     assert.equal(readiness.payload.capabilities.reportFeedback, true);
-    assert.equal(readiness.payload.capabilities.reportHandoff, true);
+    assert.equal(readiness.payload.capabilities.reportHandoff, false);
 
     const owner = await register(server.origin, "primary");
     const other = await register(server.origin, "other");

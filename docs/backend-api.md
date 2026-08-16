@@ -31,6 +31,10 @@ are only streamed after a D1 ownership check.
    API from the same origin. Canonical bearer URLs require HTTPS in every
    deployed environment; only `APP_ENV=test` may use exact HTTP loopback hosts
    (`127.0.0.1`, `localhost`, or `[::1]`) for local end-to-end testing.
+5. Generate a different cryptographically random 32-byte value for each
+   environment, hex-encode it, and enter it interactively as the
+   `REPORT_SHARE_ABUSE_HMAC_KEY` Worker secret. Never place the value in
+   `wrangler.toml`, shell history, logs, or release artifacts.
 
 Decision Compare does not require R2. Paid checkout additionally requires
 Razorpay key ID/secret, webhook secret, KV, an exact HTTPS `APP_ORIGIN`, and all
@@ -130,7 +134,8 @@ abuse control are ready; `capabilities.reportFeedback` is true only when the
 separate feedback table, its owner/archive guards, the project-input
 allowlist/account ceiling, and KV abuse control are ready;
 `capabilities.reportHandoff` is true only when `reportShareSchema=current`, the
-four report-share guards and both indexes exist, and KV abuse control is ready;
+five report-handoff guards and all five indexes exist, the D1 operations control
+is enabled, and KV abuse control is ready;
 unavailable optional capabilities do not
 make the free product unready. Returns `503 status=not_ready` if a required
 free-product dependency is absent or unhealthy.
@@ -869,8 +874,9 @@ a statutory drawing, engineering design, contractor quote, or permit approval.
   irrevocable. It never returns a bearer token, token hash, content hash, request
   hash, idempotency digest, or reusable URL.
 - `POST /api/projects/:projectId/report-shares` requires trusted origin, session,
-  owner scope, CSRF, KV abuse control, an active project and a bounded
-  `Idempotency-Key`. The exact body is:
+  owner scope, CSRF, KV abuse control, the enabled D1 handoff switch, an active
+  project and a bounded `Idempotency-Key`. A strongly consistent D1 counter
+  admits at most 20 new links per account per fixed 24-hour window. The exact body is:
 
   ```json
   {
@@ -893,21 +899,18 @@ a statutory drawing, engineering design, contractor quote, or permit approval.
   trusted-origin and CSRF-protected. It revokes monotonically and returns empty
   `204`; an exact repeat remains `204`.
 - Public `POST /api/shared/report` requires no session, accepts exactly
-  `{ "token": "<43-character base64url capability>" }`, and returns only:
+  `{ "token": "<43-character base64url capability>" }` from the trusted app
+  origin as `application/json` in at most 512 streamed bytes, and returns only:
 
   ```json
   {
     "share": {
       "expiresAt": "2026-08-23 12:00:00",
-      "report": {
-        "schemaVersion": 2,
-        "generatedAt": "2026-08-16 12:00:00",
-        "sections": {
-          "overview": {},
-          "cost": {},
-          "risks": [],
-          "nextActions": []
-        }
+      "sections": {
+        "overview": {},
+        "cost": {},
+        "risks": [],
+        "nextActions": []
       }
     }
   }
@@ -916,9 +919,11 @@ a statutory drawing, engineering design, contractor quote, or permit approval.
   Only requested sections appear; `next_actions` maps to `nextActions` in the
   public report shape. Missing/malformed tokens are `404`; expired or revoked
   records are `410`. Reads are no-store and increment only the bounded server-side
-  access counter. KV provides a fail-closed perimeter and a strongly consistent
-  D1 counter admits at most 120 requests per hashed IP/hour before the share
-  lookup, including under concurrency. The raw IP is not stored. The customer
+  access counter. KV provides a fail-closed perimeter with a window-bound HMAC
+  identity, and a strongly consistent D1 counter admits at most 120 requests per secret-keyed hourly IP pseudonym
+  before the share lookup, including under concurrency. The raw IP is not stored.
+  A distinct rotatable `REPORT_SHARE_ABUSE_HMAC_KEY` Worker secret is required in
+  each environment; readiness reveals only its configured/unavailable state. The customer
   URL places the capability in
   a fragment, which browsers do not send over HTTP; the page transfers it only
   in an anonymous, credential-free POST body to the constant API path. The
@@ -929,6 +934,13 @@ a statutory drawing, engineering design, contractor quote, or permit approval.
 The link does not request or record professional acceptance and never changes
 the immutable report. Full security, schema, retention, canary and rollback
 requirements are in [report-handoff.md](report-handoff.md).
+
+The single `report_handoff_controls` row is the independent operations switch.
+Migration `0016` creates it disabled; release automation proves the exact Worker
+under that state before any bounded activation. When disabled or malformed,
+creation and public redemption fail closed with
+`503 report_handoff_disabled`; owner list/revoke stay available and readiness
+sets `capabilities.reportHandoff=false` without taking free planning offline.
 
 ### `GET|PUT /api/projects/:projectId/revisions/:revision/reports/:schemaVersion/feedback`
 

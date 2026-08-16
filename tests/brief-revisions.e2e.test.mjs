@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const wranglerCli = path.join(root, "node_modules", "wrangler", "bin", "wrangler.js");
+const reportShareAbuseHmacKey = "ab".repeat(32);
 
 function reservePort() {
   return new Promise((resolve, reject) => {
@@ -52,6 +53,8 @@ async function startWorker(stateDirectory, assetsDirectory, port) {
     "APP_ENV:test",
     "--var",
     "APP_ORIGIN:https://app.example.test",
+    "--var",
+    `REPORT_SHARE_ABUSE_HMAC_KEY:${reportShareAbuseHmacKey}`,
     "--var",
     "PAID_CHECKOUT_ENABLED:false",
     "--var",
@@ -492,7 +495,7 @@ test("Brief Check revisions are truthful, immutable, owner-scoped, and race safe
       readiness.payload.checks,
       [
         "database", "schema", "rateLimit", "aiSchema", "aiAbuseControl", "decisionSchema",
-        "paymentSchema", "familyAlignmentSchema", "archiveSafetySchema", "revisionSchema", "reportFeedbackSchema", "reportShareSchema", "projectCreationSchema", "authSchema", "ai",
+        "paymentSchema", "familyAlignmentSchema", "archiveSafetySchema", "revisionSchema", "reportFeedbackSchema", "reportShareSchema", "reportHandoffControl", "reportShareAbuseHashing", "projectCreationSchema", "authSchema", "ai",
         "privateStorage", "acceptingPaidPlans",
       ],
       "readiness.checks",
@@ -505,11 +508,13 @@ test("Brief Check revisions are truthful, immutable, owner-scoped, and race safe
     assert.equal(readiness.payload.checks.revisionSchema, "current");
     assert.equal(readiness.payload.checks.reportFeedbackSchema, "current");
     assert.equal(readiness.payload.checks.reportShareSchema, "current");
+    assert.equal(readiness.payload.checks.reportHandoffControl, "disabled");
+    assert.equal(readiness.payload.checks.reportShareAbuseHashing, "configured");
     assert.equal(readiness.payload.checks.projectCreationSchema, "current");
     assert.equal(readiness.payload.checks.authSchema, "current");
     assert.equal(readiness.payload.capabilities.briefCheck, true);
     assert.equal(readiness.payload.capabilities.reportFeedback, true);
-    assert.equal(readiness.payload.capabilities.reportHandoff, true);
+    assert.equal(readiness.payload.capabilities.reportHandoff, false);
     assert.equal(readiness.payload.capabilities.accountSecurity, true);
     assert.equal(readiness.payload.capabilities.paidCheckout, false);
     assert.equal(readiness.payload.capabilities.paidFulfillment, false);

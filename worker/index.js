@@ -169,8 +169,11 @@ const REPORT_SHARE_SECTIONS = Object.freeze([
 const REPORT_SHARE_SECTION_SET = new Set(REPORT_SHARE_SECTIONS);
 const REPORT_SHARE_HISTORY_LIMIT = 50;
 const REPORT_SHARE_ACTIVE_LIMIT = 5;
+const REPORT_SHARE_CREATE_LIMIT = 20;
+const REPORT_SHARE_CREATE_WINDOW_SECONDS = 24 * 60 * 60;
 const REPORT_SHARE_READ_LIMIT = 120;
 const REPORT_SHARE_READ_WINDOW_SECONDS = 60 * 60;
+const REPORT_SHARE_PUBLIC_BODY_BYTES = 512;
 const PROJECT_REVISION_HISTORY_LIMIT = 50;
 const PROJECT_REVISION_DEFAULT_LIMIT = 20;
 const REPORT_FEEDBACK_OUTCOMES = new Set(["helpful", "unclear", "needs_review"]);
@@ -199,6 +202,7 @@ const EXPECTED_CLOSED_CONTROL_CODES = new Set([
   "fulfillment_unavailable",
   "payment_plan_unavailable",
   "payments_disabled",
+  "report_handoff_disabled",
   "storage_unavailable",
   "abuse_control_unavailable",
 ]);
@@ -524,10 +528,12 @@ function requestIp(request) {
   return (request.headers.get("cf-connecting-ip") || request.headers.get("x-forwarded-for")?.split(",")[0] || "unknown").trim().slice(0, 80);
 }
 
-async function rateLimit(request, env, scope, limit, windowSeconds) {
+async function rateLimit(request, env, scope, limit, windowSeconds, hmacKey = null) {
   if (!env.GRIHAGRID_CACHE) return;
   const window = Math.floor(Date.now() / (windowSeconds * 1000));
-  const identity = await digestBase64(`${scope}:${requestIp(request)}`);
+  const identity = hmacKey
+    ? await hmacSha256Hex(hmacKey, new TextEncoder().encode(`${scope}:${window}:${requestIp(request)}`))
+    : await digestBase64(`${scope}:${requestIp(request)}`);
   const key = `rate:${scope}:${window}:${identity}`;
   let attempts;
   try {
@@ -571,8 +577,13 @@ async function familyAlignmentEvent(db, eventName, surface, outcome = "success")
   }
 }
 
-async function reportShareEvent(db, eventName, surface) {
-  if (!REPORT_SHARE_EVENT_NAMES.has(eventName)) return;
+function isReleaseCanaryProjectName(value) {
+  return typeof value === "string"
+    && /^Release canary [0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(value);
+}
+
+async function reportShareEvent(db, eventName, surface, projectName) {
+  if (!REPORT_SHARE_EVENT_NAMES.has(eventName) || isReleaseCanaryProjectName(projectName)) return;
   try {
     await db.prepare(
       `INSERT INTO product_event_aggregates
@@ -611,6 +622,29 @@ function requireAbuseControl(env) {
   return env.GRIHAGRID_CACHE;
 }
 
+async function reportShareAbuseHmacKey(env) {
+  const configured = String(env.REPORT_SHARE_ABUSE_HMAC_KEY || "").trim();
+  if (/^[a-f0-9]{64}$/iu.test(configured)) return configured;
+  throw new HttpError(503, "abuse controls are temporarily unavailable", "abuse_control_unavailable");
+}
+
+async function reportHandoffControl(db) {
+  try {
+    const row = await db.prepare(
+      "SELECT enabled FROM report_handoff_controls WHERE control_key='report_handoff'",
+    ).first();
+    return Number(row?.enabled) === 1 ? "enabled" : Number(row?.enabled) === 0 ? "disabled" : "unavailable";
+  } catch {
+    return "unavailable";
+  }
+}
+
+async function requireReportHandoffEnabled(db) {
+  if (await reportHandoffControl(db) !== "enabled") {
+    throw new HttpError(503, "professional handoff is temporarily unavailable", "report_handoff_disabled");
+  }
+}
+
 async function acquirePasswordChangeAdmission(db, userId, date = new Date(), limit = PASSWORD_CHANGE_ACCOUNT_LIMIT) {
   if (!Number.isSafeInteger(limit) || limit < 1 || !(date instanceof Date) || Number.isNaN(date.valueOf())) {
     throw new HttpError(503, "abuse controls are temporarily unavailable", "abuse_control_unavailable");
@@ -638,15 +672,57 @@ async function acquirePasswordChangeAdmission(db, userId, date = new Date(), lim
   if (!admitted) throw new HttpError(429, "too many attempts; please try again later", "rate_limited");
 }
 
-async function acquireReportShareReadAdmission(db, request, date = new Date(), limit = REPORT_SHARE_READ_LIMIT) {
+async function acquireReportShareCreateAdmission(
+  db,
+  userId,
+  date = new Date(),
+  limit = REPORT_SHARE_CREATE_LIMIT,
+) {
+  if (typeof userId !== "string" || !userId || !Number.isSafeInteger(limit) || limit < 1
+      || limit > REPORT_SHARE_CREATE_LIMIT || !(date instanceof Date) || Number.isNaN(date.valueOf())) {
+    throw new HttpError(503, "abuse controls are temporarily unavailable", "abuse_control_unavailable");
+  }
+  const windowMs = REPORT_SHARE_CREATE_WINDOW_SECONDS * 1000;
+  const windowStart = sqliteTimestamp(new Date(Math.floor(date.getTime() / windowMs) * windowMs));
+  const now = sqliteTimestamp(date);
+  let admitted;
+  try {
+    admitted = await db.prepare(
+      `INSERT INTO report_share_create_counters
+         (user_id,window_start,request_count,limit_count,updated_at)
+       VALUES (?,?,1,?,?)
+       ON CONFLICT(user_id,window_start) DO UPDATE SET
+         request_count=report_share_create_counters.request_count+1,
+         limit_count=excluded.limit_count,
+         updated_at=excluded.updated_at
+       WHERE report_share_create_counters.limit_count=excluded.limit_count
+         AND report_share_create_counters.request_count<report_share_create_counters.limit_count
+       RETURNING request_count`,
+    ).bind(userId, windowStart, limit, now).first();
+  } catch {
+    throw new HttpError(503, "abuse controls are temporarily unavailable", "abuse_control_unavailable");
+  }
+  if (!admitted) throw new HttpError(429, "too many report links; please try again tomorrow", "rate_limited");
+}
+
+async function acquireReportShareReadAdmission(
+  db,
+  request,
+  hmacKey,
+  date = new Date(),
+  limit = REPORT_SHARE_READ_LIMIT,
+) {
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > REPORT_SHARE_READ_LIMIT
+      || typeof hmacKey !== "string" || !/^[a-f0-9]{64}$/iu.test(hmacKey)
       || !(date instanceof Date) || Number.isNaN(date.valueOf())) {
     throw new HttpError(503, "abuse controls are temporarily unavailable", "abuse_control_unavailable");
   }
   const windowMs = REPORT_SHARE_READ_WINDOW_SECONDS * 1000;
   const windowStart = sqliteTimestamp(new Date(Math.floor(date.getTime() / windowMs) * windowMs));
   const now = sqliteTimestamp(date);
-  const subjectHash = await digestHex(`report-share-read:${requestIp(request)}`);
+  const subjectHash = await hmacSha256Hex(hmacKey, new TextEncoder().encode(
+    `report-share-read:${windowStart}:${requestIp(request)}`,
+  ));
   let admitted;
   try {
     admitted = await db.prepare(
@@ -2862,9 +2938,9 @@ function projectHomeNextAction(stage, reportAvailable = false) {
   }
   return {
     code: "open_handoff",
-    label: "Open decision handoff",
-    description: "Review the chosen direction and carry its assumptions into the professional conversation.",
-    target: "compare",
+    label: "Open professional handoff",
+    description: "Choose the exact report evidence to carry into the professional conversation.",
+    target: "report",
   };
 }
 
@@ -4953,6 +5029,71 @@ function normalizePublicReportShareRequest(body) {
   return body.token;
 }
 
+async function readPublicReportShareToken(request) {
+  const mediaType = String(request.headers.get("content-type") || "")
+    .split(";", 1)[0]
+    .trim()
+    .toLowerCase();
+  if (mediaType !== "application/json") {
+    throw new HttpError(404, "shared report not found", "report_share_not_found");
+  }
+  const declared = request.headers.get("content-length");
+  if (declared != null && (!/^\d+$/u.test(declared.trim()) || Number(declared) > REPORT_SHARE_PUBLIC_BODY_BYTES)) {
+    throw new HttpError(404, "shared report not found", "report_share_not_found");
+  }
+  if (!request.body) throw new HttpError(404, "shared report not found", "report_share_not_found");
+  const reader = request.body.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!(value instanceof Uint8Array)) throw new Error("invalid request chunk");
+      total += value.byteLength;
+      if (total > REPORT_SHARE_PUBLIC_BODY_BYTES) {
+        await reader.cancel().catch(() => {});
+        throw new Error("request body is too large");
+      }
+      chunks.push(value);
+    }
+    const bytes = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    const body = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    return normalizePublicReportShareRequest(body);
+  } catch (error) {
+    if (error instanceof HttpError && error.code === "report_share_not_found") throw error;
+    throw new HttpError(404, "shared report not found", "report_share_not_found");
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+async function settleUnreadRequestBody(request) {
+  if (!request.body || request.bodyUsed) return;
+  const reader = request.body.getReader();
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      total += value.byteLength;
+      if (total > REPORT_SHARE_PUBLIC_BODY_BYTES) {
+        await reader.cancel().catch(() => {});
+        return;
+      }
+    }
+  } catch {
+    // Rejection is already determined; draining is best-effort transport cleanup.
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 function normalizeReportShareRequest(body) {
   const fields = ["projectRevision", "reportSchemaVersion", "expiresInDays", "sections"];
   if (!body || typeof body !== "object" || Array.isArray(body)
@@ -4960,7 +5101,7 @@ function normalizeReportShareRequest(body) {
       || fields.some((field) => !Object.hasOwn(body, field))) {
     throw new HttpError(400, "report share must contain exactly projectRevision, reportSchemaVersion, expiresInDays, and sections", "invalid_report_share");
   }
-  if (typeof body.projectRevision !== "number" || !Number.isInteger(body.projectRevision) || body.projectRevision < 1) {
+  if (typeof body.projectRevision !== "number" || !Number.isSafeInteger(body.projectRevision) || body.projectRevision < 1) {
     throw new HttpError(400, "projectRevision must be a positive integer", "invalid_report_share");
   }
   if (typeof body.reportSchemaVersion !== "number" || body.reportSchemaVersion !== REPORT_VERSION) {
@@ -5095,12 +5236,14 @@ async function listReportShares(request, env, projectId) {
 
 async function createReportShare(request, env, projectId) {
   requireTrustedOrigin(request, env);
+  // A link that cannot be redeemed safely must not consume either eventually
+  // consistent or D1-backed owner admission, nor create any durable state.
+  await reportShareAbuseHmacKey(env);
   requireAbuseControl(env);
   const db = requireDatabase(env);
+  await requireReportHandoffEnabled(db);
   const session = await getSession(request, env);
   await requireCsrf(request, session);
-  await rateLimit(request, env, `report-share-create:${session.user_id}`, 20, 60 * 60);
-  await accountRateLimit(env, `report-share-user:${session.user_id}`, 20, 60 * 60);
   const project = await ownedProject(db, projectId, session.user_id);
   const normalized = normalizeReportShareRequest(await readJson(request));
   const keyHash = await digestBase64(`report-share:${session.user_id}:${normalizeIdempotencyKey(request)}`);
@@ -5124,6 +5267,16 @@ async function createReportShare(request, env, projectId) {
   ).bind(projectId, normalized.projectRevision, normalized.reportSchemaVersion, session.user_id).first();
   if (!source) throw new HttpError(404, "report not found", "report_not_found");
   validatedReportShareSource(source);
+  const active = await db.prepare(
+    `SELECT COUNT(*) AS count FROM report_shares
+      WHERE project_id=? AND user_id=? AND revoked_at IS NULL AND expires_at>datetime('now')`,
+  ).bind(projectId, session.user_id).first();
+  if (Number(active?.count) >= REPORT_SHARE_ACTIVE_LIMIT) {
+    throw new HttpError(409, `a project may have at most ${REPORT_SHARE_ACTIVE_LIMIT} active report shares`, "report_share_limit");
+  }
+  await rateLimit(request, env, `report-share-create:${session.user_id}`, REPORT_SHARE_CREATE_LIMIT, 60 * 60);
+  await accountRateLimit(env, `report-share-user:${session.user_id}`, REPORT_SHARE_CREATE_LIMIT, 60 * 60);
+  await acquireReportShareCreateAdmission(db, session.user_id);
   const origin = canonicalAppOrigin(env);
   const token = randomToken(32);
   const id = crypto.randomUUID();
@@ -5160,6 +5313,13 @@ async function createReportShare(request, env, projectId) {
       row.request_hash, row.expires_at, row.created_at,
     ).run();
   } catch (error) {
+    const message = String(error?.message || error);
+    // The SQL trigger is the authoritative create-admission point. Check this
+    // before idempotency reconciliation so a completed disable always closes
+    // creation deterministically, even if the key already raced elsewhere.
+    if (/report handoff is disabled/iu.test(message)) {
+      throw new HttpError(503, "professional handoff is temporarily unavailable", "report_handoff_disabled");
+    }
     const raced = await db.prepare(
       "SELECT * FROM report_shares WHERE idempotency_key_hash=? AND user_id=?",
     ).bind(keyHash, session.user_id).first();
@@ -5169,7 +5329,6 @@ async function createReportShare(request, env, projectId) {
       }
       return json({ share: reportShareMetadata(raced), idempotentReplay: true });
     }
-    const message = String(error?.message || error);
     if (/report share active limit reached/iu.test(message)) {
       throw new HttpError(409, `a project may have at most ${REPORT_SHARE_ACTIVE_LIMIT} active report shares`, "report_share_limit");
     }
@@ -5181,7 +5340,7 @@ async function createReportShare(request, env, projectId) {
     }
     throw error;
   }
-  await reportShareEvent(db, "report_handoff_link_created", "report");
+  await reportShareEvent(db, "report_handoff_link_created", "report", project.name);
   return json({ share: reportShareMetadata(row, origin, token) }, 201);
 }
 
@@ -5190,7 +5349,7 @@ async function revokeReportShare(request, env, projectId, shareId) {
   const db = requireDatabase(env);
   const session = await getSession(request, env);
   await requireCsrf(request, session);
-  await ownedProject(db, projectId, session.user_id);
+  const project = await ownedProject(db, projectId, session.user_id);
   const share = await db.prepare(
     "SELECT id,revoked_at FROM report_shares WHERE id=? AND project_id=? AND user_id=?",
   ).bind(shareId, projectId, session.user_id).first();
@@ -5201,30 +5360,44 @@ async function revokeReportShare(request, env, projectId, shareId) {
         WHERE id=? AND project_id=? AND user_id=? AND revoked_at IS NULL
       RETURNING id`,
     ).bind(sqliteTimestamp(), shareId, projectId, session.user_id).first();
-    if (revoked) await reportShareEvent(db, "report_handoff_link_revoked", "report");
+    if (revoked) await reportShareEvent(db, "report_handoff_link_revoked", "report", project.name);
   }
   return empty();
 }
 
 async function getSharedReport(request, env) {
-  requireAbuseControl(env);
-  await rateLimit(request, env, "public-report-share", REPORT_SHARE_READ_LIMIT, REPORT_SHARE_READ_WINDOW_SECONDS);
-  const db = requireDatabase(env);
-  await acquireReportShareReadAdmission(db, request);
-  let body;
+  let token;
   try {
-    body = await readJson(request);
-  } catch {
-    throw new HttpError(404, "shared report not found", "report_share_not_found");
+    requireTrustedOrigin(request, env);
+    token = await readPublicReportShareToken(request);
+  } catch (error) {
+    await settleUnreadRequestBody(request);
+    throw error;
   }
-  const token = normalizePublicReportShareRequest(body);
+  const db = requireDatabase(env);
+  await requireReportHandoffEnabled(db);
+  requireAbuseControl(env);
+  const hmacKey = await reportShareAbuseHmacKey(env);
+  await rateLimit(
+    request,
+    env,
+    "public-report-share",
+    REPORT_SHARE_READ_LIMIT,
+    REPORT_SHARE_READ_WINDOW_SECONDS,
+    hmacKey,
+  );
+  await acquireReportShareReadAdmission(db, request, hmacKey);
   const row = await db.prepare(
-    `SELECT sh.*,rr.source_report_id,rr.input_hash,rr.content_json,rr.generated_at
+    `SELECT sh.*,rr.source_report_id,rr.input_hash,rr.content_json,rr.generated_at,
+            p.name AS project_name
        FROM report_shares sh
        JOIN project_revision_reports rr
-         ON rr.project_id=sh.project_id
+        ON rr.project_id=sh.project_id
         AND rr.project_revision=sh.project_revision
         AND rr.report_schema_version=sh.report_schema_version
+       JOIN projects p
+         ON p.id=sh.project_id
+        AND p.user_id=sh.user_id
       WHERE sh.token_hash=?`,
   ).bind(await digestHex(token)).first();
   if (!row) throw new HttpError(404, "shared report not found", "report_share_not_found");
@@ -5238,30 +5411,44 @@ async function getSharedReport(request, env) {
   const report = validatedReportShareSource(row);
   const sections = reportShareSectionsFromRow(row);
   const projection = publicReportShareProjection(report, sections);
-  let admitted;
+  let admissionResults;
   try {
-    admitted = await db.prepare(
-      `UPDATE report_shares
-          SET access_count=access_count+1,last_accessed_at=?
-        WHERE id=? AND revoked_at IS NULL AND expires_at>datetime('now')
-      RETURNING id`,
-    ).bind(sqliteTimestamp(), row.id).first();
+    // D1 batch statements share one transaction. The update and the following
+    // control read therefore classify the same serialized admission point: a
+    // disable that wins before this batch prevents both the counter increment
+    // and the public response, while a later disable cannot rewrite the result.
+    admissionResults = await db.batch([
+      db.prepare(
+        `UPDATE report_shares
+            SET access_count=access_count+1,last_accessed_at=?
+          WHERE id=? AND revoked_at IS NULL AND expires_at>datetime('now')
+            AND EXISTS (
+              SELECT 1 FROM report_handoff_controls
+               WHERE control_key='report_handoff' AND enabled=1
+            )
+        RETURNING id`,
+      ).bind(sqliteTimestamp(), row.id),
+      db.prepare(
+        "SELECT enabled FROM report_handoff_controls WHERE control_key='report_handoff'",
+      ),
+    ]);
   } catch (error) {
     console.error("Professional Handoff access admission failed");
     throw error;
   }
+  const admitted = admissionResults?.[0]?.results?.[0];
   if (!admitted) {
+    const finalControl = admissionResults?.[1]?.results?.[0];
+    if (Number(finalControl?.enabled) !== 1) {
+      throw new HttpError(503, "professional handoff is temporarily unavailable", "report_handoff_disabled");
+    }
     throw new HttpError(410, "this shared report is no longer available", "report_share_unavailable");
   }
-  await reportShareEvent(db, "report_handoff_opened", "public_share");
+  await reportShareEvent(db, "report_handoff_opened", "public_share", row.project_name);
   return json({
     share: {
       expiresAt: row.expires_at,
-      report: {
-        schemaVersion: REPORT_VERSION,
-        generatedAt: row.generated_at,
-        sections: projection,
-      },
+      sections: projection,
     },
   });
 }
@@ -6711,6 +6898,7 @@ async function api(request, env, ctx, url) {
       let revisionSchema = "unknown";
       let reportFeedbackSchema = "unknown";
       let reportShareSchema = "unknown";
+      let reportHandoffControlState = "unknown";
       let projectCreationSchema = "unknown";
       let authSchema = "unknown";
       if (env.DB) {
@@ -6723,7 +6911,8 @@ async function api(request, env, ctx, url) {
                     SUM(CASE WHEN name IN ('family_alignment_rooms','family_alignment_responses') THEN 1 ELSE 0 END) AS family_alignment_count,
                     SUM(CASE WHEN name IN ('project_revisions','project_revision_requests','project_revision_reports') THEN 1 ELSE 0 END) AS revision_table_count,
                     SUM(CASE WHEN name='report_feedback' THEN 1 ELSE 0 END) AS report_feedback_count,
-                    SUM(CASE WHEN name IN ('report_shares','report_share_read_counters') THEN 1 ELSE 0 END) AS report_share_count,
+                    SUM(CASE WHEN name IN ('report_shares','report_share_read_counters',
+                                           'report_share_create_counters','report_handoff_controls') THEN 1 ELSE 0 END) AS report_share_count,
                     SUM(CASE WHEN name IN
                       ('decision_comparisons','decision_selections','purchased_decision_snapshots',
                        'decision_shares','product_event_aggregates','decision_progress') THEN 1 ELSE 0 END) AS decision_table_count
@@ -6735,10 +6924,10 @@ async function api(request, env, ctx, url) {
                  'decision_progress','payment_terminal_records','payment_reconciliation_cases',
                  'family_alignment_rooms','family_alignment_responses','project_revisions',
                  'project_revision_requests','project_revision_reports','report_feedback','report_shares',
-                 'report_share_read_counters')`,
+                 'report_share_read_counters','report_share_create_counters','report_handoff_controls')`,
           ).first();
           database = "ok";
-          const requiredTablesPresent = Number(result?.count) === 25;
+          const requiredTablesPresent = Number(result?.count) === 27;
           if (Number(result?.revision_table_count) === 3) {
             try {
               await env.DB.prepare(
@@ -6820,7 +7009,7 @@ async function api(request, env, ctx, url) {
           } else {
             reportFeedbackSchema = "outdated";
           }
-          if (Number(result?.report_share_count) === 2) {
+          if (Number(result?.report_share_count) === 4) {
             try {
               await env.DB.prepare(
                 `SELECT id,project_id,user_id,project_revision,report_schema_version,sections_json,
@@ -6832,27 +7021,40 @@ async function api(request, env, ctx, url) {
                 `SELECT subject_hash,window_start,request_count,limit_count,updated_at
                    FROM report_share_read_counters LIMIT 0`,
               ).first();
+              await env.DB.prepare(
+                `SELECT user_id,window_start,request_count,limit_count,updated_at
+                   FROM report_share_create_counters LIMIT 0`,
+              ).first();
+              await env.DB.prepare(
+                `SELECT control_key,enabled,updated_at FROM report_handoff_controls LIMIT 0`,
+              ).first();
               const shareObjects = await env.DB.prepare(
                 `SELECT
                    SUM(CASE WHEN type='trigger' AND name IN (
                      'report_share_sections_insert_guard','report_share_identity_immutable',
-                     'archived_report_share_insert_guard','report_share_active_limit_insert'
+                     'archived_report_share_insert_guard','report_share_active_limit_insert',
+                     'report_handoff_enabled_insert_guard'
                    ) THEN 1 ELSE 0 END) AS trigger_count,
                    SUM(CASE WHEN type='index' AND name IN (
                      'idx_report_shares_owner_created','idx_report_shares_expiry',
-                     'idx_report_share_read_counters_updated'
+                     'idx_report_shares_revoked','idx_report_share_read_counters_updated',
+                     'idx_report_share_create_counters_updated'
                    ) THEN 1 ELSE 0 END) AS index_count
                  FROM sqlite_master WHERE type IN ('trigger','index')`,
               ).first();
-              reportShareSchema = Number(shareObjects?.trigger_count) === 4
-                && Number(shareObjects?.index_count) === 3
+              reportHandoffControlState = await reportHandoffControl(env.DB);
+              reportShareSchema = Number(shareObjects?.trigger_count) === 5
+                && Number(shareObjects?.index_count) === 5
+                && reportHandoffControlState !== "unavailable"
                 ? "current"
                 : "outdated";
             } catch {
               reportShareSchema = "outdated";
+              reportHandoffControlState = "unavailable";
             }
           } else {
             reportShareSchema = "outdated";
+            reportHandoffControlState = "unavailable";
           }
           try {
             await env.DB.prepare(
@@ -7066,11 +7268,19 @@ async function api(request, env, ctx, url) {
           revisionSchema = "unknown";
           reportFeedbackSchema = "unknown";
           reportShareSchema = "unknown";
+          reportHandoffControlState = "unknown";
           projectCreationSchema = "unknown";
           authSchema = "unknown";
         }
       }
       const rateLimit = env.GRIHAGRID_CACHE ? "configured" : "missing";
+      let reportShareAbuseHashing = "unavailable";
+      try {
+        await reportShareAbuseHmacKey(env);
+        reportShareAbuseHashing = "configured";
+      } catch {
+        // Professional Handoff fails closed without its dedicated pseudonymization key.
+      }
       let geminiConfiguration = "invalid";
       try {
         requireGeminiConfig(env);
@@ -7100,6 +7310,8 @@ async function api(request, env, ctx, url) {
           revisionSchema,
           reportFeedbackSchema,
           reportShareSchema,
+          reportHandoffControl: reportHandoffControlState,
+          reportShareAbuseHashing,
           projectCreationSchema,
           authSchema,
           ai: geminiConfigured ? "configured" : "unavailable",
@@ -7116,7 +7328,8 @@ async function api(request, env, ctx, url) {
           familyAlignment: freeReady && decisionSchema === "current" && familyAlignmentSchema === "current" && rateLimit === "configured",
           briefCheck: freeReady && revisionSchema === "current" && rateLimit === "configured",
           reportFeedback: freeReady && reportFeedbackSchema === "current" && rateLimit === "configured",
-          reportHandoff: freeReady && reportShareSchema === "current" && rateLimit === "configured",
+          reportHandoff: freeReady && reportShareSchema === "current"
+            && reportHandoffControlState === "enabled" && reportShareAbuseHashing === "configured",
           accountSecurity: freeReady && authSchema === "current" && rateLimit === "configured",
         },
         time: new Date().toISOString(),
@@ -7536,6 +7749,7 @@ export default {
       env.DB.prepare("DELETE FROM ai_generation_counters WHERE updated_at<datetime('now','-8 days')"),
       env.DB.prepare("DELETE FROM password_change_attempt_counters WHERE updated_at<datetime('now','-2 days')"),
       env.DB.prepare("DELETE FROM report_share_read_counters WHERE updated_at<datetime('now','-2 days')"),
+      env.DB.prepare("DELETE FROM report_share_create_counters WHERE updated_at<datetime('now','-2 days')"),
       env.DB.prepare("DELETE FROM decision_shares WHERE expires_at<datetime('now','-90 days') OR (revoked_at IS NOT NULL AND revoked_at<datetime('now','-90 days'))"),
       env.DB.prepare("DELETE FROM family_alignment_rooms WHERE expires_at<datetime('now','-90 days') OR (revoked_at IS NOT NULL AND revoked_at<datetime('now','-90 days'))"),
       env.DB.prepare("DELETE FROM report_shares WHERE expires_at<datetime('now','-90 days') OR (revoked_at IS NOT NULL AND revoked_at<datetime('now','-90 days'))"),
@@ -7548,6 +7762,7 @@ export default {
 // the default export above.
 export const __test = {
   acquirePasswordChangeAdmission,
+  acquireReportShareCreateAdmission,
   acquireReportShareReadAdmission,
   acquireAiGenerationAdmission,
   aiBriefFromRow,
@@ -7573,6 +7788,7 @@ export const __test = {
   normalizeProjectInput,
   normalizeReportShareRequest,
   normalizePublicReportShareRequest,
+  readPublicReportShareToken,
   normalizeRevisionPatch,
   operationalRoute,
   orderFromRow,
@@ -7585,6 +7801,8 @@ export const __test = {
   reportFeedbackMetricsFromRow,
   publicReportShareProjection,
   reportShareMetadata,
+  reportHandoffControl,
+  reportShareAbuseHmacKey,
   revisionFromRow,
   requireCsrf,
   ensureProjectDeletable,
@@ -7602,4 +7820,5 @@ export const __test = {
   verifyPassword,
   webhookPaymentDetails,
   hmacSha256Hex,
+  isReleaseCanaryProjectName,
 };
