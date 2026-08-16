@@ -21,43 +21,56 @@ function readCookie(name) {
 }
 
 async function apiRequest(path, options = {}) {
-  const headers = new Headers(options.headers || {});
-  const method = String(options.method || "GET").toUpperCase();
+  const { anonymous = false, timeoutMs = 15_000, ...requestOptions } = options;
+  const headers = new Headers(requestOptions.headers || {});
+  const method = String(requestOptions.method || "GET").toUpperCase();
   const controller = new AbortController();
   let timedOut = false;
-  const forwardAbort = () => controller.abort(options.signal?.reason);
-  if (options.signal?.aborted) forwardAbort();
-  else options.signal?.addEventListener("abort", forwardAbort, { once: true });
+  const forwardAbort = () => controller.abort(requestOptions.signal?.reason);
+  if (requestOptions.signal?.aborted) forwardAbort();
+  else requestOptions.signal?.addEventListener("abort", forwardAbort, { once: true });
   const timer = window.setTimeout(() => {
     timedOut = true;
     controller.abort();
-  }, options.timeoutMs || 15_000);
+  }, timeoutMs);
   const signal = controller.signal;
-  let body = options.body;
+  let body = requestOptions.body;
   if (body && !(body instanceof FormData) && typeof body !== "string") {
     headers.set("content-type", "application/json");
     body = JSON.stringify(body);
   }
-  if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
+  if (!anonymous && !["GET", "HEAD", "OPTIONS"].includes(method)) {
     const token = csrfToken || readCookie("grihagrid_csrf");
     if (token) headers.set("x-csrf-token", token);
   }
+  if (anonymous) {
+    headers.delete("authorization");
+    headers.delete("cookie");
+    headers.delete("x-csrf-token");
+  }
   let response;
+  let payload;
   try {
-    response = await fetch(path, { ...options, body, headers, signal, credentials: "include" });
+    response = await fetch(path, {
+      ...requestOptions,
+      body,
+      headers,
+      signal,
+      credentials: anonymous ? "omit" : "include",
+    });
+    const type = response.headers.get("content-type") || "";
+    payload = type.includes("application/json") ? await response.json() : await response.text();
   } catch (error) {
     if (error?.name === "AbortError" && timedOut) throw new ApiError("The request took too long. Please try again.", 408, null);
     throw error;
   } finally {
     window.clearTimeout(timer);
-    options.signal?.removeEventListener("abort", forwardAbort);
+    requestOptions.signal?.removeEventListener("abort", forwardAbort);
   }
-  const type = response.headers.get("content-type") || "";
-  const payload = type.includes("application/json") ? await response.json() : await response.text();
   if (!response.ok) {
     throw new ApiError(payload?.error || payload?.message || `Request failed (${response.status})`, response.status, payload);
   }
-  if (payload && typeof payload === "object" && payload.csrfToken) {
+  if (!anonymous && payload && typeof payload === "object" && payload.csrfToken) {
     csrfToken = payload.csrfToken;
   }
   return { payload, response };
@@ -65,6 +78,10 @@ async function apiRequest(path, options = {}) {
 
 export async function api(path, options = {}) {
   return (await apiRequest(path, options)).payload;
+}
+
+export async function publicApi(path, options = {}) {
+  return (await apiRequest(path, { ...options, anonymous: true })).payload;
 }
 
 export async function apiResponse(path, options = {}) {

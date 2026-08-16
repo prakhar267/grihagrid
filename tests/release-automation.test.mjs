@@ -71,6 +71,7 @@ test("release database evidence hard-gates legacy safety and proves migration da
     "trigger:report_feedback_insert_guard", "trigger:report_feedback_update_guard",
     "trigger:project_input_allowlist_insert_guard", "trigger:project_input_allowlist_update_guard",
     "trigger:project_account_limit_insert_guard",
+    "index:idx_projects_user_creation_key",
   ].map((entry) => {
     const separator = entry.indexOf(":");
     return { type: entry.slice(0, separator), name: entry.slice(separator + 1) };
@@ -78,6 +79,7 @@ test("release database evidence hard-gates legacy safety and proves migration da
   const columns = [
     "users:id", "users:email", "users:password_hash", "users:password_salt", "users:password_iterations", "users:password_algorithm",
     "projects:id", "projects:user_id", "projects:status", "projects:input_json", "projects:input_revision", "projects:input_hash", "projects:brief_check_json",
+    "projects:creation_key_hash", "projects:creation_request_hash",
     "orders:id", "orders:project_id", "orders:plan", "orders:status", "orders:product_code", "orders:request_hash",
     "project_revisions:project_id", "project_revisions:revision", "project_revisions:content_hash", "project_revisions:input_json", "project_revisions:brief_check_json",
     "report_feedback:project_id", "report_feedback:project_revision", "report_feedback:report_schema_version", "report_feedback:user_id",
@@ -93,7 +95,11 @@ test("release database evidence hard-gates legacy safety and proves migration da
     schemaPayload: d1(schemaNames),
     columnsPayload: d1(columns),
     countsPayload: d1(countsRows),
-    projectsPayload: d1(projects),
+    projectsPayload: d1(projects.map((project) => ({
+      ...project,
+      creation_key_hash: null,
+      creation_request_hash: null,
+    }))),
     reportsPayload: d1(reports),
     feedbackCountPayload: d1([{ row_count: 0 }]),
     feedbackMigrationPending: true,
@@ -141,7 +147,12 @@ test("release database evidence hard-gates legacy safety and proves migration da
       schemaPayload: d1(schemaNames),
       columnsPayload: d1(columns),
       countsPayload: d1(countsRows),
-      projectsPayload: d1([{ ...projects[0], status: "changed" }]),
+      projectsPayload: d1([{
+        ...projects[0],
+        status: "changed",
+        creation_key_hash: null,
+        creation_request_hash: null,
+      }]),
       reportsPayload: d1(reports),
       feedbackCountPayload: d1([{ row_count: 0 }]),
       feedbackMigrationPending: true,
@@ -224,7 +235,18 @@ test("authenticated smoke proves current and rollback-compatible Worker paths fa
   let deleted = false;
   let loggedOut = false;
   let legacyResponse = false;
+  let createCalls = 0;
   const denied = [];
+  const estimatorInput = { width: 30, length: 50, floors: "G+1", quality: "Signature", city: "Pune" };
+  const estimatorEstimate = {
+    plotSqft: 1500,
+    builtUpSqft: 1830,
+    lowInr: 3703920,
+    highInr: 4428600,
+    floors: "G+1",
+    quality: "Signature",
+    city: "Pune",
+  };
 
   globalThis.fetch = async (input, init = {}) => {
     const url = new URL(input);
@@ -255,9 +277,21 @@ test("authenticated smoke proves current and rollback-compatible Worker paths fa
         ? Response.json({ code: "unauthenticated" }, { status: 401 })
         : Response.json({ user: { email: "release@example.test" } });
     }
+    if (url.pathname === "/api/estimate" && method === "POST") {
+      assert.deepEqual(JSON.parse(init.body), estimatorInput);
+      return Response.json({ input: estimatorInput, estimate: estimatorEstimate, basis: { ruleVersion: 1 } });
+    }
     if (url.pathname === "/api/projects" && method === "POST") {
+      createCalls += 1;
       marker = JSON.parse(init.body).name;
-      return Response.json({ project: { id: projectId, inputRevision: 1 } }, { status: 201 });
+      if (!legacyResponse) assert.match(new Headers(init.headers).get("idempotency-key") || "", /^release-canary-/u);
+      return Response.json({ project: {
+        id: projectId,
+        inputRevision: 1,
+        input: { ...estimatorInput, bedrooms: 3, bathrooms: 3, parking: true },
+        estimate: estimatorEstimate,
+        estimateRuleVersion: 1,
+      } }, { status: !legacyResponse && createCalls > 1 ? 200 : 201 });
     }
     if (url.pathname === "/api/projects" && method === "GET") {
       return Response.json({ projects: deleted ? [] : [{ id: projectId, name: marker }] });
@@ -337,6 +371,8 @@ test("authenticated smoke proves current and rollback-compatible Worker paths fa
     assert.deepEqual(denied, ["checkout", "upload"]);
     assert.equal(result.projectDeleted, true);
     assert.equal(result.sessionRevocationVerified, true);
+    assert.equal(result.publicEstimateVerified, true);
+    assert.equal(result.projectCreateReplayVerified, true);
     assert.deepEqual(result.canaryProjectIds, [projectId]);
     assert.equal(deleted, true);
 
@@ -344,6 +380,7 @@ test("authenticated smoke proves current and rollback-compatible Worker paths fa
     deleted = false;
     loggedOut = false;
     legacyResponse = true;
+    createCalls = 0;
     denied.length = 0;
     const rollbackResult = await runAuthenticatedSmoke(
       "https://worker.example.test",
@@ -366,6 +403,7 @@ test("authenticated smoke deletes only its exact marker after an ambiguous creat
   let logoutCalled = false;
   let loggedOut = false;
   const projectId = "11111111-1111-4111-8111-111111111111";
+  const estimatorInput = { width: 30, length: 50, floors: "G+1", quality: "Signature", city: "Pune" };
   globalThis.fetch = async (input, init = {}) => {
     const url = new URL(input);
     if (url.pathname === "/api/auth/login") {
@@ -388,6 +426,13 @@ test("authenticated smoke deletes only its exact marker after an ambiguous creat
       return loggedOut
         ? Response.json({ code: "unauthenticated" }, { status: 401 })
         : Response.json({ user: { email: "release@example.test" } });
+    }
+    if (url.pathname === "/api/estimate" && init.method === "POST") {
+      return Response.json({
+        input: estimatorInput,
+        estimate: { plotSqft: 1500, builtUpSqft: 1830, lowInr: 3703920, highInr: 4428600, floors: "G+1", quality: "Signature", city: "Pune" },
+        basis: { ruleVersion: 1 },
+      });
     }
     if (url.pathname === "/api/projects" && init.method === "POST") {
       marker = JSON.parse(init.body).name;

@@ -45,13 +45,43 @@ test("read-only smoke verifies health, readiness, estimate and fail-closed catal
       return Response.json({
         status: "ready",
         releaseId: "11111111-1111-4111-8111-111111111111",
-        checks: { familyAlignmentSchema: "current", reportFeedbackSchema: "current", privateStorage: "unavailable", acceptingPaidPlans: [] },
+        checks: { familyAlignmentSchema: "current", reportFeedbackSchema: "current", projectCreationSchema: "current", privateStorage: "unavailable", acceptingPaidPlans: [] },
         capabilities: { freePlanning: true, familyAlignment: true, reportFeedback: true, privateUploads: false, paidCheckout: false, paidFulfillment: false },
         time: new Date().toISOString(),
       }, { headers: { ...securityHeaders, "cache-control": "no-store" } });
     }
     if (url.pathname === "/api/estimate") {
-      return Response.json({ estimate: { plotSqft: 1500, builtUpSqft: 1830, lowInr: 3_703_920, highInr: 4_428_600, floors: "G+1", quality: "Signature", city: "Pune" } }, { headers: { ...securityHeaders, "cache-control": "no-store" } });
+      return Response.json({
+        input: { width: 30, length: 50, floors: "G+1", quality: "Signature", city: "Pune" },
+        estimate: {
+          plotSqft: 1500,
+          builtUpSqft: 1830,
+          lowInr: 3_703_920,
+          highInr: 4_428_600,
+          floors: "G+1",
+          quality: "Signature",
+          city: "Pune",
+          disclaimer: "Indicative concept-stage estimate; not a contractor quote.",
+        },
+        basis: {
+          ruleVersion: 1,
+          rulePublishedDate: "2026-08-16",
+          benchmarkStatus: "internal_directional_rule",
+          marketBenchmarkAsOf: null,
+          marketWarning: "Internal planning assumptions are not independently calibrated to current local quotes.",
+          currency: "INR",
+          confidence: "directional",
+          areaMethod: "Plot area × floor-programme factor",
+          costMethod: "Likely built-up area × internal finish benchmark × city factor",
+          floorFactor: 1.22,
+          finishRateInrPerSqft: 2200,
+          cityFactor: 1,
+          lowFactor: 0.92,
+          highFactor: 1.1,
+          taxesAndStatutoryFees: "excluded",
+          exclusions: ["Taxes and statutory fees"],
+        },
+      }, { headers: { ...securityHeaders, "cache-control": "no-store" } });
     }
     if (url.pathname === "/api/commerce/catalog") {
       return Response.json({ plans: [{ id: "decision_compare", amountPaise: 99_900, currency: "INR", acceptingOrders: false }] }, { headers: { ...securityHeaders, "cache-control": "no-store" } });

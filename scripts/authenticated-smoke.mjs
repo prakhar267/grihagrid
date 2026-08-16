@@ -5,6 +5,13 @@ import { pathToFileURL } from "node:url";
 const REQUEST_TIMEOUT_MS = 15_000;
 const SESSION_COOKIE = "__Host-grihagrid_session";
 const CSRF_COOKIE = "grihagrid_csrf";
+const ESTIMATOR_CANARY_INPUT = Object.freeze({
+  width: 30,
+  length: 50,
+  floors: "G+1",
+  quality: "Signature",
+  city: "Pune",
+});
 
 function canonicalOrigin(raw) {
   const origin = new URL(raw);
@@ -72,6 +79,8 @@ export async function runAuthenticatedSmoke(rawOrigin, credentials, options = {}
   let immutableReportSha256 = "";
   let sessionRevocationVerified = false;
   let projectCreateAttempted = false;
+  let publicEstimateVerified = false;
+  let projectCreateReplayVerified = false;
   const cleanupIds = new Set();
   const deletedIds = new Set();
   let primaryError = null;
@@ -136,26 +145,51 @@ export async function runAuthenticatedSmoke(rawOrigin, credentials, options = {}
       "canary session belongs to the wrong account",
     );
 
+    const publicEstimate = legacyWorker ? null : await call("/api/estimate", {
+      method: "POST",
+      body: JSON.stringify(ESTIMATOR_CANARY_INPUT),
+    });
+    if (!legacyWorker) {
+      assert.deepEqual(publicEstimate?.input, ESTIMATOR_CANARY_INPUT, "public estimator changed the canary tuple");
+      assert.ok(Number.isInteger(publicEstimate?.basis?.ruleVersion), "public estimator did not expose a rule version");
+    }
+
     projectCreateAttempted = true;
+    const projectCreationKey = `release-canary-${crypto.randomUUID()}`;
+    const createBody = JSON.stringify({
+      name: marker,
+      input: {
+        ...ESTIMATOR_CANARY_INPUT,
+        bedrooms: 3,
+        bathrooms: 3,
+        parking: true,
+      },
+    });
     const created = await call("/api/projects", {
       method: "POST",
-      body: JSON.stringify({
-        name: marker,
-        input: {
-          width: 30,
-          length: 50,
-          floors: "G+1",
-          quality: "Signature",
-          city: "Pune",
-          bedrooms: 3,
-          bathrooms: 3,
-          parking: true,
-        },
-      }),
+      headers: legacyWorker ? {} : { "idempotency-key": projectCreationKey },
+      body: createBody,
     }, [201]);
     projectId = String(created?.project?.id || "");
     assert.match(projectId, /^[0-9a-f-]{36}$/u, "canary project did not return a valid identifier");
     cleanupIds.add(projectId);
+    if (!legacyWorker) {
+      for (const field of Object.keys(ESTIMATOR_CANARY_INPUT)) {
+        assert.equal(created?.project?.input?.[field], ESTIMATOR_CANARY_INPUT[field], `created project changed estimator field ${field}`);
+      }
+      for (const field of ["plotSqft", "builtUpSqft", "lowInr", "highInr", "floors", "quality", "city"]) {
+        assert.equal(created?.project?.estimate?.[field], publicEstimate?.estimate?.[field], `created project estimate changed ${field}`);
+      }
+      assert.equal(created?.project?.estimateRuleVersion, publicEstimate?.basis?.ruleVersion, "created project used a different estimate rule version");
+      publicEstimateVerified = true;
+      const replayed = await call("/api/projects", {
+        method: "POST",
+        headers: { "idempotency-key": projectCreationKey },
+        body: createBody,
+      }, [200]);
+      assert.equal(replayed?.project?.id, projectId, "project create replay returned a different project");
+      projectCreateReplayVerified = true;
+    }
 
     const encodedProjectId = encodeURIComponent(projectId);
     const project = await call(`/api/projects/${encodedProjectId}`);
@@ -275,6 +309,8 @@ export async function runAuthenticatedSmoke(rawOrigin, credentials, options = {}
     checkedAt: new Date().toISOString(),
     legacyWorker,
     projectCreateAttempted,
+    publicEstimateVerified,
+    projectCreateReplayVerified,
     projectCreated: cleanupIds.size > 0,
     projectDeleted: cleanupIds.size > 0 && deletedIds.size === cleanupIds.size,
     canaryProjectIds: [...cleanupIds].sort(),

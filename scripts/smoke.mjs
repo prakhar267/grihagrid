@@ -90,6 +90,7 @@ export async function runSmoke(rawOrigin, options = {}) {
     assert.equal(body.status, "ready");
     assert.equal(body.checks?.familyAlignmentSchema, "current");
     assert.equal(body.checks?.reportFeedbackSchema, "current");
+    assert.equal(body.checks?.projectCreationSchema, "current");
     assert.equal(body.checks?.privateStorage, "unavailable");
     assert.deepEqual(body.checks?.acceptingPaidPlans, expectCheckout ? ["decision_compare"] : []);
     assert.equal(body.capabilities?.freePlanning, true);
@@ -111,6 +112,7 @@ export async function runSmoke(rawOrigin, options = {}) {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ width: 30, length: 50, floors: "G+1", quality: "Signature", city: "Pune" }),
   }, (body) => {
+    assert.deepEqual(body.input, { width: 30, length: 50, floors: "G+1", quality: "Signature", city: "Pune" });
     assert.equal(body.estimate?.plotSqft, 1500);
     assert.equal(body.estimate?.builtUpSqft, 1830);
     assert.equal(body.estimate?.lowInr, 3_703_920);
@@ -118,6 +120,15 @@ export async function runSmoke(rawOrigin, options = {}) {
     assert.equal(body.estimate?.floors, "G+1");
     assert.equal(body.estimate?.quality, "Signature");
     assert.equal(body.estimate?.city, "Pune");
+    assert.equal(body.basis?.ruleVersion, 1);
+    assert.equal(body.basis?.rulePublishedDate, "2026-08-16");
+    assert.equal(body.basis?.benchmarkStatus, "internal_directional_rule");
+    assert.equal(body.basis?.marketBenchmarkAsOf, null);
+    assert.match(body.basis?.marketWarning || "", /not independently calibrated/u);
+    assert.equal(body.basis?.finishRateInrPerSqft, 2200);
+    assert.equal(body.basis?.cityFactor, 1);
+    assert.equal(body.basis?.taxesAndStatutoryFees, "excluded");
+    assert.ok(Array.isArray(body.basis?.exclusions) && body.basis.exclusions.length >= 1);
   }));
 
   checks.push(await jsonCheck(origin, "/api/commerce/catalog", {}, (body) => {

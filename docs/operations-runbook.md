@@ -283,6 +283,10 @@ Migrations currently run in this order:
 13. `0013_report_feedback_and_intake_hardening.sql`: one structured feedback
     record per immutable report revision/schema; owner/archive and vocabulary
     guards; database project-input allowlisting; and a 50-project account cap.
+14. `0014_project_creation_idempotency.sql`: nullable project-creation key and
+    request digests plus a unique per-user partial index, allowing an exact lost
+    create response to replay without a duplicate project or KPI increment while
+    remaining compatible with the previous Worker's explicit insert.
 
 Each schema-and-Worker release is one ordered change: audit and back up D1,
 apply the migration, verify the expanded schema and its compatibility with the
@@ -347,8 +351,12 @@ release artifacts.
 After migration, require `report_feedback` to be empty when `0013` was newly
 applied, `PRAGMA foreign_key_check` to return no rows, the feedback table, both
 feedback indexes, all five `0013` triggers, the protected baseline objects and
-the required columns to exist. Readiness must report
-`reportFeedbackSchema=current` and `reportFeedback=true` while every paid and
+the required columns to exist. For `0014`, require both nullable creation
+metadata columns and `idx_projects_user_creation_key`. The release evidence
+canonicalizer represents a pre-0014 missing creation field as `null`, so the
+first additive upgrade compares equal while every later non-null digest remains
+protected byte-for-byte. Readiness must report `reportFeedbackSchema=current`,
+`projectCreationSchema=current`, and `reportFeedback=true` while every paid and
 upload control remains closed.
 
 Before deploying the candidate, run the reviewed **current** authenticated
@@ -1010,6 +1018,13 @@ updates. That compatibility is containment, not a normal operating mode:
 - after roll-forward, require `revisionSchema=current`, regenerate v2 explicitly,
   and reconcile `projects.input_revision` to the maximum stored revision for
   every project before reopening edits.
+
+Migration `0014` is likewise rollback-compatible: its columns are nullable and
+the previous Worker names every insert column, so it neither depends on nor
+corrupts creation metadata. A previous Worker does not provide keyed-create
+replay semantics, so keep the release quiet during rehearsal and require the
+current harness to create, read, generate, delete, and prove exact-ID zero
+residue before that version can be selected for rollback.
 
 ```sql
 SELECT p.id,p.input_revision,MAX(r.revision) AS stored_revision

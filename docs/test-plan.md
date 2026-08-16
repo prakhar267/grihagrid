@@ -10,7 +10,10 @@ interleaved within their own real-D1 fixtures.
 
 ## Critical paths
 
-1. Home → adjust estimate → start project → complete four steps → dashboard → report.
+1. Home → adjust width, length, city, floors, and finish → receive an exact
+   calculation-checked range and published rule basis → use those details → complete four
+   steps → create the project → require the stored recalculation to match →
+   dashboard → report.
 2. Home → pricing → select plan → account route.
 3. Login/register validation and demo dashboard handoff.
 4. Dashboard → report → pricing upgrade.
@@ -45,10 +48,22 @@ interleaved within their own real-D1 fixtures.
 ## API cases
 
 - `GET /api/health`: dependency-independent liveness returns 200.
-- `GET /api/readiness`: 200 only with current D1 schema and KV; otherwise 503,
+- `GET /api/readiness`: 200 only with current D1 schema, including
+  `projectCreationSchema=current`, and KV; otherwise 503,
   while separately reporting AI schema/admission/config validity and optional
   upload and checkout capability.
-- `POST /api/estimate`: valid result; defaults; malformed JSON; wrong content type; dimensions below/above bounds.
+- `POST /api/estimate`: exact five-field allowlist; primitive finite width and
+  length at inclusive 10/500 boundaries; missing/null optional defaults; every
+  supported city/floor/finish; malformed JSON; wrong content type; scalar type
+  confusion; `NaN`/infinity at the pure boundary; dimensions below/above bounds;
+  enum case/typos; arrays/objects; and unknown address/account/project fields.
+  Require the exact normalized `{ input, estimate, basis }` envelope, finite
+  non-negative numbers, `lowInr <= highInr`, matching enum echoes, a non-empty
+  disclaimer, a real published/versioned INR directional rule, explicit
+  `internal_directional_rule` status, `null` current-market calibration date, a
+  bounded market warning, positive factors and rate, `lowFactor < highFactor`,
+  exact tuple/basis/output arithmetic, explicit tax/fee exclusion, and one to
+  eight bounded exclusions. Public browser requests must omit cookies and CSRF.
 - `POST /api/leads`: valid email; invalid email; duplicate email; unavailable database.
 - `POST /api/auth/logout`: trusted-origin live session requires matching CSRF,
   deletes only the current D1 session, clears both cookies and returns empty `204`;
@@ -63,9 +78,12 @@ interleaved within their own real-D1 fixtures.
   and invalid dimensions. Require exact root/nested allowlists and typed
   categorical bounds; reject hidden `soilReport`/metadata claims, fail closed
   on KV read **or** write failure, enforce isolated 20/hour account limits and
-  the SQL-time 50-project ceiling. Seed exactly 50 active/archived projects,
-  require create 51 to fail without a partial row, and always retain the
-  geotechnical-verification risk.
+  the SQL-time 50-project ceiling. Test an absent/malformed key, first `201`,
+  same-key/same-normalized-request `200`, same-key/different-request `409`, lost
+  success, unique-index races, and the 49→50 trigger race. Every keyed replay
+  must return one canonical project and increment estimator attribution at most
+  once. Seed exactly 50 active/archived projects, require create 51 to fail
+  without a partial row, and always retain the geotechnical-verification risk.
 - Unknown `/api/*`: JSON 404. Unknown browser route: SPA fallback.
 - Project Decision Home: `GET /api/projects/:projectId/home` is authenticated,
   owner-scoped, `no-store`, bounded to the documented `{ project, lifecycle,
@@ -131,10 +149,11 @@ interleaved within their own real-D1 fixtures.
   checkout and fulfillment controls remain closed throughout the suite.
 - Populated upgrade: apply migrations through `0011` to a fixture containing a
   real owner, non-first input revision and saved schema-v1 report, then apply
-  `0012` and `0013`. Require exact preservation of the v1 bytes and honest
+  `0012`, `0013`, and `0014`. Require exact preservation of the v1 bytes and honest
   baseline, zero fabricated revisions/feedback, canonical removal of unsupported
-  keys only on the next real source revision, and enforcement of the 50→51
-  project ceiling.
+  keys only on the next real source revision, null creation metadata on existing
+  projects, the unique per-user creation-key index, and enforcement of the
+  50→51 project ceiling.
 - Rollback compatibility: run the reviewed current authenticated harness in
   legacy-Worker mode against the previous Worker after migration, not a harness
   copied from the previous commit. Triggers must capture an honest revision with
@@ -288,6 +307,23 @@ interleaved within their own real-D1 fixtures.
   issues, selections, Family Alignment rooms/receipts, cap overruns, or D1
   write errors.
 
+## Public estimator manual acceptance matrix
+
+| Area | Test | Required result |
+|---|---|---|
+| Happy path | Change each of width, length, city, floors, and finish independently, then use the confirmed details to create a project | Every change reaches the Worker; displayed and created-project plot area, built-up area, low/high INR, normalized tuple, and rule basis reconcile exactly |
+| Bounds and types | Enter 10, 500, 9.99, 500.01, blank/intermediate values, normal typed/pasted numbers, exponent notation, `NaN`/infinity through the pure boundary, and type-confused API JSON | Values that normalize to primitive finite numbers inside inclusive bounds pass; every unsupported value has associated text, makes no valid API request, and never produces or transfers a confirmed range |
+| Enums and allowlist | Exercise every supported city/floor/finish; send typos, case variants, arrays/objects, and address/account/project/price fields | Supported choices return their exact normalized tuple; every unsupported/unknown field is bounded `400 invalid_estimate_request` with no echo or coercion |
+| Race | Delay request A, change controls to B, let B resolve, then deliver A; repeat with abort during rapid edits | Only B can become confirmed; A is ignored and cannot overwrite the range, basis, stored tuple, or status. Valid B remains eligible for handoff independently of A |
+| Loading | Throttle the estimate request on initial load and after a valid edit, then continue before it resolves | The pending state is announced without focus theft; no stale range is labelled current; the five-field valid tuple is carried forward and successful project creation recalculates it on the Worker |
+| Unavailable | Inject timeout, offline, network reset, 5xx, non-JSON success, missing disclaimer, inverted/negative/non-finite output, stale input, and malformed/extra/missing basis fields, then continue with the valid tuple | Inputs remain editable and recoverable; the state is announced; no browser-price fallback, partial render, false confirmation, or estimate transfer occurs; project handoff remains available and creation recalculates the tuple on the Worker |
+| Basis and boundary | Open the methodology disclosure for Essential/Signature/Premium/Luxury and representative cities | Rule version/publication date, internal-benchmark status, absent current-market calibration date, market-change warning, directional confidence, methods, selected factors/rate, band, INR, tax/fee treatment, exclusions, and professional boundary are accurate and keyboard-readable |
+| Storage and navigation privacy | Seed session storage with valid fields plus address, account/project IDs, nested tokens, malformed JSON, incomplete tuples, and wrong scalar types; then make storage reads/writes throw through estimator → start → register. Explicitly abandon to Home, then perform an unrelated login | Estimator recovery restores only five tuple fields. Auth continuation carries only the documented full-draft allowlist, source marker, and opaque retry key in same-tab state/session storage; every arbitrary extra is discarded, no URL/estimate/identity/credential is added, blocked storage still works, and abandonment prevents later silent creation |
+| Anonymous transport | Use the estimator while logged out and while a valid account session/CSRF cookie exists; inspect request headers and Worker logs | Both requests use `credentials: omit`, send no cookie/CSRF, and log only the templated route/bounded outcome without tuple or private values |
+| Server-tied leading KPI | Create projects after confirmed, loading, unavailable, storage-backed, and navigation-fallback estimator handoffs; replay a lost `201` with the same key; race duplicate/conflicting bodies; repeat with invalid/unauthorized/rejected/direct-start requests, a direct generic event submission, and injected aggregate-write failure | The first-party client sends exact attribution plus matching `Idempotency-Key` only for its continuation. One insert and one aggregate result; exact retries return canonical `200`, conflicts return `409`, and all rejected/direct cases record none. Generic submission is `400 invalid_event`; aggregate failure preserves the project and `201`. The aggregate row contains no tuple, identity, resource ID, or client timestamp |
+| Accessibility | Complete per-field invalid → loading → confirmed → unavailable → retry → recovered flows using keyboard and VoiceOver/NVDA at 390 px, 200% zoom/text spacing, high contrast, and reduced motion; change the tuple during one retry | Width/length errors are individually associated and other errors are announced; labels/status/disclosure are programmatic; retry focus stays stable on pending/failure, moves to status only after success for the unchanged tuple, and is cancelled for a changed tuple; text—not colour—communicates state, targets reflow, and no horizontal overflow occurs |
+| Guardrail | Compare public and create-project responses across representative city/floor/finish fixtures and both dimension boundaries | Exact mismatch count is zero for normalized tuple, rule version, plot/built-up area, and low/high INR; any mismatch blocks promotion |
+
 ## Decision Compare manual acceptance matrix
 
 | Area | Test | Required result |
@@ -349,7 +385,7 @@ interleaved within their own real-D1 fixtures.
 | Side effects | Save with an active Family room, old comparison/choice and purchased snapshot | Family link closes; old decision/payment evidence is unchanged and clearly historical, never current |
 | Archive and ownership | Read archived history, attempt every write, and repeat as another account | Archived owner can read history only; all writes fail closed; foreign/missing resources share safe `404` behavior |
 | Accessibility | Keyboard, screen reader, 200% zoom, text spacing, reduced motion, high contrast and 390 px | Logical edit/review/history order, announced errors/status, non-colour change cues, stable focus and no overflow |
-| Operations | Inspect readiness, populated `0011`→`0013` migration, backup and current-harness old-Worker rehearsal | `revisionSchema=current`, `briefCheck=true`; v1 bytes remain immutable; no ID/input/key in logs; rollback is gated on compatibility and exact-ID cleanup |
+| Operations | Inspect readiness, populated `0011`→`0014` migration, backup and current-harness old-Worker rehearsal | `revisionSchema=current`, `projectCreationSchema=current`, `briefCheck=true`; existing project/report values remain unchanged; no ID/input/key in logs; rollback is gated on compatibility and exact-ID cleanup |
 
 ## Report feedback manual acceptance matrix
 
@@ -391,7 +427,8 @@ Attach to the release record, without secrets or customer data:
   schema-v1 API/UI/D1 rejection, archived/ownership/CSRF/KV-failure/rate-limit
   evidence, the exact 60→61 feedback limit and 50→51 project cap, concurrent
   atomic-write and archive/delete-race evidence, D1 guard bypasses, aggregate redaction,
-  populated `0011`→`0013` upgrade, failed/successful exact-ID canary cleanup,
+  populated `0011`→`0014` upgrade, project-create replay/race proof,
+  public-to-created estimate equality, failed/successful exact-ID canary cleanup,
   print exclusion and keyboard/screen-reader/reflow results;
 - encrypted D1 backup checksum, isolated restore counts and measured RTO; and
 - go/no-go sign-off from founder/product, engineering on-call, payment owner,

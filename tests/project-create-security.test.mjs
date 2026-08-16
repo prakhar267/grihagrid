@@ -50,11 +50,33 @@ class ThrowingKv {
   }
 }
 
+class OneShotBarrier {
+  constructor(participants) {
+    this.remaining = participants;
+    this.released = false;
+    this.promise = new Promise((resolve) => { this.release = resolve; });
+  }
+
+  async wait() {
+    if (this.released) return;
+    this.remaining -= 1;
+    if (this.remaining === 0) {
+      this.released = true;
+      this.release();
+    }
+    await this.promise;
+  }
+}
+
 class MemoryD1 {
   constructor() {
     this.users = [];
     this.sessions = [];
     this.projects = [];
+    this.aggregates = [];
+    this.failAggregates = false;
+    this.projectReplayBarrier = null;
+    this.projectLimitErrors = 0;
   }
 
   prepare(sql) {
@@ -92,6 +114,14 @@ class MemoryStatement {
       const userId = this.values.find((value) => this.db.users.some((user) => user.id === value));
       return { count: this.db.projects.filter((project) => project.user_id === userId).length };
     }
+    if (this.sql.includes("p.creation_key_hash=?")) {
+      await this.db.projectReplayBarrier?.wait();
+      const [userId, creationKeyHash] = this.values;
+      const project = this.db.projects.find((candidate) => (
+        candidate.user_id === userId && candidate.creation_key_hash === creationKeyHash
+      ));
+      return project ? { ...project, report_available: 0 } : null;
+    }
     throw new Error(`Unhandled MemoryD1 first(): ${this.sql}`);
   }
 
@@ -109,9 +139,18 @@ class MemoryStatement {
         estimate_rule_version,
         brief_check_version,
         brief_check_json,
+        creation_key_hash,
+        creation_request_hash,
         created_at,
         updated_at,
       ] = this.values;
+      if (this.db.projects.filter((project) => project.user_id === user_id).length >= 50) {
+        this.db.projectLimitErrors += 1;
+        throw new Error("project account limit reached");
+      }
+      if (creation_key_hash && this.db.projects.some((project) => (
+        project.user_id === user_id && project.creation_key_hash === creation_key_hash
+      ))) throw new Error("UNIQUE constraint failed: projects.user_id, projects.creation_key_hash");
       this.db.projects.push({
         id,
         user_id,
@@ -124,8 +163,22 @@ class MemoryStatement {
         estimate_rule_version,
         brief_check_version,
         brief_check_json,
+        creation_key_hash,
+        creation_request_hash,
         created_at,
         updated_at,
+      });
+      return { success: true, meta: { changes: 1 } };
+    }
+    if (this.sql.startsWith("INSERT INTO product_event_aggregates")) {
+      if (this.db.failAggregates) throw new Error("synthetic aggregate failure");
+      const existing = this.db.aggregates.find((row) => row.event_name === "public_estimator_brief_started");
+      if (existing) existing.event_count += 1;
+      else this.db.aggregates.push({
+        event_name: "public_estimator_brief_started",
+        surface: "public_estimator",
+        outcome: "success",
+        event_count: 1,
       });
       return { success: true, meta: { changes: 1 } };
     }
@@ -159,16 +212,19 @@ async function seedAuth(db, suffix = "000000000001") {
   };
 }
 
-async function postProject(env, auth, body, ip = "203.0.113.10") {
+async function postProject(env, auth, body, ip = "203.0.113.10", entryPoint = null, idempotencyKey = null) {
+  const headers = {
+    origin: ORIGIN,
+    "content-type": "application/json",
+    cookie: auth.cookie,
+    "x-csrf-token": auth.csrf,
+    "cf-connecting-ip": ip,
+  };
+  if (entryPoint) headers["x-grihagrid-entry-point"] = entryPoint;
+  if (idempotencyKey) headers["idempotency-key"] = idempotencyKey;
   const response = await worker.fetch(new Request(`${ORIGIN}/api/projects`, {
     method: "POST",
-    headers: {
-      origin: ORIGIN,
-      "content-type": "application/json",
-      cookie: auth.cookie,
-      "x-csrf-token": auth.csrf,
-      "cf-connecting-ip": ip,
-    },
+    headers,
     body: typeof body === "string" ? body : JSON.stringify(body),
   }), env);
   return { response, payload: await response.json() };
@@ -349,6 +405,196 @@ test("project creation maps KV failures to a fail-closed operational response", 
   });
   assert.ok(logs.some((line) => line.includes('"outcome":"control_closed"')), "operations log must classify the fail-closed control");
   assert.equal(db.projects.length, 0);
+});
+
+test("public estimator attribution is server-tied to successful project creation", async () => {
+  const db = new MemoryD1();
+  const auth = await seedAuth(db, 350);
+  const env = { ASSETS: assets, DB: db, GRIHAGRID_CACHE: new MemoryKv(), APP_ORIGIN: ORIGIN };
+
+  const rejected = await postProject(
+    env,
+    auth,
+    projectBody({ ...validInput, width: 2 }),
+    "203.0.113.10",
+    "public_estimator",
+  );
+  assert.equal(rejected.response.status, 400);
+  assert.equal(db.projects.length, 0);
+  assert.equal(db.aggregates.length, 0);
+
+  const attributed = await postProject(env, auth, projectBody(), "203.0.113.10", "public_estimator");
+  assert.equal(attributed.response.status, 201, JSON.stringify(attributed.payload));
+  assert.equal(db.projects.length, 1);
+  assert.deepEqual(db.aggregates, [{
+    event_name: "public_estimator_brief_started",
+    surface: "public_estimator",
+    outcome: "success",
+    event_count: 1,
+  }]);
+
+  const directEvent = await worker.fetch(new Request(`${ORIGIN}/api/events`, {
+    method: "POST",
+    headers: {
+      origin: ORIGIN,
+      "content-type": "application/json",
+      cookie: auth.cookie,
+      "x-csrf-token": auth.csrf,
+      "cf-connecting-ip": "203.0.113.10",
+    },
+    body: JSON.stringify({
+      event: "public_estimator_brief_started",
+      properties: { surface: "public_estimator", outcome: "success" },
+    }),
+  }), env);
+  assert.equal(directEvent.status, 400);
+  assert.equal((await directEvent.json()).code, "invalid_event");
+  assert.equal(db.aggregates[0].event_count, 1);
+
+  const directStart = await postProject(env, auth, projectBody(validInput, { name: "Direct start" }));
+  assert.equal(directStart.response.status, 201, JSON.stringify(directStart.payload));
+  assert.equal(db.projects.length, 2);
+  assert.equal(db.aggregates[0].event_count, 1);
+
+  db.failAggregates = true;
+  const ancillaryFailure = await postProject(
+    env,
+    auth,
+    projectBody(validInput, { name: "Attribution unavailable" }),
+    "203.0.113.10",
+    "public_estimator",
+  );
+  assert.equal(ancillaryFailure.response.status, 201, JSON.stringify(ancillaryFailure.payload));
+  assert.equal(db.projects.length, 3, "measurement failure must not roll back a valid project");
+  assert.equal(db.aggregates[0].event_count, 1);
+});
+
+test("project creation safely replays an ambiguous successful response", async () => {
+  const db = new MemoryD1();
+  const auth = await seedAuth(db, 360);
+  const env = { ASSETS: assets, DB: db, GRIHAGRID_CACHE: new MemoryKv(), APP_ORIGIN: ORIGIN };
+  const key = "public-estimator-draft-0001";
+
+  const invalidKey = await postProject(env, auth, projectBody(), "203.0.113.10", null, "bad key!");
+  assert.equal(invalidKey.response.status, 400);
+  assert.equal(invalidKey.payload.code, "invalid_idempotency_key");
+  assert.equal(db.projects.length, 0);
+
+  const created = await postProject(env, auth, projectBody(), "203.0.113.10", "public_estimator", key);
+  assert.equal(created.response.status, 201, JSON.stringify(created.payload));
+  assert.equal(db.projects.length, 1);
+  assert.equal(db.aggregates[0].event_count, 1);
+
+  const replayed = await postProject(env, auth, projectBody(), "203.0.113.10", "public_estimator", key);
+  assert.equal(replayed.response.status, 200, JSON.stringify(replayed.payload));
+  assert.equal(replayed.payload.project.id, created.payload.project.id);
+  assert.deepEqual(replayed.payload.project.input, created.payload.project.input);
+  assert.deepEqual(replayed.payload.project.estimate, created.payload.project.estimate);
+  assert.equal(db.projects.length, 1, "a lost 201 retry must not create a second project");
+  assert.equal(db.aggregates[0].event_count, 1, "a replay must not increment attribution twice");
+
+  const conflict = await postProject(
+    env,
+    auth,
+    projectBody(validInput, { name: "Different project" }),
+    "203.0.113.10",
+    "public_estimator",
+    key,
+  );
+  assert.equal(conflict.response.status, 409);
+  assert.equal(conflict.payload.code, "idempotency_conflict");
+  assert.equal(db.projects.length, 1);
+  assert.equal(db.aggregates[0].event_count, 1);
+});
+
+test("concurrent project creation reconciles the canonical idempotency row", async (t) => {
+  async function fixture(existingProjectCount = 0) {
+    const db = new MemoryD1();
+    const auth = await seedAuth(db, 370);
+    db.projects.push(...Array.from({ length: existingProjectCount }, (_, index) => ({
+      id: `preexisting-project-${index + 1}`,
+      user_id: auth.userId,
+      creation_key_hash: null,
+    })));
+    db.projectReplayBarrier = new OneShotBarrier(2);
+    return {
+      auth,
+      db,
+      env: { ASSETS: assets, DB: db, GRIHAGRID_CACHE: new MemoryKv(), APP_ORIGIN: ORIGIN },
+    };
+  }
+
+  await t.test("same key and body replay the winner after a unique-index race", async () => {
+    const { auth, db, env } = await fixture();
+    const key = "concurrent-project-create-0001";
+    const results = await Promise.all([
+      postProject(env, auth, projectBody(), "203.0.113.10", "public_estimator", key),
+      postProject(env, auth, projectBody(), "203.0.113.10", "public_estimator", key),
+    ]);
+
+    assert.deepEqual(results.map(({ response }) => response.status).sort(), [200, 201]);
+    assert.equal(results[0].payload.project.id, results[1].payload.project.id);
+    assert.equal(db.projects.length, 1, "the concurrent retry must not create a duplicate project");
+    assert.equal(db.projectLimitErrors, 0, "the under-cap test must exercise the unique-index path");
+    assert.deepEqual(db.aggregates, [{
+      event_name: "public_estimator_brief_started",
+      surface: "public_estimator",
+      outcome: "success",
+      event_count: 1,
+    }], "only the winning insert may increment attribution");
+  });
+
+  await t.test("same key with a different body conflicts after a unique-index race", async () => {
+    const { auth, db, env } = await fixture();
+    const key = "concurrent-project-create-0002";
+    const results = await Promise.all([
+      postProject(env, auth, projectBody(), "203.0.113.10", null, key),
+      postProject(env, auth, projectBody(validInput, { name: "Different project" }), "203.0.113.10", null, key),
+    ]);
+    const created = results.find(({ response }) => response.status === 201);
+    const conflict = results.find(({ response }) => response.status === 409);
+
+    assert.ok(created, "exactly one concurrent request must create the canonical project");
+    assert.equal(conflict?.payload.code, "idempotency_conflict");
+    assert.equal(db.projects.length, 1, "conflicting key reuse must not create a duplicate project");
+    assert.equal(db.projectLimitErrors, 0, "the under-cap conflict must exercise the unique-index path");
+  });
+
+  await t.test("same key and body replay the winner at the 49-to-50 account boundary", async () => {
+    const { auth, db, env } = await fixture(49);
+    const key = "concurrent-project-create-0003";
+    const results = await Promise.all([
+      postProject(env, auth, projectBody(), "203.0.113.10", "public_estimator", key),
+      postProject(env, auth, projectBody(), "203.0.113.10", "public_estimator", key),
+    ]);
+
+    assert.deepEqual(results.map(({ response }) => response.status).sort(), [200, 201]);
+    assert.equal(results[0].payload.project.id, results[1].payload.project.id);
+    assert.equal(db.projects.length, 50, "the concurrent retry must not create project 51");
+    assert.equal(db.projectLimitErrors, 1, "the test must exercise the database account-limit race");
+    assert.deepEqual(db.aggregates, [{
+      event_name: "public_estimator_brief_started",
+      surface: "public_estimator",
+      outcome: "success",
+      event_count: 1,
+    }], "only the winning boundary insert may increment attribution");
+  });
+
+  await t.test("same key with a different body conflicts at the 49-to-50 account boundary", async () => {
+    const { auth, db, env } = await fixture(49);
+    const key = "concurrent-project-create-0004";
+    const results = await Promise.all([
+      postProject(env, auth, projectBody(), "203.0.113.10", null, key),
+      postProject(env, auth, projectBody(validInput, { name: "Different project" }), "203.0.113.10", null, key),
+    ]);
+    const created = results.find(({ response }) => response.status === 201);
+    const conflict = results.find(({ response }) => response.status === 409);
+
+    assert.ok(created, "exactly one boundary request must create the canonical project");
+    assert.equal(conflict?.payload.code, "idempotency_conflict");
+    assert.equal(db.projects.length, 50, "conflicting key reuse must not create project 51");
+    assert.equal(db.projectLimitErrors, 1, "the conflict must reconcile after the account-limit trigger");
+  });
 });
 
 test("project creation enforces an isolated 20-per-user hourly limit without exposing identifiers", async () => {

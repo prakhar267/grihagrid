@@ -323,10 +323,10 @@ test("report feedback is exact, private, immutable-report-safe, and observable o
 
     const feedbackMigration = migrationFile(13);
     assert.equal(path.basename(feedbackMigration), "0013_report_feedback_and_intake_hardening.sql");
-    requireD1Success(d1(stateDirectory, "migrate"), "migration 0013 failed");
+    requireD1Success(d1(stateDirectory, "migrate"), "migrations 0013 and 0014 failed");
     const migrationLedger = query(stateDirectory, "SELECT id,name FROM d1_migrations ORDER BY id", "migration ledger query failed");
-    assert.equal(migrationLedger.length, 13);
-    assert.equal(migrationLedger.at(-1)?.name, path.basename(feedbackMigration));
+    assert.equal(migrationLedger.length, 14);
+    assert.equal(migrationLedger.at(-1)?.name, "0014_project_creation_idempotency.sql");
     const schemaObjects = query(
       stateDirectory,
       `SELECT type,name FROM sqlite_master WHERE name IN (
@@ -358,6 +358,7 @@ test("report feedback is exact, private, immutable-report-safe, and observable o
     assert.equal(readiness.response.status, 200, JSON.stringify(readiness.payload));
     assert.equal(readiness.payload.status, "ready");
     assert.equal(readiness.payload.checks.reportFeedbackSchema, "current");
+    assert.equal(readiness.payload.checks.projectCreationSchema, "current");
     assert.equal(readiness.payload.capabilities.reportFeedback, true);
 
     const owner = await register(server.origin, "primary");
@@ -897,7 +898,7 @@ test("report feedback is exact, private, immutable-report-safe, and observable o
   }
 });
 
-test("0013 upgrades populated history, canonicalizes legacy input, rejects v1 feedback, and enforces the exact account cap", { timeout: 180_000 }, async () => {
+test("0012 through 0014 upgrade populated history, preserve legacy bytes, and enforce feedback and project caps", { timeout: 180_000 }, async () => {
   const stateDirectory = mkdtempSync(path.join(tmpdir(), "grihagrid-report-feedback-populated-"));
   const assetsDirectory = path.join(stateDirectory, "assets");
   mkdirSync(assetsDirectory, { recursive: true });
@@ -975,7 +976,7 @@ test("0013 upgrades populated history, canonicalizes legacy input, rejects v1 fe
       );
     `;
     requireD1Success(d1(stateDirectory, "execute", seed), "populated legacy seed failed");
-    requireD1Success(d1(stateDirectory, "migrate"), "populated 0012/0013 upgrade failed");
+    requireD1Success(d1(stateDirectory, "migrate"), "populated 0012/0013/0014 upgrade failed");
     const coreAfterMigration = query(
       stateDirectory,
       `SELECT p.input_json,r.content_json
@@ -985,6 +986,19 @@ test("0013 upgrades populated history, canonicalizes legacy input, rejects v1 fe
     )[0];
     assert.equal(coreAfterMigration.input_json, JSON.stringify(legacyInput));
     assert.equal(coreAfterMigration.content_json, JSON.stringify(legacyReport));
+    const creationSchema = query(
+      stateDirectory,
+      `SELECT p.creation_key_hash,p.creation_request_hash,
+              EXISTS(SELECT 1 FROM sqlite_master
+                       WHERE type='index' AND name='idx_projects_user_creation_key') AS has_creation_index
+         FROM projects p WHERE p.id=${sqlLiteral(projectId)}`,
+      "project creation schema query failed",
+    )[0];
+    assert.deepEqual(creationSchema, {
+      creation_key_hash: null,
+      creation_request_hash: null,
+      has_creation_index: 1,
+    });
 
     server = await startWorker(stateDirectory, assetsDirectory, port);
     const auth = {

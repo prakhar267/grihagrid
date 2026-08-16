@@ -23,6 +23,10 @@ const REQUIRED_0013_OBJECTS = Object.freeze([
   "trigger:project_account_limit_insert_guard",
 ]);
 
+const REQUIRED_0014_OBJECTS = Object.freeze([
+  "index:idx_projects_user_creation_key",
+]);
+
 const REQUIRED_BASELINE_OBJECTS = Object.freeze([
   "table:users",
   "table:projects",
@@ -37,6 +41,7 @@ const REQUIRED_BASELINE_OBJECTS = Object.freeze([
 const REQUIRED_COLUMNS = Object.freeze([
   "users:id", "users:email", "users:password_hash", "users:password_salt", "users:password_iterations", "users:password_algorithm",
   "projects:id", "projects:user_id", "projects:status", "projects:input_json", "projects:input_revision", "projects:input_hash", "projects:brief_check_json",
+  "projects:creation_key_hash", "projects:creation_request_hash",
   "orders:id", "orders:project_id", "orders:plan", "orders:status", "orders:product_code", "orders:request_hash",
   "project_revisions:project_id", "project_revisions:revision", "project_revisions:content_hash", "project_revisions:input_json", "project_revisions:brief_check_json",
   "report_feedback:project_id", "report_feedback:project_revision", "report_feedback:report_schema_version", "report_feedback:user_id",
@@ -77,6 +82,17 @@ function canonicalTable(payload, expectedCount, label) {
   return { rowCount: rows.length, sha256: sha256(stableStringify(rows)) };
 }
 
+function canonicalProjects(payload, expectedCount) {
+  const rows = d1Rows(payload, "projects canonical rows");
+  assert.equal(rows.length, expectedCount, "projects canonical query was truncated or inconsistent");
+  const canonicalRows = rows.map((row) => ({
+    ...row,
+    creation_key_hash: row.creation_key_hash ?? null,
+    creation_request_hash: row.creation_request_hash ?? null,
+  }));
+  return { rowCount: rows.length, sha256: sha256(stableStringify(canonicalRows)) };
+}
+
 export function buildPreMigrationEvidence({ environment, countsPayload, auditPayload, projectsPayload, reportsPayload }) {
   assert.match(String(environment), /^(?:staging|production)$/u, "invalid release environment");
   const counts = exactCounts(countsPayload);
@@ -100,7 +116,7 @@ export function buildPreMigrationEvidence({ environment, countsPayload, auditPay
     counts,
     legacySafety: audit,
     canonical: {
-      projects: canonicalTable(projectsPayload, counts.projects, "projects"),
+      projects: canonicalProjects(projectsPayload, counts.projects),
       reports: canonicalTable(reportsPayload, counts.reports, "reports"),
     },
   };
@@ -127,7 +143,7 @@ export function verifyPostMigrationEvidence({
   );
 
   const schemaNames = new Set(d1Rows(schemaPayload, "schema objects").map((row) => `${row.type}:${row.name}`));
-  for (const name of [...REQUIRED_BASELINE_OBJECTS, ...REQUIRED_0013_OBJECTS]) {
+  for (const name of [...REQUIRED_BASELINE_OBJECTS, ...REQUIRED_0013_OBJECTS, ...REQUIRED_0014_OBJECTS]) {
     assert.ok(schemaNames.has(name), `required schema object is missing: ${name}`);
   }
   const columns = new Set(d1Rows(columnsPayload, "schema columns").map((row) => `${row.table_name}:${row.name}`));
@@ -136,7 +152,7 @@ export function verifyPostMigrationEvidence({
   const counts = exactCounts(countsPayload);
   assert.deepEqual(counts, pre.counts, "migration changed protected table row counts");
   const canonical = {
-    projects: canonicalTable(projectsPayload, counts.projects, "projects"),
+    projects: canonicalProjects(projectsPayload, counts.projects),
     reports: canonicalTable(reportsPayload, counts.reports, "reports"),
   };
   assert.deepEqual(canonical, pre.canonical, "migration changed canonical projects or reports bytes");
@@ -156,7 +172,7 @@ export function verifyPostMigrationEvidence({
     foreignKeyCheckRows: 0,
     reportFeedbackRows,
     feedbackMigrationPending: Boolean(feedbackMigrationPending),
-    requiredSchemaObjects: [...REQUIRED_BASELINE_OBJECTS, ...REQUIRED_0013_OBJECTS],
+    requiredSchemaObjects: [...REQUIRED_BASELINE_OBJECTS, ...REQUIRED_0013_OBJECTS, ...REQUIRED_0014_OBJECTS],
     requiredColumns: [...REQUIRED_COLUMNS],
   };
 }

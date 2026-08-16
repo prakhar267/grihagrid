@@ -6,13 +6,32 @@ import {
   ShareNetwork, ShieldCheck, SignOut, Sparkle, Stack, Trash, UploadSimple, UserCircle,
   WarningCircle, X, XCircle,
 } from "@phosphor-icons/react";
-import { api, ApiError, copyText, formatDate, formatDateTime, formatLakh, idempotencyKey, trackEvent } from "./api.js";
+import { api, ApiError, copyText, formatDate, formatDateTime, formatLakh, idempotencyKey, publicApi, trackEvent } from "./api.js";
 import {
   LOGOUT_CHANNEL_NAME, LOGOUT_FAILURE_MESSAGE, broadcastLogout, clearLocalLogoutState, confirmLogout,
   isApplicationUnauthenticated, isCurrentSessionRevalidationTarget, isLogoutBroadcast,
   isLogoutChannelMessage, privateRouteAfterUnauthenticated, shouldRevalidateSession,
 } from "./logout.js";
 import { reportFeedbackConcernState, resolveArchivedReportFeedback } from "./report-feedback-state.js";
+import {
+  ESTIMATOR_CITIES,
+  ESTIMATOR_FLOORS,
+  ESTIMATOR_QUALITIES,
+  consumePublicEstimatorAttribution,
+  estimatorAuthContinuationState,
+  estimatorRequestKey,
+  isPublicEstimatorAttribution,
+  normalizePublicEstimateEnvelope,
+  parseStoredEstimatorScenario,
+  publicEstimatorAttributionHeaders,
+  safeSessionStorage,
+  selectAuthPendingProjectDraft,
+  selectAuthProjectCreationKey,
+  selectEstimatorScenario,
+  storeEstimatorHandoff,
+  validProjectCreationKey,
+  validateEstimatorScenario,
+} from "./public-estimator.js";
 
 const cityFactors = { Pune: 1, Bengaluru: 1.08, Mumbai: 1.18, Delhi: 1.1, Hyderabad: .98, Chennai: 1.02, Jaipur: .88, Other: .95 };
 const qualityRates = { Essential: 1750, Signature: 2200, Premium: 2850, Luxury: 3900 };
@@ -65,8 +84,8 @@ function usePrivateUploadCapability() {
   return state;
 }
 
-function route(path) {
-  window.history.pushState({}, "", path);
+function route(path, state = {}) {
+  window.history.pushState(state, "", path);
   window.dispatchEvent(new PopStateEvent("popstate"));
   const hash = path.includes("#") ? path.slice(path.indexOf("#") + 1) : "";
   if (hash) window.requestAnimationFrame(() => document.getElementById(safeDecodePathSegment(hash))?.scrollIntoView({ behavior: "smooth", block: "start" }));
@@ -77,6 +96,48 @@ function replaceRoute(path, state = {}) {
   window.dispatchEvent(new PopStateEvent("popstate"));
 }
 
+function completePublicEstimatorHandoff() {
+  consumePublicEstimatorAttribution(safeSessionStorage());
+  removeSessionValue("grihagrid.projectCreationKey");
+}
+
+function abandonPendingProjectHandoff() {
+  removeSessionValue("grihagrid.pendingProject");
+  completePublicEstimatorHandoff();
+}
+
+function setSessionValue(key, value) {
+  try { const storage=safeSessionStorage();if(!storage)return false;storage.setItem(key,value);return true; } catch { return false; }
+}
+
+function removeSessionValue(key) {
+  try { safeSessionStorage()?.removeItem(key); } catch { /* Browser storage cleanup is ancillary. */ }
+}
+
+function pendingProjectValue() {
+  return selectAuthPendingProjectDraft(safeSessionStorage(), window.history.state);
+}
+
+function pendingAuthContinuationState() {
+  return estimatorAuthContinuationState(
+    safeSessionStorage(),
+    window.history.state,
+    pendingProjectValue(),
+    window.history.state?.projectCreationKey,
+  );
+}
+
+function useProjectCreationKey(recoverStored = false) {
+  const [key] = useState(() => validProjectCreationKey(window.history.state?.projectCreationKey)
+    || (recoverStored ? selectAuthProjectCreationKey(safeSessionStorage(), window.history.state) : null)
+    || crypto.randomUUID());
+  useEffect(() => {
+    if (window.history.state?.projectCreationKey === key) return;
+    window.history.replaceState({ ...(window.history.state || {}), projectCreationKey: key }, "", window.location.href);
+  }, [key]);
+  return key;
+}
+
 function isPrivateAccountPath(pathname) {
   return /^\/(?:dashboard|orders(?:\/|$)|projects\/|report\/|checkout\/return)/u.test(pathname);
 }
@@ -85,8 +146,8 @@ function safeDecodePathSegment(value) {
   try { return decodeURIComponent(value); } catch { return value; }
 }
 
-function Brand({ inverted = false }) {
-  return <button className={`brand ${inverted ? "brand--inverted" : ""}`} onClick={() => route("/")} aria-label="GrihaGrid home">GrihaGrid</button>;
+function Brand({ inverted = false, disabled = false, onHome = null }) {
+  return <button className={`brand ${inverted ? "brand--inverted" : ""}`} disabled={disabled} onClick={() => onHome ? onHome() : route("/")} aria-label="GrihaGrid home">GrihaGrid</button>;
 }
 
 function Header({ user }) {
@@ -154,25 +215,131 @@ function SectionHeading({ kicker, title, copy, align = "left" }) {
 }
 
 function EstimateInstrument({ condensed = false, initial }) {
-  const [width, setWidth] = useState(initial?.width || 30);
-  const [length, setLength] = useState(initial?.length || 50);
-  const [city, setCity] = useState(initial?.city || "Bengaluru");
-  const [floors, setFloors] = useState(initial?.floors || "G+1");
-  const [quality] = useState(initial?.quality || "Signature");
-  const estimate = useMemo(() => {
-    const builtUp = Math.round(width * length * floorFactors[floors]);
-    const midpoint = builtUp * qualityRates[quality] * cityFactors[city];
-    return { builtUp, low: midpoint * .92, high: midpoint * 1.1 };
-  }, [width, length, city, floors, quality]);
+  const defaultScenario = { width: 30, length: 50, city: "Bengaluru", floors: "G+1", quality: "Signature" };
+  const startingScenario = parseStoredEstimatorScenario({ ...defaultScenario, ...initial }) || defaultScenario;
+  const [width, setWidth] = useState(String(startingScenario.width));
+  const [length, setLength] = useState(String(startingScenario.length));
+  const [city, setCity] = useState(startingScenario.city);
+  const [floors, setFloors] = useState(startingScenario.floors);
+  const [quality, setQuality] = useState(startingScenario.quality);
+  const [retry, setRetry] = useState(0);
+  const [result, setResult] = useState({ phase: "loading", requestKey: "", envelope: null, message: "" });
+  const latestRequestKey = useRef("");
+  const retryFocusRequested = useRef(false);
+  const retryFocusRequestKey = useRef("");
+  const statusRef = useRef(null);
+  const widthErrorId = useId();
+  const lengthErrorId = useId();
+  const scenarioErrorId = useId();
+  const scenario = useMemo(() => ({
+    width: width === "" ? null : Number(width),
+    length: length === "" ? null : Number(length),
+    city,
+    floors,
+    quality,
+  }), [width, length, city, floors, quality]);
+  const validation = useMemo(() => validateEstimatorScenario(scenario), [scenario]);
+  const requestKey = validation.valid ? estimatorRequestKey(validation.request) : "";
+  latestRequestKey.current = requestKey;
+  if (retryFocusRequestKey.current && retryFocusRequestKey.current !== requestKey) {
+    retryFocusRequested.current = false;
+    retryFocusRequestKey.current = "";
+  }
+
+  useEffect(() => {
+    if (!validation.valid) return undefined;
+    const requestedScenario = validation.request;
+    const controller = new AbortController();
+    let active = true;
+    setResult(current => ({
+      phase: current.requestKey === requestKey && current.phase === "retrying" ? "retrying" : "loading",
+      requestKey,
+      envelope: null,
+      message: "",
+    }));
+    const timer = window.setTimeout(async () => {
+      try {
+        const response = await publicApi("/api/estimate", {
+          method: "POST",
+          body: requestedScenario,
+          signal: controller.signal,
+          timeoutMs: 8_000,
+        });
+        const envelope = normalizePublicEstimateEnvelope(response, requestedScenario);
+        if (!active || controller.signal.aborted || latestRequestKey.current !== requestKey) return;
+        setResult({ phase: "ready", requestKey, envelope, message: "" });
+        if (retryFocusRequested.current && retryFocusRequestKey.current === requestKey) {
+          retryFocusRequested.current = false;
+          retryFocusRequestKey.current = "";
+          window.requestAnimationFrame(() => statusRef.current?.focus({ preventScroll: true }));
+        }
+      } catch (error) {
+        if (!active || controller.signal.aborted || latestRequestKey.current !== requestKey) return;
+        const message = error instanceof ApiError && error.status === 408
+          ? "The check took too long. Retry when your connection is steadier."
+          : "We could not confirm this range right now. Your plot details can still continue safely.";
+        setResult({ phase: "error", requestKey, envelope: null, message });
+      }
+    }, 300);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [requestKey, retry]);
+
+  const phase = !validation.valid
+    ? "invalid"
+    : result.requestKey === requestKey ? result.phase : "loading";
+  const envelope = phase === "ready" ? result.envelope : null;
+  const scenarioErrors = Object.entries(validation.errors)
+    .filter(([field]) => !["width", "length"].includes(field))
+    .map(([, message]) => message);
+  const status = {
+    invalid: { label: "Check inputs", Icon: WarningCircle },
+    loading: { label: "Updating…", Icon: ArrowClockwise },
+    retrying: { label: "Retrying…", Icon: ArrowClockwise },
+    ready: { label: "Calculation checked", Icon: SealCheck },
+    error: { label: "Unavailable", Icon: WarningCircle },
+  }[phase];
+  const StatusIcon = status.Icon;
+
+  function continueWithScenario() {
+    if (!validation.valid) return;
+    const projectCreationKey = crypto.randomUUID();
+    storeEstimatorHandoff(safeSessionStorage(), validation.request, projectCreationKey);
+    route("/start", {
+      estimatorScenario: validation.request,
+      estimatorSource: "public_estimator",
+      projectCreationKey,
+    });
+  }
+
+  function retryEstimate() {
+    if (phase === "retrying") return;
+    retryFocusRequested.current = true;
+    retryFocusRequestKey.current = requestKey;
+    setResult(current => ({ ...current, phase: "retrying", envelope: null, message: "" }));
+    setRetry(value => value + 1);
+  }
+
   return <div className={`estimate-instrument ${condensed ? "estimate-instrument--condensed" : ""}`}>
-    <div className="instrument-title"><span>Plot–cost estimator</span><span className="instrument-status"><i/> Live</span></div>
+    <div className="instrument-title"><span>Plot–cost estimator</span><span ref={statusRef} tabIndex="-1" className={`instrument-status instrument-status--${phase}`} role="status" aria-live="polite"><StatusIcon aria-hidden="true"/> {status.label}</span></div>
     <div className="instrument-inputs">
-      <label><span>Plot size</span><div className="dimension-inputs"><input aria-label="Plot width in feet" type="number" min="10" max="500" value={width} onChange={e => setWidth(Math.max(10, +e.target.value || 10))}/><b>×</b><input aria-label="Plot length in feet" type="number" min="10" max="500" value={length} onChange={e => setLength(Math.max(10, +e.target.value || 10))}/><em>ft</em></div></label>
-      <label><span>Location</span><select aria-label="Location" value={city} onChange={e => setCity(e.target.value)}>{Object.keys(cityFactors).map(c => <option key={c}>{c}</option>)}</select></label>
-      <label><span>Floors</span><select aria-label="Number of floors" value={floors} onChange={e => setFloors(e.target.value)}>{Object.keys(floorFactors).map(f => <option key={f}>{f}</option>)}</select></label>
+      <label className="instrument-input instrument-input--plot"><span>Plot size</span><div className="dimension-inputs"><input aria-label="Plot width in feet" aria-invalid={Boolean(validation.errors.width)} aria-describedby={validation.errors.width ? widthErrorId : undefined} inputMode="decimal" type="number" min="10" max="500" step="0.1" value={width} onChange={e => setWidth(e.target.value)}/><b>×</b><input aria-label="Plot length in feet" aria-invalid={Boolean(validation.errors.length)} aria-describedby={validation.errors.length ? lengthErrorId : undefined} inputMode="decimal" type="number" min="10" max="500" step="0.1" value={length} onChange={e => setLength(e.target.value)}/><em>ft</em></div></label>
+      <label className="instrument-input"><span>Location</span><select aria-label="Location" value={city} onChange={e => setCity(e.target.value)}>{ESTIMATOR_CITIES.map(c => <option key={c}>{c}</option>)}</select></label>
+      <label className="instrument-input"><span>Floors</span><select aria-label="Number of floors" value={floors} onChange={e => setFloors(e.target.value)}>{ESTIMATOR_FLOORS.map(f => <option key={f}>{f}</option>)}</select></label>
+      <label className="instrument-input"><span>Finish</span><select aria-label="Finish level" value={quality} onChange={e => setQuality(e.target.value)}>{ESTIMATOR_QUALITIES.map(value => <option key={value}>{value}</option>)}</select></label>
     </div>
-    <div className="instrument-output"><span>Estimated construction cost</span><strong>{formatLakh(estimate.low)} – {formatLakh(estimate.high)}</strong><small>{estimate.builtUp.toLocaleString("en-IN")} sq ft built-up · Signature finish</small></div>
-    <button className="text-link" onClick={() => { sessionStorage.setItem('grihagrid.estimator',JSON.stringify({width,length,city,floors,quality})); route("/start"); }}>Use these details <ArrowRight/></button>
+    <div className={`instrument-output instrument-output--${phase}`} aria-busy={["loading", "retrying"].includes(phase)}>
+      <span>Indicative construction range</span>
+      {phase === "ready"&&<><strong>{formatLakh(envelope.estimate.lowInr)} – {formatLakh(envelope.estimate.highInr)}</strong><small>{envelope.estimate.builtUpSqft.toLocaleString("en-IN")} sq ft likely built-up · {envelope.input.quality} finish · Internal directional benchmark; current local quotes not verified</small></>}
+      {phase === "loading"&&<><strong>Checking current basis…</strong><small>Waiting for a server-confirmed range.</small></>}
+      {phase === "invalid"&&<><strong>Complete the plot details</strong><div className="instrument-errors" role="alert">{validation.errors.width&&<span id={widthErrorId}>{validation.errors.width}</span>}{validation.errors.length&&<span id={lengthErrorId}>{validation.errors.length}</span>}{scenarioErrors.length>0&&<span id={scenarioErrorId}>{scenarioErrors.join(" ")}</span>}</div></>}
+      {["error", "retrying"].includes(phase)&&<><strong>{phase === "retrying" ? "Checking current basis…" : "Range temporarily unavailable"}</strong><small>{phase === "retrying" ? "Retrying the server check without changing your details." : result.message}</small><button type="button" className="instrument-retry" aria-disabled={phase === "retrying"} aria-busy={phase === "retrying"} onClick={retryEstimate}>{phase === "retrying" ? "Checking again…" : "Retry server check"}</button></>}
+    </div>
+    {envelope&&<details className="instrument-basis"><summary>Basis and exclusions</summary><div><p><strong>Area method:</strong> {envelope.basis.areaMethod}. {envelope.estimate.plotSqft.toLocaleString("en-IN")} sq ft plot × {envelope.basis.floorFactor.toLocaleString("en-IN", { maximumFractionDigits: 2 })} floor factor = <strong>{envelope.estimate.builtUpSqft.toLocaleString("en-IN")} sq ft</strong> likely built-up.</p><p><strong>Cost method:</strong> {envelope.basis.costMethod}. ₹{envelope.basis.finishRateInrPerSqft.toLocaleString("en-IN")}/sq ft internal finish benchmark × {envelope.basis.cityFactor.toLocaleString("en-IN", { maximumFractionDigits: 2 })} city factor, with a {envelope.basis.lowFactor.toLocaleString("en-IN", { maximumFractionDigits: 2 })}×–{envelope.basis.highFactor.toLocaleString("en-IN", { maximumFractionDigits: 2 })}× directional band.</p><p>Calculation rule published {formatDate(envelope.basis.rulePublishedDate)} · v{envelope.basis.ruleVersion}. Current-market calibration has not been independently verified. Taxes and statutory fees are excluded.</p><p>{envelope.basis.marketWarning}</p><ul>{envelope.basis.exclusions.map(item => <li key={item}>{item}</li>)}</ul><p>{envelope.estimate.disclaimer}</p></div></details>}
+    <button type="button" className="text-link" disabled={!validation.valid} onClick={continueWithScenario}>{phase === "ready" ? "Use calculation-checked details" : phase === "error" ? "Continue without a range" : "Continue with these details"} <ArrowRight/></button>
   </div>;
 }
 
@@ -295,22 +462,36 @@ function StartPage({ user }) {
   const [error,setError]=useState("");
   const [files,setFiles]=useState([]);
   const privateUploads=usePrivateUploadCapability();
-  const [data,setData]=useState(()=>{let scenario={};try{scenario=JSON.parse(sessionStorage.getItem('grihagrid.estimator')||'{}')}catch{}return {name:"My family home",width:30,length:50,city:"Pune",facing:"East",floors:"G+1",bedrooms:3,bathrooms:null,parking:"1 car",roadWidthFt:null,plotShape:"unknown",accessibility:"unknown",futureUse:"unknown",budgetLakh:null,style:"Warm modern",quality:"Signature",...scenario}});
+  const projectCreationKey=useProjectCreationKey();
+  const active=useRef(true);
+  useEffect(()=>{active.current=true;return()=>{active.current=false}},[]);
+  const [data,setData]=useState(()=>{const scenario=selectEstimatorScenario(safeSessionStorage(),window.history.state)||{};return {name:"My family home",width:30,length:50,city:"Pune",facing:"East",floors:"G+1",bedrooms:3,bathrooms:null,parking:"1 car",roadWidthFt:null,plotShape:"unknown",accessibility:"unknown",futureUse:"unknown",budgetLakh:null,style:"Warm modern",quality:"Signature",...scenario}});
   const update=(key,value)=>setData(prev=>({...prev,[key]:value}));
+  const abandon=()=>{abandonPendingProjectHandoff();route('/')};
   async function createProject(){
     const request=projectRequestBody(data);
+    const attributionHeaders={...publicEstimatorAttributionHeaders(safeSessionStorage(),window.history.state,projectCreationKey),"idempotency-key":projectCreationKey};
     setBusy(true);setError("");
-    try { const result=await api("/api/projects",{method:"POST",body:request}); sessionStorage.removeItem("grihagrid.pendingProject");sessionStorage.removeItem('grihagrid.estimator');const failed=[];const uploadQueue=privateUploads.enabled?files:[];for(const file of uploadQueue){const form=new FormData();form.append('file',file);form.append('kind','reference');try{await api(`/api/projects/${result.project.id}/files`,{method:'POST',body:form})}catch{failed.push(file.name)}}if(failed.length)sessionStorage.setItem(`grihagrid.uploadWarning.${result.project.id}`,`${failed.length} file${failed.length===1?'':'s'} could not be saved. Add them again from the report.`);route(`/projects/${result.project.id}`); }
-    catch(err){ if(err instanceof ApiError && err.status===401){sessionStorage.setItem("grihagrid.pendingProject",JSON.stringify(request));route("/register");} else setError(err.message); }
-    finally{setBusy(false)}
+    try {
+      const result=await api("/api/projects",{method:"POST",headers:attributionHeaders,body:request});
+      if(!active.current)return;
+      removeSessionValue("grihagrid.pendingProject");completePublicEstimatorHandoff();
+      const failed=[];const uploadQueue=privateUploads.enabled?files:[];
+      for(const file of uploadQueue){const form=new FormData();form.append('file',file);form.append('kind','reference');try{await api(`/api/projects/${result.project.id}/files`,{method:'POST',body:form})}catch{failed.push(file.name)}}
+      if(!active.current)return;
+      if(failed.length)setSessionValue(`grihagrid.uploadWarning.${result.project.id}`,`${failed.length} file${failed.length===1?'':'s'} could not be saved. Add them again from the report.`);
+      replaceRoute(`/projects/${result.project.id}`);
+    }
+    catch(err){if(!active.current)return;if(err instanceof ApiError&&err.status===401){setSessionValue("grihagrid.projectCreationKey",projectCreationKey);setSessionValue("grihagrid.pendingProject",JSON.stringify(request));replaceRoute("/register",{projectContinuation:true,pendingProject:request,estimatorSource:isPublicEstimatorAttribution(safeSessionStorage(),window.history.state,projectCreationKey)?"public_estimator":undefined,projectCreationKey})}else setError(err.message)}
+    finally{if(active.current)setBusy(false)}
   }
-  return <main className="wizard-page"><div className="wizard-header"><Brand/><button className="quiet-action" onClick={()=>route('/')}>Exit</button></div><div className="wizard-progress" aria-label="Project brief progress">{wizardSteps.map((label,i)=><div className={i<=step?"active":""} aria-current={i===step?'step':undefined} key={label}><span>{i<step?<Check/>:i+1}</span><small>{label}</small></div>)}</div><form className="wizard-sheet" onSubmit={event=>{event.preventDefault();if(step<3)setStep(step+1);else createProject()}}>
-    {step===0&&<><span className="kicker">Step one · The plot</span><h1>Begin with the measured ground.</h1><p>Use your sale deed or current survey where possible. Leave uncertain facts clearly marked—not guessed.</p><div className="form-grid"><label>Project name<input required value={data.name} onChange={e=>update('name',e.target.value)} maxLength="100"/></label><label>City<select value={data.city} onChange={e=>update('city',e.target.value)}>{Object.keys(cityFactors).map(c=><option key={c}>{c}</option>)}</select></label><label>Plot width <span>feet</span><input required type="number" min="10" max="500" value={data.width} onChange={e=>update('width',+e.target.value)}/></label><label>Plot length <span>feet</span><input required type="number" min="10" max="500" value={data.length} onChange={e=>update('length',+e.target.value)}/></label><label>Road-facing side<select value={data.facing} onChange={e=>update('facing',e.target.value)}>{['North','East','South','West'].map(x=><option key={x}>{x}</option>)}</select></label><label>Road width <span>feet · optional</span><input type="number" min="6" max="200" inputMode="decimal" value={data.roadWidthFt??''} placeholder="Not sure" onChange={e=>update('roadWidthFt',e.target.value===''?null:Number(e.target.value))}/><small>Leave blank until measured.</small></label><StructuredSelect label="Plot shape" value={data.plotShape||'unknown'} options={plotShapeOptions} onChange={value=>update('plotShape',value)}/></div></>}
-    {step===1&&<><span className="kicker">Step two · The home</span><h1>Describe the life it needs to hold.</h1><p>Choose the practical starting point. “Not sure” is useful information when the family has not decided.</p><Choice label="Floors" value={data.floors} choices={['G','G+1','G+2']} onChange={v=>update('floors',v)}/><Choice label="Bedrooms" value={data.bedrooms} choices={[2,3,4,'5+']} onChange={v=>update('bedrooms',v)}/><div className="form-grid form-grid--programme"><label>Bathrooms <span>optional</span><select value={data.bathrooms??''} onChange={e=>update('bathrooms',e.target.value===''?null:Number(e.target.value))}><option value="">Not sure</option>{Array.from({length:12},(_,index)=>index+1).map(value=><option value={value} key={value}>{value}</option>)}</select></label><StructuredSelect label="Accessibility" value={data.accessibility||'unknown'} options={accessibilityOptions} onChange={value=>update('accessibility',value)}/><StructuredSelect label="Future use" value={data.futureUse||'unknown'} options={futureUseOptions} onChange={value=>update('futureUse',value)}/><label>Working budget <span>₹ lakh · optional</span><input type="number" min="5" max="10000" inputMode="decimal" value={data.budgetLakh??''} placeholder="Not sure" onChange={e=>update('budgetLakh',e.target.value===''?null:Number(e.target.value))}/><small>A planning limit, not a quotation.</small></label></div><Choice label="Parking" value={data.parking} choices={['None','1 car','2 cars']} onChange={v=>update('parking',v)}/><Choice label="Finish" value={data.quality} choices={['Essential','Signature','Premium','Luxury']} onChange={v=>update('quality',v)}/></>}
+  return <main className="wizard-page"><div className="wizard-header"><Brand disabled={busy} onHome={abandon}/><button className="quiet-action" disabled={busy} onClick={abandon}>Exit</button></div><div className="wizard-progress" aria-label="Project brief progress">{wizardSteps.map((label,i)=><div className={i<=step?"active":""} aria-current={i===step?'step':undefined} key={label}><span>{i<step?<Check/>:i+1}</span><small>{label}</small></div>)}</div><form className="wizard-sheet" onSubmit={event=>{event.preventDefault();if(step<3)setStep(step+1);else createProject()}}>
+    {step===0&&<><span className="kicker">Step one · The plot</span><h1>Begin with the measured ground.</h1><p>Use your sale deed or current survey where possible. Leave uncertain facts clearly marked—not guessed.</p><div className="form-grid"><label>Project name<input required value={data.name} onChange={e=>update('name',e.target.value)} maxLength="100"/></label><label>City<select value={data.city} onChange={e=>update('city',e.target.value)}>{ESTIMATOR_CITIES.map(c=><option key={c}>{c}</option>)}</select></label><label>Plot width <span>feet</span><input required type="number" min="10" max="500" step="any" inputMode="decimal" value={data.width} onChange={e=>update('width',+e.target.value)}/></label><label>Plot length <span>feet</span><input required type="number" min="10" max="500" step="any" inputMode="decimal" value={data.length} onChange={e=>update('length',+e.target.value)}/></label><label>Road-facing side<select value={data.facing} onChange={e=>update('facing',e.target.value)}>{['North','East','South','West'].map(x=><option key={x}>{x}</option>)}</select></label><label>Road width <span>feet · optional</span><input type="number" min="6" max="200" inputMode="decimal" value={data.roadWidthFt??''} placeholder="Not sure" onChange={e=>update('roadWidthFt',e.target.value===''?null:Number(e.target.value))}/><small>Leave blank until measured.</small></label><StructuredSelect label="Plot shape" value={data.plotShape||'unknown'} options={plotShapeOptions} onChange={value=>update('plotShape',value)}/></div></>}
+    {step===1&&<><span className="kicker">Step two · The home</span><h1>Describe the life it needs to hold.</h1><p>Choose the practical starting point. “Not sure” is useful information when the family has not decided.</p><Choice label="Floors" value={data.floors} choices={ESTIMATOR_FLOORS} onChange={v=>update('floors',v)}/><Choice label="Bedrooms" value={data.bedrooms} choices={[2,3,4,'5+']} onChange={v=>update('bedrooms',v)}/><div className="form-grid form-grid--programme"><label>Bathrooms <span>optional</span><select value={data.bathrooms??''} onChange={e=>update('bathrooms',e.target.value===''?null:Number(e.target.value))}><option value="">Not sure</option>{Array.from({length:12},(_,index)=>index+1).map(value=><option value={value} key={value}>{value}</option>)}</select></label><StructuredSelect label="Accessibility" value={data.accessibility||'unknown'} options={accessibilityOptions} onChange={value=>update('accessibility',value)}/><StructuredSelect label="Future use" value={data.futureUse||'unknown'} options={futureUseOptions} onChange={value=>update('futureUse',value)}/><label>Working budget <span>₹ lakh · optional</span><input type="number" min="5" max="10000" inputMode="decimal" value={data.budgetLakh??''} placeholder="Not sure" onChange={e=>update('budgetLakh',e.target.value===''?null:Number(e.target.value))}/><small>A planning limit, not a quotation.</small></label></div><Choice label="Parking" value={data.parking} choices={['None','1 car','2 cars']} onChange={v=>update('parking',v)}/><Choice label="Finish" value={data.quality} choices={ESTIMATOR_QUALITIES} onChange={v=>update('quality',v)}/></>}
     {step===2&&<><span className="kicker">Step three · Context</span><h1>Give the concept a sense of place.</h1><p>{privateUploads.enabled?'Site photographs are optional and are stored in private, account-scoped storage.':'Site photographs are not required for this Brief Check. Your structured facts are enough to identify what is known and what still needs verification.'}</p>{privateUploads.enabled?(user?<label className="upload-field"><UploadSimple/><strong>{files.length?`${files.length} photograph${files.length===1?'':'s'} selected`:'Choose plot photographs'}</strong><span>JPG, PNG or WebP · up to 10 MB each</span><input type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={e=>{if(privateUploads.enabled)setFiles([...e.target.files].filter(file=>file.size<=10*1024*1024))}}/></label>:<div className="account-note"><LockKey/><p>Create or log into your private account first, then add site photographs from the report.</p></div>):<div className="account-note upload-capability-note" role="status"><LockKey/><p>{privateUploads.phase==='loading'?'Checking private photo storage. Uploads stay closed until availability is verified; the Brief Check continues without them.':'Private photo storage is not enabled in this release. Keep site photos on your device and share them directly with your licensed professional when needed.'}</p></div>}<label className="select-block">Exterior direction<select value={data.style} onChange={e=>update('style',e.target.value)}>{['Warm modern','Contemporary','Traditional Indian','Tropical modern','Minimal'].map(x=><option key={x}>{x}</option>)}</select></label></>}
     {step===3&&<><span className="kicker">Step four · Review</span><h1>Ready for a Brief Check.</h1><p>These stated facts—and the facts left unknown—become the assumption record behind the planning range.</p><div className="brief-lines">{[['Plot',`${data.width} × ${data.length} ft · ${data.facing}-facing · ${plotShapeOptions.find(([value])=>value===data.plotShape)?.[1]||'Not sure'}`],['Access',data.roadWidthFt?`${data.roadWidthFt} ft road`:'Road width not known'],['Home',`${data.floors} · ${data.bedrooms} bedrooms · ${data.bathrooms??'Bathrooms not sure'}${data.bathrooms?' bathrooms':''} · ${data.parking}`],['Household',`${accessibilityOptions.find(([value])=>value===data.accessibility)?.[1]||'Not sure'} · ${futureUseOptions.find(([value])=>value===data.futureUse)?.[1]||'Not sure'}`],['Context',`${data.city} · ${data.style}`],['Budget & finish',`${data.budgetLakh?`₹${data.budgetLakh} lakh working limit`:'Budget not stated'} · ${data.quality}`]].map(([k,v])=><div key={k}><span>{k}</span><strong>{v}</strong></div>)}</div><div className="warning-note"><WarningCircle/><p>A Brief Check identifies evidence gaps and programme pressure. It does not validate site suitability, bylaws, design, structure or construction readiness.</p></div>{!user&&<div className="account-note"><LockKey/><p>You will create an account next so this project remains private and can be revisited.</p></div>}</>}
     {error&&<p className="form-error" role="alert">{error}</p>}
-    <div className="wizard-actions">{step>0&&<button type="button" className="outline-button" onClick={()=>setStep(step-1)}><ArrowLeft/> Back</button>}<button type="submit" disabled={busy} className="copper-button">{step<3?'Continue':busy?'Creating…':user?'Create Brief Check':'Secure my project'} <ArrowRight/></button></div>
+    <div className="wizard-actions">{step>0&&<button type="button" disabled={busy} className="outline-button" onClick={()=>setStep(step-1)}><ArrowLeft/> Back</button>}<button type="submit" disabled={busy} className="copper-button">{step<3?'Continue':busy?'Creating…':user?'Create Brief Check':'Secure my project'} <ArrowRight/></button></div>
   </form></main>;
 }
 
@@ -320,8 +501,21 @@ function AuthPage({ mode, onAuthenticated }) {
   const isLogin=mode==="login";
   const [form,setForm]=useState({name:"",email:"",password:""});
   const [busy,setBusy]=useState(false);const [error,setError]=useState("");
-  async function submit(e){e.preventDefault();setBusy(true);setError("");try{const result=await api(`/api/auth/${isLogin?'login':'register'}`,{method:'POST',body:form});onAuthenticated(result.user);const pending=sessionStorage.getItem('grihagrid.pendingProject');if(pending){const project=await api('/api/projects',{method:'POST',body:projectRequestBody(JSON.parse(pending))});sessionStorage.removeItem('grihagrid.pendingProject');route(`/projects/${project.project.id}`);}else route('/dashboard');}catch(err){setError(err.message);}finally{setBusy(false)}}
-  return <main className="auth-page"><div className="auth-architecture"><img width="1536" height="1024" src="/assets/v2/monograph-house-v2.jpg" onError={e=>{e.currentTarget.src='/assets/grihagrid-hero.jpg'}} alt="Contemporary Indian home"/><div><Brand inverted/><blockquote>Start with clarity.<br/>Build with confidence.</blockquote></div></div><section className="auth-form"><button className="back-action" onClick={()=>route('/')}><ArrowLeft/> Home</button><span className="kicker">Private project workspace</span><h1>{isLogin?'Welcome back.':'Create your account.'}</h1><p>{isLogin?'Return to your saved home plans.':'Save the brief you just created and keep every decision together.'}</p><form onSubmit={submit}>{!isLogin&&<label>Full name<input required autoComplete="name" value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label>}<label>Email address<input required type="email" autoComplete="email" value={form.email} onChange={e=>setForm({...form,email:e.target.value})}/></label><label>Password<input required type="password" minLength="10" autoComplete={isLogin?'current-password':'new-password'} value={form.password} onChange={e=>setForm({...form,password:e.target.value})}/><small>At least 10 characters</small></label>{error&&<p className="form-error" role="alert">{error}</p>}<button disabled={busy} className="copper-button" type="submit">{busy?'Please wait…':isLogin?'Log in':'Create account'} <ArrowRight/></button></form><p className="auth-switch">{isLogin?'New to GrihaGrid?':'Already have an account?'} <button onClick={()=>route(isLogin?'/register':'/login')}>{isLogin?'Create account':'Log in'}</button></p></section></main>;
+  const [authenticated,setAuthenticated]=useState(false);
+  const projectCreationKey=useProjectCreationKey(true);
+  const active=useRef(true);
+  useEffect(()=>{active.current=true;return()=>{active.current=false}},[]);
+  const abandon=()=>{abandonPendingProjectHandoff();route('/')};
+  async function submit(e){
+    e.preventDefault();setBusy(true);setError("");
+    try{
+      if(!authenticated){const result=await api(`/api/auth/${isLogin?'login':'register'}`,{method:'POST',body:form});if(!active.current)return;onAuthenticated(result.user);setAuthenticated(true)}
+      const pending=pendingProjectValue();
+      if(pending){const project=await api('/api/projects',{method:'POST',headers:{...publicEstimatorAttributionHeaders(safeSessionStorage(),window.history.state,projectCreationKey),'idempotency-key':projectCreationKey},body:projectRequestBody(pending)});if(!active.current)return;removeSessionValue('grihagrid.pendingProject');completePublicEstimatorHandoff();replaceRoute(`/projects/${project.project.id}`)}
+      else {if(window.history.state?.projectContinuation===true)abandonPendingProjectHandoff();route('/dashboard')}
+    }catch(err){if(active.current)setError(err.message)}finally{if(active.current)setBusy(false)}
+  }
+  return <main className="auth-page"><div className="auth-architecture"><img width="1536" height="1024" src="/assets/v2/monograph-house-v2.jpg" onError={e=>{e.currentTarget.src='/assets/grihagrid-hero.jpg'}} alt="Contemporary Indian home"/><div><Brand inverted disabled={busy} onHome={abandon}/><blockquote>Start with clarity.<br/>Build with confidence.</blockquote></div></div><section className="auth-form"><button className="back-action" disabled={busy} onClick={abandon}><ArrowLeft/> Home</button><span className="kicker">Private project workspace</span><h1>{isLogin?'Welcome back.':'Create your account.'}</h1><p>{isLogin?'Return to your saved home plans.':'Save the brief you just created and keep every decision together.'}</p><form onSubmit={submit}>{!isLogin&&<label>Full name<input required autoComplete="name" value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label>}<label>Email address<input required type="email" autoComplete="email" value={form.email} onChange={e=>setForm({...form,email:e.target.value})}/></label><label>Password<input required type="password" minLength="10" autoComplete={isLogin?'current-password':'new-password'} value={form.password} onChange={e=>setForm({...form,password:e.target.value})}/><small>At least 10 characters</small></label>{error&&<p className="form-error" role="alert">{error}</p>}<button disabled={busy} className="copper-button" type="submit">{busy?'Please wait…':authenticated?'Retry saving project':isLogin?'Log in':'Create account'} <ArrowRight/></button></form><p className="auth-switch">{isLogin?'New to GrihaGrid?':'Already have an account?'} <button disabled={busy} onClick={()=>replaceRoute(isLogin?'/register':'/login',pendingAuthContinuationState())}>{isLogin?'Create account':'Log in'}</button></p></section></main>;
 }
 
 function Dashboard({ user, onLogout }) {

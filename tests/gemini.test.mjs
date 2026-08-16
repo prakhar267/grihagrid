@@ -224,10 +224,12 @@ class MemoryStatement {
     }
     if (this.sql.startsWith("INSERT INTO projects")) {
       const [id, user_id, name, status, input_json, estimate_json, input_hash, input_schema_version,
-        estimate_rule_version, brief_check_version, brief_check_json, created_at, updated_at] = this.values;
+        estimate_rule_version, brief_check_version, brief_check_json, creation_key_hash,
+        creation_request_hash, created_at, updated_at] = this.values;
       this.db.projects.push({
         id, user_id, name, status, input_json, estimate_json, input_hash, input_schema_version,
-        estimate_rule_version, brief_check_version, brief_check_json, input_revision: 1, created_at, updated_at,
+        estimate_rule_version, brief_check_version, brief_check_json, creation_key_hash,
+        creation_request_hash, input_revision: 1, created_at, updated_at,
       });
       this.db.revisions.push({
         project_id: id,
@@ -730,6 +732,7 @@ test("real D1 rejects a Gemini result when a legitimate brief revision wins duri
     "0011_archived_project_write_fence.sql",
     "0012_brief_check_revision_history.sql",
     "0013_report_feedback_and_intake_hardening.sql",
+    "0014_project_creation_idempotency.sql",
   ];
   for (const migration of migrations) {
     const source = await readFile(new URL(`../migrations/${migration}`, import.meta.url), "utf8");
@@ -949,7 +952,7 @@ test("readiness reports AI capability without exposing the configured secret", a
     family_alignment_count: 2,
     revision_table_count: 3,
     report_feedback_count: 1,
-  }, withBatch = true, staleDecisionColumns = false, stalePaymentColumns = false, staleFamilyColumns = false, staleFamilyObjects = false, staleArchiveSafety = false, staleRevisionObjects = false) => ({
+  }, withBatch = true, staleDecisionColumns = false, stalePaymentColumns = false, staleFamilyColumns = false, staleFamilyObjects = false, staleArchiveSafety = false, staleRevisionObjects = false, staleProjectCreation = false) => ({
     ...(withBatch ? { batch: async () => [] } : {}),
     prepare(sql) {
       return {
@@ -967,6 +970,9 @@ test("readiness reports AI capability without exposing the configured secret", a
           }
           if (sql.includes("AS trigger_count") && sql.includes("report_feedback_insert_guard")) {
             return { trigger_count: 5, index_count: 2 };
+          }
+          if (sql.includes("idx_projects_user_creation_key")) {
+            return { count: staleProjectCreation ? 0 : 1 };
           }
           if (sql.includes("FROM sqlite_master")) return counts;
           if (staleFamilyColumns && sql.includes("FROM family_alignment_rooms")) throw new Error("no such column: request_hash");
@@ -993,6 +999,7 @@ test("readiness reports AI capability without exposing the configured secret", a
   assert.equal(body.checks.archiveSafetySchema, "current");
   assert.equal(body.checks.revisionSchema, "current");
   assert.equal(body.checks.reportFeedbackSchema, "current");
+  assert.equal(body.checks.projectCreationSchema, "current");
   assert.equal(body.capabilities.aiPlanningBrief, true);
   assert.equal(body.capabilities.familyAlignment, true);
   assert.equal(body.capabilities.briefCheck, true);
@@ -1065,6 +1072,17 @@ test("readiness reports AI capability without exposing the configured secret", a
   assert.equal(staleRevisionObjectsBody.status, "not_ready");
   assert.equal(staleRevisionObjectsBody.checks.revisionSchema, "outdated");
   assert.equal(staleRevisionObjectsBody.capabilities.briefCheck, false);
+
+  const staleProjectCreationResponse = await worker.fetch(request("/api/readiness"), {
+    ASSETS: assets,
+    DB: readinessDb(undefined, true, false, false, false, false, false, false, true),
+    GRIHAGRID_CACHE: new MemoryKv(),
+    GEMINI_API_KEY: API_KEY,
+  });
+  assert.equal(staleProjectCreationResponse.status, 503);
+  const staleProjectCreationBody = await staleProjectCreationResponse.json();
+  assert.equal(staleProjectCreationBody.checks.projectCreationSchema, "outdated");
+  assert.equal(staleProjectCreationBody.capabilities.freePlanning, false);
 
   for (const [label, overrides] of [
     ["invalid model", { DB: readinessDb(), GEMINI_API_KEY: API_KEY, GEMINI_MODEL: "bad/model" }],

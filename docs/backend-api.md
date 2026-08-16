@@ -110,7 +110,9 @@ Free-product readiness probe. Returns `200 status=ready` only when D1 is
 reachable, the required schema is present, and the KV abuse-control binding
 exists. The response separately reports Gemini planning, private upload, and
 paid-checkout capabilities, including `decisionSchema`, `paymentSchema`,
-`revisionSchema`, and `reportFeedbackSchema`. `releaseId` is the non-secret Cloudflare Worker version ID
+`revisionSchema`, `reportFeedbackSchema`, and `projectCreationSchema`.
+`projectCreationSchema=current` requires migration 0014's two nullable project
+creation columns and unique partial index. `releaseId` is the non-secret Cloudflare Worker version ID
 used to correlate a deployment with smoke and monitoring evidence.
 `capabilities.paidFulfillment` reports the independent Decision Compare
 fulfillment kill switch, so release checks can prove that both selling and
@@ -140,7 +142,71 @@ Public, no session required. Body:
 Dimensions are feet, each between 10 and 500. Supported floors are `G`, `G+1`,
 `G+2`; qualities are `Essential`, `Signature`, `Premium`, `Luxury`; cities are
 `Pune`, `Bengaluru`, `Mumbai`, `Delhi`, `Hyderabad`, `Chennai`, `Jaipur`, and
-`Other`. Unknown choice values retain the prototype's safe defaults.
+`Other`. Width and length must be primitive finite JSON numbers. Missing or
+`null` floors, quality, and city normalize to `G+1`, `Signature`, and `Other`;
+the browser sends all five fields explicitly. Unknown fields, scalar coercion,
+and unsupported enum values return `400 invalid_estimate_request` rather than a
+plausible default.
+
+Returns the normalized input, deterministic estimate, and exact published
+calculation basis. The basis explicitly says that its internal directional
+benchmark has not been independently calibrated to current local quotations:
+
+```json
+{
+  "input": {
+    "width": 30,
+    "length": 50,
+    "floors": "G+1",
+    "quality": "Signature",
+    "city": "Pune"
+  },
+  "estimate": {
+    "plotSqft": 1500,
+    "builtUpSqft": 1830,
+    "lowInr": 3703920,
+    "highInr": 4428600,
+    "floors": "G+1",
+    "quality": "Signature",
+    "city": "Pune",
+    "disclaimer": "Indicative concept-stage estimate; not a contractor quote."
+  },
+  "basis": {
+    "ruleVersion": 1,
+    "rulePublishedDate": "2026-08-16",
+    "benchmarkStatus": "internal_directional_rule",
+    "marketBenchmarkAsOf": null,
+    "marketWarning": "Internal planning assumptions are not independently calibrated to current local quotes. Rates vary with specification, contractor, availability, and market conditions; verify current local quotations before decisions.",
+    "currency": "INR",
+    "confidence": "directional",
+    "areaMethod": "Plot area × floor-programme factor",
+    "costMethod": "Likely built-up area × internal finish benchmark × city factor",
+    "floorFactor": 1.22,
+    "finishRateInrPerSqft": 2200,
+    "cityFactor": 1,
+    "lowFactor": 0.92,
+    "highFactor": 1.1,
+    "taxesAndStatutoryFees": "excluded",
+    "exclusions": [
+      "Land purchase and finance costs",
+      "Taxes, statutory fees, utility connections, and municipal charges",
+      "Abnormal ground, retaining, foundation, demolition, and external works",
+      "Loose furniture, appliances, and owner-specific upgrades"
+    ]
+  }
+}
+```
+
+The response is concept-stage and directional. `rulePublishedDate` is the date
+this calculation contract was published, not a claim that the rate assumptions
+were independently refreshed on that date. `marketBenchmarkAsOf` stays `null`
+until governed calibration exists. Taxes/statutory fees and every listed
+exclusion are outside the returned band. The browser accepts the response only
+for the exact current request tuple and rejects malformed, non-finite, negative,
+inverted-range, disclaimer-free, stale, arithmetically inconsistent, or
+malformed-basis envelopes. Public fetches omit cookies and CSRF material. See
+`docs/public-estimator.md` for the UI state, privacy, accessibility,
+measurement, and migration contract.
 
 ### `POST /api/leads`
 
@@ -233,9 +299,18 @@ Requires CSRF. Preferred body:
 }
 ```
 
-For backward compatibility, estimate fields may be at the body root. Returns
-`201 { project }` with normalized input, estimate, timestamps, status
-`feasibility_ready`, `inputRevision: 1`, and `reportAvailable: false`.
+For backward compatibility, estimate fields may be at the body root. The
+first-party create journey sends an `Idempotency-Key` containing 8–128 safe
+characters. On its first successful insert the endpoint returns `201 { project }`
+with normalized input, estimate, `estimateRuleVersion`, timestamps, status
+`feasibility_ready`, `inputRevision: 1`, and `reportAvailable: false`. An exact
+retry by the same user with the same key, normalized name, and input returns the
+canonical project with `200`; it does not insert, consume the per-account create
+bucket again, or increment estimator attribution. Reusing the key for a
+different normalized request returns `409 idempotency_conflict`. Concurrent
+duplicates reconcile through the unique D1 index, including at the 49→50
+account-cap boundary. The header remains optional for backward-compatible
+clients, whose unkeyed successful creates return `201` without replay semantics.
 Both request shapes are exact allowlists: unknown root or nested input fields,
 mistyped categories, non-finite/out-of-range values, and hidden claims such as
 an unverified soil report return `400 invalid_project_input`. Creation requires
@@ -244,6 +319,18 @@ KV absence or read/write failure returns fail-closed
 `503 abuse_control_unavailable` with the internal `control_closed` outcome. D1
 independently enforces the exact concurrency-safe ceiling of 50 projects per
 account and returns `429 project_limit_reached`.
+
+The first-party estimator journey adds the exact header
+`x-grihagrid-entry-point: public_estimator` to this request only when its
+bounded same-tab navigation-state handoff or refresh-safe session-storage mirror
+carries that fixed source and a matching project-creation key.
+The header is bounded measurement metadata, not trusted project input and not
+an authorization signal. Only after authentication, CSRF, abuse controls,
+request validation, and the project insert succeed does the Worker best-effort
+increment the daily `public_estimator_brief_started` / `public_estimator` /
+`success` aggregate. Invalid, unauthorized, rejected, and direct-start requests
+record no estimator aggregate. Aggregate failure is logged without changing the
+inserted project or its `201` response.
 
 ### `GET /api/projects?limit=50&offset=0`
 
@@ -640,12 +727,21 @@ fulfillment does not block signed webhook persistence.
 `project_home_opened`, `project_home_next_action_clicked`,
 `decision_compare_opened`, `decision_compare_saved`,
 `decision_compare_option_chosen`, `decision_compare_checkout_started`,
-`decision_compare_artifact_downloaded`, `decision_compare_share_created`, and
-`decision_compare_share_revoked`. Properties may contain only allowlisted
-`surface` and `outcome`; Project Home uses only surface `project_home` and
-outcome `success`, without sending its project, revision, stage, or action.
+`decision_compare_artifact_downloaded`, `decision_compare_share_created`,
+and `decision_compare_share_revoked`.
+Properties may contain only allowlisted `surface` and `outcome`. Allowed
+surfaces are `project_home`, `owner_compare`, `family_review`, `checkout`,
+`orders`, `artifact`, `public_share`, and `unknown`; allowed
+outcomes are `success`, `failure`, `saved`, `preview`, `cancelled`, and
+`unknown`. Project Home uses only surface `project_home` and outcome `success`,
+without sending its project, revision, stage, or action.
 D1 stores daily name/surface/outcome counts—never an event stream, identity,
 resource ID, version, IP, free text, or client timestamp.
+
+`public_estimator_brief_started` and surface `public_estimator` are deliberately
+absent from these generic client allowlists. Direct submission of that event to
+`POST /api/events` returns `400 invalid_event`; its aggregate row can be created
+only by the successful project-insert path described above.
 
 `GET /api/events/aggregate?days=30` is an operator endpoint. It returns `404`
 unless a constant-time checked `METRICS_READ_TOKEN` bearer value is present and
