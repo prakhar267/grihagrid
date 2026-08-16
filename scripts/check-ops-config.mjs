@@ -195,6 +195,16 @@ export async function checkOpsConfig() {
   }
   assert.equal((deployWorkflow.match(/release-db-evidence\.mjs pre /gu) || []).length, 2, "staging and production must record strict pre-migration evidence");
   assert.equal((deployWorkflow.match(/release-db-evidence\.mjs post /gu) || []).length, 2, "staging and production must prove migration invariance");
+  assert.equal(
+    (deployWorkflow.match(/WITH entities\(entity\) AS \(VALUES \('users'\),\('sessions'\),\('projects'\),\('reports'\),\('orders'\),\('payment_webhook_events'\)\)/gu) || []).length,
+    4,
+    "all pre/post protected-count queries must use one D1-compatible SELECT",
+  );
+  assert.doesNotMatch(
+    deployWorkflow,
+    /SELECT 'users' AS entity,COUNT\(\*\) AS row_count FROM users UNION ALL SELECT 'sessions'/u,
+    "protected-count evidence must not exceed D1's compound SELECT term limit",
+  );
   assert.equal((deployWorkflow.match(/LEGACY_WORKER_COMPAT:\s*"true"/gu) || []).length, 2, "both environments must rehearse the previous Worker with the current harness");
   assert.doesNotMatch(deployWorkflow, /git show[^\n]*authenticated-smoke\.mjs/u, "rollback rehearsal must not execute the previous commit's harness");
   assert.match(deployWorkflow, /wait-for-release\.mjs/u, "releases must wait for consecutive exact-version smoke samples");
