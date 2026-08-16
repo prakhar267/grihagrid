@@ -332,6 +332,17 @@ test("Family Alignment is redacted, bounded, owner-scoped, revocable, and retain
     });
     assert.equal(foreignRevoke.response.status, 404);
 
+    const initialExpiryState = query(stateDirectory, `
+      SELECT expires_at,
+             length(expires_at)=19 AS canonical_length,
+             strftime('%Y-%m-%d %H:%M:%S',julianday(expires_at))=expires_at AS canonical_value
+        FROM family_alignment_rooms WHERE id=${sqlLiteral(mainRoom.id)};
+    `)[0];
+    assert.deepEqual(
+      [Number(initialExpiryState.canonical_length), Number(initialExpiryState.canonical_value)],
+      [1, 1],
+      `created room expiry must be canonical: ${JSON.stringify(initialExpiryState)}`,
+    );
     const publicRead = await call(server.origin, `/api/family-alignment/${mainToken}`);
     assert.equal(publicRead.response.status, 200, JSON.stringify(publicRead.payload));
     assert.deepEqual(Object.keys(publicRead.payload), ["room"]);
@@ -346,6 +357,257 @@ test("Family Alignment is redacted, bounded, owner-scoped, revocable, and retain
     for (const privateValue of [...main.privateValues, main.project.id, main.comparison.id, main.comparison.scenarios[0].id]) {
       assert.equal(publicJson.includes(privateValue), false, `public review leaked ${privateValue}`);
     }
+    const successfulReadState = query(stateDirectory, `
+      SELECT access_count,last_accessed_at FROM family_alignment_rooms WHERE id=${sqlLiteral(mainRoom.id)};
+    `)[0];
+    assert.equal(Number(successfulReadState.access_count), 1, "one admitted read must increment exactly once");
+    assert.ok(successfulReadState.last_accessed_at, "one admitted read must record its access time");
+
+    // The public comparison must not survive a dependency failure or a revoke
+    // that wins after the initial token lookup but before final read admission.
+    // These real-D1 triggers deterministically exercise both interleavings.
+    requireD1Success(d1(
+      stateDirectory,
+      "execute",
+      "DROP TRIGGER e2e_fail_family_analytics;",
+    ), "enabling aggregate observation for read admission failed");
+    const openedEventsBeforeAdmission = Number(query(
+      stateDirectory,
+      "SELECT COALESCE(SUM(event_count),0) AS count FROM product_event_aggregates WHERE event_name='family_alignment_review_opened';",
+    )[0].count);
+    const readAdmission = await createDecision(server.origin, owner, "READ_ADMISSION", [39, 59], "Pune");
+    const readAdmissionCreated = await createRoom(
+      server.origin,
+      owner,
+      readAdmission,
+      "family-read-admission-create",
+    );
+    assert.equal(readAdmissionCreated.response.status, 201, JSON.stringify(readAdmissionCreated.payload));
+    const readAdmissionRoom = readAdmissionCreated.payload.room;
+    const readAdmissionToken = roomToken(readAdmissionRoom);
+    requireD1Success(d1(
+      stateDirectory,
+      "execute",
+      `CREATE TRIGGER e2e_fail_family_read_admission
+         BEFORE UPDATE OF access_count ON family_alignment_rooms
+         WHEN OLD.id=${sqlLiteral(readAdmissionRoom.id)}
+       BEGIN
+         SELECT RAISE(ABORT, 'synthetic private read admission outage');
+       END;`,
+    ), "installing the read-admission failure failed");
+    const failedAdmission = await call(
+      server.origin,
+      `/api/family-alignment/${readAdmissionToken}`,
+    );
+    assert.equal(failedAdmission.response.status, 503, JSON.stringify(failedAdmission.payload));
+    assert.equal(Object.hasOwn(failedAdmission.payload, "room"), false);
+    assert.equal(JSON.stringify(failedAdmission.payload).includes("synthetic private read admission outage"), false);
+    requireD1Success(d1(
+      stateDirectory,
+      "execute",
+      `DROP TRIGGER e2e_fail_family_read_admission;
+       CREATE TRIGGER e2e_revoke_family_before_read_admission
+         BEFORE UPDATE OF access_count ON family_alignment_rooms
+         WHEN OLD.id=${sqlLiteral(readAdmissionRoom.id)} AND OLD.revoked_at IS NULL
+       BEGIN
+         UPDATE family_alignment_rooms SET revoked_at=datetime('now') WHERE id=OLD.id;
+         SELECT RAISE(IGNORE);
+       END;`,
+    ), "installing the read-vs-revoke interleaving failed");
+    const revokeWonAdmission = await call(
+      server.origin,
+      `/api/family-alignment/${readAdmissionToken}`,
+    );
+    assert.equal(revokeWonAdmission.response.status, 410, JSON.stringify(revokeWonAdmission.payload));
+    assert.equal(revokeWonAdmission.payload.code, "family_alignment_unavailable");
+    assert.equal(Object.hasOwn(revokeWonAdmission.payload, "room"), false);
+    const readAdmissionState = query(stateDirectory, `
+      SELECT access_count,last_accessed_at,revoked_at
+        FROM family_alignment_rooms WHERE id=${sqlLiteral(readAdmissionRoom.id)};
+    `)[0];
+    assert.equal(Number(readAdmissionState.access_count), 0);
+    assert.equal(readAdmissionState.last_accessed_at, null);
+    assert.ok(readAdmissionState.revoked_at);
+    requireD1Success(d1(
+      stateDirectory,
+      "execute",
+      "DROP TRIGGER e2e_revoke_family_before_read_admission;",
+    ), "dropping the read-vs-revoke interleaving failed");
+    const deletedReadAdmissionProject = await call(
+      server.origin,
+      `/api/projects/${readAdmission.project.id}`,
+      { method: "DELETE", auth: owner },
+    );
+    assert.equal(deletedReadAdmissionProject.response.status, 204, JSON.stringify(deletedReadAdmissionProject.payload));
+
+    const archiveAdmission = await createDecision(server.origin, owner, "ARCHIVE_ADMISSION", [39, 61], "Jaipur");
+    const archiveAdmissionCreated = await createRoom(
+      server.origin,
+      owner,
+      archiveAdmission,
+      "family-archive-admission-create",
+    );
+    assert.equal(archiveAdmissionCreated.response.status, 201, JSON.stringify(archiveAdmissionCreated.payload));
+    const archiveAdmissionRoom = archiveAdmissionCreated.payload.room;
+    const archiveAdmissionToken = roomToken(archiveAdmissionRoom);
+    requireD1Success(d1(
+      stateDirectory,
+      "execute",
+      `CREATE TRIGGER e2e_archive_family_before_read_admission
+         BEFORE UPDATE OF access_count ON family_alignment_rooms
+         WHEN OLD.id=${sqlLiteral(archiveAdmissionRoom.id)}
+       BEGIN
+         UPDATE projects SET status='archived' WHERE id=OLD.project_id;
+         SELECT RAISE(IGNORE);
+       END;`,
+    ), "installing the read-vs-archive interleaving failed");
+    const archiveWonAdmission = await call(
+      server.origin,
+      `/api/family-alignment/${archiveAdmissionToken}`,
+    );
+    assert.equal(archiveWonAdmission.response.status, 410, JSON.stringify(archiveWonAdmission.payload));
+    assert.equal(archiveWonAdmission.payload.code, "family_alignment_unavailable");
+    assert.equal(Object.hasOwn(archiveWonAdmission.payload, "room"), false);
+    const archiveAdmissionState = query(stateDirectory, `
+      SELECT r.access_count,r.last_accessed_at,p.status AS project_status
+        FROM family_alignment_rooms r
+        JOIN projects p ON p.id=r.project_id
+       WHERE r.id=${sqlLiteral(archiveAdmissionRoom.id)};
+    `)[0];
+    assert.equal(Number(archiveAdmissionState.access_count), 0);
+    assert.equal(archiveAdmissionState.last_accessed_at, null);
+    assert.equal(archiveAdmissionState.project_status, "archived");
+    requireD1Success(d1(
+      stateDirectory,
+      "execute",
+      "DROP TRIGGER e2e_archive_family_before_read_admission;",
+    ), "dropping the read-vs-archive interleaving failed");
+    const deletedArchiveAdmissionProject = await call(
+      server.origin,
+      `/api/projects/${archiveAdmission.project.id}`,
+      { method: "DELETE", auth: owner },
+    );
+    assert.equal(deletedArchiveAdmissionProject.response.status, 204, JSON.stringify(deletedArchiveAdmissionProject.payload));
+
+    const invalidExpiryAdmission = await createDecision(
+      server.origin,
+      owner,
+      "INVALID_EXPIRY_ADMISSION",
+      [41, 61],
+      "Hyderabad",
+    );
+    const invalidExpiryCreated = await createRoom(
+      server.origin,
+      owner,
+      invalidExpiryAdmission,
+      "family-invalid-expiry-admission-create",
+    );
+    assert.equal(invalidExpiryCreated.response.status, 201, JSON.stringify(invalidExpiryCreated.payload));
+    const invalidExpiryRoom = invalidExpiryCreated.payload.room;
+    const invalidExpiryToken = roomToken(invalidExpiryRoom);
+    const expiryAdmission = await createDecision(server.origin, owner, "EXPIRY_ADMISSION", [43, 61], "Chennai");
+    const expiryAdmissionCreated = await createRoom(
+      server.origin,
+      owner,
+      expiryAdmission,
+      "family-expiry-admission-create",
+    );
+    assert.equal(expiryAdmissionCreated.response.status, 201, JSON.stringify(expiryAdmissionCreated.payload));
+    const expiryAdmissionRoom = expiryAdmissionCreated.payload.room;
+    const expiryAdmissionToken = roomToken(expiryAdmissionRoom);
+    requireD1Success(d1(
+      stateDirectory,
+      "execute",
+      `DROP TRIGGER family_alignment_room_identity_immutable;
+       CREATE TRIGGER e2e_invalidate_family_expiry_before_read_admission
+         BEFORE UPDATE OF access_count ON family_alignment_rooms
+         WHEN OLD.id=${sqlLiteral(invalidExpiryRoom.id)}
+       BEGIN
+         UPDATE family_alignment_rooms SET expires_at='2027-02-30 12:00:00' WHERE id=OLD.id;
+         SELECT RAISE(IGNORE);
+       END;
+       CREATE TRIGGER e2e_expire_family_before_read_admission
+         BEFORE UPDATE OF access_count ON family_alignment_rooms
+         WHEN OLD.id=${sqlLiteral(expiryAdmissionRoom.id)}
+       BEGIN
+         UPDATE family_alignment_rooms SET expires_at=datetime('now','-1 second') WHERE id=OLD.id;
+         SELECT RAISE(IGNORE);
+       END;`,
+    ), "installing malformed and expired read-admission interleavings failed");
+    const invalidExpiryRead = await call(
+      server.origin,
+      `/api/family-alignment/${invalidExpiryToken}`,
+    );
+    assert.equal(invalidExpiryRead.response.status, 503, JSON.stringify(invalidExpiryRead.payload));
+    assert.equal(Object.hasOwn(invalidExpiryRead.payload, "room"), false);
+    assert.equal(JSON.stringify(invalidExpiryRead.payload).includes("2027-02-30"), false);
+    requireD1Success(d1(
+      stateDirectory,
+      "execute",
+      `UPDATE family_alignment_rooms SET expires_at='2099-01-02T03:04:05'
+        WHERE id=${sqlLiteral(invalidExpiryRoom.id)};`,
+    ), "installing a non-canonical stored expiry failed");
+    const nonCanonicalExpiryRead = await call(
+      server.origin,
+      `/api/family-alignment/${invalidExpiryToken}`,
+    );
+    assert.equal(nonCanonicalExpiryRead.response.status, 503, JSON.stringify(nonCanonicalExpiryRead.payload));
+    assert.equal(Object.hasOwn(nonCanonicalExpiryRead.payload, "room"), false);
+    assert.equal(JSON.stringify(nonCanonicalExpiryRead.payload).includes("2099-01-02"), false);
+    const expiryWonAdmission = await call(
+      server.origin,
+      `/api/family-alignment/${expiryAdmissionToken}`,
+    );
+    assert.equal(expiryWonAdmission.response.status, 410, JSON.stringify(expiryWonAdmission.payload));
+    assert.equal(expiryWonAdmission.payload.code, "family_alignment_expired");
+    assert.equal(Object.hasOwn(expiryWonAdmission.payload, "room"), false);
+    for (const fixture of [invalidExpiryRoom, expiryAdmissionRoom]) {
+      const state = query(stateDirectory, `
+        SELECT access_count,last_accessed_at FROM family_alignment_rooms WHERE id=${sqlLiteral(fixture.id)};
+      `)[0];
+      assert.equal(Number(state.access_count), 0);
+      assert.equal(state.last_accessed_at, null);
+    }
+    requireD1Success(d1(
+      stateDirectory,
+      "execute",
+      `DROP TRIGGER e2e_invalidate_family_expiry_before_read_admission;
+       DROP TRIGGER e2e_expire_family_before_read_admission;
+       CREATE TRIGGER family_alignment_room_identity_immutable
+       BEFORE UPDATE ON family_alignment_rooms
+       WHEN NEW.project_id IS NOT OLD.project_id
+         OR NEW.user_id IS NOT OLD.user_id
+         OR NEW.comparison_id IS NOT OLD.comparison_id
+         OR NEW.comparison_version != OLD.comparison_version
+         OR NEW.token_hash IS NOT OLD.token_hash
+         OR NEW.idempotency_key IS NOT OLD.idempotency_key
+         OR NEW.request_hash IS NOT OLD.request_hash
+         OR NEW.expires_at IS NOT OLD.expires_at
+         OR NEW.created_at IS NOT OLD.created_at
+       BEGIN
+         SELECT RAISE(ABORT, 'family alignment room identity is immutable');
+       END;`,
+    ), "restoring the immutable room identity fence failed");
+    for (const fixture of [invalidExpiryAdmission, expiryAdmission]) {
+      const deletedFixture = await call(
+        server.origin,
+        `/api/projects/${fixture.project.id}`,
+        { method: "DELETE", auth: owner },
+      );
+      assert.equal(deletedFixture.response.status, 204, JSON.stringify(deletedFixture.payload));
+    }
+    assert.equal(Number(query(
+      stateDirectory,
+      "SELECT COALESCE(SUM(event_count),0) AS count FROM product_event_aggregates WHERE event_name='family_alignment_review_opened';",
+    )[0].count), openedEventsBeforeAdmission, "closed or failed reads must not emit successful-open events");
+    requireD1Success(d1(
+      stateDirectory,
+      "execute",
+      `CREATE TRIGGER e2e_fail_family_analytics
+         BEFORE INSERT ON product_event_aggregates
+         WHEN NEW.event_name LIKE 'family_alignment_%'
+       BEGIN SELECT RAISE(ABORT, 'synthetic family analytics outage'); END;`,
+    ), "restoring the ancillary analytics failure failed");
 
     const invalidBody = await submitResponse(server.origin, mainToken, responseToken(), {
       role: "spouse",
