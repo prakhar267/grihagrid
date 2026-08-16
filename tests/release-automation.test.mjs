@@ -74,6 +74,12 @@ test("release database evidence hard-gates legacy safety and proves migration da
   });
   assert.equal(pre.legacySafety.unknown_input_rows, 0);
   assert.match(pre.canonical.projects.sha256, /^[a-f0-9]{64}$/u);
+  assert.equal(pre.canonical.users.algorithm, "PBKDF2-SHA256");
+  assert.equal(pre.canonical.users.iterations, 100_000);
+  assert.match(pre.canonical.users.saltBase64Url, /^[A-Za-z0-9_-]{22}$/u);
+  assert.match(pre.canonical.users.digest, /^[a-f0-9]{64}$/u);
+  assert.equal(JSON.stringify(pre).includes("password-hash"), false);
+  assert.equal(JSON.stringify(pre).includes("password-salt"), false);
   assert.throws(
     () => buildPreMigrationEvidence({
       environment: "staging",

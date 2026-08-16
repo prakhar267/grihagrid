@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, pbkdf2Sync, randomBytes } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
@@ -12,6 +12,10 @@ const COUNTED_ENTITIES = Object.freeze([
   "orders",
   "payment_webhook_events",
 ]);
+
+const CREDENTIAL_EVIDENCE_ALGORITHM = "PBKDF2-SHA256";
+const CREDENTIAL_EVIDENCE_ITERATIONS = 100_000;
+const CREDENTIAL_EVIDENCE_SALT_BYTES = 16;
 
 const REQUIRED_0013_OBJECTS = Object.freeze([
   "table:report_feedback",
@@ -106,7 +110,7 @@ function canonicalProjects(payload, expectedCount) {
   return { rowCount: rows.length, sha256: sha256(stableStringify(canonicalRows)) };
 }
 
-function canonicalUsers(payload, expectedCount) {
+function canonicalUsers(payload, expectedCount, priorProof = null) {
   const rows = d1Rows(payload, "users canonical rows");
   assert.equal(rows.length, expectedCount, "users canonical query was truncated or inconsistent");
   const canonicalRows = rows.map((row) => ({
@@ -115,7 +119,29 @@ function canonicalUsers(payload, expectedCount) {
     auth_revision_id: row.auth_revision_id ?? null,
     password_changed_at: row.password_changed_at ?? null,
   }));
-  return { rowCount: rows.length, sha256: sha256(stableStringify(canonicalRows)) };
+  if (priorProof) {
+    assert.equal(priorProof.algorithm, CREDENTIAL_EVIDENCE_ALGORITHM, "credential evidence algorithm changed");
+    assert.equal(priorProof.iterations, CREDENTIAL_EVIDENCE_ITERATIONS, "credential evidence work factor changed");
+    assert.match(String(priorProof.saltBase64Url || ""), /^[A-Za-z0-9_-]{22}$/u, "credential evidence salt is invalid");
+  }
+  const salt = priorProof
+    ? Buffer.from(priorProof.saltBase64Url, "base64url")
+    : randomBytes(CREDENTIAL_EVIDENCE_SALT_BYTES);
+  assert.equal(salt.length, CREDENTIAL_EVIDENCE_SALT_BYTES, "credential evidence salt length is invalid");
+  const digest = pbkdf2Sync(
+    stableStringify(canonicalRows),
+    salt,
+    CREDENTIAL_EVIDENCE_ITERATIONS,
+    32,
+    "sha256",
+  ).toString("hex");
+  return {
+    rowCount: rows.length,
+    algorithm: CREDENTIAL_EVIDENCE_ALGORITHM,
+    iterations: CREDENTIAL_EVIDENCE_ITERATIONS,
+    saltBase64Url: salt.toString("base64url"),
+    digest,
+  };
 }
 
 function canonicalSessions(payload, expectedCount) {
@@ -200,7 +226,7 @@ export function verifyPostMigrationEvidence({
   const counts = exactCounts(countsPayload);
   assert.deepEqual(counts, pre.counts, "migration changed protected table row counts");
   const canonical = {
-    users: canonicalUsers(usersPayload, counts.users),
+    users: canonicalUsers(usersPayload, counts.users, pre.canonical.users),
     sessions: canonicalSessions(sessionsPayload, counts.sessions),
     projects: canonicalProjects(projectsPayload, counts.projects),
     reports: canonicalTable(reportsPayload, counts.reports, "reports"),
