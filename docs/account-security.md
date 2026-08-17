@@ -203,6 +203,261 @@ soon as possible. Existing fence rows remain data, expire naturally, and are
 honored after roll-forward. Never drop the table, weaken its constraints, or
 rewrite migration history to make an old Worker appear equivalent.
 
+## ID-06 session review and password-confirmed bulk revocation
+
+### Product decision and bounded scope
+
+An authenticated customer can review the account's valid session boundaries
+and close every pre-existing session without changing a password they still
+trust. This is intentionally a privacy-minimized security control, not a device
+inventory or an account-recovery flow.
+
+- Review includes the current session first and at most the 20 newest other
+  unexpired sessions that match the current authentication generation and
+  opaque revision. `hasMore` says whether still earlier matching sessions were
+  omitted.
+- Every public row contains exactly `current`, `startedAt`, and `expiresAt`.
+  The response never exposes a session/account ID, bearer or CSRF value,
+  user-agent, browser, device, IP address, location, last-active value,
+  authentication generation, or authentication revision.
+- “Sign out other sessions” requires the exact current password. Success
+  replaces this browser profile's session boundary, revokes every session that
+  existed before the transaction, and leaves the password record unchanged.
+- The action remains available when review shows only the current row. A copied
+  current bearer is the same server session and cannot truthfully be rendered
+  as a separate device; replacing the boundary still invalidates every copy.
+- Anyone who knows the unchanged password may sign in again after revocation.
+  If access is unfamiliar or the credential may be known, the customer should
+  use the separate password-rotation control immediately afterward.
+- No email, push, in-product inbox, or other important-security-event
+  notification is sent. That part of ID-06 remains future work, so ID-06 is
+  implemented only partially.
+
+### Customer journey and interaction contract
+
+1. The customer opens **Account security** from the private workspace.
+2. The page loads a read-only session review. The current cookie is represented
+   first; other rows are ordered newest first and described only by start and
+   expiry time. Copy explicitly explains that device and location labels are
+   unavailable.
+3. The customer can open **Sign out other sessions** even when the list contains
+   only the current row. The password field receives focus and has the
+   `current-password` autocomplete hint.
+4. The customer enters only the current password. The browser sends no session
+   ID, target list, device selection, or replacement credential.
+5. On confirmed success, both secure cookies are replaced, the review collapses
+   to one current row, focus moves to the success message, and the copy warns
+   that the unchanged password can be used for a new login.
+6. A known validation/authentication failure is actionable. A response-loss or
+   unexpected server/network failure is treated as ambiguous: the UI does not
+   claim success, clears the password field, and asks the customer to reload or
+   sign in before relying on the boundary.
+
+Session review and password rotation cannot submit concurrently. Loading,
+empty/current-only, truncated, wrong-password, fail-closed, success, conflict,
+expired-session, and ambiguous states remain keyboard-operable and announced.
+Print excludes the session list, sign-in times, password control, and result
+details.
+
+### `GET /api/auth/sessions`
+
+Requires a live session and returns `Cache-Control: no-store`. The successful
+shape is exact:
+
+```json
+{
+  "sessions": [
+    {
+      "current": true,
+      "startedAt": "2026-08-17 10:00:00",
+      "expiresAt": "2026-09-16 10:00:00"
+    },
+    {
+      "current": false,
+      "startedAt": "2026-08-16 08:30:00",
+      "expiresAt": "2026-09-15 08:30:00"
+    }
+  ],
+  "hasMore": false
+}
+```
+
+The current session is always the first and only `current: true` row. The
+remaining list contains at most 20 current-authentication, unexpired rows,
+newest first. The Worker reads one extra row only to derive `hasMore`; it never
+returns that sentinel. Expired rows and rows from older generation/revision
+boundaries are excluded.
+
+The read is observational: it does not update `last_seen_at`, delete expired
+rows, rotate a token, or mutate the user/session records. Missing authentication
+is `401 unauthenticated`. A database/query failure, missing current row,
+duplicate/malformed shape, invalid canonical timestamp, or expiry not later
+than start fails closed as `503 session_review_unavailable` instead of returning
+a plausible partial list.
+
+### `POST /api/auth/sessions/revoke-others`
+
+The request body must be one JSON object with exactly one primitive-string
+field:
+
+```json
+{ "currentPassword": "the customer's current password" }
+```
+
+The endpoint requires a trusted same-origin request, live session, matching
+CSRF cookie/header/hash, and healthy KV before it will verify the password. Its
+endpoint-specific KV perimeter admits at most 10 attempts per IP in 15 minutes.
+The same strongly consistent D1 `password_change_attempt_counters` admission
+used by `PUT /api/auth/password` admits at most five total current-password
+checks per account in each fixed 15-minute window across both controls. Six
+mixed password-change/revocation attempts therefore cannot yield six password
+verifications. Missing or failing KV/D1 admission is
+`503 abuse_control_unavailable`; exhaustion is `429 rate_limited`.
+
+Missing, extra, inherited, or non-string fields return
+`400 invalid_session_revocation`. A supplied string outside the 10–128
+character credential boundary receives dummy PBKDF2 work and follows the
+incorrect-current-password path. A wrong password returns
+`401 current_password_incorrect`; a lost authentication race returns bounded
+`401 unauthenticated` or `409 auth_state_changed`. None of those paths may
+claim revocation or partially mutate authentication state.
+
+After password confirmation, one D1 batch:
+
+1. conditionally advances `users.auth_generation` by exactly one and installs a
+   fresh `auth_revision_id`, fenced by the prior generation/revision and the
+   complete existing password record;
+2. deletes every session for the account only if that new generation/revision
+   and password hash are current; and
+3. inserts one replacement session fenced by the new generation/revision and
+   unchanged password hash.
+
+The batch does not write `password_hash`, `password_salt`,
+`password_iterations`, `password_algorithm`, or `password_changed_at`. It also
+does not delete or reset `login_attempt_fences`; revoking sessions must not
+silently reopen login. Any batch failure rolls back the generation/revision
+bump, all deletes, and replacement insert together. Concurrent requests have
+one winner; the loser cannot delete the winner's replacement.
+
+Success returns `200`, replaces both secure cookies, and returns only the
+public user, replacement CSRF token, one current session projection, and
+`hasMore: false`:
+
+```json
+{
+  "user": {
+    "id": "account UUID",
+    "email": "owner@example.com",
+    "name": "Owner",
+    "createdAt": "2026-08-16 00:00:00"
+  },
+  "csrfToken": "replacement browser token",
+  "sessions": [
+    {
+      "current": true,
+      "startedAt": "2026-08-17 10:05:00",
+      "expiresAt": "2026-09-16 10:05:00"
+    }
+  ],
+  "hasMore": false
+}
+```
+
+### Acceptance criteria
+
+1. Review returns exactly one current row followed by no more than 20 newest
+   other current-authentication, unexpired rows; `hasMore` is true exactly when
+   another matching row exists beyond the cap.
+2. Review is byte-shape bounded and read-only. It exposes only
+   current/start/expiry and contains no identifier, user-agent, device, IP,
+   location, last-active, token, email, generation, or revision data.
+3. The revoke request accepts only `currentPassword` and fails closed on
+   origin, session, CSRF, KV, D1 admission, password, malformed-body, or
+   authentication-race failure with no false success.
+4. Password rotation and bulk revocation share one five-per-account/15-minute
+   D1 password-verification boundary, including concurrent mixed requests.
+5. A successful revoke advances only authentication generation/revision,
+   deletes every pre-existing session, creates exactly one replacement, and
+   leaves every password field, `password_changed_at`, and the login-attempt
+   fence byte-equivalent.
+6. Every retained old bearer returns `401`; the replacement works. A later
+   login with the unchanged password succeeds and appears as a new
+   post-boundary session.
+7. Two concurrent revocations yield one committed boundary. Injected failure
+   at update, delete, or replacement insert leaves the complete prior boundary
+   usable and cannot clear or mutate the login-attempt fence.
+8. The current-only UI retains the action and explains copied-bearer limits;
+   desktop, 390 px, keyboard, screen reader, 200% zoom/text spacing, high
+   contrast, reduced motion, slow/error states, and print pass without leakage.
+
+### KPI and guardrails
+
+The launch KPI is the aggregate count of confirmed customer-initiated bulk
+revocations, with session-review success rate and latency as operational
+diagnostics. Measurement uses only templated route, bounded outcome/status,
+release and duration. It creates no product event and retains no account,
+session, password, IP, timestamp-list, or device dimension.
+
+Guardrails are zero old-bearer acceptance after a confirmed boundary, zero
+password or `password_changed_at` mutation, zero login-fence clears, zero
+split generation/session commits, zero session-identifying or fingerprinting
+data in API/UI/logs, zero false-success UI states, p95 below the normal 500 ms
+API target, zero accessibility-critical defects, and no change to paid,
+fulfillment, allowlist, upload, project, report, order, or payment state.
+
+### Migration, release, rollback, and manual QA
+
+This cut adds **no D1 migration**. Migration `0015_account_security.sql`
+already documents and permits a generation-only increment with a fresh opaque
+revision while prohibiting `password_changed_at` changes when the credential is
+unchanged. The existing session-generation columns, immutable-session trigger,
+password-change admission table, and migration `0017` login fence are the exact
+schema used here. Do not add an empty migration, change an applied migration,
+or reset either admission table for this feature.
+
+Release evidence must show zero unexpected pending migrations in staging and
+production, `authSchema=current`, healthy KV, exact-SHA CI/CodeQL, real-D1
+bounded-list/privacy/atomicity/race tests, production and staging Worker dry
+runs, an authenticated synthetic with exact account-scoped cleanup, public
+smoke, the serving Worker version, privacy-safe route logs, and the 30-minute
+exact-version observation. Real-local D1 tests prove current-plus-20
+truncation, read purity and byte-equivalent credential, timestamp and login-
+fence state. The deployed synthetic deliberately uses two sessions and proves
+identifier-free review, boundary rotation, both old-bearer rejections, one
+working replacement, unchanged-password post-boundary login, password rotation
+and paid/upload controls still closed. Its bounded evidence never contains the
+raw account ID; operations must privately resolve the unique synthetic, match
+the returned ID hash, prove zero customer-owned rows, delete only that exact
+account and verify user/session/auth-counter absence. An ambiguous registration
+without a verified ID hash stops for manual investigation and is never automatic
+deletion authority.
+
+Rollback uses the prior known-good Worker; there is no migration to reverse.
+A completed generation-only boundary is durable: rollback must not restore an
+old bearer, password, or session row, and the unchanged password remains the
+credential. The older UI/Worker may temporarily remove the review/revoke
+capability but remains compatible with the unchanged 0015/0017 schema. Record
+that active prior version and its successful release evidence as the known-good
+rollback target. The workflow's previous-Worker compatibility rehearsal runs
+only when a migration is present; if any migration enters this release, that
+rehearsal becomes mandatory. Roll forward to restore ID-06; never decrement a
+generation, reuse a revision, rewrite migration history, or manually recreate
+deleted sessions.
+
+Manual QA must use only synthetic accounts and retained synthetic cookies:
+
+| Area | Required check |
+|---|---|
+| List boundaries | Exercise current-only, 1/20/21+ other sessions, expired and stale-generation rows; require current first, newest matching others, exact `hasMore`, and no read mutation. |
+| Privacy | Inspect DOM, API, print, storage, analytics and logs; require only current/start/expiry with no IDs, UA/browser/device, IP, location or last-active data. |
+| Copied bearer | Copy the current bearer, keep the visible list current-only, revoke, and require both retained copies to fail while the replacement succeeds. |
+| Step-up and shared limit | Mix password rotation and revoke guesses from concurrent IP fixtures; exactly five account checks are admitted per 15-minute window and every fail-closed path makes no boundary claim. |
+| Atomicity and races | Inject each batch failure and race two revokes/login; require one winner or complete rollback, one replacement, no stale login, and an unchanged login fence. |
+| Credential boundary | Compare every password field and `password_changed_at` before/after, then log in with the same password; all remain unchanged and the post-boundary login is valid. |
+| Interaction | Test loading, retry, current-only, truncated, wrong-password, expired-session, response-loss/ambiguous, conflict and success states with keyboard and screen-reader announcements. |
+| Responsive/print | Verify 390 px, 200% zoom/text spacing, contrast, reduced motion, no horizontal overflow, stable focus, and print exclusion of session/password details. |
+| Release containment | Record exact SHA/version and no-pending-migration evidence; confirm checkout, fulfillment, allowlist and private uploads remain closed before and after the canary. |
+
 ## Password rotation product decision
 
 GrihaGrid lets an authenticated customer replace a known password and revoke
@@ -224,9 +479,10 @@ and must not be implied by this release.
 
 ## Password rotation customer problem and journey
 
-An account owner who still knows the current password has no way to respond to
-a suspected credential leak or revoke another signed-in browser. Logging out
-only removes the current session.
+Session-only bulk revocation closes every bearer that exists at its boundary,
+but anyone who knows the unchanged password may immediately sign in again.
+Password rotation is therefore the stronger response to a suspected credential
+leak. Ordinary logout still removes only the current session.
 
 1. The authenticated customer opens **Account security** from the private
    workspace account control.

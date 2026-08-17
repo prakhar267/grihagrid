@@ -1137,10 +1137,137 @@ function accountSecurityFailure(error) {
   return ambiguous;
 }
 
+function normalizeSessionReview(payload){
+  const invalid=()=>{throw new ApiError("Session review response was incomplete",502,payload)};
+  if(!payload||typeof payload!=="object"||!Array.isArray(payload.sessions)||typeof payload.hasMore!=="boolean"||payload.sessions.length<1||payload.sessions.length>21)invalid();
+  const sessions=payload.sessions.map((session,index)=>{
+    const keys=session&&typeof session==="object"?Object.keys(session).sort():[];
+    if(keys.join(",")!=="current,expiresAt,startedAt"||typeof session.current!=="boolean"||typeof session.startedAt!=="string"||typeof session.expiresAt!=="string")invalid();
+    const canonical=/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/u;
+    const started=canonical.test(session.startedAt)?Date.parse(`${session.startedAt.replace(" ","T")}Z`):NaN;
+    const expires=canonical.test(session.expiresAt)?Date.parse(`${session.expiresAt.replace(" ","T")}Z`):NaN;
+    if(!Number.isFinite(started)||!Number.isFinite(expires)||expires<=started||session.current!==(index===0))invalid();
+    return {current:session.current,startedAt:session.startedAt,expiresAt:session.expiresAt};
+  });
+  if(sessions.filter(session=>session.current).length!==1||(payload.hasMore&&sessions.length!==21))invalid();
+  return {sessions,hasMore:payload.hasMore};
+}
+
+function sessionRevocationFailure(error){
+  const code=error?.payload?.code;
+  const ambiguous={ambiguous:true,message:"We could not confirm whether the session boundary changed. Other sessions may already be closed. Reload or sign in again before relying on this control."};
+  if(code==="current_password_incorrect")return {field:true,message:"Your current password is incorrect. Check it and try again."};
+  if(code==="invalid_session_revocation")return {field:true,message:"Enter your current password only."};
+  if(code==="auth_state_changed")return {ambiguous:true,message:"Your account changed while this request was being checked. Other sessions may already be closed; reload or sign in again before relying on this control."};
+  if(code==="rate_limited")return {message:"Too many account-security checks were made. Wait a little before trying again."};
+  if(code==="abuse_control_unavailable"||code==="session_review_unavailable")return {message:"Session controls are temporarily unavailable while account protection recovers. No sign-out has been claimed."};
+  if(code==="origin_rejected"||code==="csrf_rejected")return {message:"This secure page is no longer current. Reload it before trying again."};
+  if(code==="unauthenticated")return {needsLogin:true,message:"Your session has ended. Sign in again to review the account."};
+  if(error instanceof ApiError&&error.status===408&&error.payload==null)return ambiguous;
+  if(error instanceof ApiError&&error.status>=400&&error.status<500)return {message:error.message||"We could not sign out the other sessions."};
+  return ambiguous;
+}
+
+function sessionReviewLoadFailure(error){
+  const code=error?.payload?.code;
+  if(code==="unauthenticated")return {needsLogin:true,message:"Your session has ended. Sign in again to review the account."};
+  if(code==="session_review_unavailable"||code==="database_unavailable")return {message:"GrihaGrid could not safely read the active-session record. No account state was changed."};
+  return {message:"The session list could not be loaded. No account state was changed; retry when the connection is stable."};
+}
+
+function SessionReview({ disabled, refreshKey, onAuthenticated, onBusyChange }){
+  const [review,setReview]=useState(null);
+  const [loadPhase,setLoadPhase]=useState("loading");
+  const [loadFailure,setLoadFailure]=useState(null);
+  const [retry,setRetry]=useState(0);
+  const [expanded,setExpanded]=useState(false);
+  const [currentPassword,setCurrentPassword]=useState("");
+  const [actionPhase,setActionPhase]=useState("idle");
+  const [actionFailure,setActionFailure]=useState(null);
+  const actionRef=useRef(null);
+  const passwordRef=useRef(null);
+  const actionMessageRef=useRef(null);
+  const errorId=useId();
+  const helpId=useId();
+  const actionPending=actionPhase==="pending";
+
+  useEffect(()=>{
+    actionRef.current?.abort();actionRef.current=null;onBusyChange(false);
+    setExpanded(false);setCurrentPassword("");setActionPhase("idle");setActionFailure(null);
+  },[refreshKey]);
+
+  useEffect(()=>{
+    const controller=new AbortController();let active=true;
+    setLoadPhase("loading");setLoadFailure(null);
+    api('/api/auth/sessions',{signal:controller.signal}).then(result=>{
+      if(!active)return;
+      setReview(normalizeSessionReview(result));setLoadPhase("ready");
+    }).catch(error=>{
+      if(!active||controller.signal.aborted)return;
+      const failure=sessionReviewLoadFailure(error);setLoadFailure(failure);setLoadPhase("error");
+      if(failure.needsLogin)replaceRoute('/login');
+    });
+    return()=>{active=false;controller.abort()};
+  },[refreshKey,retry]);
+
+  useEffect(()=>()=>{actionRef.current?.abort()},[]);
+
+  function openStepUp(){
+    setExpanded(true);setActionFailure(null);setActionPhase("idle");
+    window.requestAnimationFrame(()=>passwordRef.current?.focus({preventScroll:true}));
+  }
+
+  async function revokeOthers(event){
+    event.preventDefault();
+    if(actionRef.current||disabled)return;
+    if(!currentPassword){
+      const failure={field:true,message:"Enter your current password to replace the session boundary."};
+      setActionFailure(failure);setActionPhase("error");window.requestAnimationFrame(()=>passwordRef.current?.focus({preventScroll:true}));return;
+    }
+    const controller=new AbortController();actionRef.current=controller;setActionFailure(null);setActionPhase("pending");onBusyChange(true);
+    try{
+      const result=await api('/api/auth/sessions/revoke-others',{method:'POST',signal:controller.signal,body:{currentPassword}});
+      if(controller.signal.aborted)return;
+      const nextReview=normalizeSessionReview(result);
+      if(nextReview.sessions.length!==1||nextReview.hasMore||!result?.user||typeof result.csrfToken!=="string"||!result.csrfToken)throw new ApiError("Session revocation response was incomplete",502,result);
+      setReview(nextReview);setLoadPhase("ready");setCurrentPassword("");setExpanded(false);setActionPhase("success");onAuthenticated(result.user);
+      window.requestAnimationFrame(()=>actionMessageRef.current?.focus({preventScroll:true}));
+    }catch(error){
+      if(controller.signal.aborted)return;
+      const failure=sessionRevocationFailure(error);setActionFailure(failure);setActionPhase("error");
+      if(failure.ambiguous)setCurrentPassword("");
+      if(failure.needsLogin)replaceRoute('/login');
+      else window.requestAnimationFrame(()=>(failure.field?passwordRef:actionMessageRef).current?.focus({preventScroll:true}));
+    }finally{
+      if(actionRef.current===controller)actionRef.current=null;
+      if(!controller.signal.aborted)onBusyChange(false);
+    }
+  }
+
+  const otherSessions=review?.sessions.slice(1)||[];
+  const countCopy=review?.hasMore?`${otherSessions.length}+ earlier sessions`:otherSessions.length===0?"No other active session is visible":`${otherSessions.length} other active session${otherSessions.length===1?"":"s"}`;
+  return <section className="security-session-review" aria-labelledby="session-review-title" aria-busy={loadPhase==="loading"||actionPending}>
+    <header><span className="kicker">Signed-in sessions</span><h2 id="session-review-title">Review open doors.</h2><p>GrihaGrid shows valid sign-in times, not devices or locations. A repeated login or copied browser cookie can look like the same session.</p></header>
+    {loadPhase==="loading"&&<p className="security-session-loading" role="status"><ArrowClockwise/> Checking active sessions…</p>}
+    {loadPhase==="error"&&<div className="security-message security-message--ambiguous" role="alert"><WarningCircle/><div><strong>Session list unavailable</strong><p>{loadFailure?.message}</p>{!loadFailure?.needsLogin&&<button type="button" className="underlined-action" onClick={()=>setRetry(value=>value+1)}>Retry session review</button>}</div></div>}
+    {loadPhase==="ready"&&review&&<>
+      <div className="security-session-summary"><div><span>Current boundary</span><strong>{countCopy}</strong></div><small>{review.hasMore?"Only the newest 20 are shown. The action below closes every pre-existing session.":"The action remains useful if a current bearer was copied, because copied cookies cannot be listed separately."}</small></div>
+      <ol className="security-session-list">
+        {review.sessions.map((session,index)=><li key={`${session.startedAt}-${session.expiresAt}-${index}`} className={session.current?"security-session-list__current":""}><div><strong>{session.current?"This browser profile":"Another signed-in session"}</strong><span>Started {formatDateTime(session.startedAt)} · expires {formatDateTime(session.expiresAt)}</span></div>{session.current&&<small><SealCheck/> Current</small>}</li>)}
+      </ol>
+      {actionPhase==="success"&&<div ref={actionMessageRef} className="security-message security-message--success" tabIndex="-1" role="status" aria-live="polite" aria-atomic="true"><CheckCircle/><div><strong>Earlier sessions closed</strong><p>This browser profile has a fresh replacement session. Anyone who still knows your password can sign in again; change it below if access was unfamiliar.</p></div></div>}
+      {actionFailure&&<div ref={actionMessageRef} id={errorId} className={`security-message security-message--error ${actionFailure.ambiguous?'security-message--ambiguous':''}`} tabIndex="-1" role="alert"><WarningCircle/><div><strong>{actionFailure.ambiguous?'Sign-out not confirmed':'Other sessions not signed out'}</strong><p>{actionFailure.message}</p>{actionFailure.needsLogin&&<button type="button" className="underlined-action" onClick={()=>replaceRoute('/login')}>Go to log in</button>}</div></div>}
+      {!expanded?<button type="button" className="outline-button security-session-review__action" disabled={disabled||actionPending} onClick={openStepUp}><SignOut/> Sign out other sessions</button>:<form className="security-session-step-up" onSubmit={revokeOthers} noValidate><label>Current password<input ref={passwordRef} required type="password" maxLength="128" autoComplete="current-password" autoCapitalize="none" spellCheck="false" disabled={disabled||actionPending} value={currentPassword} aria-invalid={actionFailure?.field||undefined} aria-describedby={`${helpId}${actionFailure?.field?` ${errorId}`:""}`} onChange={event=>{setCurrentPassword(event.target.value);if(actionPhase==="error"){setActionFailure(null);setActionPhase("idle")}}}/><small id={helpId}>Required before GrihaGrid replaces this browser’s session and closes every earlier one.</small></label><div><button type="button" className="underlined-action" disabled={disabled||actionPending} onClick={()=>{setExpanded(false);setCurrentPassword("");setActionFailure(null);setActionPhase("idle")}}>Cancel</button><button type="submit" className="outline-button" disabled={disabled||actionPending}>{actionPending?'Closing earlier sessions…':'Confirm and sign out'} <SignOut/></button></div></form>}
+    </>}
+  </section>;
+}
+
 function AccountSecurityPage({ user, onAuthenticated }) {
   const [form,setForm]=useState({currentPassword:"",newPassword:"",confirmPassword:""});
   const [phase,setPhase]=useState("idle");
   const [failure,setFailure]=useState(null);
+  const [sessionBusy,setSessionBusy]=useState(false);
+  const [sessionRefresh,setSessionRefresh]=useState(0);
   const active=useRef(true);
   const requestRef=useRef(null);
   const currentRef=useRef(null);
@@ -1151,7 +1278,8 @@ function AccountSecurityPage({ user, onAuthenticated }) {
   const errorId=useId();
   const newHelpId=useId();
   const confirmHelpId=useId();
-  const pending=phase==="pending";
+  const passwordPending=phase==="pending";
+  const pending=passwordPending||sessionBusy;
   useEffect(()=>{active.current=true;return()=>{active.current=false;requestRef.current?.abort()}},[]);
   useEffect(()=>{if(user===null)replaceRoute('/login')},[user]);
 
@@ -1171,7 +1299,7 @@ function AccountSecurityPage({ user, onAuthenticated }) {
 
   async function changePassword(event){
     event.preventDefault();
-    if(requestRef.current)return;
+    if(requestRef.current||sessionBusy)return;
     if(!form.currentPassword)return rejectForm({field:"currentPassword",message:"Enter your current password."});
     if(form.newPassword.length<10||form.newPassword.length>128)return rejectForm({field:"newPassword",message:"Use between 10 and 128 characters for your new password."});
     if(!form.confirmPassword)return rejectForm({field:"confirmPassword",message:"Enter the new password again to confirm it."});
@@ -1185,6 +1313,7 @@ function AccountSecurityPage({ user, onAuthenticated }) {
       if(!result?.user||typeof result.csrfToken!=="string"||!result.csrfToken)throw new ApiError("Password change response was incomplete",502,result);
       setForm({currentPassword:"",newPassword:"",confirmPassword:""});
       onAuthenticated(result.user);
+      setSessionRefresh(value=>value+1);
       setPhase("success");
       window.requestAnimationFrame(()=>successRef.current?.focus({preventScroll:true}));
     }catch(error){
@@ -1203,17 +1332,18 @@ function AccountSecurityPage({ user, onAuthenticated }) {
   const newDescription=fieldError==="newPassword"?`${newHelpId} ${errorId}`:newHelpId;
   const confirmDescription=fieldError==="confirmPassword"?`${confirmHelpId} ${errorId}`:confirmHelpId;
   return <main className="security-page"><header className="security-page__topbar"><Brand disabled={pending}/><button type="button" className="back-action" disabled={pending} onClick={()=>route('/dashboard')}><ArrowLeft/> My projects</button></header><div className="security-layout">
-    <section className="security-intro" aria-labelledby="security-title"><span className="kicker">Account security · private</span><h1 id="security-title">Change your<br/><i>password.</i></h1><p>Use a password unique to GrihaGrid. We will preserve this browser as your current session and close every genuinely older route into the account.</p><div className="security-principles"><div><span>01</span><p><strong>This browser stays signed in.</strong> Its tabs share the fresh session cookie and CSRF token created by this change.</p></div><div><span>02</span><p><strong>Every older session is revoked.</strong> Copied sessions and sessions in other browsers or devices can no longer open the account.</p></div></div><small><ShieldCheck/> GrihaGrid will never ask you to send a password by email.</small></section>
+    <section className="security-intro" aria-labelledby="security-title"><span className="kicker">Account security · private</span><h1 id="security-title">Protect your<br/><i>account.</i></h1><p>Review valid sessions, close every earlier route without changing a good password, or rotate the password when access looks unfamiliar.</p><div className="security-principles"><div><span>01</span><p><strong>Privacy before fingerprints.</strong> The session inventory shows sign-in and expiry times, never device, location, IP, or browser labels.</p></div><div><span>02</span><p><strong>One new boundary.</strong> Password confirmation keeps this browser profile signed in and closes every session created before it.</p></div></div><small><ShieldCheck/> Anyone who still knows the password can sign in again. Change it after suspected compromise.</small></section>
     <section className="security-panel" aria-labelledby="security-form-title" aria-busy={pending}>
+      <SessionReview disabled={passwordPending} refreshKey={sessionRefresh} onBusyChange={setSessionBusy} onAuthenticated={onAuthenticated}/>
       {phase==="success"?<div ref={successRef} className="security-success" tabIndex="-1" role="status" aria-live="polite" aria-atomic="true"><CheckCircle/><span className="kicker">Password changed</span><h2 id="security-form-title">Your new key is active.</h2><p>This browser remains signed in with a fresh session. Other tabs in the same browser profile share the replacement cookie and may remain signed in. Every genuinely older or copied session, including sessions in other browsers and devices, has been revoked.</p><button type="button" className="copper-button" onClick={()=>route('/dashboard')}>Return to my projects <ArrowRight/></button></div>:<><header><span className="kicker">Credential update</span><h2 id="security-form-title">Choose a new key.</h2><p>Signed in as <strong>{user.email||user.name}</strong>. Your current password confirms this change; there is no password-recovery flow on this page.</p></header><form noValidate onSubmit={changePassword}>
         <label>Current password<input ref={currentRef} required type="password" maxLength="128" autoComplete="current-password" autoCapitalize="none" spellCheck="false" disabled={pending} value={form.currentPassword} aria-invalid={fieldError==="currentPassword"||undefined} aria-describedby={currentDescription} onChange={event=>update("currentPassword",event.target.value)}/></label>
         <label>New password<input ref={newRef} required type="password" minLength="10" maxLength="128" autoComplete="new-password" autoCapitalize="none" spellCheck="false" disabled={pending} value={form.newPassword} aria-invalid={fieldError==="newPassword"||undefined} aria-describedby={newDescription} onChange={event=>update("newPassword",event.target.value)}/><small id={newHelpId}>10–128 characters. Use a password different from your current one.</small></label>
         <label>Confirm new password<input ref={confirmRef} required type="password" minLength="10" maxLength="128" autoComplete="new-password" autoCapitalize="none" spellCheck="false" disabled={pending} value={form.confirmPassword} aria-invalid={fieldError==="confirmPassword"||undefined} aria-describedby={confirmDescription} onChange={event=>update("confirmPassword",event.target.value)}/><small id={confirmHelpId}>Enter the new password exactly as above.</small></label>
         {failure&&<div ref={errorRef} id={errorId} className={`security-message security-message--error ${failure.ambiguous?'security-message--ambiguous':''}`} tabIndex="-1" role="alert"><WarningCircle/><div><strong>{failure.ambiguous?'Change not confirmed':'Password not changed'}</strong><p>{failure.message}</p>{failure.needsLogin&&<button type="button" className="underlined-action" onClick={()=>replaceRoute('/login')}>Go to log in</button>}</div></div>}
-        {pending&&<p className="security-form-status" role="status" aria-live="polite"><LockKey/> Updating your password and revoking older sessions…</p>}
-        <button type="submit" className="copper-button copper-button--large" disabled={pending}>{pending?'Securing account…':'Change password'} <ArrowRight/></button>
+        {passwordPending&&<p className="security-form-status" role="status" aria-live="polite"><LockKey/> Updating your password and revoking older sessions…</p>}
+        <button type="submit" className="copper-button copper-button--large" disabled={pending}>{passwordPending?'Securing account…':'Change password'} <ArrowRight/></button>
       </form></>}
-      <p className="security-print-note">Account security controls are available only inside the signed-in GrihaGrid workspace. No password fields or session details are included in print.</p>
+      <p className="security-print-note">Account security controls are available only inside the signed-in GrihaGrid workspace. No password fields, sign-in times, or session details are included in print.</p>
     </section>
   </div></main>;
 }

@@ -148,3 +148,33 @@ test("anonymous responses cannot poison a later authenticated CSRF header", asyn
     globalThis.document = originalDocument;
   }
 });
+
+test("authenticated writes prefer the live rotated CSRF cookie over stale in-memory state", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalWindow = globalThis.window;
+  const originalDocument = globalThis.document;
+  const requests = [];
+  clearCsrfToken();
+  globalThis.window = { setTimeout, clearTimeout };
+  globalThis.document = { cookie: "grihagrid_csrf=first-cookie-token" };
+  globalThis.fetch = async (path, options) => {
+    requests.push({ path, csrf: options.headers.get("x-csrf-token") });
+    return new Response(JSON.stringify(
+      path === "/api/auth/me" ? { csrfToken: "stale-memory-token" } : { ok: true },
+    ), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  try {
+    await api("/api/auth/me");
+    globalThis.document.cookie = "grihagrid_csrf=replacement-cookie-token";
+    await api("/api/projects", { method: "POST", body: { name: "Rotated session" } });
+    assert.deepEqual(requests, [
+      { path: "/api/auth/me", csrf: null },
+      { path: "/api/projects", csrf: "replacement-cookie-token" },
+    ]);
+  } finally {
+    clearCsrfToken();
+    globalThis.fetch = originalFetch;
+    globalThis.window = originalWindow;
+    globalThis.document = originalDocument;
+  }
+});

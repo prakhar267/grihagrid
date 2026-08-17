@@ -2128,8 +2128,6 @@ jobs:
           monitor_status=${PIPESTATUS[0]}
           kill -0 "$invocation_pid" 2>/dev/null || tails_alive=false
           kill -0 "$server_pid" 2>/dev/null || tails_alive=false
-          invocation_stderr_bytes="$(wc -c < "$invocation_stderr")"
-          server_stderr_bytes="$(wc -c < "$server_stderr")"
           public_regression=false
           monitor_infrastructure_failure=false
           case "$monitor_status" in
@@ -2148,6 +2146,8 @@ jobs:
           invocation_status=$?
           wait "$server_pid"
           server_status=$?
+          invocation_stderr_bytes="$(wc -c < "$invocation_stderr")"
+          server_stderr_bytes="$(wc -c < "$server_stderr")"
           set -e
 
           for attempt in $(seq 1 50); do
@@ -2190,11 +2190,13 @@ jobs:
           const publicRegression = process.env.PUBLIC_REGRESSION === "true";
           const tailRegression = process.env.TAIL_REGRESSION === "true";
           const stoppedEarly = monitorStatus !== 0;
+          const tailsStoppedByOperator = invocationStatus === 143 && serverStatus === 143;
           const regression = publicRegression || tailRegression || invocation.eventCount > 0 || server.eventCount > 0;
           const infrastructureFailure = process.env.MONITOR_INFRASTRUCTURE_FAILURE === "true"
             || process.env.TAILS_ALIVE !== "true"
             || Number(process.env.INVOCATION_STDERR_BYTES) !== 0
-            || Number(process.env.SERVER_STDERR_BYTES) !== 0;
+            || Number(process.env.SERVER_STDERR_BYTES) !== 0
+            || !tailsStoppedByOperator;
           writeFileSync("release-evidence/production/tail-health.json", `${JSON.stringify({
             exactVersion: process.env.GRIHAGRID_RELEASE_ID,
             configuredDurationMs: 1_800_000,
@@ -2208,6 +2210,7 @@ jobs:
             tailsAliveThroughPublicMonitor: process.env.TAILS_ALIVE === "true",
             invocationProcessExit: invocationStatus,
             serverProcessExit: serverStatus,
+            tailsStoppedByOperator,
             invocationStderrBytes: Number(process.env.INVOCATION_STDERR_BYTES),
             serverStderrBytes: Number(process.env.SERVER_STDERR_BYTES),
             regression,

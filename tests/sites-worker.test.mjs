@@ -10,6 +10,14 @@ test("operational routes never log Decision share bearer tokens", () => {
   assert.equal(__test.operationalRoute(`/share/decision/${token}`).includes(token), false);
 });
 
+test("account session routes use fixed identifier-free operational templates", () => {
+  assert.equal(__test.operationalRoute("/api/auth/sessions"), "/api/auth/sessions");
+  assert.equal(
+    __test.operationalRoute("/api/auth/sessions/revoke-others"),
+    "/api/auth/sessions/revoke-others",
+  );
+});
+
 test("serves existing static assets without a fallback", async () => {
   const calls = [];
   const response = await worker.fetch(new Request("https://example.test/assets/app.js"), {

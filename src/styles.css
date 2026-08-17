@@ -2749,13 +2749,178 @@ blockquote {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
+  gap: clamp(2.75rem, 5vw, 4.5rem);
 }
 
 .security-panel > header,
 .security-panel > form,
-.security-success {
+.security-success,
+.security-session-review {
   width: min(560px, 100%);
+}
+
+.security-session-review {
+  padding-bottom: clamp(2.75rem, 5vw, 4.5rem);
+  display: grid;
+  gap: 1.35rem;
+  border-bottom: 1px solid var(--rule-strong);
+}
+
+.security-session-review > header h2 {
+  margin: 0.75rem 0 0.65rem;
+  font-size: clamp(2.7rem, 4.2vw, 4rem);
+  letter-spacing: -0.045em;
+  line-height: 0.92;
+}
+
+.security-session-review > header p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.65;
+}
+
+.security-session-loading {
+  margin: 0;
+  min-height: 84px;
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  border-top: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.security-session-loading svg {
+  width: 19px;
+  height: 19px;
+  color: var(--copper);
+}
+
+.security-session-summary {
+  padding: 1rem 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(190px, 0.85fr);
+  align-items: end;
+  gap: 1.25rem;
+  border-top: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+}
+
+.security-session-summary span,
+.security-session-summary small {
+  color: var(--muted);
+  font-size: 0.69rem;
+  line-height: 1.55;
+}
+
+.security-session-summary span {
+  display: block;
+  margin-bottom: 0.25rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.security-session-summary strong {
+  display: block;
+  font-family: var(--serif);
+  font-size: 1.2rem;
+  font-weight: 600;
+}
+
+.security-session-list {
+  margin: 0;
+  padding: 0;
+  border-bottom: 1px solid var(--rule);
+  list-style: none;
+}
+
+.security-session-list li {
+  min-height: 74px;
+  padding: 0.9rem 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border-top: 1px solid var(--rule);
+}
+
+.security-session-list li:first-child {
+  border-top: 0;
+}
+
+.security-session-list li > div {
+  min-width: 0;
+}
+
+.security-session-list strong,
+.security-session-list span {
+  display: block;
+}
+
+.security-session-list strong {
+  color: var(--ink-soft);
+  font-family: var(--serif);
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.security-session-list span {
+  margin-top: 0.2rem;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 0.7rem;
+  line-height: 1.45;
+}
+
+.security-session-list li > small {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex: 0 0 auto;
+  color: var(--good);
+  font-size: 0.67rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.security-session-list li > small svg {
+  width: 16px;
+  height: 16px;
+}
+
+.security-session-list__current {
+  background: rgba(50, 105, 77, 0.045);
+}
+
+.security-session-review__action {
+  width: 100%;
+  min-height: 50px;
+}
+
+.security-session-step-up {
+  display: grid;
+  gap: 1.15rem;
+}
+
+.security-session-step-up > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.security-session-step-up > div .underlined-action {
+  font-family: var(--sans);
+  font-size: 0.78rem;
+}
+
+.security-message--success {
+  border-left-color: var(--good);
+  background: rgba(50, 105, 77, 0.07);
+  color: var(--ink-soft);
 }
 
 .security-panel > header {
@@ -3058,6 +3223,28 @@ blockquote {
     font-size: 3.35rem;
   }
 
+  .security-session-review > header h2 {
+    font-size: 3rem;
+  }
+
+  .security-session-summary {
+    grid-template-columns: 1fr;
+    align-items: start;
+    gap: 0.65rem;
+  }
+
+  .security-session-step-up > div {
+    align-items: stretch;
+    flex-direction: column-reverse;
+  }
+
+  .security-session-step-up > div .outline-button,
+  .security-session-step-up > div .underlined-action {
+    width: 100%;
+    min-height: 48px;
+    justify-content: center;
+  }
+
   .security-success > .copper-button {
     width: 100%;
   }
@@ -3071,6 +3258,7 @@ blockquote {
 
   .security-page__topbar,
   .security-intro,
+  .security-session-review,
   .security-panel > header,
   .security-panel > form,
   .security-success {

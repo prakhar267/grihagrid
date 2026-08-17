@@ -179,9 +179,37 @@ Priority definitions: **P0** is required to sell responsibly; **P1** improves co
 | ID-03 | P0 | Customer recovers account access | One-time, expiring reset flow avoids account enumeration and revokes old sessions after password reset. |
 | ID-04 | P0 | System protects mutating requests | CSRF defence, origin validation, request-size limits, and per-account/IP abuse controls are enforced. |
 | ID-05 | P1 | Customer verifies email | Verification status is visible and required before paid fulfillment or external sharing. |
-| ID-06 | P1 | Customer sees active sessions | User can revoke other sessions; important security events are notified. |
+| ID-06 | P1 | Customer reviews active session boundaries | The current cut shows the current session plus at most 20 other current-authentication, unexpired start/expiry records with an honest truncation signal and lets a current-password-confirmed customer replace the boundary atomically. It exposes no session ID, UA/browser/device, IP, location or last-active data. Important-security-event notifications remain future work, so ID-06 is partial. |
 | ID-07 | P1 | Customer records communication consent | Transactional and marketing purposes are separate, timestamped, revocable, and not preselected. |
 | ID-08 | P2 | Customer adds another family collaborator | Invite is scoped to one project, role-limited, expiring, revocable, and fully audited. |
+
+#### ID-06 implemented cut
+
+The bounded customer problem is a signed-in owner who wants to inspect and
+close possible copied or forgotten sessions without first changing a password
+they still trust. Account security shows one current row and up to 20 newest
+other valid rows using only start and expiry time. `hasMore` communicates a
+truncated list without creating a device-fingerprinting or location-history
+product.
+
+The primary action remains available in the current-only state because a copy
+of the current bearer cannot truthfully appear as another device. The owner
+confirms the exact current password; success atomically advances the account
+authentication generation/revision, deletes every session and creates one
+replacement while preserving all password fields, `password_changed_at` and
+the login-attempt fence. Every old bearer fails, but anyone who knows the
+unchanged password can sign in again. The product therefore directs suspected
+credential compromise to the adjacent password-rotation flow.
+
+Acceptance requires current-plus-20/`hasMore` accuracy, read-only behavior,
+zero identifier/fingerprint leakage, same-origin/CSRF and shared five-per-
+account/15-minute current-password admission, one-winner atomic concurrency,
+complete failure rollback, copied-bearer invalidation, unchanged-credential and
+login-fence proof, and accessible current-only/truncated/error/success states.
+No migration is added: migration 0015 explicitly supports the generation-only
+transition. Release and rollback must preserve completed boundaries and never
+recreate deleted sessions. Email/push/in-product security notifications remain
+a separately designed Phase 1 outcome.
 
 ### C. Project and brief management
 
@@ -405,7 +433,7 @@ The launch schema already establishes users, sessions, projects, reports, projec
 |---|---|
 | `users` | Account identity, verified contact state, deletion/tombstone state; one-to-many sessions/projects/orders. |
 | `credentials` or versioned user fields | Password hash parameters separated enough to upgrade algorithms safely. |
-| `sessions` | Hashed session and CSRF secrets, user, expiry, last-seen, revocation context. |
+| `sessions` | Hashed session and CSRF secrets, user, authentication generation/revision, expiry, last-seen and revocation context. The customer review projection exposes only current/start/expiry, never the row identity or fingerprinting data. |
 | `consents` | Purpose, policy version, action, timestamp, source; append-only. |
 | `projects` | Owner, display name, current state/current version, lifecycle timestamps. |
 | `project_versions` | Immutable normalized input JSON, schema version, created-by, prior version, input hash. |
@@ -522,6 +550,7 @@ This prevents “reports generated” from becoming a vanity metric. Define and 
 | Professional | Review on-time/accepted rate | Is human review timely, specific, and useful? |
 | Retention | 30-day returning project rate | Does the workspace remain useful during real planning? |
 | Advocacy | Qualified referral/share-to-signup rate | Do customers trust the artifact enough to involve family/professionals? |
+| Account safety | Confirmed bulk-session revocations, with review success/latency diagnostics | Can an owner close a suspected bearer boundary without false success or surveillance data? |
 
 ### Guardrails
 
@@ -534,7 +563,11 @@ This prevents “reports generated” from becoming a vanity metric. Define and 
 - deletion completion within policy SLA;
 - unsafe/prohibited claim findings in sampled reports;
 - expert-review escalation and quality-failure rate;
-- accessibility-critical defects in production (target zero).
+- accessibility-critical defects in production (target zero);
+- accepted pre-boundary bearer after confirmed bulk revocation (target zero);
+- session-review identifier/device/IP/location/last-active leakage (target zero);
+- credential, `password_changed_at`, or login-fence mutation during session-only
+  revocation (target zero).
 
 Event names and formulas need a versioned analytics contract. Never infer success from clicks alone; join funnel events to validated project/order states without sending private brief content to analytics.
 
@@ -551,6 +584,7 @@ Event names and formulas need a versioned analytics contract. Never infer succes
 | Private file exposure | Public URL/object listing detection | Private bucket, scoped object key, auth gateway, expiry | Disable file delivery, rotate access mechanism, enumerate exposure | Engineering/security |
 | Reviewer shortage/quality failure | Queue age, sampled rubric score | Capacity forecast, eligibility checks, QA sampling | Stop premium sales; reassign/escalate; offer refund | Operations/professional lead |
 | Account/email abuse | Auth spikes, bounce/complaint rate | Rate limits, verification, Turnstile when justified | Tighten limits, block source, protect transactional sender | Engineering |
+| Session boundary failure | Old bearer accepted after confirmed revocation, split batch, or false-success report | Generation/revision fencing, atomic replacement, retained-bearer canaries, ambiguous client state | Disable the revoke action, preserve evidence, require password rotation/sign-in, deploy known-good Worker | Engineering/security |
 | Dependency/deployment regression | Synthetic journey or 5xx alert | CI, canary/preview, pinned dependencies, rollback artifact | Roll back application; use additive corrective DB migration | On-call/DevOps |
 | Legal/brand challenge | Notice, counsel finding | Clearance, terms/policy review, licensed assets | Pause affected claims/brand campaign; preserve records; counsel response | Founder/legal |
 | Low willingness to pay | Good activation, poor paid conversion | Customer interviews, value-based packaging tests | Avoid ad scaling; test report usefulness/scope before discounts | Founder/product |
@@ -595,7 +629,8 @@ Rollback uses the last known-good application artifact. Never roll back an irrev
 
 **Outcome:** users understand and act on the artifact; conversion improves without increasing complaints.
 
-- Anonymous brief resume, email verification/session management, scenario comparison, report feedback.
+- Anonymous brief resume, email verification, security-event notifications and
+  richer session management, scenario comparison, report feedback.
 - Photo labelling/metadata hygiene and site-informed quality rubric.
 - Versioned report sharing with redaction/expiry.
 - Customer-visible estimate methodology and basis freshness.

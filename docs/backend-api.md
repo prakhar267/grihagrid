@@ -368,6 +368,109 @@ The `204` response is explicitly `no-store`.
 Requires session. Returns `{ user, csrfToken }`; use this to restore frontend
 auth state after reload. Expired/deleted sessions return `401`.
 
+### `GET /api/auth/sessions`
+
+Requires a live session and returns a read-only, `no-store` review of sessions
+that are both unexpired by D1 time and bound to the current account
+authentication generation/revision. The current session is always first,
+followed by at most the 20 newest other matching sessions:
+
+```json
+{
+  "sessions": [
+    {
+      "current": true,
+      "startedAt": "2026-08-17 10:00:00",
+      "expiresAt": "2026-09-16 10:00:00"
+    },
+    {
+      "current": false,
+      "startedAt": "2026-08-16 08:30:00",
+      "expiresAt": "2026-09-15 08:30:00"
+    }
+  ],
+  "hasMore": false
+}
+```
+
+Every session object has exactly `current`, `startedAt`, and `expiresAt`.
+`hasMore` is true only when an additional matching other session exists beyond
+the 20-row public cap. The response has no session/account IDs, bearer or CSRF
+values, user-agent/browser/device label, IP address, location, last-active
+value, authentication generation, or authentication revision. The query does
+not update `last_seen_at`, rotate cookies, delete expired rows, or otherwise
+mutate D1. Missing authentication is `401 unauthenticated`; query failure,
+missing/duplicate current state, or a malformed/non-increasing canonical time
+pair is `503 session_review_unavailable`, never a partial success.
+
+### `POST /api/auth/sessions/revoke-others`
+
+Requires trusted same origin, a live session, matching CSRF cookie/header/hash,
+and configured healthy KV. The exact JSON body is:
+
+```json
+{ "currentPassword": "the current password" }
+```
+
+No session ID, target list, device value, or other field is accepted. Invalid
+shape returns `400 invalid_session_revocation`; wrong password returns
+`401 current_password_incorrect`; missing/failing abuse control returns
+`503 abuse_control_unavailable`; exhausted controls return
+`429 rate_limited`; and a lost authentication race returns bounded
+`401 unauthenticated` or `409 auth_state_changed`.
+
+The endpoint has a fail-closed 10-attempt-per-IP/15-minute KV perimeter. More
+importantly, it shares `password_change_attempt_counters` with
+`PUT /api/auth/password`: together those routes admit at most five
+current-password verifications per account in each fixed 15-minute D1 window,
+including concurrent mixed requests. An invalid-length string receives dummy
+PBKDF2 work after admission and cannot bypass that shared boundary.
+
+On a correct password, one conditional D1 batch advances only
+`auth_generation` and `auth_revision_id`, deletes every session for that
+account, and inserts one replacement session bound to the new state. The
+credential hash, salt, algorithm, iterations and `password_changed_at` remain
+unchanged. Unlike password rotation, this batch deliberately preserves
+`login_attempt_fences`; closing sessions must not reopen login. A failed or
+losing batch commits none of the generation, delete, or replacement work.
+
+Success replaces both cookies and returns:
+
+```json
+{
+  "user": {
+    "id": "account UUID",
+    "email": "owner@example.com",
+    "name": "Owner",
+    "createdAt": "2026-08-16 00:00:00"
+  },
+  "csrfToken": "replacement browser token",
+  "sessions": [
+    {
+      "current": true,
+      "startedAt": "2026-08-17 10:05:00",
+      "expiresAt": "2026-09-16 10:05:00"
+    }
+  ],
+  "hasMore": false
+}
+```
+
+Every pre-boundary bearer is then invalid, including a copied current cookie.
+The unchanged password can legitimately create a new post-boundary session, so
+customers should use password rotation when credential disclosure is
+suspected. The action remains useful when the GET response contains only the
+current row because copied bearer values cannot be enumerated separately.
+Important-security-event notifications are not sent; that part of ID-06 is
+future work.
+
+These endpoints require no new migration. They use migration 0015's explicitly
+supported generation-only transition, current session columns/guard and shared
+password-attempt table, plus the existing migration 0017 login fence. Release
+preflight must prove no unexpected pending migrations; rollback removes the
+endpoints/UI only and must not decrement the generation or recreate deleted
+sessions.
+
 ### `PUT /api/auth/password`
 
 Requires a trusted same-origin request, live session, matching CSRF

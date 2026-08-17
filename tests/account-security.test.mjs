@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
@@ -166,11 +166,33 @@ async function clearPasswordAttempts(db, userId) {
   await db.prepare("DELETE FROM password_change_attempt_counters WHERE user_id=?").bind(userId).run();
 }
 
+async function withPasswordDerivationCount(action) {
+  const original = crypto.subtle.deriveBits;
+  let derivations = 0;
+  crypto.subtle.deriveBits = async function countedDeriveBits(...arguments_) {
+    if (arguments_[0]?.name === "PBKDF2") derivations += 1;
+    return original.apply(this, arguments_);
+  };
+  try {
+    return { result: await action(), derivations };
+  } finally {
+    crypto.subtle.deriveBits = original;
+  }
+}
+
 function passwordRequest(auth, currentPassword, newPassword, extra = {}) {
   return {
     method: "PUT",
     auth,
     body: { currentPassword, newPassword, ...extra },
+  };
+}
+
+function sessionRevocationRequest(auth, currentPassword, extra = {}) {
+  return {
+    method: "POST",
+    auth,
+    body: { currentPassword, ...extra },
   };
 }
 
@@ -551,4 +573,451 @@ test("password change is strict, fail-closed, atomic, revoking, and race-safe on
   assert.equal(afterStaleLogin.sessions.length, beforeStaleLogin.sessions.length);
   const staleMe = await call(env, "/api/auth/me", { auth: staleOwner });
   assert.equal(staleMe.response.status, 401, "the generation-only revocation must invalidate the prior bearer");
+});
+
+test("session review is bounded, current-auth-only, identifier-free, and read-only on real D1", { timeout: 120_000 }, async (context) => {
+  const db = await realD1(context, "session-review");
+  await applyMigrations(db, (await migrationNames()).filter((name) => [
+    "0001_initial.sql",
+    "0002_backend.sql",
+    "0015_account_security.sql",
+    "0017_login_attempt_fence.sql",
+  ].includes(name)));
+  const env = {
+    ASSETS: assets,
+    DB: db,
+    GRIHAGRID_CACHE: new MemoryKv(),
+    APP_ORIGIN: ORIGIN,
+    PAID_CHECKOUT_ENABLED: "false",
+    DECISION_COMPARE_FULFILLMENT_ENABLED: "false",
+    ENABLED_PAYMENT_PLANS: "",
+  };
+  const email = "session-review-owner@example.test";
+  const primary = await register(env, email);
+  const second = await login(env, email, INITIAL_PASSWORD);
+  const third = await login(env, email, INITIAL_PASSWORD);
+  assert.equal(second.response.status, 200);
+  assert.equal(third.response.status, 200);
+
+  const before = await accountSnapshot(db, primary.user.id);
+  const rawToken = /__Host-grihagrid_session=([^;]+)/u.exec(primary.cookie)?.[1] || "";
+  const currentTokenHash = createHash("sha256").update(rawToken).digest("base64url");
+  const currentSessionId = before.sessions.find((row) => row.token_hash === currentTokenHash)?.id;
+  assert.ok(currentSessionId);
+  for (let index = 0; index < 22; index += 1) {
+    const secondValue = String(index).padStart(2, "0");
+    await db.prepare(
+      `INSERT INTO sessions
+         (id,user_id,token_hash,csrf_hash,expires_at,created_at,last_seen_at,auth_generation,auth_revision_id)
+       VALUES (?,?,?,?,?,?,?,?,?)`,
+    ).bind(
+      `bounded-session-${secondValue}`,
+      primary.user.id,
+      `bounded-token-hash-${secondValue}`,
+      `bounded-csrf-hash-${secondValue}`,
+      "2099-01-01 00:00:00",
+      `2026-08-16 00:00:${secondValue}`,
+      `2026-08-16 00:00:${secondValue}`,
+      1,
+      null,
+    ).run();
+  }
+  await db.prepare(
+    `INSERT INTO sessions
+       (id,user_id,token_hash,csrf_hash,expires_at,created_at,last_seen_at,auth_generation,auth_revision_id)
+     VALUES ('expired-session',?,'expired-token-hash','expired-csrf-hash','2020-01-02 00:00:00',
+             '2020-01-01 00:00:00','2020-01-01 00:00:00',1,NULL)`,
+  ).bind(primary.user.id).run();
+  await db.prepare(
+    `INSERT INTO sessions
+       (id,user_id,token_hash,csrf_hash,expires_at,created_at,last_seen_at,auth_generation,auth_revision_id)
+     VALUES ('stale-auth-session',?,'stale-auth-token-hash','stale-auth-csrf-hash','2099-01-02 00:00:00',
+             '2098-01-01 00:00:00','2098-01-01 00:00:00',2,'stale-auth-revision')`,
+  ).bind(primary.user.id).run();
+  const storedBeforeReview = await accountSnapshot(db, primary.user.id);
+
+  const reviewed = await call(env, "/api/auth/sessions", { auth: primary });
+  assert.equal(reviewed.response.status, 200, JSON.stringify(reviewed.payload));
+  assert.equal(reviewed.response.headers.get("cache-control"), "no-store");
+  assert.deepEqual(Object.keys(reviewed.payload).sort(), ["hasMore", "sessions"]);
+  assert.equal(reviewed.payload.hasMore, true);
+  assert.equal(reviewed.payload.sessions.length, 21, "current plus at most 20 other sessions must be returned");
+  assert.equal(reviewed.payload.sessions.filter((session) => session.current).length, 1);
+  assert.equal(reviewed.payload.sessions[0].current, true);
+  const expectedOtherStarts = storedBeforeReview.sessions
+    .filter((session) => session.id !== currentSessionId
+      && session.auth_generation === storedBeforeReview.user.auth_generation
+      && session.auth_revision_id === storedBeforeReview.user.auth_revision_id
+      && Date.parse(`${session.expires_at.replace(" ", "T")}Z`) > Date.now())
+    .sort((left, right) => right.created_at.localeCompare(left.created_at) || right.id.localeCompare(left.id))
+    .slice(0, 20)
+    .map((session) => session.created_at);
+  assert.deepEqual(
+    reviewed.payload.sessions.slice(1).map((session) => session.startedAt),
+    expectedOtherStarts,
+    "other sessions must remain in exact newest-first order with a stable ID tie-break",
+  );
+  for (const session of reviewed.payload.sessions) {
+    assert.deepEqual(Object.keys(session).sort(), ["current", "expiresAt", "startedAt"]);
+    assert.match(session.startedAt, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/u);
+    assert.match(session.expiresAt, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/u);
+  }
+  const serialized = JSON.stringify(reviewed.payload);
+  for (const forbidden of [
+    primary.user.id,
+    "bounded-session-",
+    "bounded-token-hash-",
+    "bounded-csrf-hash-",
+    "2098-01-01 00:00:00",
+    email,
+    "session_id",
+    "last_seen",
+    "auth_generation",
+    "auth_revision",
+    "userAgent",
+    "ipAddress",
+  ]) assert.equal(serialized.includes(forbidden), false, forbidden);
+  const after = await accountSnapshot(db, primary.user.id);
+  assert.deepEqual(after, storedBeforeReview, "review must not update last-seen time or any authentication row");
+  assert.equal(after.sessions.length, before.sessions.length + 24, "review must not prune or update session rows");
+
+  const noAuth = await call(env, "/api/auth/sessions");
+  assert.equal(noAuth.response.status, 401);
+  assert.equal(noAuth.payload.code, "unauthenticated");
+  const wrongMethod = await call(env, "/api/auth/sessions", { method: "POST", auth: primary, body: {} });
+  assert.equal(wrongMethod.response.status, 405);
+  assert.equal(wrongMethod.response.headers.get("allow"), "GET");
+
+  await db.prepare("UPDATE sessions SET created_at='not-a-time' WHERE id=?").bind(currentSessionId).run();
+  const malformed = await call(env, "/api/auth/sessions", { auth: primary });
+  assert.equal(malformed.response.status, 503);
+  assert.deepEqual(malformed.payload, {
+    error: "session review is temporarily unavailable",
+    code: "session_review_unavailable",
+  });
+
+  await db.prepare("UPDATE sessions SET created_at=? WHERE id=?")
+    .bind(storedBeforeReview.sessions.find((session) => session.id === currentSessionId).created_at, currentSessionId).run();
+  const selectedOtherId = storedBeforeReview.sessions.find((session) => session.created_at === expectedOtherStarts[0]
+    && session.id !== currentSessionId)?.id;
+  assert.ok(selectedOtherId);
+  await db.prepare("UPDATE sessions SET created_at='not-a-time' WHERE id=?").bind(selectedOtherId).run();
+  const malformedOther = await call(env, "/api/auth/sessions", { auth: primary });
+  assert.equal(malformedOther.response.status, 503);
+  assert.equal(malformedOther.payload.code, "session_review_unavailable");
+});
+
+test("password-confirmed session revocation is strict, atomic, generation-fenced, and preserves credentials", { timeout: 120_000 }, async (context) => {
+  const db = await realD1(context, "session-revoke");
+  await applyMigrations(db, (await migrationNames()).filter((name) => [
+    "0001_initial.sql",
+    "0002_backend.sql",
+    "0015_account_security.sql",
+    "0017_login_attempt_fence.sql",
+  ].includes(name)));
+  const kv = new MemoryKv();
+  const env = {
+    ASSETS: assets,
+    DB: db,
+    GRIHAGRID_CACHE: kv,
+    APP_ORIGIN: ORIGIN,
+    PAID_CHECKOUT_ENABLED: "false",
+    DECISION_COMPARE_FULFILLMENT_ENABLED: "false",
+    ENABLED_PAYMENT_PLANS: "",
+  };
+  const email = "session-revoke-owner@example.test";
+  const primary = await register(env, email);
+  const secondLogin = await login(env, email, INITIAL_PASSWORD);
+  const thirdLogin = await login(env, email, INITIAL_PASSWORD);
+  assert.equal(secondLogin.response.status, 200);
+  assert.equal(thirdLogin.response.status, 200);
+  const retained = [primary, secondLogin.auth, thirdLogin.auth];
+  const baseline = await accountSnapshot(db, primary.user.id);
+  assert.equal(baseline.sessions.length, 3);
+
+  const wrongMethod = await call(env, "/api/auth/sessions/revoke-others", {
+    ...sessionRevocationRequest(primary, INITIAL_PASSWORD),
+    method: "PUT",
+  });
+  assert.equal(wrongMethod.response.status, 405);
+  assert.equal(wrongMethod.response.headers.get("allow"), "POST");
+  assert.deepEqual(await accountSnapshot(db, primary.user.id), baseline);
+
+  kv.clear();
+  const crossOrigin = await call(env, "/api/auth/sessions/revoke-others", {
+    ...sessionRevocationRequest(primary, INITIAL_PASSWORD),
+    origin: "https://evil.example.test",
+  });
+  assert.equal(crossOrigin.response.status, 403);
+  assert.equal(crossOrigin.payload.code, "origin_rejected");
+  assert.deepEqual(await accountSnapshot(db, primary.user.id), baseline);
+
+  const badCsrf = await call(env, "/api/auth/sessions/revoke-others", {
+    method: "POST",
+    auth: { ...primary, csrf: "attacker-csrf" },
+    body: { currentPassword: INITIAL_PASSWORD },
+  });
+  assert.equal(badCsrf.response.status, 403);
+  assert.equal(badCsrf.payload.code, "csrf_rejected");
+  assert.deepEqual(await accountSnapshot(db, primary.user.id), baseline);
+
+  const noKv = await call(
+    { ...env, GRIHAGRID_CACHE: undefined },
+    "/api/auth/sessions/revoke-others",
+    sessionRevocationRequest(primary, INITIAL_PASSWORD),
+  );
+  assert.equal(noKv.response.status, 503);
+  assert.equal(noKv.payload.code, "abuse_control_unavailable");
+  assert.deepEqual(await accountSnapshot(db, primary.user.id), baseline);
+
+  const failedKv = await call(
+    { ...env, GRIHAGRID_CACHE: new MemoryKv({ fail: true }) },
+    "/api/auth/sessions/revoke-others",
+    sessionRevocationRequest(primary, INITIAL_PASSWORD),
+  );
+  assert.equal(failedKv.response.status, 503);
+  assert.equal(failedKv.payload.code, "abuse_control_unavailable");
+  assert.deepEqual(await accountSnapshot(db, primary.user.id), baseline);
+
+  kv.clear();
+  const failedAdmission = await call(
+    { ...env, DB: failedPasswordAdmissionDatabase(db) },
+    "/api/auth/sessions/revoke-others",
+    sessionRevocationRequest(primary, INITIAL_PASSWORD),
+  );
+  assert.equal(failedAdmission.response.status, 503);
+  assert.equal(failedAdmission.payload.code, "abuse_control_unavailable");
+  assert.deepEqual(await accountSnapshot(db, primary.user.id), baseline);
+
+  for (const body of [
+    {},
+    { currentPassword: INITIAL_PASSWORD, sessionId: baseline.sessions[1].id },
+    { currentPassword: 42 },
+    { currentPassword: { value: INITIAL_PASSWORD } },
+  ]) {
+    kv.clear();
+    const invalid = await call(env, "/api/auth/sessions/revoke-others", { method: "POST", auth: primary, body });
+    assert.equal(invalid.response.status, 400, JSON.stringify(invalid.payload));
+    assert.equal(invalid.payload.code, "invalid_session_revocation");
+    assert.deepEqual(await accountSnapshot(db, primary.user.id), baseline);
+  }
+
+  await clearPasswordAttempts(db, primary.user.id);
+  kv.clear();
+  const wrongAttempt = await withPasswordDerivationCount(() => call(
+      env,
+      "/api/auth/sessions/revoke-others",
+      sessionRevocationRequest(primary, "wrong current password"),
+  ));
+  const wrongPassword = wrongAttempt.result;
+  assert.equal(wrongPassword.response.status, 401);
+  assert.equal(wrongPassword.payload.code, "current_password_incorrect");
+  assert.equal(wrongAttempt.derivations, 1, "an admitted wrong password must execute exactly one PBKDF2 derivation");
+  assert.equal((await db.prepare(
+    "SELECT request_count FROM password_change_attempt_counters WHERE user_id=?",
+  ).bind(primary.user.id).first()).request_count, 1);
+  assert.deepEqual(await accountSnapshot(db, primary.user.id), baseline);
+
+  for (const [label, suppliedPassword] of [
+    ["short", "123456789"],
+    ["long", "x".repeat(129)],
+  ]) {
+    await clearPasswordAttempts(db, primary.user.id);
+    kv.clear();
+    const attempt = await withPasswordDerivationCount(() => call(
+      env,
+      "/api/auth/sessions/revoke-others",
+      sessionRevocationRequest(primary, suppliedPassword),
+    ));
+    assert.equal(attempt.result.response.status, 401, label);
+    assert.equal(attempt.result.payload.code, "current_password_incorrect", label);
+    assert.equal(attempt.derivations, 1, `${label} password must execute exactly one dummy PBKDF2 derivation`);
+    assert.equal((await db.prepare(
+      "SELECT request_count FROM password_change_attempt_counters WHERE user_id=?",
+    ).bind(primary.user.id).first()).request_count, 1, label);
+    assert.deepEqual(await accountSnapshot(db, primary.user.id), baseline, label);
+  }
+
+  const validHash = baseline.user.password_hash;
+  const validSalt = baseline.user.password_salt;
+  const malformedRecords = [
+    ["hash", "%%%", validSalt, 100_000, "PBKDF2-SHA256"],
+    ["salt", validHash, "%%%", 100_000, "PBKDF2-SHA256"],
+    ["iterations", validHash, validSalt, 99_999, "PBKDF2-SHA256"],
+    ["algorithm", validHash, validSalt, 100_000, "PBKDF2-SHA1"],
+  ];
+  for (const [label, passwordHash, passwordSalt, passwordIterations, passwordAlgorithm] of malformedRecords) {
+    const userId = randomUUID();
+    const sessionId = randomUUID();
+    const sessionToken = `malformed-session-${label}-${randomUUID()}`;
+    const csrf = `malformed-csrf-${label}-${randomUUID()}`;
+    const malformedAuth = {
+      csrf,
+      cookie: `__Host-grihagrid_session=${sessionToken}; grihagrid_csrf=${csrf}`,
+    };
+    await db.prepare(
+      `INSERT INTO users
+         (id,email,name,created_at,password_hash,password_salt,password_iterations,password_algorithm,
+          password_changed_at,auth_generation,auth_revision_id)
+       VALUES (?,?,?,?,?,?,?,?,?,1,NULL)`,
+    ).bind(
+      userId,
+      `malformed-${label}@example.test`,
+      "Malformed credential fixture",
+      "2026-08-17 00:00:00",
+      passwordHash,
+      passwordSalt,
+      passwordIterations,
+      passwordAlgorithm,
+      "2026-08-17 00:00:00",
+    ).run();
+    await db.prepare(
+      `INSERT INTO sessions
+         (id,user_id,token_hash,csrf_hash,expires_at,created_at,last_seen_at,auth_generation,auth_revision_id)
+       VALUES (?,?,?,?,?,?,?,1,NULL)`,
+    ).bind(
+      sessionId,
+      userId,
+      createHash("sha256").update(sessionToken).digest("base64url"),
+      createHash("sha256").update(csrf).digest("base64url"),
+      "2099-01-01 00:00:00",
+      "2026-08-17 00:00:00",
+      "2026-08-17 00:00:00",
+    ).run();
+    const malformedBaseline = await accountSnapshot(db, userId);
+    kv.clear();
+    const attempt = await withPasswordDerivationCount(() => call(
+      env,
+      "/api/auth/sessions/revoke-others",
+      sessionRevocationRequest(malformedAuth, INITIAL_PASSWORD),
+    ));
+    assert.equal(attempt.result.response.status, 401, label);
+    assert.equal(attempt.result.payload.code, "current_password_incorrect", label);
+    assert.equal(attempt.derivations, 1, `${label} record must execute exactly one dummy PBKDF2 derivation`);
+    assert.equal((await db.prepare(
+      "SELECT request_count FROM password_change_attempt_counters WHERE user_id=?",
+    ).bind(userId).first()).request_count, 1, label);
+    assert.deepEqual(await accountSnapshot(db, userId), malformedBaseline, label);
+  }
+
+  await clearPasswordAttempts(db, primary.user.id);
+  kv.clear();
+  const sharedStepUpAttempts = [];
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    sharedStepUpAttempts.push(await call(
+      env,
+      "/api/auth/sessions/revoke-others",
+      sessionRevocationRequest(primary, "wrong current password"),
+    ));
+  }
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    sharedStepUpAttempts.push(await call(
+      env,
+      "/api/auth/password",
+      passwordRequest(primary, "wrong current password", SECOND_PASSWORD),
+    ));
+  }
+  assert.deepEqual(sharedStepUpAttempts.map((result) => result.response.status), [401, 401, 401, 401, 401, 429]);
+  assert.equal(sharedStepUpAttempts.at(-1).payload.code, "rate_limited");
+  assert.equal((await db.prepare(
+    "SELECT request_count FROM password_change_attempt_counters WHERE user_id=?",
+  ).bind(primary.user.id).first()).request_count, 5, "both current-password surfaces must share one atomic account cap");
+  assert.deepEqual(await accountSnapshot(db, primary.user.id), baseline);
+
+  await clearPasswordAttempts(db, primary.user.id);
+  kv.clear();
+  const seededFence = await login(env, email, "wrong current password");
+  assert.equal(seededFence.response.status, 401);
+  const fenceBefore = await db.prepare("SELECT * FROM login_attempt_fences WHERE user_id=?")
+    .bind(primary.user.id).first();
+  assert.equal(fenceBefore.request_count, 1);
+  await db.prepare(
+    `CREATE TRIGGER e2e_fail_session_revocation_replacement
+       BEFORE INSERT ON sessions WHEN NEW.auth_generation=2
+     BEGIN
+       SELECT RAISE(ABORT, 'synthetic session revocation insert failure');
+     END`,
+  ).run();
+  kv.clear();
+  const injectedFailure = await call(
+    env,
+    "/api/auth/sessions/revoke-others",
+    sessionRevocationRequest(primary, INITIAL_PASSWORD),
+  );
+  assert.equal(injectedFailure.response.status, 500, JSON.stringify(injectedFailure.payload));
+  assert.equal(injectedFailure.payload.code, "internal_error");
+  assert.deepEqual(await accountSnapshot(db, primary.user.id), baseline);
+  assert.deepEqual(
+    await db.prepare("SELECT * FROM login_attempt_fences WHERE user_id=?").bind(primary.user.id).first(),
+    fenceBefore,
+    "a failed revoke boundary must neither clear nor mutate the login fence",
+  );
+  await db.prepare("DROP TRIGGER e2e_fail_session_revocation_replacement").run();
+
+  await clearPasswordAttempts(db, primary.user.id);
+  kv.clear();
+  const revoked = await call(
+    env,
+    "/api/auth/sessions/revoke-others",
+    sessionRevocationRequest(primary, INITIAL_PASSWORD),
+  );
+  assert.equal(revoked.response.status, 200, JSON.stringify(revoked.payload));
+  assert.equal(revoked.response.headers.get("cache-control"), "no-store");
+  assert.deepEqual(Object.keys(revoked.payload).sort(), ["csrfToken", "hasMore", "sessions", "user"]);
+  assert.deepEqual(revoked.payload.sessions.map((session) => Object.keys(session).sort()), [
+    ["current", "expiresAt", "startedAt"],
+  ]);
+  assert.equal(revoked.payload.sessions[0].current, true);
+  assert.equal(revoked.payload.hasMore, false);
+  const replacement = authFromResponse(revoked.response, revoked.payload);
+  const committed = await accountSnapshot(db, primary.user.id);
+  assert.equal(committed.user.auth_generation, baseline.user.auth_generation + 1);
+  assert.match(committed.user.auth_revision_id, /^[0-9a-f-]{36}$/u);
+  assert.equal(committed.user.password_hash, baseline.user.password_hash);
+  assert.equal(committed.user.password_salt, baseline.user.password_salt);
+  assert.equal(committed.user.password_iterations, baseline.user.password_iterations);
+  assert.equal(committed.user.password_algorithm, baseline.user.password_algorithm);
+  assert.equal(committed.user.password_changed_at, baseline.user.password_changed_at);
+  assert.equal(committed.sessions.length, 1);
+  assert.equal(committed.sessions[0].auth_generation, committed.user.auth_generation);
+  assert.equal(committed.sessions[0].auth_revision_id, committed.user.auth_revision_id);
+  assert.deepEqual(
+    await db.prepare("SELECT * FROM login_attempt_fences WHERE user_id=?").bind(primary.user.id).first(),
+    fenceBefore,
+    "revoking sessions without changing the password must not reopen the login fence",
+  );
+  for (const oldSession of retained) {
+    const me = await call(env, "/api/auth/me", { auth: oldSession });
+    assert.equal(me.response.status, 401);
+    assert.equal(me.payload.code, "unauthenticated");
+  }
+  assert.equal((await call(env, "/api/auth/me", { auth: replacement })).response.status, 200);
+
+  kv.clear();
+  const postBoundaryLogin = await login(env, email, INITIAL_PASSWORD);
+  assert.equal(postBoundaryLogin.response.status, 200, "the unchanged password may legitimately create a new post-boundary session");
+  const afterNewLogin = await call(env, "/api/auth/sessions", { auth: replacement });
+  assert.equal(afterNewLogin.response.status, 200);
+  assert.equal(afterNewLogin.payload.sessions.length, 2);
+  assert.equal(afterNewLogin.payload.hasMore, false);
+
+  await clearPasswordAttempts(db, primary.user.id);
+  kv.clear();
+  const race = await Promise.all([
+    call(env, "/api/auth/sessions/revoke-others", sessionRevocationRequest(replacement, INITIAL_PASSWORD)),
+    call(env, "/api/auth/sessions/revoke-others", sessionRevocationRequest(replacement, INITIAL_PASSWORD)),
+  ]);
+  const winners = race.filter((result) => result.response.status === 200);
+  const losers = race.filter((result) => result.response.status !== 200);
+  assert.equal(winners.length, 1, JSON.stringify(race.map((result) => result.response.status)));
+  assert.equal(losers.length, 1);
+  assert.ok([401, 409].includes(losers[0].response.status));
+  if (losers[0].response.status === 409) assert.equal(losers[0].payload.code, "auth_state_changed");
+  const afterRace = await accountSnapshot(db, primary.user.id);
+  assert.equal(afterRace.user.auth_generation, committed.user.auth_generation + 1);
+  assert.equal(afterRace.sessions.length, 1);
+  const winnerAuth = authFromResponse(winners[0].response, winners[0].payload);
+  assert.equal((await call(env, "/api/auth/me", { auth: winnerAuth })).response.status, 200);
+  assert.equal((await call(env, "/api/auth/me", { auth: replacement })).response.status, 401);
+  assert.equal((await call(env, "/api/auth/me", { auth: postBoundaryLogin.auth })).response.status, 401);
 });

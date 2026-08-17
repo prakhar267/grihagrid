@@ -7,6 +7,7 @@ const MAX_RECORDED_CHECKS = 32;
 const SESSION_COOKIE = "__Host-grihagrid_session";
 const CSRF_COOKIE = "grihagrid_csrf";
 const WORKER_VERSION_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+const SQLITE_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/u;
 
 class AccountSecurityCanaryError extends Error {
   constructor(phase) {
@@ -136,14 +137,20 @@ export async function runAccountSecurityCanary(rawOrigin, credentials, options =
     launchControlsClosed: false,
     accountRegistered: false,
     accountIdentityVerified: false,
-    secondOldSessionCreated: false,
+    secondPreBoundarySessionCreated: false,
+    preBoundarySessionsListedIdentifierFree: false,
+    revokeOthersBoundaryRotated: false,
+    bothPreBoundarySessionsRevoked: false,
+    revokeReplacementSessionWorks: false,
+    unchangedPasswordCreatedPostBoundarySession: false,
+    postBoundarySessionsListedIdentifierFree: false,
     passwordRotated: false,
-    bothPreChangeSessionsRevoked: false,
-    replacementSessionWorks: false,
+    bothPrePasswordChangeSessionsRevoked: false,
+    passwordReplacementSessionWorks: false,
     oldPasswordRejected: false,
     newPasswordAccepted: false,
-    replacementSessionLoggedOut: false,
-    newLoginSessionLoggedOut: false,
+    passwordReplacementSessionLoggedOut: false,
+    newPasswordSessionLoggedOut: false,
   };
   const cleanup = {
     logoutAttempts: 0,
@@ -160,8 +167,13 @@ export async function runAccountSecurityCanary(rawOrigin, credentials, options =
   let phase = "input_validation";
   let primaryError = null;
   const primaryJar = new Map();
-  const secondOldJar = new Map();
-  const newLoginJar = new Map();
+  const secondPreBoundaryJar = new Map();
+  const postBoundaryJar = new Map();
+  const newPasswordJar = new Map();
+  const capturedPrimaryPreBoundaryJar = new Map();
+  const capturedPrimaryPrePasswordChangeJar = new Map();
+  const passwordReplacementLogoutReplayJar = new Map();
+  const newPasswordLogoutReplayJar = new Map();
 
   function recordCheck(entry) {
     requestCount += 1;
@@ -237,20 +249,45 @@ export async function runAccountSecurityCanary(rawOrigin, credentials, options =
       requireCondition(typeof payload?.csrfToken === "string" && payload.csrfToken === csrfToken(jar));
     }
 
+    function requireIdentifierFreeSessionList(payload, expectedCount, envelopeKeys = ["hasMore", "sessions"]) {
+      requireCondition(payload && typeof payload === "object" && !Array.isArray(payload));
+      requireCondition(JSON.stringify(Object.keys(payload).sort()) === JSON.stringify([...envelopeKeys].sort()));
+      requireCondition(payload.hasMore === false);
+      requireCondition(Array.isArray(payload.sessions) && payload.sessions.length === expectedCount);
+      for (const [index, session] of payload.sessions.entries()) {
+        requireCondition(session && typeof session === "object" && !Array.isArray(session));
+        requireCondition(JSON.stringify(Object.keys(session).sort())
+          === JSON.stringify(["current", "expiresAt", "startedAt"]));
+        requireCondition(session.current === (index === 0));
+        requireCondition(typeof session.startedAt === "string" && SQLITE_TIMESTAMP_PATTERN.test(session.startedAt));
+        requireCondition(typeof session.expiresAt === "string" && SQLITE_TIMESTAMP_PATTERN.test(session.expiresAt));
+        const startedAt = Date.parse(`${session.startedAt.replace(" ", "T")}Z`);
+        const expiresAt = Date.parse(`${session.expiresAt.replace(" ", "T")}Z`);
+        requireCondition(Number.isFinite(startedAt) && Number.isFinite(expiresAt));
+        requireCondition(startedAt < expiresAt && expiresAt > Date.now());
+      }
+    }
+
     async function me(label, jar, expected = [200]) {
       return call(label, "/api/auth/me", { jar, expected });
     }
 
-    async function logoutAndProve(label, jar) {
+    async function logoutAndProve(label, jar, replayJar) {
       requireCondition(hasAuthentication(jar));
-      const captured = new Map(jar);
-      await call(`${label}_logout`, "/api/auth/logout", { jar, method: "POST", body: {}, expected: [204] });
+      replayJar.clear();
+      for (const [name, value] of jar) replayJar.set(name, value);
       cleanup.logoutAttempts += 1;
-      cleanup.logoutAcknowledged += 1;
+      try {
+        await call(`${label}_logout`, "/api/auth/logout", { jar, method: "POST", body: {}, expected: [204] });
+        cleanup.logoutAcknowledged += 1;
+      } catch (error) {
+        cleanup.logoutFailures += 1;
+        throw error;
+      }
       requireCondition(!jar.has(SESSION_COOKIE) && !jar.has(CSRF_COOKIE));
-      const replay = await me(`${label}_logout_replay`, captured, [401]);
+      const replay = await me(`${label}_logout_replay`, replayJar, [401]);
       requireCondition(replay?.code === "unauthenticated");
-      captured.clear();
+      replayJar.clear();
     }
 
     phase = "readiness";
@@ -286,38 +323,108 @@ export async function runAccountSecurityCanary(rawOrigin, credentials, options =
     requireCondition(sameAccount(registeredMe, normalizedEmail, registeredUserId));
     proofs.accountIdentityVerified = true;
 
-    const secondLogin = await call("second_old_login", "/api/auth/login", {
-      jar: secondOldJar,
+    const secondLogin = await call("second_pre_boundary_login", "/api/auth/login", {
+      jar: secondPreBoundaryJar,
       method: "POST",
       body: { email: normalizedEmail, password: inputs.initialPassword },
     });
-    requireAuthenticatedResponse(secondOldJar, secondLogin, registeredUserId);
-    requireCondition(primaryJar.get(SESSION_COOKIE) !== secondOldJar.get(SESSION_COOKIE));
-    proofs.secondOldSessionCreated = true;
+    requireAuthenticatedResponse(secondPreBoundaryJar, secondLogin, registeredUserId);
+    requireCondition(primaryJar.get(SESSION_COOKIE) !== secondPreBoundaryJar.get(SESSION_COOKIE));
+    proofs.secondPreBoundarySessionCreated = true;
 
-    const capturedPrimaryOld = new Map(primaryJar);
-    const capturedSecondOld = new Map(secondOldJar);
-    const primaryOldSession = primaryJar.get(SESSION_COOKIE);
+    const preBoundaryReview = await call("pre_boundary_session_review", "/api/auth/sessions", {
+      jar: primaryJar,
+    });
+    requireIdentifierFreeSessionList(preBoundaryReview, 2);
+    proofs.preBoundarySessionsListedIdentifierFree = true;
+
+    capturedPrimaryPreBoundaryJar.clear();
+    for (const [name, value] of primaryJar) capturedPrimaryPreBoundaryJar.set(name, value);
+    const capturedSecondPreBoundary = new Map(secondPreBoundaryJar);
+    const primaryPreBoundarySession = primaryJar.get(SESSION_COOKIE);
+    const revokedOthers = await call("revoke_other_sessions", "/api/auth/sessions/revoke-others", {
+      jar: primaryJar,
+      method: "POST",
+      body: { currentPassword: inputs.initialPassword },
+    });
+    requireAuthenticatedResponse(primaryJar, revokedOthers, registeredUserId);
+    requireIdentifierFreeSessionList(
+      revokedOthers,
+      1,
+      ["csrfToken", "hasMore", "sessions", "user"],
+    );
+    requireCondition(primaryJar.get(SESSION_COOKIE) !== primaryPreBoundarySession);
+    proofs.revokeOthersBoundaryRotated = true;
+
+    const firstPreBoundaryRejected = await me(
+      "first_pre_boundary_session_rejected",
+      capturedPrimaryPreBoundaryJar,
+      [401],
+    );
+    const secondPreBoundaryRejected = await me(
+      "second_pre_boundary_session_rejected",
+      capturedSecondPreBoundary,
+      [401],
+    );
+    requireCondition(firstPreBoundaryRejected?.code === "unauthenticated"
+      && secondPreBoundaryRejected?.code === "unauthenticated");
+    proofs.bothPreBoundarySessionsRevoked = true;
+    capturedPrimaryPreBoundaryJar.clear();
+    capturedSecondPreBoundary.clear();
+    secondPreBoundaryJar.clear();
+
+    const revokeReplacementMe = await me("revoke_replacement_session_identity", primaryJar);
+    requireCondition(sameAccount(revokeReplacementMe, normalizedEmail, registeredUserId));
+    proofs.revokeReplacementSessionWorks = true;
+
+    const unchangedPasswordLogin = await call("unchanged_password_post_boundary_login", "/api/auth/login", {
+      jar: postBoundaryJar,
+      method: "POST",
+      body: { email: normalizedEmail, password: inputs.initialPassword },
+    });
+    requireAuthenticatedResponse(postBoundaryJar, unchangedPasswordLogin, registeredUserId);
+    requireCondition(postBoundaryJar.get(SESSION_COOKIE) !== primaryJar.get(SESSION_COOKIE));
+    proofs.unchangedPasswordCreatedPostBoundarySession = true;
+
+    const postBoundaryReview = await call("post_boundary_session_review", "/api/auth/sessions", {
+      jar: primaryJar,
+    });
+    requireIdentifierFreeSessionList(postBoundaryReview, 2);
+    proofs.postBoundarySessionsListedIdentifierFree = true;
+
+    capturedPrimaryPrePasswordChangeJar.clear();
+    for (const [name, value] of primaryJar) capturedPrimaryPrePasswordChangeJar.set(name, value);
+    const capturedSecondPrePasswordChange = new Map(postBoundaryJar);
+    const primaryPrePasswordChangeSession = primaryJar.get(SESSION_COOKIE);
     const changed = await call("password_rotation", "/api/auth/password", {
       jar: primaryJar,
       method: "PUT",
       body: { currentPassword: inputs.initialPassword, newPassword: nextPassword },
     });
     requireAuthenticatedResponse(primaryJar, changed, registeredUserId);
-    requireCondition(primaryJar.get(SESSION_COOKIE) !== primaryOldSession);
+    requireCondition(primaryJar.get(SESSION_COOKIE) !== primaryPrePasswordChangeSession);
     proofs.passwordRotated = true;
 
-    const firstRevoked = await me("first_pre_change_session_rejected", capturedPrimaryOld, [401]);
-    const secondRevoked = await me("second_pre_change_session_rejected", capturedSecondOld, [401]);
-    requireCondition(firstRevoked?.code === "unauthenticated" && secondRevoked?.code === "unauthenticated");
-    proofs.bothPreChangeSessionsRevoked = true;
-    capturedPrimaryOld.clear();
-    capturedSecondOld.clear();
-    secondOldJar.clear();
+    const firstPrePasswordChangeRejected = await me(
+      "first_pre_password_change_session_rejected",
+      capturedPrimaryPrePasswordChangeJar,
+      [401],
+    );
+    const secondPrePasswordChangeRejected = await me(
+      "second_pre_password_change_session_rejected",
+      capturedSecondPrePasswordChange,
+      [401],
+    );
+    requireCondition(firstPrePasswordChangeRejected?.code === "unauthenticated"
+      && secondPrePasswordChangeRejected?.code === "unauthenticated");
+    proofs.bothPrePasswordChangeSessionsRevoked = true;
+    capturedPrimaryPrePasswordChangeJar.clear();
+    capturedSecondPrePasswordChange.clear();
+    postBoundaryJar.clear();
 
-    const replacementMe = await me("replacement_session_identity", primaryJar);
+    const replacementMe = await me("password_replacement_session_identity", primaryJar);
     requireCondition(sameAccount(replacementMe, normalizedEmail, registeredUserId));
-    proofs.replacementSessionWorks = true;
+    proofs.passwordReplacementSessionWorks = true;
 
     const rejectedOldPassword = await call("old_password_rejected", "/api/auth/login", {
       jar: new Map(),
@@ -329,25 +436,40 @@ export async function runAccountSecurityCanary(rawOrigin, credentials, options =
     proofs.oldPasswordRejected = true;
 
     const acceptedNewPassword = await call("new_password_accepted", "/api/auth/login", {
-      jar: newLoginJar,
+      jar: newPasswordJar,
       method: "POST",
       body: { email: normalizedEmail, password: nextPassword },
     });
-    requireAuthenticatedResponse(newLoginJar, acceptedNewPassword, registeredUserId);
-    requireCondition(newLoginJar.get(SESSION_COOKIE) !== primaryJar.get(SESSION_COOKIE));
+    requireAuthenticatedResponse(newPasswordJar, acceptedNewPassword, registeredUserId);
+    requireCondition(newPasswordJar.get(SESSION_COOKIE) !== primaryJar.get(SESSION_COOKIE));
     proofs.newPasswordAccepted = true;
 
-    await logoutAndProve("replacement_session", primaryJar);
-    proofs.replacementSessionLoggedOut = true;
-    await logoutAndProve("new_login_session", newLoginJar);
-    proofs.newLoginSessionLoggedOut = true;
+    await logoutAndProve("password_replacement_session", primaryJar, passwordReplacementLogoutReplayJar);
+    proofs.passwordReplacementSessionLoggedOut = true;
+    await logoutAndProve("new_password_session", newPasswordJar, newPasswordLogoutReplayJar);
+    proofs.newPasswordSessionLoggedOut = true;
   } catch (error) {
     primaryError = error instanceof AccountSecurityCanaryError ? error : safeFailure(phase);
   } finally {
     // If the main proof fails early, revoke every session still represented by
     // a live in-memory jar. Logout is idempotent for already-revoked sessions.
-    for (const [label, jar] of [["cleanup_primary", primaryJar], ["cleanup_second", secondOldJar], ["cleanup_new", newLoginJar]]) {
+    const acknowledgedCleanupSessions = new Set();
+    for (const [label, jar] of [
+      ["cleanup_primary", primaryJar],
+      ["cleanup_second_pre_boundary", secondPreBoundaryJar],
+      ["cleanup_post_boundary", postBoundaryJar],
+      ["cleanup_new_password", newPasswordJar],
+      ["cleanup_captured_primary_pre_boundary", capturedPrimaryPreBoundaryJar],
+      ["cleanup_captured_primary_pre_password_change", capturedPrimaryPrePasswordChangeJar],
+      ["cleanup_password_replacement_logout_replay", passwordReplacementLogoutReplayJar],
+      ["cleanup_new_password_logout_replay", newPasswordLogoutReplayJar],
+    ]) {
       if (!hasAuthentication(jar) || !origin) continue;
+      const representedSession = jar.get(SESSION_COOKIE);
+      if (acknowledgedCleanupSessions.has(representedSession)) {
+        jar.clear();
+        continue;
+      }
       cleanup.logoutAttempts += 1;
       const headers = new Headers({
         "content-type": "application/json",
@@ -370,7 +492,10 @@ export async function runAccountSecurityCanary(rawOrigin, credentials, options =
         });
         mergeCookies(jar, response);
         recordCheck({ name: label, method: "POST", route: "/api/auth/logout", status: response.status, latencyMs: Math.round(performance.now() - started) });
-        if (response.status === 204) cleanup.logoutAcknowledged += 1;
+        if (response.status === 204) {
+          cleanup.logoutAcknowledged += 1;
+          acknowledgedCleanupSessions.add(representedSession);
+        }
         else cleanup.logoutFailures += 1;
       } catch {
         recordCheck({ name: label, method: "POST", route: "/api/auth/logout", status: null, latencyMs: Math.round(performance.now() - started) });
