@@ -50,6 +50,16 @@ class ThrowingKv {
   }
 }
 
+class MalformedKv {
+  async get() {
+    return "NaN";
+  }
+
+  async put() {
+    throw new Error("malformed abuse-control state must never be overwritten");
+  }
+}
+
 class OneShotBarrier {
   constructor(participants) {
     this.remaining = participants;
@@ -355,6 +365,22 @@ test("POST /api/projects rejects oversized root, nested, and byte shapes before 
   }
 });
 
+test("project names normalize Unicode and reject control or bidi characters", async () => {
+  const db = new MemoryD1();
+  const auth = await seedAuth(db, 250);
+  const env = { ASSETS: assets, DB: db, GRIHAGRID_CACHE: new MemoryKv() };
+  const normalized = await postProject(env, auth, projectBody(validInput, { name: "  ＱＡ　Home  " }));
+  assert.equal(normalized.response.status, 201, JSON.stringify(normalized.payload));
+  assert.equal(normalized.payload.project.name, "QA Home");
+
+  for (const name of ["Unsafe\u0000name", "Unsafe\u202ename"]) {
+    const rejected = await postProject(env, auth, projectBody(validInput, { name }));
+    assert.equal(rejected.response.status, 400, JSON.stringify(rejected.payload));
+    assert.equal(rejected.payload.code, "invalid_project_name");
+  }
+  assert.equal(db.projects.length, 1);
+});
+
 test("legacy soilReport input can never suppress foundation and geotechnical verification", () => {
   const legacyInput = { ...validInput, soilReport: true };
   const estimate = __test.computeEstimate(legacyInput);
@@ -404,6 +430,18 @@ test("project creation maps KV failures to a fail-closed operational response", 
     code: "abuse_control_unavailable",
   });
   assert.ok(logs.some((line) => line.includes('"outcome":"control_closed"')), "operations log must classify the fail-closed control");
+  assert.equal(db.projects.length, 0);
+});
+
+test("project creation rejects malformed account abuse-control state", async () => {
+  const db = new MemoryD1();
+  const auth = await seedAuth(db, 302);
+  const result = await postProject({ ASSETS: assets, DB: db, GRIHAGRID_CACHE: new MalformedKv() }, auth, projectBody());
+  assert.equal(result.response.status, 503, JSON.stringify(result.payload));
+  assert.deepEqual(result.payload, {
+    error: "abuse controls are temporarily unavailable",
+    code: "abuse_control_unavailable",
+  });
   assert.equal(db.projects.length, 0);
 });
 

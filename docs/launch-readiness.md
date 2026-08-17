@@ -579,9 +579,11 @@ new paid capability.
   fail closed; private fields and files cannot enter as dedicated fields, while
   disclosure warns that user-entered project-name text remains in the draft.
 - [ ] Recovery is value-free before explicit Resume, and Save & exit is distinct
-  from Discard. Reads do not extend expiry, storage failure is described as
-  same-tab only, and expiry/removal occurs on the next app run without claiming
-  a closed-browser timer.
+  from Discard. Save & exit confirms the exact visible canonical version and
+  blocks/focuses invalid input instead of substituting an older copy. Reads and
+  no-op choices do not extend expiry, storage failure is described as same-tab
+  only, and an `ifAvailable` exclusive boot lock performs expiry/removal on the
+  next app run without claiming a closed-browser timer.
 - [ ] One exclusive same-origin Web Lock spans `/start` through explicit auth
   continuation before shared-storage access. Contention is value-free and
   read-only, unsupported locks use memory only, `pagehide` releases, and
@@ -595,7 +597,9 @@ new paid capability.
   credentials-only. The authenticated project request freezes and reuses the
   exact draft plus original key; lost
   `201` replay is `200` with one project, conflicting reuse is `409`, and no
-  anonymous endpoint, D1 row, cookie, event or migration is added.
+  anonymous endpoint, D1 row, cookie, event or migration is added. Only strict,
+  validated `200`/`201` project envelopes may consume the browser copy;
+  malformed or unexpected `2xx` responses retain the frozen retry.
 - [ ] Automated contracts, real-D1 project-create security, browser recovery,
   keyboard, 390 px, 200% zoom, console/network, staging smoke, production smoke,
   CodeQL and the 30-minute exact-version monitor all pass with dated evidence.

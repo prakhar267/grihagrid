@@ -49,6 +49,7 @@ const FUTURE_USES = Object.freeze(["none", "rental", "home_office", "vertical_ex
 export const ANONYMOUS_DRAFT_STYLES = Object.freeze(["Warm modern", "Contemporary", "Traditional Indian", "Tropical modern", "Minimal"]);
 const QUALITIES = Object.freeze(["Essential", "Signature", "Premium", "Luxury"]);
 const STATUSES = Object.freeze(["editing", "awaiting_auth", "submitting", "retry_required"]);
+const PROJECT_STATUSES = Object.freeze(["draft", "feasibility_ready", "archived"]);
 const UNSAFE_TEXT_PATTERN = /[\p{Cc}\p{Cf}]/u;
 
 let ephemeralDraft = null;
@@ -107,6 +108,10 @@ export function canonicalAnonymousProjectDraft(value) {
       || !enumValue(value.style, ANONYMOUS_DRAFT_STYLES)
       || !enumValue(value.quality, QUALITIES)) return null;
   return Object.fromEntries(DRAFT_FIELDS.map(field => [field, field === "name" ? name : value[field]]));
+}
+
+export function validAnonymousProjectName(value) {
+  return Boolean(canonicalText(value, 100));
 }
 
 function validCreationUuid(value) {
@@ -279,6 +284,42 @@ export function prepareAnonymousDraftSubmission(visibleDraft, activeRecord = nul
   return { draft, record: activeRecord };
 }
 
+export function prepareAnonymousDraftExit(visibleDraft, step, activeRecord = null) {
+  const draft = canonicalAnonymousProjectDraft(visibleDraft);
+  if (!draft || !Number.isInteger(step) || step < 0 || step > 3) return null;
+  const exactRecord = activeRecord
+    && activeRecord.step === step
+    && sameAnonymousDraftPayload(activeRecord, {
+      projectCreationKey: activeRecord.projectCreationKey,
+      draft,
+    })
+    ? activeRecord
+    : null;
+  return { draft, exactRecord };
+}
+
+export function acceptedAnonymousProjectCreationResponse(payload, status, submitted) {
+  if (![200, 201].includes(status)
+      || !isRecord(payload)
+      || !hasExactOwnKeys(payload, ["project"])
+      || !isRecord(payload.project)
+      || !submitted) return null;
+  const project = payload.project;
+  if (!validCreationUuid(project.id)
+      || !PROJECT_STATUSES.includes(project.status)
+      || !Number.isSafeInteger(project.inputRevision) || project.inputRevision < 1
+      || typeof project.reportAvailable !== "boolean"
+      || !isRecord(project.input)
+      || Object.hasOwn(project.input, "name")) return null;
+  const canonicalProject = canonicalAnonymousProjectDraft({ name: project.name, ...project.input });
+  if (!canonicalProject) return null;
+  if (status === 201 && !sameAnonymousDraftPayload(submitted, {
+    projectCreationKey: submitted.projectCreationKey,
+    draft: canonicalProject,
+  })) return null;
+  return project;
+}
+
 function nextEnvelope({ draft, step, projectCreationKey, entryPoint = null, status = "editing" }, expected, nowMs, touch) {
   const canonicalDraft = canonicalAnonymousProjectDraft(draft);
   const creationKey = validCreationUuid(projectCreationKey);
@@ -305,6 +346,12 @@ export function saveAnonymousDraft(storage, input, expected = null, nowMs = Date
   const record = nextEnvelope(input, validExpected, nowMs, touch);
   if (!record) return { ok: false, reason: "invalid", record: null };
   const continuingEphemeral = Boolean(validExpected && ephemeralOnly && sameAnonymousDraftVersion(ephemeralDraft, validExpected));
+  const unchanged = Boolean(validExpected
+    && record.step === validExpected.step
+    && record.projectCreationKey === validExpected.projectCreationKey
+    && record.entryPoint === validExpected.entryPoint
+    && record.status === validExpected.status
+    && sameAnonymousDraftPayload(record, validExpected));
   const stored = rawStoredDraft(storage);
   if (stored.available) {
     const current = stored.raw === null ? null : parseAnonymousDraftEnvelope(stored.raw, nowMs);
@@ -313,6 +360,11 @@ export function saveAnonymousDraft(storage, input, expected = null, nowMs = Date
       : Boolean(ephemeralBaseline && sameAnonymousDraftVersion(current, ephemeralBaseline)));
     if (validExpected ? !sameAnonymousDraftVersion(current, validExpected) && !safeEphemeralBaseline : stored.raw !== null) {
       return { ok: false, reason: "conflict", record: current };
+    }
+    if (unchanged) {
+      return continuingEphemeral
+        ? { ok: false, reason: "unavailable", record: validExpected }
+        : { ok: true, reason: "unchanged", record: validExpected };
     }
     try {
       storage.setItem(ANONYMOUS_DRAFT_STORAGE_KEY, JSON.stringify(record));
@@ -326,6 +378,8 @@ export function saveAnonymousDraft(storage, input, expected = null, nowMs = Date
       // Preserve the last confirmed browser version; the newer value remains same-tab only.
       if (!continuingEphemeral) ephemeralBaseline = current;
     }
+  } else if (unchanged) {
+    return { ok: false, reason: "unavailable", record: validExpected };
   } else if (!continuingEphemeral) {
     if (validExpected) {
       const expectedWasConfirmed = !ephemeralOnly && sameAnonymousDraftVersion(ephemeralDraft, validExpected);
@@ -406,4 +460,34 @@ export function clearEphemeralAnonymousDraft(projectCreationKey = null) {
 export function anonymousDraftExpiryLabel(envelope, locale = "en-IN") {
   if (!envelope) return "";
   return new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" }).format(new Date(envelope.expiresAtMs));
+}
+
+export async function purgeInvalidAnonymousDraftOnBoot(windowObject = globalThis.window, nowMs = Date.now()) {
+  let locks;
+  try {
+    locks = windowObject?.navigator?.locks;
+  } catch {
+    return "unsupported";
+  }
+  if (!locks || typeof locks.request !== "function") return "unsupported";
+  try {
+    return await locks.request(
+      ANONYMOUS_DRAFT_LOCK_NAME,
+      { mode: "exclusive", ifAvailable: true },
+      lock => {
+        if (!lock) return "contended";
+        const storage = safeLocalStorage(windowObject);
+        if (!storage) return "unavailable";
+        const before = rawStoredDraft(storage);
+        if (!before.available) return "unavailable";
+        if (before.raw === null) return "absent";
+        const valid = readAnonymousDraft(storage, nowMs, true);
+        if (valid) return "retained";
+        const after = rawStoredDraft(storage);
+        return after.available && after.raw === null ? "purged" : "unavailable";
+      },
+    );
+  } catch {
+    return "unavailable";
+  }
 }

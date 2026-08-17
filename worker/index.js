@@ -607,14 +607,28 @@ async function accountRateLimit(env, scope, limit, windowSeconds) {
   const window = Math.floor(Date.now() / (windowSeconds * 1000));
   const identity = await digestBase64(scope);
   const key = `rate:${scope}:${window}:${identity}`;
-  let attempts;
   try {
-    attempts = Number(await env.GRIHAGRID_CACHE.get(key) || 0) + 1;
+    const stored = await env.GRIHAGRID_CACHE.get(key);
+    let previous = 0;
+    if (stored !== null) {
+      if (typeof stored !== "string" || !/^(?:0|[1-9]\d*)$/u.test(stored)) {
+        throw new Error("invalid account abuse-control state");
+      }
+      previous = Number(stored);
+      if (!Number.isSafeInteger(previous) || previous < 0) {
+        throw new Error("invalid account abuse-control state");
+      }
+    }
+    const attempts = previous + 1;
+    if (!Number.isSafeInteger(attempts)) throw new Error("invalid account abuse-control state");
     await env.GRIHAGRID_CACHE.put(key, String(attempts), { expirationTtl: windowSeconds * 2 });
-  } catch {
+    if (attempts > limit) {
+      throw new HttpError(429, "too many attempts; please try again later", "rate_limited");
+    }
+  } catch (error) {
+    if (error instanceof HttpError) throw error;
     throw new HttpError(503, "abuse controls are temporarily unavailable", "abuse_control_unavailable");
   }
-  if (attempts > limit) throw new HttpError(429, "too many attempts; please try again later", "rate_limited");
 }
 
 async function familyAlignmentEvent(db, eventName, surface, outcome = "success") {
@@ -2924,7 +2938,11 @@ function normalizeProjectName(value) {
   if (value != null && typeof value !== "string") {
     throw new HttpError(400, "project name must be text", "invalid_project_name");
   }
-  const name = (value || "My home project").trim().replace(/\s+/gu, " ");
+  const source = value || "My home project";
+  if (/[\p{Cc}\p{Cf}]/u.test(source)) {
+    throw new HttpError(400, "project name contains unsupported characters", "invalid_project_name");
+  }
+  const name = source.normalize("NFKC").trim().replace(/\s+/gu, " ");
   if (!name || name.length > 100) throw new HttpError(400, "project name must be between 1 and 100 characters", "invalid_project_name");
   return name;
 }

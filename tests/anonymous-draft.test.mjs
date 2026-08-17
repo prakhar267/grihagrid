@@ -4,6 +4,7 @@ import {
   ANONYMOUS_DRAFT_RETENTION_MS,
   ANONYMOUS_DRAFT_LOCK_NAME,
   ANONYMOUS_DRAFT_STORAGE_KEY,
+  acceptedAnonymousProjectCreationResponse,
   canonicalAnonymousProjectDraft,
   clearAnonymousDraft,
   clearAnonymousDraftAfterCreation,
@@ -11,7 +12,9 @@ import {
   clearLegacyPendingProjectState,
   holdAnonymousDraftLock,
   parseAnonymousDraftEnvelope,
+  prepareAnonymousDraftExit,
   prepareAnonymousDraftSubmission,
+  purgeInvalidAnonymousDraftOnBoot,
   readAnonymousDraft,
   readAnonymousDraftContinuation,
   readRecoverableAnonymousDraft,
@@ -20,12 +23,14 @@ import {
   sameAnonymousDraftVersion,
   saveAnonymousDraft,
   updateAnonymousDraftStatus,
+  validAnonymousProjectName,
 } from "../src/anonymous-draft.js";
 
 const NOW = Date.parse("2026-08-17T03:00:00.000Z");
 const KEY = "123e4567-e89b-42d3-a456-426614174000";
 const OTHER_KEY = "123e4567-e89b-42d3-b456-426614174001";
 const OTHER_WRITE_ID = "123e4567-e89b-42d3-8456-426614174002";
+const PROJECT_ID = "123e4567-e89b-42d3-9456-426614174003";
 const validDraft = Object.freeze({
   name: "My family home",
   width: 30,
@@ -83,6 +88,9 @@ test("anonymous drafts round-trip one exact, versioned seven-day envelope", () =
 test("the persisted project shape is an exact allowlist with strict scalar values", () => {
   assert.deepEqual(canonicalAnonymousProjectDraft(validDraft), validDraft);
   assert.equal(canonicalAnonymousProjectDraft({ ...validDraft, name: "  My\u00a0 family   home  " }).name, "My family home");
+  assert.equal(validAnonymousProjectName("  ＱＡ　Home  "), true);
+  assert.equal(validAnonymousProjectName("Unsafe\u202ename"), false);
+  assert.equal(validAnonymousProjectName("   "), false);
   for (const value of [null, [], "draft", { ...validDraft, token: "secret" }]) {
     assert.equal(canonicalAnonymousProjectDraft(value), null);
   }
@@ -108,6 +116,54 @@ test("invalid or changed visible input cannot resolve to an older saved submissi
   assert.deepEqual(prepareAnonymousDraftSubmission(validDraft), { draft: validDraft, record: null });
 });
 
+test("Save & exit requires the exact visible canonical draft and step", () => {
+  const storage = memoryStorage();
+  const saved = save(storage, { draft: { ...validDraft, name: "Original name" } }).record;
+  assert.equal(prepareAnonymousDraftExit({ ...validDraft, name: "   " }, 1, saved), null);
+  assert.deepEqual(prepareAnonymousDraftExit({ ...validDraft, name: "Changed visible name" }, 1, saved), {
+    draft: { ...validDraft, name: "Changed visible name" },
+    exactRecord: null,
+  });
+  assert.deepEqual(prepareAnonymousDraftExit(saved.draft, 2, saved), { draft: saved.draft, exactRecord: null });
+  assert.deepEqual(prepareAnonymousDraftExit(saved.draft, 1, saved), { draft: saved.draft, exactRecord: saved });
+});
+
+test("only strict 200/201 project responses may consume an anonymous draft", () => {
+  const submitted = save(memoryStorage()).record;
+  const { name, ...input } = submitted.draft;
+  const response = {
+    project: {
+      id: PROJECT_ID,
+      name,
+      status: "feasibility_ready",
+      input,
+      estimate: {},
+      estimateRuleVersion: 1,
+      briefCheck: {},
+      inputRevision: 1,
+      reportAvailable: false,
+      createdAt: "2026-08-17 03:00:00",
+      updatedAt: "2026-08-17 03:00:00",
+    },
+  };
+  assert.deepEqual(acceptedAnonymousProjectCreationResponse(response, 201, submitted), response.project);
+  assert.equal(acceptedAnonymousProjectCreationResponse(response, 202, submitted), null);
+  assert.equal(acceptedAnonymousProjectCreationResponse({}, 201, submitted), null);
+  assert.equal(acceptedAnonymousProjectCreationResponse({ project: { ...response.project, id: "not-a-uuid" } }, 201, submitted), null);
+  assert.equal(acceptedAnonymousProjectCreationResponse({ project: { ...response.project, name: "Different project" } }, 201, submitted), null);
+  assert.equal(acceptedAnonymousProjectCreationResponse({ project: { ...response.project, input: { ...input, name } } }, 201, submitted), null);
+  const currentReplay = {
+    project: {
+      ...response.project,
+      name: "Renamed after creation",
+      input: { ...input, city: "Delhi" },
+      inputRevision: 2,
+      status: "archived",
+    },
+  };
+  assert.deepEqual(acceptedAnonymousProjectCreationResponse(currentReplay, 200, submitted), currentReplay.project);
+});
+
 test("application boot purges only the retired session and history payloads", () => {
   const sessionStorage = memoryStorage({ "grihagrid.pendingProject": "private", unrelated: "preserve" });
   const calls = [];
@@ -127,6 +183,35 @@ test("application boot purges only the retired session and history payloads", ()
     title: "",
     url: "https://example.test/start",
   }]);
+});
+
+test("general app boot purges expired drafts only under an available exclusive lock", async () => {
+  const storage = memoryStorage({ unrelated: "preserve" });
+  const record = save(storage).record;
+  const availableWindow = {
+    localStorage: storage,
+    navigator: {
+      locks: {
+        request(name, options, callback) {
+          assert.equal(name, ANONYMOUS_DRAFT_LOCK_NAME);
+          assert.deepEqual(options, { mode: "exclusive", ifAvailable: true });
+          return callback({ name });
+        },
+      },
+    },
+  };
+  assert.equal(await purgeInvalidAnonymousDraftOnBoot(availableWindow, record.expiresAtMs), "purged");
+  assert.equal(storage.getItem(ANONYMOUS_DRAFT_STORAGE_KEY), null);
+  assert.equal(storage.getItem("unrelated"), "preserve");
+
+  const contendedStorage = memoryStorage({ [ANONYMOUS_DRAFT_STORAGE_KEY]: JSON.stringify(record) });
+  const contendedWindow = {
+    localStorage: contendedStorage,
+    navigator: { locks: { request: (_name, _options, callback) => callback(null) } },
+  };
+  assert.equal(await purgeInvalidAnonymousDraftOnBoot(contendedWindow, record.expiresAtMs), "contended");
+  assert.notEqual(contendedStorage.getItem(ANONYMOUS_DRAFT_STORAGE_KEY), null);
+  assert.equal(await purgeInvalidAnonymousDraftOnBoot({ navigator: {} }, record.expiresAtMs), "unsupported");
 });
 
 test("an exclusive Web Lock is held until release and contention never enters the critical section", async () => {
@@ -214,6 +299,11 @@ test("an open memory-only tab cannot edit, advance, or submit after exact expiry
 test("only an actual edit advances the seven-day window", () => {
   const storage = memoryStorage();
   const initial = save(storage).record;
+  const unchanged = save(storage, {}, initial, NOW + 45_000);
+  assert.equal(unchanged.ok, true);
+  assert.equal(unchanged.reason, "unchanged");
+  assert.deepEqual(unchanged.record, initial);
+  assert.deepEqual(readAnonymousDraft(storage, NOW + 45_000), initial);
   const editedAt = NOW + 90_000;
   const edited = save(storage, { draft: { ...validDraft, budgetLakh: 80 }, step: 2 }, initial, editedAt);
   assert.equal(edited.ok, true);

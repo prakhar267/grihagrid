@@ -19,10 +19,14 @@ and broader breach scope without evidence that cross-device recovery is needed.
 1. A visitor enters or changes a supported planner value. GrihaGrid writes one
    strict browser envelope and shows its exact expiry. An untouched default
    brief is not written unless the visitor explicitly chooses **Save & exit**.
-2. Only a user edit or step change advances expiry to seven days. Reads,
-   reloads, the recovery prompt, and Resume do not extend it.
-3. **Save & exit** leaves the browser copy intact. **Discard draft** removes the
-   exact active version. A stale tab cannot overwrite or delete a newer version.
+2. Only an actual user edit or step change advances expiry to seven days.
+   Re-selecting the current choice, reads, reloads, the recovery prompt, and
+   Resume do not extend it.
+3. **Save & exit** first canonicalizes the visible form and exits only after that
+   exact step and value set is confirmed as the current browser version. Invalid
+   visible input keeps the planner open, focuses the field, and never substitutes
+   an older saved value. **Discard draft** removes the exact active version. A
+   stale tab cannot overwrite or delete a newer version.
 4. A return to `/start` shows a value-free recovery choice before hydrating the
    form. Resume restores the exact step, structured values, estimator source,
    and project-creation idempotency key. Discard creates a fresh key and clean
@@ -36,8 +40,10 @@ and broader breach scope without evidence that cross-device recovery is needed.
    server failure becomes `retry_required`; the next attempt reuses identical
    project bytes and the original key.
 7. A confirmed `201` creation or `200` idempotent replay conditionally consumes
-   only the submitted browser version. A newer version is never erased by an
-   older response.
+   only the submitted browser version after the client validates the exact HTTP
+   status and a bounded, canonical project envelope with a UUID. A malformed or
+   unexpected `2xx` leaves the draft frozen for safe retry. A newer version is
+   never erased by an older response.
 
 ## Browser contract
 
@@ -81,8 +87,9 @@ email, credential, or other personal information.
 Browser storage is plaintext to the browser profile, extensions, and other
 people using that profile. Product copy says “saved on this browser,” never
 “encrypted” or “private.” Browser eviction can occur before seven days. Expired
-records are removed when GrihaGrid next runs; there is no claim that a closed
-browser executes a timer.
+or corrupt records are removed when GrihaGrid next runs only when a non-blocking
+exclusive Web Lock is available; a contending planner is never read or changed.
+There is no claim that a closed browser executes a timer.
 
 If Web Storage is blocked or quota-limited, the planner remains usable and one
 same-page application continuation can use an in-memory copy. The UI says that
@@ -158,8 +165,10 @@ blocked storage, exclusive-lock acquisition/contention/fallback, exact-baseline
 fallback, compare-and-set conflicts, discard, conditional consumption,
 auth/body separation, source/key/write-version continuity, and legacy removal.
 
-Browser acceptance covers a partial edit, save-and-exit, prompt-before-values,
-explicit Resume, exact restored step and values, mobile reflow, 200% zoom,
-keyboard focus, console/network health, and the value-free missing/expired copy.
-The existing real Worker/D1 project-creation suite remains the backend proof for
-exact `201`/`200` replay, concurrency, conflict, ownership, CSRF, and cleanup.
+Browser acceptance covers a partial edit, blocked invalid Save & exit,
+save-and-exit, prompt-before-values, explicit Resume, exact restored step and
+values, mobile reflow, 200% zoom, keyboard focus, console/network health, and
+the value-free missing/expired copy. The real Worker/D1 project-creation fixture
+proves exact `201`/`200` replay, concurrent reconciliation, changed-body
+conflict, same-key cross-account isolation, the 49→50 race, one canonical row,
+and at-most-once estimator attribution.
