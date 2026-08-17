@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promise
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   AUTHENTICATED_SMOKE_LOGIN_TIMEOUT_MS,
   AUTHENTICATED_SMOKE_REQUEST_TIMEOUT_MS,
@@ -755,6 +756,41 @@ test("release monitor distinguishes lost tail coverage from an application regre
     ),
     ReleaseTailCoverageError,
   );
+});
+
+test("release tails suppress Wrangler notices but preserve stderr as a failure signal", async () => {
+  const workflow = await readFile(new URL("../.github/workflows/deploy.yml", import.meta.url), "utf8");
+  const observe = workflowStep(workflow, "Observe the exact production version for 30 minutes");
+  assert.equal((observe.match(/WRANGLER_LOG=error WRANGLER_WRITE_LOGS=false/gu) || []).length, 2);
+  assert.equal((observe.match(/wrangler tail/gu) || []).length, 2);
+  assert.doesNotMatch(observe, /WRANGLER_LOG=none/u);
+  assert.match(observe, /Number\(process\.env\.INVOCATION_STDERR_BYTES\) !== 0/u);
+  assert.match(observe, /Number\(process\.env\.SERVER_STDERR_BYTES\) !== 0/u);
+  assert.match(observe, /process\.env\.TAILS_ALIVE !== "true"/u);
+  assert.match(observe, /invocation\.eventCount > 0 \|\| server\.eventCount > 0/u);
+
+  const wrangler = fileURLToPath(new URL("../node_modules/wrangler/bin/wrangler.js", import.meta.url));
+  const runWrangler = (level) => spawnSync(
+    process.execPath,
+    [wrangler, "tail", "--format", "invalid"],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        CI: "true",
+        FORCE_COLOR: "0",
+        WRANGLER_LOG: level,
+        WRANGLER_WRITE_LOGS: "false",
+      },
+    },
+  );
+  const errorOnly = runWrangler("error");
+  assert.notEqual(errorOnly.status, 0);
+  assert.match(errorOnly.stderr, /ERROR|Invalid values/u);
+  assert.doesNotMatch(errorOnly.stderr, /update available/u);
+  const silent = runWrangler("none");
+  assert.notEqual(silent.status, 0);
+  assert.equal(silent.stderr, "", "WRANGLER_LOG=none would hide a real tail CLI failure");
 });
 
 test("release rollback polling propagates legacy Worker compatibility to every smoke sample", async () => {

@@ -8035,6 +8035,16 @@ function protectSharedEstimatorDocument(response) {
   });
 }
 
+function sharedEstimatorAppShellRequest(request) {
+  const indexUrl = new URL(request.url);
+  indexUrl.pathname = "/index.html";
+  indexUrl.search = "";
+  indexUrl.hash = "";
+  // Do not clone the navigation request: its canonical scenario query and any
+  // ambient account cookies or authorization headers are not asset inputs.
+  return new Request(indexUrl, { method: request.method });
+}
+
 function logOperationalRequest(request, env, response, startedAt, requestId) {
   if (!env.APP_ENV) return;
   const url = new URL(request.url);
@@ -8060,6 +8070,8 @@ export default {
     let finalResponse;
     if (url.pathname === "/api" || url.pathname.startsWith("/api/")) {
       finalResponse = secure(await api(request, env, ctx, url));
+    } else if (url.pathname === "/estimate" && ["GET", "HEAD"].includes(request.method)) {
+      finalResponse = secure(await env.ASSETS.fetch(sharedEstimatorAppShellRequest(request)));
     } else {
       const response = await env.ASSETS.fetch(request);
       const isHtmlNavigation = isAppNavigation(request, url);

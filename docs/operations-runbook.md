@@ -582,6 +582,12 @@ logged as `outcome=control_closed`, while missing-provider, database, abuse,
 AI, and unexpected failures remain `server_error` and trip the monitor.
 Raw tail events are reduced in memory to counts and byte totals, stop the
 observation on the first matching event, and never enter release artifacts.
+The pinned Wrangler tail processes run at `WRANGLER_LOG=error`, so routine
+startup and available-update notices do not masquerade as infrastructure
+failures. Actual Wrangler errors still reach stderr, and any non-empty stderr,
+dead tail process, missing or malformed aggregate, public regression, or
+matching error event fails the release closed. Wrangler disk logs are disabled
+on those runners so no provider-side diagnostic copy survives the job.
 Automation may roll the Worker back after a confirmed application regression
 when no migration ran. When a migration did run, rollback is eligible only if
 the pre-deploy old-Worker rehearsal completed against the expanded schema and
