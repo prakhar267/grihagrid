@@ -16,11 +16,17 @@ test("version-controlled production and staging configuration stays isolated and
 test("read-only smoke rejects unsafe targets before network access", async () => {
   await assert.rejects(() => runSmoke("http://localhost:8787"), /must use HTTPS/u);
   await assert.rejects(() => runSmoke("https://user:password@example.test"), /cannot include credentials/u);
+  await assert.rejects(
+    () => runSmoke("https://worker.example.test", { releaseProbe: "private-query=value" }),
+    /bounded numeric correlation value/u,
+  );
 });
 
 test("read-only smoke verifies health, readiness, estimate and fail-closed catalog", async () => {
   const originalFetch = globalThis.fetch;
   const requested = [];
+  const readinessProbes = [];
+  const readinessCacheControls = [];
   let readinessAttempts = 0;
   let legacyReadiness = false;
   let handoffEnabled = true;
@@ -53,6 +59,8 @@ test("read-only smoke verifies health, readiness, estimate and fail-closed catal
       return Response.json({ status: "ok", service: "grihagrid", time: new Date().toISOString() }, { headers: { ...securityHeaders, "cache-control": "no-store" } });
     }
     if (url.pathname === "/api/readiness") {
+      readinessProbes.push(url.searchParams.get("release_probe"));
+      readinessCacheControls.push(init.headers?.["cache-control"] || null);
       readinessAttempts += 1;
       if (readinessAttempts === 1) throw new DOMException("synthetic timeout", "TimeoutError");
       return Response.json({
@@ -132,11 +140,23 @@ test("read-only smoke verifies health, readiness, estimate and fail-closed catal
       { path: "/share/report", method: "GET" },
       { path: "/share/report", method: "HEAD" },
       { path: "/api/health", method: "GET" },
-      { path: "/api/readiness", method: "GET" },
-      { path: "/api/readiness", method: "GET" },
       { path: "/api/estimate", method: "POST" },
       { path: "/api/commerce/catalog", method: "GET" },
+      { path: "/api/readiness", method: "GET" },
+      { path: "/api/readiness", method: "GET" },
     ]);
+    assert.deepEqual(requested.slice(-2).map((request) => request.path), ["/api/readiness", "/api/readiness"]);
+    assert.deepEqual(readinessProbes, [null, null]);
+    assert.deepEqual(readinessCacheControls, [null, null]);
+
+    readinessAttempts = 0;
+    const cacheBusted = await runSmoke("https://worker.example.test", {
+      expectedReleaseId: "11111111-1111-4111-8111-111111111111",
+      releaseProbe: "7-1786000000000",
+    });
+    assert.equal(cacheBusted.checks.find((check) => check.path.includes("/api/readiness"))?.attempts, 2);
+    assert.deepEqual(readinessProbes.slice(-2), ["7-1786000000000", "7-1786000000000"]);
+    assert.deepEqual(readinessCacheControls.slice(-2), ["no-cache", "no-cache"]);
 
     requested.length = 0;
     readinessAttempts = 0;

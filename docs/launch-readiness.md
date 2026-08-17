@@ -135,9 +135,12 @@ both environments must show no pending migration and pass all of these gates:
   admits no more than 20 daily creates, verifies the cleanup query uses both
   expiry/revoked indexes, seeds old read/create admission rows, invokes the
   scheduled handler, and proves only eligible link and counter rows are deleted;
-- staging and production keep the default-disabled control closed through three
-  exact-version propagation samples; enable it only inside the authenticated
-  canary step whose EXIT trap always re-closes it; prove exact-ID residue,
+- staging and production keep the default-disabled control closed through at
+  least three exact-version propagation samples sustained for a monotonic full
+  minute. A unique cache-busted version check ends every sample; any old-version
+  or failed response resets that stability window. Enable it
+  only inside the authenticated canary step whose EXIT trap always re-closes it;
+  prove exact-ID residue,
   capability false and public `503` while re-closed; then perform the only final
   fail-closed restoration, require capability true/missing-token `404`, and
   capture dated bounded post-canary counts for share/read/create rows and

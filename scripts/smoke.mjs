@@ -88,6 +88,12 @@ export async function runSmoke(rawOrigin, options = {}) {
   const expectedReleaseId = options.expectedReleaseId ? String(options.expectedReleaseId) : "";
   const legacyWorker = options.legacyWorker === true;
   const expectReportHandoff = options.expectReportHandoff !== false;
+  const releaseProbe = options.releaseProbe == null ? "" : String(options.releaseProbe);
+  assert.match(releaseProbe, /^(?:|\d{1,6}-\d{1,16})$/u, "release probe must be a bounded numeric correlation value");
+  const readinessPath = releaseProbe
+    ? `/api/readiness?release_probe=${encodeURIComponent(releaseProbe)}`
+    : "/api/readiness";
+  const readinessInit = releaseProbe ? { headers: { "cache-control": "no-cache" } } : {};
   const checks = [];
 
   const home = await timedFetch(origin);
@@ -107,35 +113,6 @@ export async function runSmoke(rawOrigin, options = {}) {
     assert.equal(body.status, "ok");
     assert.equal(body.service, "grihagrid");
     assertFreshTime(body.time, "health");
-  }));
-
-  checks.push(await jsonCheck(origin, "/api/readiness", {}, (body) => {
-    assert.equal(body.status, "ready");
-    assert.equal(body.checks?.familyAlignmentSchema, "current");
-    assert.equal(body.checks?.reportFeedbackSchema, "current");
-    if (!legacyWorker) {
-      assert.equal(body.checks?.reportShareSchema, "current");
-      assert.equal(body.checks?.reportHandoffControl, expectReportHandoff ? "enabled" : "disabled");
-      assert.equal(body.checks?.reportShareAbuseHashing, "configured");
-    }
-    assert.equal(body.checks?.projectCreationSchema, "current");
-    assert.equal(body.checks?.authSchema, "current");
-    assert.equal(body.checks?.privateStorage, "unavailable");
-    assert.deepEqual(body.checks?.acceptingPaidPlans, expectCheckout ? ["decision_compare"] : []);
-    assert.equal(body.capabilities?.freePlanning, true);
-    assert.equal(body.capabilities?.familyAlignment, true);
-    assert.equal(body.capabilities?.reportFeedback, true);
-    if (!legacyWorker) assert.equal(body.capabilities?.reportHandoff, expectReportHandoff);
-    assert.equal(body.capabilities?.accountSecurity, true);
-    assert.equal(body.capabilities?.privateUploads, false);
-    assert.equal(body.capabilities?.paidCheckout, expectCheckout);
-    assert.notEqual(body.capabilities?.paidFulfillment, true, "fulfillment is unexpectedly open");
-    if (expectedReleaseId) {
-      assert.equal(body.releaseId, expectedReleaseId, "readiness is not serving the expected Worker version");
-      assert.equal(body.capabilities?.paidFulfillment, false, "versioned readiness must expose closed fulfillment");
-    }
-    assertFreshTime(body.time, "readiness");
-    assert.ok(!JSON.stringify(body).match(/(?:secret|api[_-]?key|authorization|cookie)/iu), "readiness may not expose secret-shaped fields");
   }));
 
   checks.push(await jsonCheck(origin, "/api/estimate", {
@@ -175,6 +152,37 @@ export async function runSmoke(rawOrigin, options = {}) {
       assert.equal(accepting[0].amountPaise, 99_900);
       assert.equal(accepting[0].currency, "INR");
     }
+  }));
+
+  // Keep the exact-version assertion last so post-readiness endpoint latency
+  // can never be counted toward the sustained propagation window.
+  checks.push(await jsonCheck(origin, readinessPath, readinessInit, (body) => {
+    assert.equal(body.status, "ready");
+    assert.equal(body.checks?.familyAlignmentSchema, "current");
+    assert.equal(body.checks?.reportFeedbackSchema, "current");
+    if (!legacyWorker) {
+      assert.equal(body.checks?.reportShareSchema, "current");
+      assert.equal(body.checks?.reportHandoffControl, expectReportHandoff ? "enabled" : "disabled");
+      assert.equal(body.checks?.reportShareAbuseHashing, "configured");
+    }
+    assert.equal(body.checks?.projectCreationSchema, "current");
+    assert.equal(body.checks?.authSchema, "current");
+    assert.equal(body.checks?.privateStorage, "unavailable");
+    assert.deepEqual(body.checks?.acceptingPaidPlans, expectCheckout ? ["decision_compare"] : []);
+    assert.equal(body.capabilities?.freePlanning, true);
+    assert.equal(body.capabilities?.familyAlignment, true);
+    assert.equal(body.capabilities?.reportFeedback, true);
+    if (!legacyWorker) assert.equal(body.capabilities?.reportHandoff, expectReportHandoff);
+    assert.equal(body.capabilities?.accountSecurity, true);
+    assert.equal(body.capabilities?.privateUploads, false);
+    assert.equal(body.capabilities?.paidCheckout, expectCheckout);
+    assert.notEqual(body.capabilities?.paidFulfillment, true, "fulfillment is unexpectedly open");
+    if (expectedReleaseId) {
+      assert.equal(body.releaseId, expectedReleaseId, "readiness is not serving the expected Worker version");
+      assert.equal(body.capabilities?.paidFulfillment, false, "versioned readiness must expose closed fulfillment");
+    }
+    assertFreshTime(body.time, "readiness");
+    assert.ok(!JSON.stringify(body).match(/(?:secret|api[_-]?key|authorization|cookie)/iu), "readiness may not expose secret-shaped fields");
   }));
 
   return {

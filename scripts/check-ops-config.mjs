@@ -8,6 +8,7 @@ const files = Object.freeze({
   ci: new URL("../.github/workflows/ci.yml", import.meta.url),
   smokeWorkflow: new URL("../.github/workflows/production-smoke.yml", import.meta.url),
   deployWorkflow: new URL("../.github/workflows/deploy.yml", import.meta.url),
+  releaseScope: new URL("./release-scope.mjs", import.meta.url),
   smoke: new URL("./smoke.mjs", import.meta.url),
   waitForRelease: new URL("./wait-for-release.mjs", import.meta.url),
   readinessLatency: new URL("./readiness-latency.mjs", import.meta.url),
@@ -45,7 +46,7 @@ function workflowStep(source, name) {
 }
 
 export async function checkOpsConfig() {
-  const [wrangler, packageText, gitignore, ci, smokeWorkflow, deployWorkflow, smoke, waitForRelease, readinessLatency, authenticatedSmoke, releaseDbEvidence, worker] = await Promise.all(
+  const [wrangler, packageText, gitignore, ci, smokeWorkflow, deployWorkflow, releaseScope, smoke, waitForRelease, readinessLatency, authenticatedSmoke, releaseDbEvidence, worker] = await Promise.all(
     Object.values(files).map((file) => readFile(file, "utf8")),
   );
   const packageJson = JSON.parse(packageText);
@@ -154,7 +155,19 @@ export async function checkOpsConfig() {
   assert.match(deployWorkflow, /checks:\s*read/u, "deployment gate must read exact-SHA check results");
   assert.match(deployWorkflow, /security-events:\s*read/u, "deployment gate must read bounded code-scanning evidence");
   assert.match(deployWorkflow, /workflow_dispatch'\s*&&\s*github\.ref\s*==\s*'refs\/heads\/main'/u, "manual releases must use the main workflow ref");
-  assert.match(deployWorkflow, /manual releases must target the current main tip/u, "manual releases must reject historical main ancestors");
+  assert.equal((deployWorkflow.match(/release-scope\.mjs assert-current "\$RELEASE_SHA" "\$current_main_sha"/gu) || []).length, 7, "authorization and every privileged boundary must reject a candidate behind newer runtime work");
+  const authorizationStep = workflowStep(deployWorkflow, "Require a squash-merged PR and exact trusted workflow results");
+  const ancestryPosition = authorizationStep.indexOf('git merge-base --is-ancestor "$RELEASE_SHA" origin/main');
+  const codeqlPosition = authorizationStep.indexOf("CODEQL_RELEASE_SHA=\"$RELEASE_SHA\"");
+  const candidateNodePosition = authorizationStep.indexOf('node scripts/release-scope.mjs assert-current "$RELEASE_SHA" "$current_main_sha"');
+  assert.ok(
+    ancestryPosition >= 0 && codeqlPosition > ancestryPosition && candidateNodePosition > codeqlPosition,
+    "authorization must prove ancestry and trusted exact-SHA evidence before candidate code runs",
+  );
+  assert.match(authorizationStep, /env -u GH_TOKEN node scripts\/release-scope\.mjs assert-current/u, "authorization must remove the API token before candidate code runs");
+  assert.match(releaseScope, /merge-base", "--is-ancestor"/u, "release currentness must require main ancestry");
+  assert.match(releaseScope, /git",[\s\S]*?"log"[\s\S]*?--first-parent[\s\S]*?--diff-merges=first-parent[\s\S]*?--name-only[\s\S]*?--no-renames/u, "release currentness must inspect every first-parent commit including merge-resolution changes");
+  assert.match(releaseScope, /trailingScope\.deploy,[\s\S]*?false,[\s\S]*?newer deployable changes/u, "release currentness must allow trailing documentation but reject trailing runtime changes");
   assert.match(deployWorkflow, /fetch-depth:\s*0/u, "release ancestry must use complete history");
   assert.match(deployWorkflow, /dynamic\/github-code-scanning\/codeql/u, "release gate must verify the trusted CodeQL workflow identity");
   assert.match(deployWorkflow, /code-scanning\/analyses/u, "release gate must query exact-SHA CodeQL analysis results");
@@ -201,9 +214,15 @@ export async function checkOpsConfig() {
   assert.match(smoke, /expectReportHandoff \? "enabled" : "disabled"/u, "public smoke must verify the requested report-handoff control state");
   assert.match(smoke, /if \(!legacyWorker\) \{[\s\S]*?reportShareDocumentCheck\(origin,"GET"\)[\s\S]*?reportShareDocumentCheck\(origin,"HEAD"\)/u, "legacy smoke must skip the handoff-only document route");
   assert.match(smoke, /if \(!legacyWorker\) \{[\s\S]*?reportHandoffControl[\s\S]*?reportShareAbuseHashing/u, "legacy smoke must skip current-only handoff readiness checks");
-  assert.match(waitForRelease, /smoke\(origin, \{ expectedReleaseId, legacyWorker, expectReportHandoff \}\)/u, "release polling must pass legacy and handoff-control expectations to every smoke sample");
+  assert.match(waitForRelease, /releaseProbe,\s*\}\)/u, "release polling must pass a unique routing probe to every smoke sample");
   assert.match(waitForRelease, /LEGACY_WORKER_COMPAT === "true"/u, "release polling CLI must expose legacy compatibility mode");
   assert.match(waitForRelease, /EXPECT_REPORT_HANDOFF !== "false"/u, "release polling CLI must expose closed-control propagation mode");
+  assert.match(waitForRelease, /const DEFAULT_STABILITY_MS = 60 \* 1000/u, "release polling must require a sustained one-minute exact-version window");
+  assert.doesNotMatch(waitForRelease, /GRIHAGRID_RELEASE_STABILITY_MS/u, "release polling CLI must not permit a sub-minute stability-window override");
+  assert.match(waitForRelease, /performance\.now\(\)/u, "release polling must measure stability with a monotonic clock");
+  assert.match(smoke, /readiness\?release_probe=/u, "release smoke must cache-bust exact-version readiness during propagation polling");
+  assert.match(smoke, /releaseProbe \? \{ headers: \{ "cache-control": "no-cache" \} \} : \{\}/u, "release smoke must request fresh readiness routing during propagation polling");
+  assert.ok(smoke.lastIndexOf("jsonCheck(origin, readinessPath") > smoke.lastIndexOf('jsonCheck(origin, "/api/commerce/catalog"'), "release smoke must observe the exact Worker version after every other full-sample check");
   assert.match(readinessLatency, /const DEFAULT_SAMPLE_COUNT = 20/u, "readiness latency must retain twenty raw samples");
   assert.match(readinessLatency, /const DEFAULT_MAX_P95_MS = 500/u, "readiness latency must gate p95 below 500 ms");
   assert.match(readinessLatency, /nearestRankPercentile\(latencies, 0\.95\)/u, "readiness latency must use nearest-rank p95");
@@ -407,6 +426,49 @@ export async function checkOpsConfig() {
   assert.equal((deployWorkflow.match(/if: always\(\) && steps\.rollback_compat\.outcome != 'skipped'/gu) || []).length, 2, "rollback rehearsal residue must run after success or failure in both environments");
   assert.equal((deployWorkflow.match(/if: always\(\) && steps\.canary\.outcome != 'skipped'/gu) || []).length, 4, "candidate residue and closed-control proof must run after each attempted canary");
   for (const environment of ["staging", "production"]) {
+    const currentMainFence = workflowStep(
+      deployWorkflow,
+      environment === "staging"
+        ? "Reconfirm current main before staging inspection"
+        : "Reconfirm current main after the production hold",
+    );
+    const currentMainFenceName = environment === "staging"
+      ? "Reconfirm current main before staging inspection"
+      : "Reconfirm current main after the production hold";
+    const databaseFenceName = `Reconfirm current main before ${environment} database mutation`;
+    const activationFenceName = `Reconfirm current main before ${environment} Worker activation`;
+    for (const stepName of [
+      currentMainFenceName,
+      databaseFenceName,
+      activationFenceName,
+    ]) {
+      const step = stepName === currentMainFenceName ? currentMainFence : workflowStep(deployWorkflow, stepName);
+      assert.match(step, /git fetch --no-tags origin \+refs\/heads\/main:refs\/remotes\/origin\/main/u, `${stepName} must refresh main before privileged work`);
+      assert.match(step, /release-scope\.mjs assert-current "\$RELEASE_SHA" "\$current_main_sha"/u, `${stepName} must reject a candidate behind newer runtime work`);
+    }
+    assert.ok(
+      deployWorkflow.indexOf(`      - name: ${currentMainFenceName}`)
+        < deployWorkflow.indexOf(`      - name: Record current ${environment} Worker`),
+      `${environment} must reject a stale release before remote inspection`,
+    );
+    if (environment === "production") {
+      assert.ok(
+        deployWorkflow.indexOf("      - name: Reconfirm the exact staging version after the production hold")
+          < deployWorkflow.indexOf(`      - name: ${currentMainFenceName}`),
+        "production must refresh currentness after sustained staging reconfirmation",
+      );
+    }
+    assert.ok(
+      deployWorkflow.indexOf(`      - name: ${databaseFenceName}`)
+        < deployWorkflow.indexOf(`      - name: Apply and verify ${environment} migrations`),
+      `${environment} must reject a stale release before database mutation`,
+    );
+    assert.ok(
+      deployWorkflow.indexOf(`      - name: ${activationFenceName}`)
+        < deployWorkflow.indexOf(`      - name: Deploy authorized SHA to ${environment}`),
+      `${environment} must reject a stale release before Worker activation`,
+    );
+
     for (const stepName of [
       `Inspect pending ${environment} migrations and aggregate data state`,
       `Apply and verify ${environment} migrations`,
@@ -463,7 +525,7 @@ export async function checkOpsConfig() {
       `${environment} must reject unexpected drift before backup, migration, or deployment`,
     );
 
-    const propagation = workflowStep(deployWorkflow, `Wait for three exact ${environment} smoke samples`);
+    const propagation = workflowStep(deployWorkflow, `Wait for sustained exact ${environment} smoke samples`);
     assert.match(propagation, /EXPECT_REPORT_HANDOFF:\s*"false"/u, `${environment} exact-version propagation must run while report handoff remains closed`);
 
     const latency = workflowStep(deployWorkflow, `Gate ${environment} readiness latency on the exact version`);
@@ -522,7 +584,7 @@ export async function checkOpsConfig() {
     }
     assert.match(counts, /release-db-evidence\.mjs handoff-counts/u, `${environment} post-canary counts must pass bounded validation`);
     const orderedReleaseSteps = [
-      `Wait for three exact ${environment} smoke samples`,
+      `Wait for sustained exact ${environment} smoke samples`,
       `Gate ${environment} readiness latency on the exact version`,
       `Run ${environment} authenticated canary under bounded handoff activation`,
       `Prove ${environment} canary left zero database residue`,
@@ -540,6 +602,7 @@ export async function checkOpsConfig() {
     assert.match(unverifiedFailClosed, /UPDATE report_handoff_controls SET enabled=0/u, `${environment} unverified rollback must leave the control disabled`);
 
     const failClosed = workflowStep(deployWorkflow, `Fail closed ${environment} report handoff before regression handling`);
+    assert.match(failClosed, /steps\.current_main_db\.outcome == 'success'/u, `${environment} fail-closed handling must not mutate after a failed pre-database current-main guard`);
     assert.match(failClosed, /steps\.migrations\.outcome == 'success'/u, `${environment} report handoff failure handling may run only after a verified migration step`);
     assert.match(failClosed, /steps\.migration_drift_guard\.outcome == 'success'/u, `${environment} drift rejection must not reach the later always() control mutation`);
     assert.match(failClosed, /steps\.version\.outcome != 'success'/u, `${environment} report handoff must close after an unverified or skipped activation`);
