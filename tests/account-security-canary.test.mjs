@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, dirname, join } from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { runAccountSecurityCanary } from "../scripts/account-security-canary.mjs";
 
 const ORIGIN = "https://account-security.example.test";
@@ -735,4 +738,64 @@ test("the CLI prints bounded JSON evidence and a fixed safe error on failure", (
   assert.equal(result.stdout.includes(cliEmail), false);
   assert.equal(result.stderr.includes(cliPassword), false);
   assert.equal(result.stderr.includes(cliEmail), false);
+});
+
+test("the CLI executes through a symlinked script directory", () => {
+  const temporaryRoot = mkdtempSync(join(tmpdir(), "grihagrid-account-security-cli-"));
+  const aliasDirectory = join(temporaryRoot, "scripts-alias");
+  const cliPassword = "Symlinked CLI password must never be printed 2026!";
+  const cliEmail = "symlinked-cli-secret@example.test";
+
+  try {
+    symlinkSync(dirname(scriptPath), aliasDirectory, process.platform === "win32" ? "junction" : "dir");
+    const result = spawnSync(process.execPath, [join(aliasDirectory, basename(scriptPath)), "http://unsafe.example.test"], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        GRIHAGRID_ACCOUNT_SECURITY_EMAIL: cliEmail,
+        GRIHAGRID_ACCOUNT_SECURITY_INITIAL_PASSWORD: cliPassword,
+        EXPECT_WORKER_VERSION: WORKER_VERSION,
+      },
+    });
+
+    assert.equal(result.status, 1);
+    assert.equal(result.signal, null);
+    assert.equal(result.stderr, "account-security canary failed during input_validation\n");
+    const evidence = JSON.parse(result.stdout);
+    assert.equal(evidence.outcome, "failed");
+    assert.equal(evidence.failurePhase, "input_validation");
+    assert.equal(evidence.requestCount, 0);
+    assert.equal(evidence.externalAccountCleanupRequired, false);
+    assert.equal(result.stdout.includes(cliPassword), false);
+    assert.equal(result.stdout.includes(cliEmail), false);
+    assert.equal(result.stderr.includes(cliPassword), false);
+    assert.equal(result.stderr.includes(cliEmail), false);
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test("entrypoint resolution fails closed without paths, stacks, or credentials", () => {
+  const missingEntrypoint = join(tmpdir(), "grihagrid-entrypoint-does-not-exist.mjs");
+  const importUrl = pathToFileURL(scriptPath).href;
+  const result = spawnSync(process.execPath, [
+    "--input-type=module",
+    "--eval",
+    `process.argv[1] = ${JSON.stringify(missingEntrypoint)}; await import(${JSON.stringify(importUrl)});`,
+  ], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      GRIHAGRID_ACCOUNT_SECURITY_EMAIL: "entrypoint-secret@example.test",
+      GRIHAGRID_ACCOUNT_SECURITY_INITIAL_PASSWORD: "Entrypoint secret must not print 2026!",
+    },
+  });
+
+  assert.equal(result.status, 1);
+  assert.equal(result.signal, null);
+  assert.equal(result.stdout, "");
+  assert.equal(result.stderr, "account-security canary failed during entrypoint_resolution\n");
+  assert.equal(result.stderr.includes(missingEntrypoint), false);
+  assert.equal(result.stderr.includes("entrypoint-secret@example.test"), false);
+  assert.equal(result.stderr.includes("Entrypoint secret must not print 2026!"), false);
 });

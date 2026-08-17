@@ -1,13 +1,26 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { readFileSync, statSync } from "node:fs";
-import { pathToFileURL } from "node:url";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, readdirSync, realpathSync } from "node:fs";
+import { basename, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const DIRECTLY_UNSAFE_KEYWORDS = Object.freeze(new Map([
   ["ATTACH", ["attach", "ATTACH statements are not allowed in automatic migrations"]],
   ["DETACH", ["detach", "DETACH statements are not allowed in automatic migrations"]],
 ]));
 const MIGRATION_NAME_PATTERN = /^(\d{4})_[a-z0-9_]+\.sql$/u;
+
+function isDirectExecution() {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1]);
+  } catch {
+    process.stderr.write("automatic migration policy failed during entrypoint resolution\n");
+    process.exitCode = 1;
+    return false;
+  }
+}
+
 export const TRUSTED_POLICY_BASELINE = Object.freeze([
   "0001_initial.sql",
   "0002_backend.sql",
@@ -245,15 +258,44 @@ export function scanMigrationSql(sql, filename = "<migration>") {
   return violations;
 }
 
-export function assertSafeMigrationFiles(filePaths) {
+export function assertSafeMigrationFiles(filePaths, { forcePortableFallback = false } = {}) {
   assert.ok(Array.isArray(filePaths), "migration file paths must be an array");
+  assert.equal(typeof forcePortableFallback, "boolean", "portable migration fallback option must be boolean");
   const paths = [...new Set(filePaths.map((filePath) => String(filePath)))];
   const violations = [];
 
   for (const filePath of paths) {
     assert.ok(filePath && !/[\0\r\n]/u.test(filePath), "migration paths must be non-empty single-line strings");
-    assert.ok(statSync(filePath).isFile(), `${filePath}: migration path must be a regular file`);
-    violations.push(...scanMigrationSql(readFileSync(filePath, "utf8"), filePath));
+    const supportsNoFollow = Number.isSafeInteger(constants.O_NOFOLLOW) && !forcePortableFallback;
+    const assertWranglerRegularEntry = () => {
+      const leaf = basename(filePath);
+      const entries = readdirSync(dirname(filePath), { withFileTypes: true });
+      const matches = entries.filter((entry) => entry.name === leaf);
+      assert.equal(matches.length, 1, `${filePath}: migration path must have one exact directory entry`);
+      assert.ok(matches[0].isFile(), `${filePath}: migration path must be a regular non-symlink file`);
+    };
+    assertWranglerRegularEntry();
+    let fileDescriptor;
+    try {
+      fileDescriptor = openSync(
+        filePath,
+        constants.O_RDONLY | (supportsNoFollow ? constants.O_NOFOLLOW : 0),
+      );
+    } catch {
+      throw new Error(`${filePath}: migration path must be a readable regular non-symlink file`);
+    }
+    try {
+      const openedFile = fstatSync(fileDescriptor, { bigint: true });
+      assert.ok(openedFile.isFile(), `${filePath}: migration path must be a regular file`);
+      const currentPath = lstatSync(filePath, { bigint: true });
+      assert.ok(currentPath.isFile(), `${filePath}: migration path must be a regular non-symlink file`);
+      assert.equal(currentPath.dev, openedFile.dev, `${filePath}: migration path changed while it was opened`);
+      assert.equal(currentPath.ino, openedFile.ino, `${filePath}: migration path changed while it was opened`);
+      assertWranglerRegularEntry();
+      violations.push(...scanMigrationSql(readFileSync(fileDescriptor, "utf8"), filePath));
+    } finally {
+      closeSync(fileDescriptor);
+    }
   }
 
   if (violations.length > 0) {
@@ -284,7 +326,7 @@ function pathsFromArguments(arguments_) {
   return paths;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isDirectExecution()) {
   try {
     const result = assertSafeMigrationFiles(pathsFromArguments(process.argv.slice(2)));
     process.stdout.write(`Automatic migration policy passed for ${result.filesChecked} file(s).\n`);

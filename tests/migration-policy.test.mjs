@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   assertSafeMigrationFiles,
   scanMigrationSql,
@@ -112,4 +112,80 @@ test("migration policy CLI checks an explicit file set or newline-delimited list
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test("migration policy CLI executes through a symlinked script directory", () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "grihagrid-migration-policy-cli-"));
+  const scriptAlias = path.join(directory, "scripts-alias");
+  const safe = path.join(directory, "0013_safe.sql");
+  try {
+    symlinkSync(path.dirname(command), scriptAlias, process.platform === "win32" ? "junction" : "dir");
+    writeFileSync(safe, "ALTER TABLE projects ADD COLUMN safe_note TEXT;\n", "utf8");
+    const result = spawnSync(process.execPath, [path.join(scriptAlias, path.basename(command)), safe], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.signal, null);
+    assert.match(result.stdout, /passed for 1 file/u);
+    assert.equal(result.stderr, "");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("migration policy rejects a symlinked migration even when its targets are regular files", () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "grihagrid-migration-policy-link-"));
+  const safe = path.join(directory, "0018_safe.sql");
+  const unsafe = path.join(directory, "0018_unsafe.sql");
+  const linked = path.join(directory, "0018_link.sql");
+  try {
+    writeFileSync(safe, "ALTER TABLE projects ADD COLUMN safe_note TEXT;\n", "utf8");
+    writeFileSync(unsafe, "DROP TABLE projects;\n", "utf8");
+    symlinkSync(safe, linked, "file");
+    assert.throws(
+      () => assertSafeMigrationFiles([linked]),
+      /regular non-symlink file/u,
+    );
+    rmSync(linked);
+    symlinkSync(unsafe, linked, "file");
+    assert.throws(
+      () => assertSafeMigrationFiles([linked]),
+      /regular non-symlink file/u,
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("portable migration fallback mirrors Wrangler directory-entry filtering", () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "grihagrid-migration-policy-portable-"));
+  const safe = path.join(directory, "0018_safe.sql");
+  const linked = path.join(directory, "0018_link.sql");
+  try {
+    writeFileSync(safe, "ALTER TABLE projects ADD COLUMN safe_note TEXT;\n", "utf8");
+    assert.deepEqual(
+      assertSafeMigrationFiles([safe], { forcePortableFallback: true }),
+      { filesChecked: 1 },
+    );
+    symlinkSync(safe, linked, "file");
+    assert.throws(
+      () => assertSafeMigrationFiles([linked], { forcePortableFallback: true }),
+      /regular non-symlink file/u,
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("migration policy entrypoint resolution fails closed without leaking paths", () => {
+  const missingEntrypoint = path.join(os.tmpdir(), "grihagrid-migration-entrypoint-does-not-exist.mjs");
+  const result = spawnSync(process.execPath, [
+    "--input-type=module",
+    "--eval",
+    `process.argv[1] = ${JSON.stringify(missingEntrypoint)}; await import(${JSON.stringify(pathToFileURL(command).href)});`,
+  ], { encoding: "utf8" });
+
+  assert.equal(result.status, 1);
+  assert.equal(result.signal, null);
+  assert.equal(result.stdout, "");
+  assert.equal(result.stderr, "automatic migration policy failed during entrypoint resolution\n");
+  assert.equal(result.stderr.includes(missingEntrypoint), false);
 });

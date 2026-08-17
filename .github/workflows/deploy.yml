@@ -65,6 +65,25 @@ jobs:
           TRIGGER_CI_RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
           set -euo pipefail
+          gh_api_read() {
+            local destination="$1"
+            shift
+            local attempt
+            local partial="${destination}.partial"
+            rm -f -- "$partial"
+            for attempt in 1 2 3 4; do
+              if gh api "$@" > "$partial"; then
+                mv -- "$partial" "$destination"
+                return 0
+              fi
+              rm -f -- "$partial"
+              if [ "$attempt" -lt 4 ]; then
+                sleep $((attempt * 2))
+              fi
+            done
+            echo "GitHub read failed after bounded retries" >&2
+            return 1
+          }
           if [[ ! "$RELEASE_SHA" =~ ^[a-f0-9]{40}$ ]]; then
             echo "release_sha must be a full lowercase commit SHA" >&2
             exit 1
@@ -84,11 +103,10 @@ jobs:
           }
           base_sha="$(git rev-parse "$RELEASE_SHA^")"
 
-          gh api \
+          gh_api_read "$RUNNER_TEMP/associated-pulls.json" \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
-            "repos/$GITHUB_REPOSITORY/commits/$RELEASE_SHA/pulls" \
-            > "$RUNNER_TEMP/associated-pulls.json"
+            "repos/$GITHUB_REPOSITORY/commits/$RELEASE_SHA/pulls"
           associated_pull_count="$(node --input-type=module - "$RUNNER_TEMP/associated-pulls.json" <<'NODE'
           import { readFileSync } from "node:fs";
           const pulls = JSON.parse(readFileSync(process.argv[2], "utf8"));
@@ -99,12 +117,12 @@ jobs:
 
           pull_evidence_file="$RUNNER_TEMP/associated-pulls.json"
           if [ "$associated_pull_count" -eq 0 ]; then
-            gh api --paginate --slurp --method GET \
+            gh_api_read "$RUNNER_TEMP/closed-main-pulls.json" \
+              --paginate --slurp --method GET \
               -H "Accept: application/vnd.github+json" \
               -H "X-GitHub-Api-Version: 2022-11-28" \
               "repos/$GITHUB_REPOSITORY/pulls" \
-              -f state=closed -f base=main -f sort=updated -f direction=desc -F per_page=100 \
-              > "$RUNNER_TEMP/closed-main-pulls.json"
+              -f state=closed -f base=main -f sort=updated -f direction=desc -F per_page=100
             pull_evidence_file="$RUNNER_TEMP/closed-main-pulls.json"
           fi
 
@@ -135,11 +153,12 @@ jobs:
           rm -f -- "$RUNNER_TEMP/associated-pulls.json" "$RUNNER_TEMP/closed-main-pulls.json"
 
           if [ "$GITHUB_EVENT_NAME" = "workflow_run" ]; then
-            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$TRIGGER_CI_RUN_ID" > "$RUNNER_TEMP/ci-run.json"
+            gh_api_read "$RUNNER_TEMP/ci-run.json" \
+              "repos/$GITHUB_REPOSITORY/actions/runs/$TRIGGER_CI_RUN_ID"
           else
-            gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
-              -f head_sha="$RELEASE_SHA" -f branch=main -f event=push -f status=success -F per_page=100 \
-              > "$RUNNER_TEMP/ci-runs.json"
+            gh_api_read "$RUNNER_TEMP/ci-runs.json" \
+              --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" \
+              -f head_sha="$RELEASE_SHA" -f branch=main -f event=push -f status=success -F per_page=100
             node --input-type=module - "$RELEASE_SHA" "$RUNNER_TEMP/ci-runs.json" "$RUNNER_TEMP/ci-run.json" <<'NODE'
           import { readFileSync, writeFileSync } from "node:fs";
           const [sha, input, output] = process.argv.slice(2);
@@ -163,7 +182,8 @@ jobs:
           if (!valid) process.exit(1);
           NODE
 
-          gh api "repos/$GITHUB_REPOSITORY/actions/workflows" > "$RUNNER_TEMP/workflows.json"
+          gh_api_read "$RUNNER_TEMP/workflows.json" \
+            "repos/$GITHUB_REPOSITORY/actions/workflows"
           codeql_workflow_id="$(node --input-type=module - "$RUNNER_TEMP/workflows.json" <<'NODE'
           import { readFileSync } from "node:fs";
           const workflows = JSON.parse(readFileSync(process.argv[2], "utf8")).workflows || [];
@@ -177,20 +197,46 @@ jobs:
 
           codeql_ready=false
           for attempt in $(seq 1 40); do
-            gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/$codeql_workflow_id/runs" \
-              -f head_sha="$RELEASE_SHA" -f branch=main -F per_page=100 \
-              > "$RUNNER_TEMP/codeql-runs.json"
+            gh_api_read "$RUNNER_TEMP/codeql-runs.json" \
+              --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/$codeql_workflow_id/runs" \
+              -f head_sha="$RELEASE_SHA" -f branch=main -F per_page=100
             codeql_state="$(node --input-type=module - "$RELEASE_SHA" "$RUNNER_TEMP/codeql-runs.json" <<'NODE'
+          import assert from "node:assert/strict";
           import { readFileSync } from "node:fs";
           const [sha, filename] = process.argv.slice(2);
-          const runs = (JSON.parse(readFileSync(filename, "utf8")).workflow_runs || []).filter((run) => (
+          const payload = JSON.parse(readFileSync(filename, "utf8"));
+          assert.ok(payload && typeof payload === "object" && !Array.isArray(payload), "CodeQL run response is invalid");
+          assert.ok(Array.isArray(payload.workflow_runs), "CodeQL run collection is invalid");
+          const exact = payload.workflow_runs.filter((run) => (
             run.path === "dynamic/github-code-scanning/codeql"
             && run.head_sha === sha
             && run.head_branch === "main"
           ));
-          if (runs.some((run) => run.status === "completed" && run.conclusion === "success")) {
+          const runs = exact.map((run) => {
+            assert.ok(run && typeof run === "object" && !Array.isArray(run), "CodeQL run entry is invalid");
+            assert.ok(Number.isSafeInteger(run.id) && run.id > 0, "invalid exact-SHA CodeQL run ID");
+            assert.ok(Number.isSafeInteger(run.run_number) && run.run_number > 0, "invalid exact-SHA CodeQL run number");
+            assert.ok(Number.isSafeInteger(run.run_attempt) && run.run_attempt > 0, "invalid exact-SHA CodeQL run attempt");
+            assert.ok(typeof run.status === "string" && run.status.length > 0, "invalid exact-SHA CodeQL run status");
+            assert.ok(Number.isFinite(Date.parse(String(run.created_at || ""))), "invalid exact-SHA CodeQL creation timestamp");
+            assert.ok(Number.isFinite(Date.parse(String(run.run_started_at || ""))), "invalid exact-SHA CodeQL attempt start timestamp");
+            assert.ok(Number.isFinite(Date.parse(String(run.updated_at || ""))), "invalid exact-SHA CodeQL update timestamp");
+            if (run.status === "completed") {
+              assert.ok(typeof run.conclusion === "string" && run.conclusion.length > 0, "completed CodeQL run lacks a conclusion");
+            } else {
+              assert.equal(run.conclusion, null, "active CodeQL run has a conclusion");
+            }
+            return run;
+          });
+          assert.equal(new Set(runs.map((run) => run.id)).size, runs.length, "duplicate exact-SHA CodeQL run ID");
+          assert.equal(new Set(runs.map((run) => run.run_number)).size, runs.length, "duplicate exact-SHA CodeQL run number");
+          const latestStartedAt = Math.max(...runs.map((run) => Date.parse(run.run_started_at)));
+          const latest = runs.filter((run) => Date.parse(run.run_started_at) === latestStartedAt);
+          if (runs.some((run) => run.status !== "completed")) {
+            process.stdout.write("wait");
+          } else if (latest.length > 0 && latest.every((run) => run.conclusion === "success")) {
             process.stdout.write("success");
-          } else if (runs.length > 0 && runs.every((run) => run.status === "completed")) {
+          } else if (latest.length > 0) {
             process.stdout.write("failure");
           } else {
             process.stdout.write("wait");
@@ -222,10 +268,10 @@ jobs:
 
           codeql_analysis_ready=false
           for attempt in $(seq 1 12); do
-            gh api --paginate --slurp --method GET \
+            gh_api_read "$RUNNER_TEMP/codeql-analyses.json" \
+              --paginate --slurp --method GET \
               "repos/$GITHUB_REPOSITORY/code-scanning/analyses" \
-              -f ref=refs/heads/main -f tool_name=CodeQL -F per_page=100 \
-              > "$RUNNER_TEMP/codeql-analyses.json"
+              -f ref=refs/heads/main -f tool_name=CodeQL -F per_page=100
             if CODEQL_RELEASE_SHA="$RELEASE_SHA" node --input-type=module - "$RUNNER_TEMP/codeql-analyses.json" <<'NODE'
           import { readFileSync } from "node:fs";
           const pages = JSON.parse(readFileSync(process.argv[2], "utf8"));
@@ -249,10 +295,10 @@ jobs:
             exit 1
           }
 
-          gh api --paginate --slurp --method GET \
+          gh_api_read "$RUNNER_TEMP/codeql-open-alerts.json" \
+            --paginate --slurp --method GET \
             "repos/$GITHUB_REPOSITORY/code-scanning/alerts" \
-            -f state=open -f ref=refs/heads/main -f tool_name=CodeQL -F per_page=100 \
-            > "$RUNNER_TEMP/codeql-open-alerts.json"
+            -f state=open -f ref=refs/heads/main -f tool_name=CodeQL -F per_page=100
           mkdir -p release-evidence/authorization
           umask 077
           CODEQL_RELEASE_SHA="$RELEASE_SHA" node --input-type=module \
@@ -261,28 +307,58 @@ jobs:
           import assert from "node:assert/strict";
           import { readFileSync, writeFileSync } from "node:fs";
           const [analysesFile, alertsFile, output] = process.argv.slice(2);
-          const flattenPages = (filename) => JSON.parse(readFileSync(filename, "utf8"))
-            .flatMap((page) => Array.isArray(page) ? page : []);
-          const analyses = flattenPages(analysesFile).filter((analysis) => (
+          const flattenPages = (filename, label) => {
+            const pages = JSON.parse(readFileSync(filename, "utf8"));
+            assert.ok(Array.isArray(pages) && pages.every((page) => Array.isArray(page)), `${label} pagination is invalid`);
+            const values = pages.flat();
+            assert.ok(
+              values.every((value) => value && typeof value === "object" && !Array.isArray(value)),
+              `${label} entry is invalid`,
+            );
+            return values;
+          };
+          const analyses = flattenPages(analysesFile, "CodeQL analyses").filter((analysis) => (
             analysis.commit_sha === process.env.CODEQL_RELEASE_SHA
             && analysis.ref === "refs/heads/main"
             && analysis.tool?.name === "CodeQL"
             && /(?:^|\/)language:javascript-typescript$/u.test(String(analysis.category || ""))
           ));
           assert.ok(analyses.length > 0, "missing exact-SHA JavaScript/TypeScript CodeQL analysis");
-          const exact = analyses.sort((left, right) => String(right.created_at).localeCompare(String(left.created_at)))[0];
-          const alerts = flattenPages(alertsFile);
+          assert.ok(analyses.length <= 32, "too many exact-SHA CodeQL analyses for bounded release evidence");
+          const minimumRulesCount = 103;
+          const normalizedAnalyses = analyses.map((analysis) => {
+            assert.ok(Number.isSafeInteger(analysis.id) && analysis.id > 0, "invalid CodeQL analysis ID");
+            assert.ok(Number.isSafeInteger(analysis.results_count) && analysis.results_count >= 0, "invalid CodeQL result count");
+            assert.ok(Number.isSafeInteger(analysis.rules_count), "invalid CodeQL rule count");
+            const resultsCount = analysis.results_count;
+            const rulesCount = analysis.rules_count;
+            assert.equal(resultsCount, 0, "an exact-SHA JavaScript/TypeScript CodeQL analysis contains results");
+            assert.ok(Number.isSafeInteger(rulesCount) && rulesCount >= minimumRulesCount, "exact-SHA CodeQL rule coverage is below the trusted floor");
+            assert.equal(String(analysis.error || ""), "", "exact-SHA CodeQL analysis contains an error");
+            assert.equal(String(analysis.warning || ""), "", "exact-SHA CodeQL analysis contains a warning");
+            assert.ok(Number.isFinite(Date.parse(String(analysis.created_at || ""))), "invalid CodeQL analysis timestamp");
+            return { analysis, resultsCount, rulesCount };
+          });
+          assert.ok(
+            normalizedAnalyses.some(({ analysis }) => analysis.analysis_key === "dynamic/github-code-scanning/codeql:upload"),
+            "missing trusted dynamic CodeQL analysis key",
+          );
+          assert.equal(
+            new Set(normalizedAnalyses.map(({ analysis }) => analysis.id)).size,
+            normalizedAnalyses.length,
+            "duplicate exact-SHA CodeQL analysis ID",
+          );
+          const alerts = flattenPages(alertsFile, "CodeQL alerts");
           for (const alert of alerts) {
             assert.equal(alert.state, "open", "code-scanning alert query returned a non-open alert");
             assert.equal(alert.tool?.name, "CodeQL", "code-scanning alert query returned a non-CodeQL alert");
             assert.equal(alert.most_recent_instance?.ref, "refs/heads/main", "code-scanning alert query escaped main");
           }
           assert.equal(alerts.length, 0, "main has open CodeQL alerts after the exact-SHA JavaScript/TypeScript analysis");
-          const resultsCount = Number(exact.results_count);
-          const rulesCount = Number(exact.rules_count);
-          assert.ok(Number.isSafeInteger(resultsCount) && resultsCount >= 0, "invalid CodeQL result count");
-          assert.equal(resultsCount, 0, "exact-SHA JavaScript/TypeScript CodeQL analysis contains results");
-          assert.ok(Number.isSafeInteger(rulesCount) && rulesCount >= 0, "invalid CodeQL rule count");
+          const analysisIds = normalizedAnalyses.map(({ analysis }) => analysis.id).sort((left, right) => left - right);
+          const categories = [...new Set(normalizedAnalyses.map(({ analysis }) => analysis.category))].sort();
+          const observedMinimumRulesCount = Math.min(...normalizedAnalyses.map(({ rulesCount }) => rulesCount));
+          const observedMaximumRulesCount = Math.max(...normalizedAnalyses.map(({ rulesCount }) => rulesCount));
           writeFileSync(output, `${JSON.stringify({
             checkedAt: new Date().toISOString(),
             commitSha: process.env.CODEQL_RELEASE_SHA,
@@ -290,14 +366,168 @@ jobs:
             workflowPath: "dynamic/github-code-scanning/codeql",
             workflowConclusion: "success",
             language: "javascript-typescript",
-            analysisId: exact.id,
-            category: exact.category,
-            resultsCount,
-            rulesCount,
+            analysisIds,
+            categories,
+            analysisCount: normalizedAnalyses.length,
+            resultsCount: 0,
+            minimumRulesCount: observedMinimumRulesCount,
+            maximumRulesCount: observedMaximumRulesCount,
+            trustedRulesFloor: minimumRulesCount,
             openAlertCount: 0,
           }, null, 2)}\n`);
           NODE
-          rm -f -- "$RUNNER_TEMP/codeql-analyses.json" "$RUNNER_TEMP/codeql-open-alerts.json"
+
+          gh_api_read "$RUNNER_TEMP/codeql-runs-final.json" \
+            --paginate --slurp --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/$codeql_workflow_id/runs" \
+            -f head_sha="$RELEASE_SHA" -f branch=main -F per_page=100
+          CODEQL_RELEASE_SHA="$RELEASE_SHA" node --input-type=module - "$RUNNER_TEMP/codeql-runs-final.json" <<'NODE'
+          import assert from "node:assert/strict";
+          import { readFileSync } from "node:fs";
+          const pages = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          assert.ok(Array.isArray(pages) && pages.every((page) => (
+            page && typeof page === "object" && !Array.isArray(page) && Array.isArray(page.workflow_runs)
+          )), "CodeQL run pagination is invalid");
+          const allRuns = pages.flatMap((page) => page.workflow_runs);
+          assert.ok(allRuns.every((run) => run && typeof run === "object" && !Array.isArray(run)), "CodeQL run entry is invalid");
+          const exact = allRuns.filter((run) => (
+            run.path === "dynamic/github-code-scanning/codeql"
+            && run.head_sha === process.env.CODEQL_RELEASE_SHA
+            && run.head_branch === "main"
+          ));
+          const runs = exact.map((run) => {
+            assert.ok(Number.isSafeInteger(run.id) && run.id > 0, "invalid exact-SHA CodeQL run ID");
+            assert.ok(Number.isSafeInteger(run.run_number) && run.run_number > 0, "invalid exact-SHA CodeQL run number");
+            assert.ok(Number.isSafeInteger(run.run_attempt) && run.run_attempt > 0, "invalid exact-SHA CodeQL run attempt");
+            assert.ok(typeof run.status === "string" && run.status.length > 0, "invalid exact-SHA CodeQL run status");
+            assert.ok(Number.isFinite(Date.parse(String(run.created_at || ""))), "invalid exact-SHA CodeQL creation timestamp");
+            assert.ok(Number.isFinite(Date.parse(String(run.run_started_at || ""))), "invalid exact-SHA CodeQL attempt start timestamp");
+            assert.ok(Number.isFinite(Date.parse(String(run.updated_at || ""))), "invalid exact-SHA CodeQL update timestamp");
+            if (run.status === "completed") {
+              assert.ok(typeof run.conclusion === "string" && run.conclusion.length > 0, "completed CodeQL run lacks a conclusion");
+            } else {
+              assert.equal(run.conclusion, null, "active CodeQL run has a conclusion");
+            }
+            return run;
+          });
+          assert.ok(runs.length > 0, "missing exact-SHA CodeQL run");
+          assert.equal(new Set(runs.map((run) => run.id)).size, runs.length, "duplicate exact-SHA CodeQL run ID");
+          assert.equal(new Set(runs.map((run) => run.run_number)).size, runs.length, "duplicate exact-SHA CodeQL run number");
+          assert.equal(runs.some((run) => run.status !== "completed"), false, "an exact-SHA CodeQL run is still active");
+          const latestStartedAt = Math.max(...runs.map((run) => Date.parse(run.run_started_at)));
+          const latest = runs.filter((run) => Date.parse(run.run_started_at) === latestStartedAt);
+          assert.ok(
+            latest.length > 0 && latest.every((run) => run.conclusion === "success"),
+            "latest exact-SHA CodeQL run attempts did not all succeed",
+          );
+          NODE
+
+          gh_api_read "$RUNNER_TEMP/codeql-analyses-final.json" \
+            --paginate --slurp --method GET \
+            "repos/$GITHUB_REPOSITORY/code-scanning/analyses" \
+            -f ref=refs/heads/main -f tool_name=CodeQL -F per_page=100
+          gh_api_read "$RUNNER_TEMP/codeql-open-alerts-final.json" \
+            --paginate --slurp --method GET \
+            "repos/$GITHUB_REPOSITORY/code-scanning/alerts" \
+            -f state=open -f ref=refs/heads/main -f tool_name=CodeQL -F per_page=100
+          CODEQL_RELEASE_SHA="$RELEASE_SHA" node --input-type=module \
+            - "$RUNNER_TEMP/codeql-analyses.json" "$RUNNER_TEMP/codeql-analyses-final.json" \
+            "$RUNNER_TEMP/codeql-open-alerts-final.json" <<'NODE'
+          import assert from "node:assert/strict";
+          import { readFileSync } from "node:fs";
+          const [beforeFile, afterFile, alertsFile] = process.argv.slice(2);
+          const flattenPages = (filename, label) => {
+            const pages = JSON.parse(readFileSync(filename, "utf8"));
+            assert.ok(Array.isArray(pages) && pages.every((page) => Array.isArray(page)), `${label} pagination is invalid`);
+            const values = pages.flat();
+            assert.ok(
+              values.every((value) => value && typeof value === "object" && !Array.isArray(value)),
+              `${label} entry is invalid`,
+            );
+            return values;
+          };
+          const exactIds = (filename) => flattenPages(filename, "CodeQL analyses")
+            .filter((analysis) => (
+              analysis.commit_sha === process.env.CODEQL_RELEASE_SHA
+              && analysis.ref === "refs/heads/main"
+              && analysis.tool?.name === "CodeQL"
+              && /(?:^|\/)language:javascript-typescript$/u.test(String(analysis.category || ""))
+            ))
+            .map((analysis) => analysis.id)
+            .sort((left, right) => left - right);
+          assert.deepEqual(exactIds(afterFile), exactIds(beforeFile), "exact-SHA CodeQL analysis set changed during authorization");
+          const alerts = flattenPages(alertsFile, "CodeQL alerts");
+          assert.equal(alerts.length, 0, "main gained an open CodeQL alert during authorization");
+          NODE
+          gh_api_read "$RUNNER_TEMP/codeql-runs-settled.json" \
+            --paginate --slurp --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/$codeql_workflow_id/runs" \
+            -f head_sha="$RELEASE_SHA" -f branch=main -F per_page=100
+          CODEQL_RELEASE_SHA="$RELEASE_SHA" node --input-type=module \
+            - "$RUNNER_TEMP/codeql-runs-final.json" "$RUNNER_TEMP/codeql-runs-settled.json" <<'NODE'
+          import assert from "node:assert/strict";
+          import { readFileSync } from "node:fs";
+          const exactRuns = (filename) => {
+            const pages = JSON.parse(readFileSync(filename, "utf8"));
+            assert.ok(Array.isArray(pages) && pages.every((page) => (
+              page && typeof page === "object" && !Array.isArray(page) && Array.isArray(page.workflow_runs)
+            )), "settled CodeQL run pagination is invalid");
+            const allRuns = pages.flatMap((page) => page.workflow_runs);
+            assert.ok(allRuns.every((run) => run && typeof run === "object" && !Array.isArray(run)), "settled CodeQL run entry is invalid");
+            const runs = allRuns.filter((run) => (
+              run.path === "dynamic/github-code-scanning/codeql"
+              && run.head_sha === process.env.CODEQL_RELEASE_SHA
+              && run.head_branch === "main"
+            ));
+            const normalized = runs.map((run) => {
+              assert.ok(Number.isSafeInteger(run.id) && run.id > 0, "invalid exact-SHA CodeQL run ID");
+              assert.ok(Number.isSafeInteger(run.run_number) && run.run_number > 0, "invalid exact-SHA CodeQL run number");
+              assert.ok(Number.isSafeInteger(run.run_attempt) && run.run_attempt > 0, "invalid exact-SHA CodeQL run attempt");
+              assert.ok(typeof run.status === "string" && run.status.length > 0, "invalid exact-SHA CodeQL run status");
+              assert.ok(Number.isFinite(Date.parse(String(run.created_at || ""))), "invalid exact-SHA CodeQL creation timestamp");
+              assert.ok(Number.isFinite(Date.parse(String(run.run_started_at || ""))), "invalid exact-SHA CodeQL attempt start timestamp");
+              assert.ok(Number.isFinite(Date.parse(String(run.updated_at || ""))), "invalid exact-SHA CodeQL update timestamp");
+              if (run.status === "completed") {
+                assert.ok(typeof run.conclusion === "string" && run.conclusion.length > 0, "completed CodeQL run lacks a conclusion");
+              } else {
+                assert.equal(run.conclusion, null, "active CodeQL run has a conclusion");
+              }
+              return {
+                id: run.id,
+                runNumber: run.run_number,
+                runAttempt: run.run_attempt,
+                status: run.status,
+                conclusion: run.conclusion,
+                createdAt: run.created_at,
+                runStartedAt: run.run_started_at,
+                updatedAt: run.updated_at,
+              };
+            }).sort((left, right) => left.id - right.id);
+            assert.equal(new Set(normalized.map((run) => run.id)).size, normalized.length, "duplicate exact-SHA CodeQL run ID");
+            assert.equal(new Set(normalized.map((run) => run.runNumber)).size, normalized.length, "duplicate exact-SHA CodeQL run number");
+            return normalized;
+          };
+          const before = exactRuns(process.argv[2]);
+          const runs = exactRuns(process.argv[3]);
+          assert.deepEqual(
+            runs,
+            before,
+            "exact-SHA CodeQL run attempt set changed during authorization",
+          );
+          assert.ok(runs.length > 0, "missing settled exact-SHA CodeQL run");
+          assert.equal(runs.some((run) => run.status !== "completed"), false, "an exact-SHA CodeQL run started during authorization");
+          const latestStartedAt = Math.max(...runs.map((run) => Date.parse(run.runStartedAt)));
+          const latest = runs.filter((run) => Date.parse(run.runStartedAt) === latestStartedAt);
+          assert.ok(
+            latest.length > 0 && latest.every((run) => run.conclusion === "success"),
+            "latest settled exact-SHA CodeQL run attempts did not all succeed",
+          );
+          NODE
+          rm -f -- \
+            "$RUNNER_TEMP/codeql-analyses.json" \
+            "$RUNNER_TEMP/codeql-analyses-final.json" \
+            "$RUNNER_TEMP/codeql-open-alerts.json" \
+            "$RUNNER_TEMP/codeql-open-alerts-final.json" \
+            "$RUNNER_TEMP/codeql-runs-final.json" \
+            "$RUNNER_TEMP/codeql-runs-settled.json"
 
           # Candidate code runs without the API token and only after ancestry,
           # merged-PR, exact-CI, and exact-CodeQL evidence established trust.

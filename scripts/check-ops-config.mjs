@@ -1,5 +1,18 @@
 import assert from "node:assert/strict";
+import { realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+
+function isDirectExecution() {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1]);
+  } catch {
+    process.stderr.write("operational configuration check failed during entrypoint resolution\n");
+    process.exitCode = 1;
+    return false;
+  }
+}
 
 const files = Object.freeze({
   wrangler: new URL("../wrangler.toml", import.meta.url),
@@ -161,7 +174,7 @@ export async function checkOpsConfig() {
   const authorizationStep = workflowStep(deployWorkflow, "Require a squash-merged PR and exact trusted workflow results");
   assert.match(authorizationStep, /"repos\/\$GITHUB_REPOSITORY\/commits\/\$RELEASE_SHA\/pulls"/u, "release provenance must first inspect exact commit associations");
   assert.match(authorizationStep, /if \[ "\$associated_pull_count" -eq 0 \]/u, "release provenance may fall back only for an empty association response");
-  assert.match(authorizationStep, /gh api --paginate --slurp --method GET/u, "release provenance fallback must inspect every closed-main pull-request page");
+  assert.match(authorizationStep, /gh_api_read "\$RUNNER_TEMP\/closed-main-pulls\.json"[\s\S]*?--paginate --slurp --method GET/u, "release provenance fallback must inspect every closed-main pull-request page through bounded retries");
   assert.match(authorizationStep, /"repos\/\$GITHUB_REPOSITORY\/pulls"/u, "release provenance fallback must use the stable pull-request listing API");
   assert.match(authorizationStep, /candidate\.merge_commit_sha === sha/u, "release provenance must bind the merged PR to the exact release SHA");
   assert.match(authorizationStep, /candidate\.base\?\.repo\?\.full_name === repository/u, "release provenance must bind the merged PR to this repository");
@@ -184,10 +197,24 @@ export async function checkOpsConfig() {
   assert.match(deployWorkflow, /analysis\.commit_sha === process\.env\.CODEQL_RELEASE_SHA/u, "release gate must bind CodeQL analysis evidence to the merged SHA");
   assert.match(deployWorkflow, /analysis\.ref === "refs\/heads\/main"/u, "release gate must bind CodeQL analysis evidence to main");
   assert.match(deployWorkflow, /language:javascript-typescript/u, "release gate must require JavaScript\/TypeScript CodeQL analysis");
+  assert.doesNotMatch(deployWorkflow, /code-scanning\/default-setup/u, "release gate must not require the administration-only CodeQL setup endpoint");
+  assert.match(deployWorkflow, /const minimumRulesCount = 103/u, "release gate must retain the reviewed extended-suite rule floor");
+  assert.match(deployWorkflow, /analysis\.analysis_key === "dynamic\/github-code-scanning\/codeql:upload"/u, "release gate must require the trusted dynamic analysis key");
+  assert.match(deployWorkflow, /runs\.some\(\(run\) => run\.status !== "completed"\)/u, "release gate must wait for every exact-SHA CodeQL run to settle");
+  assert.match(deployWorkflow, /run\.run_number/u, "release gate must fingerprint GitHub workflow execution numbers");
+  assert.match(deployWorkflow, /run\.run_attempt/u, "release gate must fingerprint GitHub rerun attempts");
+  assert.match(deployWorkflow, /run\.run_started_at/u, "release gate must order GitHub reruns by attempt start time");
+  assert.match(deployWorkflow, /latest\.every\(\(run\) => run\.conclusion === "success"\)/u, "release gate must require every latest-starting exact-SHA CodeQL attempt to succeed");
+  assert.match(deployWorkflow, /gh_api_read\(\)/u, "release gate must use bounded retries for read-only GitHub evidence");
+  assert.match(deployWorkflow, /for attempt in 1 2 3 4/u, "release gate GitHub retries must stay bounded");
+  assert.equal((deployWorkflow.match(/\bgh api\b/gu) || []).length, 1, "release gate must route every GitHub API read through the retry helper");
   assert.match(deployWorkflow, /code-scanning\/alerts/u, "release gate must query open code-scanning alerts after exact-SHA success");
   assert.match(deployWorkflow, /-f state=open -f ref=refs\/heads\/main -f tool_name=CodeQL/u, "release gate must scope open CodeQL alerts to main");
   assert.match(deployWorkflow, /assert\.equal\(alerts\.length, 0/u, "release gate must fail closed when main has open CodeQL alerts");
   assert.match(deployWorkflow, /assert\.equal\(resultsCount, 0/u, "release gate must fail closed when the exact-SHA CodeQL analysis contains results");
+  assert.match(deployWorkflow, /exact-SHA CodeQL analysis set changed during authorization/u, "release gate must reject a changing analysis snapshot");
+  assert.match(deployWorkflow, /an exact-SHA CodeQL run started during authorization/u, "release gate must recheck for late CodeQL runs");
+  assert.match(deployWorkflow, /exact-SHA CodeQL run attempt set changed during authorization/u, "release gate must reject a changing exact-SHA CodeQL rerun snapshot");
   assert.match(deployWorkflow, /release-evidence\/authorization\/codeql-gate\.json/u, "release gate must persist bounded CodeQL evidence");
   assert.doesNotMatch(deployWorkflow, /path:\s*\$RUNNER_TEMP\/codeql-(?:analyses|open-alerts)\.json/u, "raw CodeQL API responses must not enter artifacts");
   assert.match(deployWorkflow, /environment:[\s\S]*name:\s*staging/u, "deployment must use the staging environment");
@@ -778,7 +805,7 @@ export async function checkOpsConfig() {
   };
 }
 
-if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
+if (isDirectExecution()) {
   const result = await checkOpsConfig();
   process.stdout.write(`Operational configuration valid: ${JSON.stringify(result)}\n`);
 }

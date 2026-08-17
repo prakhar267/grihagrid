@@ -48,6 +48,64 @@ function pullEvidenceParser(source) {
   return source.slice(bodyStart, end);
 }
 
+function codeqlEvidenceParser(source) {
+  const anchor = "const [analysesFile, alertsFile, output] = process.argv.slice(2);";
+  const anchorIndex = source.indexOf(anchor);
+  assert.notEqual(anchorIndex, -1, "missing inline CodeQL evidence parser");
+  const start = source.lastIndexOf('          import assert from "node:assert/strict";', anchorIndex);
+  assert.notEqual(start, -1, "missing inline CodeQL evidence parser start");
+  const end = source.indexOf("\n          NODE", anchorIndex);
+  assert.notEqual(end, -1, "missing inline CodeQL evidence parser terminator");
+  return source.slice(start, end).replace(/^ {10}/gmu, "");
+}
+
+function inlineCodeqlParser(source, anchor) {
+  const anchorIndex = source.indexOf(anchor);
+  assert.notEqual(anchorIndex, -1, `missing inline CodeQL parser anchor: ${anchor}`);
+  const start = source.lastIndexOf('          import assert from "node:assert/strict";', anchorIndex);
+  assert.notEqual(start, -1, `missing inline CodeQL parser start: ${anchor}`);
+  const end = source.indexOf("\n          NODE", anchorIndex);
+  assert.notEqual(end, -1, `missing inline CodeQL parser terminator: ${anchor}`);
+  return source.slice(start, end).replace(/^ {10}/gmu, "");
+}
+
+function runInlineCodeqlParser(parser, arguments_, environment = {}) {
+  return spawnSync(process.execPath, ["--input-type=module", "-", ...arguments_], {
+    encoding: "utf8",
+    env: { ...process.env, ...environment },
+    input: parser,
+  });
+}
+
+async function runCodeqlEvidenceParser(parser, { analyses, alerts = [] } = {}) {
+  const directory = await mkdtemp(join(tmpdir(), "grihagrid-codeql-gate-"));
+  const analysesFile = join(directory, "analyses.json");
+  const alertsFile = join(directory, "alerts.json");
+  const outputFile = join(directory, "evidence.json");
+  try {
+    await Promise.all([
+      writeFile(analysesFile, `${JSON.stringify(analyses)}\n`, "utf8"),
+      writeFile(alertsFile, `${JSON.stringify(alerts)}\n`, "utf8"),
+    ]);
+    const result = spawnSync(process.execPath, [
+      "--input-type=module",
+      "-",
+      analysesFile,
+      alertsFile,
+      outputFile,
+    ], {
+      encoding: "utf8",
+      env: { ...process.env, CODEQL_RELEASE_SHA: "a".repeat(40) },
+      input: parser,
+    });
+    let evidence = null;
+    if (result.status === 0) evidence = JSON.parse(await readFile(outputFile, "utf8"));
+    return { result, evidence };
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
 test("deployment authorization requires bounded exact-main CodeQL evidence", async () => {
   const workflow = await readFile(new URL("../.github/workflows/deploy.yml", import.meta.url), "utf8");
   assert.match(workflow, /security-events:\s*read/u);
@@ -58,12 +116,321 @@ test("deployment authorization requires bounded exact-main CodeQL evidence", asy
   assert.match(workflow, /analysis\.commit_sha === process\.env\.CODEQL_RELEASE_SHA/u);
   assert.match(workflow, /analysis\.ref === "refs\/heads\/main"/u);
   assert.match(workflow, /language:javascript-typescript/u);
+  assert.doesNotMatch(workflow, /code-scanning\/default-setup/u);
+  assert.match(workflow, /const minimumRulesCount = 103/u);
+  assert.match(workflow, /analysis\.analysis_key === "dynamic\/github-code-scanning\/codeql:upload"/u);
+  assert.match(workflow, /runs\.some\(\(run\) => run\.status !== "completed"\)/u);
+  assert.match(workflow, /run\.run_number/u);
+  assert.match(workflow, /run\.run_attempt/u);
+  assert.match(workflow, /run\.run_started_at/u);
+  assert.match(workflow, /latest\.every\(\(run\) => run\.conclusion === "success"\)/u);
+  assert.match(workflow, /gh_api_read\(\)/u);
+  assert.match(workflow, /for attempt in 1 2 3 4/u);
+  assert.equal((workflow.match(/\bgh api\b/gu) || []).length, 1);
   assert.match(workflow, /-f state=open -f ref=refs\/heads\/main -f tool_name=CodeQL/u);
   assert.match(workflow, /assert\.equal\(alerts\.length, 0/u);
   assert.match(workflow, /assert\.equal\(resultsCount, 0/u);
+  assert.match(workflow, /exact-SHA CodeQL analysis set changed during authorization/u);
+  assert.match(workflow, /an exact-SHA CodeQL run started during authorization/u);
+  assert.match(workflow, /exact-SHA CodeQL run attempt set changed during authorization/u);
   assert.match(workflow, /openAlertCount: 0/u);
   assert.match(workflow, /path: release-evidence\/authorization\/codeql-gate\.json/u);
   assert.doesNotMatch(workflow, /path:\s*\$RUNNER_TEMP\/codeql-(?:analyses|open-alerts)\.json/u);
+});
+
+test("CodeQL release evidence validates every exact analysis and the reviewed rule floor", async () => {
+  const workflow = await readFile(new URL("../.github/workflows/deploy.yml", import.meta.url), "utf8");
+  const parser = codeqlEvidenceParser(workflow);
+  const sha = "a".repeat(40);
+  const analysis = (overrides = {}) => ({
+    id: 101,
+    commit_sha: sha,
+    ref: "refs/heads/main",
+    tool: { name: "CodeQL" },
+    analysis_key: "dynamic/github-code-scanning/codeql:upload",
+    category: "/language:javascript-typescript",
+    created_at: "2026-08-17T16:00:00Z",
+    results_count: 0,
+    rules_count: 103,
+    error: "",
+    warning: "",
+    ...overrides,
+  });
+
+  const passed = await runCodeqlEvidenceParser(parser, {
+    analyses: [[analysis(), analysis({ id: 102, rules_count: 111, created_at: "2026-08-17T16:01:00Z" })]],
+    alerts: [[]],
+  });
+  assert.equal(passed.result.status, 0, passed.result.stderr);
+  assert.deepEqual(passed.evidence.analysisIds, [101, 102]);
+  assert.equal(passed.evidence.analysisCount, 2);
+  assert.equal(passed.evidence.minimumRulesCount, 103);
+  assert.equal(passed.evidence.maximumRulesCount, 111);
+  assert.equal(passed.evidence.trustedRulesFloor, 103);
+  assert.equal(passed.evidence.resultsCount, 0);
+  assert.equal(passed.evidence.openAlertCount, 0);
+
+  const rejectedCases = [
+    {
+      name: "an older extended analysis has results even when a newer reduced analysis is clean",
+      analyses: [[
+        analysis({ id: 201, results_count: 3, rules_count: 103 }),
+        analysis({ id: 202, rules_count: 87, created_at: "2026-08-17T16:02:00Z" }),
+      ]],
+      alerts: [[]],
+      error: /contains results/u,
+    },
+    {
+      name: "an older analysis has results even when a newer extended analysis is clean",
+      analyses: [[
+        analysis({ id: 203, results_count: 3 }),
+        analysis({ id: 204, created_at: "2026-08-17T16:03:00Z" }),
+      ]],
+      alerts: [[]],
+      error: /contains results/u,
+    },
+    {
+      name: "one exact analysis has reduced rule coverage",
+      analyses: [[analysis(), analysis({ id: 205, rules_count: 87 })]],
+      alerts: [[]],
+      error: /below the trusted floor/u,
+    },
+    {
+      name: "result counts are strings",
+      analyses: [[analysis({ results_count: "0" })]],
+      alerts: [[]],
+      error: /invalid CodeQL result count/u,
+    },
+    {
+      name: "rule counts are strings",
+      analyses: [[analysis({ rules_count: "103" })]],
+      alerts: [[]],
+      error: /invalid CodeQL rule count/u,
+    },
+    {
+      name: "counts are null",
+      analyses: [[analysis({ results_count: null, rules_count: null })]],
+      alerts: [[]],
+      error: /invalid CodeQL result count/u,
+    },
+    {
+      name: "counts are negative",
+      analyses: [[analysis({ results_count: -1 })]],
+      alerts: [[]],
+      error: /invalid CodeQL result count/u,
+    },
+    {
+      name: "an analysis warning is present",
+      analyses: [[analysis({ warning: "partial extraction" })]],
+      alerts: [[]],
+      error: /contains a warning/u,
+    },
+    {
+      name: "the trusted analysis key is absent",
+      analyses: [[analysis({ analysis_key: "untrusted/upload" })]],
+      alerts: [[]],
+      error: /missing trusted dynamic CodeQL analysis key/u,
+    },
+    {
+      name: "an open alert remains",
+      analyses: [[analysis()]],
+      alerts: [[{ state: "open", tool: { name: "CodeQL" }, most_recent_instance: { ref: "refs/heads/main" } }]],
+      error: /main has open CodeQL alerts/u,
+    },
+    {
+      name: "analysis pagination is malformed",
+      analyses: [{ not: "pages" }],
+      alerts: [[]],
+      error: /pagination is invalid/u,
+    },
+    {
+      name: "unrelated analyses cannot satisfy exact presence",
+      analyses: [[analysis({ commit_sha: "b".repeat(40) })]],
+      alerts: [[]],
+      error: /missing exact-SHA/u,
+    },
+    {
+      name: "bounded evidence rejects too many exact analyses",
+      analyses: [[...Array.from({ length: 33 }, (_, index) => analysis({ id: 300 + index }))]],
+      alerts: [[]],
+      error: /too many exact-SHA/u,
+    },
+  ];
+
+  for (const candidate of rejectedCases) {
+    const rejected = await runCodeqlEvidenceParser(parser, candidate);
+    assert.equal(rejected.result.status, 1, candidate.name);
+    assert.match(rejected.result.stderr, candidate.error, candidate.name);
+  }
+});
+
+test("CodeQL run admission follows the latest settled attempt instead of any older success", async () => {
+  const workflow = await readFile(new URL("../.github/workflows/deploy.yml", import.meta.url), "utf8");
+  const parser = inlineCodeqlParser(workflow, "CodeQL run response is invalid");
+  const directory = await mkdtemp(join(tmpdir(), "grihagrid-codeql-run-state-"));
+  const runsFile = join(directory, "runs.json");
+  const sha = "a".repeat(40);
+  const run = (overrides = {}) => ({
+    id: 10,
+    run_number: 10,
+    run_attempt: 1,
+    path: "dynamic/github-code-scanning/codeql",
+    head_sha: sha,
+    head_branch: "main",
+    status: "completed",
+    conclusion: "success",
+    created_at: "2026-08-17T16:00:00Z",
+    run_started_at: "2026-08-17T16:00:10Z",
+    updated_at: "2026-08-17T16:01:00Z",
+    ...overrides,
+  });
+  try {
+    await writeFile(runsFile, JSON.stringify({
+      workflow_runs: [
+        run({ updated_at: "2026-08-17T16:05:00Z" }),
+        run({ id: 20, run_number: 20, conclusion: "failure", created_at: "2026-08-17T16:02:00Z", run_started_at: "2026-08-17T16:02:10Z", updated_at: "2026-08-17T16:03:00Z" }),
+      ],
+    }), "utf8");
+    const failed = runInlineCodeqlParser(parser, [sha, runsFile]);
+    assert.equal(failed.status, 0, failed.stderr);
+    assert.equal(failed.stdout, "failure");
+
+    await writeFile(runsFile, JSON.stringify({
+      workflow_runs: [
+        run(),
+        run({ id: 20, run_number: 20, status: "in_progress", conclusion: null, created_at: "2026-08-17T16:02:00Z", run_started_at: "2026-08-17T16:02:10Z", updated_at: "2026-08-17T16:03:00Z" }),
+      ],
+    }), "utf8");
+    const active = runInlineCodeqlParser(parser, [sha, runsFile]);
+    assert.equal(active.status, 0, active.stderr);
+    assert.equal(active.stdout, "wait");
+
+    await writeFile(runsFile, JSON.stringify({
+      workflow_runs: [
+        run({ conclusion: "failure" }),
+        run({ id: 20, run_number: 20, created_at: "2026-08-17T16:02:00Z", run_started_at: "2026-08-17T16:02:10Z", updated_at: "2026-08-17T16:03:00Z" }),
+      ],
+    }), "utf8");
+    const passed = runInlineCodeqlParser(parser, [sha, runsFile]);
+    assert.equal(passed.status, 0, passed.stderr);
+    assert.equal(passed.stdout, "success");
+
+    await writeFile(runsFile, JSON.stringify({
+      workflow_runs: [
+        run({ run_attempt: 2, conclusion: "failure", run_started_at: "2026-08-17T16:04:00Z", updated_at: "2026-08-17T16:04:30Z" }),
+        run({ id: 20, run_number: 20, run_started_at: "2026-08-17T16:03:00Z", updated_at: "2026-08-17T16:05:00Z" }),
+      ],
+    }), "utf8");
+    const olderRerun = runInlineCodeqlParser(parser, [sha, runsFile]);
+    assert.equal(olderRerun.status, 0, olderRerun.stderr);
+    assert.equal(olderRerun.stdout, "failure");
+
+    await writeFile(runsFile, JSON.stringify({
+      workflow_runs: [
+        run({ run_attempt: 2, conclusion: "failure", run_started_at: "2026-08-17T16:04:00Z", updated_at: "2026-08-17T16:04:30Z" }),
+        run({ id: 20, run_number: 20, run_started_at: "2026-08-17T16:04:00Z", updated_at: "2026-08-17T16:04:20Z" }),
+      ],
+    }), "utf8");
+    const tied = runInlineCodeqlParser(parser, [sha, runsFile]);
+    assert.equal(tied.status, 0, tied.stderr);
+    assert.equal(tied.stdout, "failure");
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("CodeQL final run proof rejects a newer failed attempt after an older success", async () => {
+  const workflow = await readFile(new URL("../.github/workflows/deploy.yml", import.meta.url), "utf8");
+  const parser = inlineCodeqlParser(workflow, "latest exact-SHA CodeQL run attempts did not all succeed");
+  const directory = await mkdtemp(join(tmpdir(), "grihagrid-codeql-run-final-"));
+  const runsFile = join(directory, "runs.json");
+  const sha = "a".repeat(40);
+  const base = {
+    run_attempt: 1,
+    path: "dynamic/github-code-scanning/codeql",
+    head_sha: sha,
+    head_branch: "main",
+    status: "completed",
+    created_at: "2026-08-17T16:00:00Z",
+  };
+  try {
+    await writeFile(runsFile, JSON.stringify([{ workflow_runs: [
+      { ...base, id: 10, run_number: 10, conclusion: "success", run_started_at: "2026-08-17T16:00:10Z", updated_at: "2026-08-17T16:03:00Z" },
+      { ...base, id: 20, run_number: 20, conclusion: "cancelled", run_started_at: "2026-08-17T16:02:00Z", updated_at: "2026-08-17T16:02:30Z" },
+    ] }]), "utf8");
+    const rejected = runInlineCodeqlParser(parser, [runsFile], { CODEQL_RELEASE_SHA: sha });
+    assert.equal(rejected.status, 1);
+    assert.match(rejected.stderr, /latest exact-SHA CodeQL run attempts did not all succeed/u);
+
+    await writeFile(runsFile, JSON.stringify([{ workflow_runs: [
+      { ...base, id: 10, run_number: 10, conclusion: "failure", run_started_at: "2026-08-17T16:04:00Z", updated_at: "2026-08-17T16:04:30Z" },
+      { ...base, id: 20, run_number: 20, conclusion: "success", run_started_at: "2026-08-17T16:04:00Z", updated_at: "2026-08-17T16:04:20Z" },
+    ] }]), "utf8");
+    const tied = runInlineCodeqlParser(parser, [runsFile], { CODEQL_RELEASE_SHA: sha });
+    assert.equal(tied.status, 1);
+    assert.match(tied.stderr, /latest exact-SHA CodeQL run attempts did not all succeed/u);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("CodeQL settled proof fingerprints rerun attempts and state across snapshots", async () => {
+  const workflow = await readFile(new URL("../.github/workflows/deploy.yml", import.meta.url), "utf8");
+  const parser = inlineCodeqlParser(workflow, "exact-SHA CodeQL run attempt set changed during authorization");
+  const directory = await mkdtemp(join(tmpdir(), "grihagrid-codeql-run-snapshot-"));
+  const beforeFile = join(directory, "before.json");
+  const afterFile = join(directory, "after.json");
+  const sha = "a".repeat(40);
+  const run = (overrides = {}) => ({
+    id: 20,
+    run_number: 20,
+    run_attempt: 1,
+    path: "dynamic/github-code-scanning/codeql",
+    head_sha: sha,
+    head_branch: "main",
+    status: "completed",
+    conclusion: "success",
+    created_at: "2026-08-17T16:00:00Z",
+    run_started_at: "2026-08-17T16:00:10Z",
+    updated_at: "2026-08-17T16:01:00Z",
+    ...overrides,
+  });
+  try {
+    await writeFile(beforeFile, JSON.stringify([{ workflow_runs: [run()] }]), "utf8");
+    await writeFile(afterFile, JSON.stringify([{ workflow_runs: [run()] }]), "utf8");
+    const passed = runInlineCodeqlParser(parser, [beforeFile, afterFile], { CODEQL_RELEASE_SHA: sha });
+    assert.equal(passed.status, 0, passed.stderr);
+
+    await writeFile(afterFile, JSON.stringify([{ workflow_runs: [run({
+      run_attempt: 2,
+      conclusion: "cancelled",
+      updated_at: "2026-08-17T16:04:00Z",
+    })] }]), "utf8");
+    const rerun = runInlineCodeqlParser(parser, [beforeFile, afterFile], { CODEQL_RELEASE_SHA: sha });
+    assert.equal(rerun.status, 1);
+    assert.match(rerun.stderr, /run attempt set changed/u);
+
+    await writeFile(afterFile, JSON.stringify([{ workflow_runs: [run({
+      status: "in_progress",
+      conclusion: null,
+      updated_at: "2026-08-17T16:05:00Z",
+    })] }]), "utf8");
+    const active = runInlineCodeqlParser(parser, [beforeFile, afterFile], { CODEQL_RELEASE_SHA: sha });
+    assert.equal(active.status, 1);
+    assert.match(active.stderr, /run attempt set changed/u);
+
+    const tiedRuns = [
+      run({ id: 10, run_number: 10, conclusion: "failure", run_started_at: "2026-08-17T16:06:00Z", updated_at: "2026-08-17T16:06:30Z" }),
+      run({ id: 20, run_number: 20, conclusion: "success", run_started_at: "2026-08-17T16:06:00Z", updated_at: "2026-08-17T16:06:20Z" }),
+    ];
+    await writeFile(beforeFile, JSON.stringify([{ workflow_runs: tiedRuns }]), "utf8");
+    await writeFile(afterFile, JSON.stringify([{ workflow_runs: tiedRuns }]), "utf8");
+    const tied = runInlineCodeqlParser(parser, [beforeFile, afterFile], { CODEQL_RELEASE_SHA: sha });
+    assert.equal(tied.status, 1);
+    assert.match(tied.stderr, /latest settled exact-SHA CodeQL run attempts did not all succeed/u);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("the current workflow blocks newer runtime work before remote inspection, mutation, or activation", async () => {
@@ -126,7 +493,7 @@ test("deployment authorization fails closed and uses paginated closed-main PRs o
   const authorization = workflowStep(workflow, "Require a squash-merged PR and exact trusted workflow results");
   const primary = authorization.indexOf('"repos/$GITHUB_REPOSITORY/commits/$RELEASE_SHA/pulls"');
   const emptyGuard = authorization.indexOf('if [ "$associated_pull_count" -eq 0 ]');
-  const fallback = authorization.indexOf("gh api --paginate --slurp --method GET");
+  const fallback = authorization.indexOf('gh_api_read "$RUNNER_TEMP/closed-main-pulls.json"');
   const parser = authorization.indexOf("const matches = pulls.filter");
   const cleanup = authorization.indexOf('rm -f -- "$RUNNER_TEMP/associated-pulls.json"');
   const candidateCode = authorization.indexOf('node scripts/release-scope.mjs assert-current "$RELEASE_SHA"');
