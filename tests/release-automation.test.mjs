@@ -38,6 +38,16 @@ function workflowStep(source, name) {
   return next === -1 ? source.slice(start) : source.slice(start, next);
 }
 
+function pullEvidenceParser(source) {
+  const marker = 'pull_request="$(node --input-type=module - "$RELEASE_SHA" "$GITHUB_REPOSITORY" "$pull_evidence_file" <<\'NODE\'\n';
+  const start = source.indexOf(marker);
+  assert.notEqual(start, -1, "missing inline pull evidence parser");
+  const bodyStart = start + marker.length;
+  const end = source.indexOf("\n          NODE", bodyStart);
+  assert.notEqual(end, -1, "missing inline pull evidence parser terminator");
+  return source.slice(bodyStart, end);
+}
+
 test("deployment authorization requires bounded exact-main CodeQL evidence", async () => {
   const workflow = await readFile(new URL("../.github/workflows/deploy.yml", import.meta.url), "utf8");
   assert.match(workflow, /security-events:\s*read/u);
@@ -108,6 +118,79 @@ test("the current workflow blocks newer runtime work before remote inspection, m
     assert.match(workflowStep(workflow, databaseFenceName), /id: current_main_db/u);
     const failClosed = workflowStep(workflow, `Fail closed ${environment} report handoff before regression handling`);
     assert.match(failClosed, /steps\.current_main_db\.outcome == 'success'/u);
+  }
+});
+
+test("deployment authorization fails closed and uses paginated closed-main PRs only for an empty association", async () => {
+  const workflow = await readFile(new URL("../.github/workflows/deploy.yml", import.meta.url), "utf8");
+  const authorization = workflowStep(workflow, "Require a squash-merged PR and exact trusted workflow results");
+  const primary = authorization.indexOf('"repos/$GITHUB_REPOSITORY/commits/$RELEASE_SHA/pulls"');
+  const emptyGuard = authorization.indexOf('if [ "$associated_pull_count" -eq 0 ]');
+  const fallback = authorization.indexOf("gh api --paginate --slurp --method GET");
+  const parser = authorization.indexOf("const matches = pulls.filter");
+  const cleanup = authorization.indexOf('rm -f -- "$RUNNER_TEMP/associated-pulls.json"');
+  const candidateCode = authorization.indexOf('node scripts/release-scope.mjs assert-current "$RELEASE_SHA"');
+  assert.ok(primary >= 0 && emptyGuard > primary && fallback > emptyGuard && parser > fallback);
+  assert.ok(cleanup > parser && candidateCode > cleanup);
+  assert.match(authorization, /"repos\/\$GITHUB_REPOSITORY\/pulls"/u);
+  assert.match(
+    authorization,
+    /-f state=closed -f base=main -f sort=updated -f direction=desc -F per_page=100/u,
+  );
+  assert.match(authorization, /const pulls = pages\.flatMap\(\(page\) => page\)/u);
+  assert.match(authorization, /candidate\.state === "closed"/u);
+  assert.match(authorization, /candidate\.merge_commit_sha === sha/u);
+  assert.match(authorization, /candidate\.base\?\.ref === "main"/u);
+  assert.match(authorization, /candidate\.base\?\.repo\?\.full_name === repository/u);
+  assert.match(authorization, /matches\.length !== 1/u);
+  assert.match(authorization, /Number\.isSafeInteger\(pull\.number\)/u);
+  assert.doesNotMatch(authorization, /gh api[^\n]*\|\|/u);
+});
+
+test("deployment pull provenance parser rejects ambiguous and cross-repository evidence", async (t) => {
+  const workflow = await readFile(new URL("../.github/workflows/deploy.yml", import.meta.url), "utf8");
+  const parser = pullEvidenceParser(workflow);
+  const directory = await mkdtemp(join(tmpdir(), "grihagrid-pull-evidence-"));
+  t.after(() => rm(directory, { force: true, recursive: true }));
+
+  const sha = "a".repeat(40);
+  const repository = "owner/repository";
+  const valid = {
+    number: 47,
+    state: "closed",
+    merged_at: "2026-08-17T14:30:42Z",
+    merge_commit_sha: sha,
+    base: { ref: "main", repo: { full_name: repository } },
+  };
+  const cases = [
+    { name: "direct exact association", payload: [valid], status: 0 },
+    { name: "paginated exact fallback", payload: [[valid]], status: 0 },
+    { name: "empty evidence", payload: [], status: 1 },
+    { name: "duplicate exact evidence", payload: [[valid], [valid]], status: 1 },
+    { name: "open pull request", payload: [[{ ...valid, state: "open" }]], status: 1 },
+    { name: "unmerged pull request", payload: [[{ ...valid, merged_at: null }]], status: 1 },
+    { name: "different merge SHA", payload: [[{ ...valid, merge_commit_sha: "b".repeat(40) }]], status: 1 },
+    { name: "different base", payload: [[{ ...valid, base: { ...valid.base, ref: "preview" } }]], status: 1 },
+    {
+      name: "different repository",
+      payload: [[{ ...valid, base: { ...valid.base, repo: { full_name: "attacker/fork" } } }]],
+      status: 1,
+    },
+    { name: "invalid pull number", payload: [[{ ...valid, number: 0 }]], status: 1 },
+    { name: "mixed direct and paginated shape", payload: [valid, [valid]], status: 1 },
+    { name: "non-array payload", payload: { pull: valid }, status: 1 },
+  ];
+
+  for (const [index, fixture] of cases.entries()) {
+    const filename = join(directory, `${index}.json`);
+    await writeFile(filename, JSON.stringify(fixture.payload), { mode: 0o600 });
+    const result = spawnSync(process.execPath, ["--input-type=module", "-", sha, repository, filename], {
+      encoding: "utf8",
+      input: parser,
+    });
+    assert.equal(result.status, fixture.status, fixture.name);
+    assert.equal(result.stderr, "", `${fixture.name} must fail without echoing evidence`);
+    assert.equal(result.stdout, fixture.status === 0 ? "47" : "", fixture.name);
   }
 });
 

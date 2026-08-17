@@ -159,6 +159,14 @@ export async function checkOpsConfig() {
   assert.match(deployWorkflow, /workflow_dispatch'\s*&&\s*github\.ref\s*==\s*'refs\/heads\/main'/u, "manual releases must use the main workflow ref");
   assert.equal((deployWorkflow.match(/release-scope\.mjs assert-current "\$RELEASE_SHA" "\$current_main_sha"/gu) || []).length, 7, "authorization and every privileged boundary must reject a candidate behind newer runtime work");
   const authorizationStep = workflowStep(deployWorkflow, "Require a squash-merged PR and exact trusted workflow results");
+  assert.match(authorizationStep, /"repos\/\$GITHUB_REPOSITORY\/commits\/\$RELEASE_SHA\/pulls"/u, "release provenance must first inspect exact commit associations");
+  assert.match(authorizationStep, /if \[ "\$associated_pull_count" -eq 0 \]/u, "release provenance may fall back only for an empty association response");
+  assert.match(authorizationStep, /gh api --paginate --slurp --method GET/u, "release provenance fallback must inspect every closed-main pull-request page");
+  assert.match(authorizationStep, /"repos\/\$GITHUB_REPOSITORY\/pulls"/u, "release provenance fallback must use the stable pull-request listing API");
+  assert.match(authorizationStep, /candidate\.merge_commit_sha === sha/u, "release provenance must bind the merged PR to the exact release SHA");
+  assert.match(authorizationStep, /candidate\.base\?\.repo\?\.full_name === repository/u, "release provenance must bind the merged PR to this repository");
+  assert.match(authorizationStep, /matches\.length !== 1/u, "release provenance must require one unambiguous merged PR");
+  assert.doesNotMatch(authorizationStep, /gh api[^\n]*\|\|/u, "release provenance must not mask a primary API failure");
   const ancestryPosition = authorizationStep.indexOf('git merge-base --is-ancestor "$RELEASE_SHA" origin/main');
   const codeqlPosition = authorizationStep.indexOf("CODEQL_RELEASE_SHA=\"$RELEASE_SHA\"");
   const candidateNodePosition = authorizationStep.indexOf('node scripts/release-scope.mjs assert-current "$RELEASE_SHA" "$current_main_sha"');

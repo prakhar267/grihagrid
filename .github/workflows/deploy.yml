@@ -86,24 +86,53 @@ jobs:
 
           gh api \
             -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
             "repos/$GITHUB_REPOSITORY/commits/$RELEASE_SHA/pulls" \
             > "$RUNNER_TEMP/associated-pulls.json"
-          pull_request="$(node --input-type=module - "$RELEASE_SHA" "$RUNNER_TEMP/associated-pulls.json" <<'NODE'
+          associated_pull_count="$(node --input-type=module - "$RUNNER_TEMP/associated-pulls.json" <<'NODE'
           import { readFileSync } from "node:fs";
-          const [sha, filename] = process.argv.slice(2);
-          const pulls = JSON.parse(readFileSync(filename, "utf8"));
-          const pull = pulls.find((candidate) => (
-            candidate.merged_at
+          const pulls = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          if (!Array.isArray(pulls) || pulls.some((pull) => Array.isArray(pull))) process.exit(1);
+          process.stdout.write(String(pulls.length));
+          NODE
+          )"
+
+          pull_evidence_file="$RUNNER_TEMP/associated-pulls.json"
+          if [ "$associated_pull_count" -eq 0 ]; then
+            gh api --paginate --slurp --method GET \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "repos/$GITHUB_REPOSITORY/pulls" \
+              -f state=closed -f base=main -f sort=updated -f direction=desc -F per_page=100 \
+              > "$RUNNER_TEMP/closed-main-pulls.json"
+            pull_evidence_file="$RUNNER_TEMP/closed-main-pulls.json"
+          fi
+
+          pull_request="$(node --input-type=module - "$RELEASE_SHA" "$GITHUB_REPOSITORY" "$pull_evidence_file" <<'NODE'
+          import { readFileSync } from "node:fs";
+          const [sha, repository, filename] = process.argv.slice(2);
+          const payload = JSON.parse(readFileSync(filename, "utf8"));
+          if (!Array.isArray(payload)) process.exit(1);
+          const pages = payload.every((item) => Array.isArray(item)) ? payload : [payload];
+          if (pages.some((page) => !Array.isArray(page) || page.some((pull) => Array.isArray(pull)))) process.exit(1);
+          const pulls = pages.flatMap((page) => page);
+          const matches = pulls.filter((candidate) => (
+            candidate.state === "closed"
+            && candidate.merged_at
             && candidate.merge_commit_sha === sha
             && candidate.base?.ref === "main"
+            && candidate.base?.repo?.full_name === repository
           ));
-          if (!pull) process.exit(1);
+          if (matches.length !== 1) process.exit(1);
+          const [pull] = matches;
+          if (!Number.isSafeInteger(pull.number) || pull.number < 1) process.exit(1);
           process.stdout.write(String(pull.number));
           NODE
           )" || {
             echo "release SHA is not the squash result of a merged pull request into main" >&2
             exit 1
           }
+          rm -f -- "$RUNNER_TEMP/associated-pulls.json" "$RUNNER_TEMP/closed-main-pulls.json"
 
           if [ "$GITHUB_EVENT_NAME" = "workflow_run" ]; then
             gh api "repos/$GITHUB_REPOSITORY/actions/runs/$TRIGGER_CI_RUN_ID" > "$RUNNER_TEMP/ci-run.json"

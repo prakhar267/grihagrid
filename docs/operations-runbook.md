@@ -182,9 +182,13 @@ non-critical dependency risk with an owner and expiry.
 
 The normal release path is `.github/workflows/deploy.yml`, triggered only after
 the exact merged `main` SHA passes CI. Its authorization job independently
-requires CodeQL success and an associated squash-merged PR. Staging and
-production use separate protected GitHub environments and separate encrypted
-environment secrets: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`,
+requires CodeQL success and exactly one closed `main` pull request whose squash
+merge SHA equals the release SHA. If GitHub's commit-association endpoint
+successfully returns an empty array, the gate searches every page of closed
+`main` pull requests for that exact repository and merge SHA; API or ambiguous
+responses still fail closed. Staging and production use separate protected
+GitHub environments and separate encrypted environment secrets:
+`CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`,
 `D1_BACKUP_PASSPHRASE`, `GRIHAGRID_CANARY_EMAIL`, and
 `GRIHAGRID_CANARY_PASSWORD`. The Cloudflare token must be scoped to this account
 and only the Worker-script, D1, KV-read/binding, and Worker-tail permissions
