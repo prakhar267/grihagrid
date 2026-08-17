@@ -250,14 +250,23 @@ inventory or an account-recovery flow.
    that the unchanged password can be used for a new login.
 6. A known validation/authentication failure is actionable. A response-loss or
    unexpected server/network failure is treated as ambiguous: the UI does not
-   claim success, clears the password field, and asks the customer to reload or
-   sign in before relying on the boundary.
+   claim success, clears and collapses the password field, and blocks another
+   revocation attempt until the customer reloads the security check or signs
+   in again. Reload immediately moves focus to its loading status, then to the
+   refreshed summary or bounded error instead of dropping keyboard focus.
 
 Session review and password rotation cannot submit concurrently. Loading,
 empty/current-only, truncated, wrong-password, fail-closed, success, conflict,
 expired-session, and ambiguous states remain keyboard-operable and announced.
 Print excludes the session list, sign-in times, password control, and result
 details.
+
+The complete Account Security page is keyed to the authenticated account ID.
+If another tab changes the browser profile from one account to another, focus
+or resume reconciliation remounts the page before rendering the replacement
+account. That clears the prior account's session timestamps, password fields,
+pending requests, and result messages instead of carrying private state across
+the account boundary.
 
 ### `GET /api/auth/sessions`
 
