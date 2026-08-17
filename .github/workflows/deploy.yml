@@ -2093,7 +2093,7 @@ jobs:
           INVOCATION_SUMMARY="$invocation_summary" setsid bash -c '
             set -o pipefail
             CLOUDFLARE_API_TOKEN="$CF_DEPLOY_TOKEN" CLOUDFLARE_ACCOUNT_ID="$CF_DEPLOY_ACCOUNT" \
-              WRANGLER_LOG=error WRANGLER_WRITE_LOGS=false \
+              WRANGLER_LOG=warn WRANGLER_HIDE_BANNER=true WRANGLER_WRITE_LOGS=false \
               timeout --signal=INT --kill-after=10s 2100s \
               wrangler tail --env="" --format json --status error \
                 --version-id "$GRIHAGRID_RELEASE_ID" \
@@ -2105,7 +2105,7 @@ jobs:
           SERVER_SUMMARY="$server_summary" setsid bash -c '
             set -o pipefail
             CLOUDFLARE_API_TOKEN="$CF_DEPLOY_TOKEN" CLOUDFLARE_ACCOUNT_ID="$CF_DEPLOY_ACCOUNT" \
-              WRANGLER_LOG=error WRANGLER_WRITE_LOGS=false \
+              WRANGLER_LOG=warn WRANGLER_HIDE_BANNER=true WRANGLER_WRITE_LOGS=false \
               timeout --signal=INT --kill-after=10s 2100s \
               wrangler tail --env="" --format json \
                 --search "\"outcome\":\"server_error\"" --version-id "$GRIHAGRID_RELEASE_ID" \
