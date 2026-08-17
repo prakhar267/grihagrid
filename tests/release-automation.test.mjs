@@ -757,6 +757,18 @@ test("release monitor distinguishes lost tail coverage from an application regre
   );
 });
 
+test("release tails suppress Wrangler notices but preserve stderr as a failure signal", async () => {
+  const workflow = await readFile(new URL("../.github/workflows/deploy.yml", import.meta.url), "utf8");
+  const observe = workflowStep(workflow, "Observe the exact production version for 30 minutes");
+  assert.equal((observe.match(/WRANGLER_LOG=error WRANGLER_WRITE_LOGS=false/gu) || []).length, 2);
+  assert.equal((observe.match(/wrangler tail/gu) || []).length, 2);
+  assert.doesNotMatch(observe, /WRANGLER_LOG=none/u);
+  assert.match(observe, /Number\(process\.env\.INVOCATION_STDERR_BYTES\) !== 0/u);
+  assert.match(observe, /Number\(process\.env\.SERVER_STDERR_BYTES\) !== 0/u);
+  assert.match(observe, /process\.env\.TAILS_ALIVE !== "true"/u);
+  assert.match(observe, /invocation\.eventCount > 0 \|\| server\.eventCount > 0/u);
+});
+
 test("release rollback polling propagates legacy Worker compatibility to every smoke sample", async () => {
   const seen = [];
   let clock = 0;
