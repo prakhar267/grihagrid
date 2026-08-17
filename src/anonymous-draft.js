@@ -264,6 +264,16 @@ function rawStoredAttribution(storage) {
   }
 }
 
+function removeStoredAttribution(storage) {
+  try {
+    storage.removeItem(ANONYMOUS_DRAFT_ATTRIBUTION_STORAGE_KEY);
+  } catch {
+    return false;
+  }
+  const afterRemoval = rawStoredAttribution(storage);
+  return afterRemoval.available && afterRemoval.raw === null;
+}
+
 function matchingAttribution(record, envelope) {
   return Boolean(record && envelope
     && envelope.entryPoint === null
@@ -278,7 +288,7 @@ export function readAnonymousDraftAttribution(storage, envelope, nowMs = Date.no
   if (stored.available) {
     const record = stored.raw === null ? null : parseAnonymousDraftAttribution(stored.raw, nowMs);
     if (stored.raw !== null && !record && purgeInvalid) {
-      try { storage.removeItem(ANONYMOUS_DRAFT_ATTRIBUTION_STORAGE_KEY); } catch { /* Attribution is optional. */ }
+      removeStoredAttribution(storage);
     }
     if (matchingAttribution(record, validEnvelope)) return record.entryPoint;
   }
@@ -314,13 +324,14 @@ export function clearAnonymousDraftAttribution(storage, projectCreationKey, nowM
   const key = validCreationUuid(projectCreationKey);
   if (!key) return false;
   const stored = rawStoredAttribution(storage);
+  if (storage && !stored.available) return false;
   if (stored.available && stored.raw !== null) {
     let parsed = null;
     if (typeof stored.raw === "string" && stored.raw.length <= MAX_STORED_ATTRIBUTION_CHARACTERS) {
       try { parsed = parseAttributionValue(JSON.parse(stored.raw), nowMs, true); } catch { /* Invalid owned state is removed below. */ }
     }
     if (!parsed || parsed.projectCreationKey === key) {
-      try { storage.removeItem(ANONYMOUS_DRAFT_ATTRIBUTION_STORAGE_KEY); } catch { return false; }
+      if (!removeStoredAttribution(storage)) return false;
     }
   }
   if (ephemeralAttribution?.projectCreationKey === key) ephemeralAttribution = null;
@@ -585,23 +596,25 @@ export async function purgeInvalidAnonymousDraftOnBoot(windowObject = globalThis
         if (!before.available) return "unavailable";
         if (before.raw === null) {
           const orphan = rawStoredAttribution(storage);
+          if (!orphan.available) return "unavailable";
           if (orphan.raw !== null) {
-            try { storage.removeItem(ANONYMOUS_DRAFT_ATTRIBUTION_STORAGE_KEY); } catch { return "unavailable"; }
+            if (!removeStoredAttribution(storage)) return "unavailable";
           }
           return "absent";
         }
         const valid = readAnonymousDraft(storage, nowMs, true);
         if (valid) {
           const attribution = rawStoredAttribution(storage);
+          if (!attribution.available) return "unavailable";
           if (attribution.raw !== null) {
             const parsed = parseAnonymousDraftAttribution(attribution.raw, nowMs);
             if (!matchingAttribution(parsed, valid)) {
-              try { storage.removeItem(ANONYMOUS_DRAFT_ATTRIBUTION_STORAGE_KEY); } catch { return "unavailable"; }
+              if (!removeStoredAttribution(storage)) return "unavailable";
             }
           }
           return "retained";
         }
-        try { storage.removeItem(ANONYMOUS_DRAFT_ATTRIBUTION_STORAGE_KEY); } catch { return "unavailable"; }
+        if (!removeStoredAttribution(storage)) return "unavailable";
         const after = rawStoredDraft(storage);
         return after.available && after.raw === null ? "purged" : "unavailable";
       },

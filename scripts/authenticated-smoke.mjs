@@ -2,7 +2,8 @@
 import assert from "node:assert/strict";
 import { pathToFileURL } from "node:url";
 
-const REQUEST_TIMEOUT_MS = 15_000;
+export const AUTHENTICATED_SMOKE_REQUEST_TIMEOUT_MS = 15_000;
+export const AUTHENTICATED_SMOKE_LOGIN_TIMEOUT_MS = 30_000;
 const SESSION_COOKIE = "__Host-grihagrid_session";
 const CSRF_COOKIE = "grihagrid_csrf";
 const ESTIMATOR_CANARY_INPUT = Object.freeze({
@@ -37,6 +38,18 @@ export function reportShareCapabilityToken(rawUrl, expectedOrigin) {
     throw new Error("report handoff did not return a valid fragment capability URL");
   }
   return token;
+}
+
+export function authenticatedSmokeRequestTimeoutMs(path, options = {}) {
+  const configured = path === "/api/auth/login"
+    ? options.loginTimeoutMs ?? AUTHENTICATED_SMOKE_LOGIN_TIMEOUT_MS
+    : options.timeoutMs ?? AUTHENTICATED_SMOKE_REQUEST_TIMEOUT_MS;
+  const timeoutMs = Number(configured);
+  assert.ok(
+    Number.isSafeInteger(timeoutMs) && timeoutMs > 0 && timeoutMs <= 60_000,
+    "authenticated smoke request timeout must be an integer between 1 and 60000 ms",
+  );
+  return timeoutMs;
 }
 
 function cookieValues(response) {
@@ -111,7 +124,11 @@ export async function runAuthenticatedSmoke(rawOrigin, credentials, options = {}
 
   async function call(path, init = {}, expected = [200]) {
     const startedAt = performance.now();
-    const { anonymous = false, ...requestInit } = init;
+    const {
+      anonymous = false,
+      timeoutMs = authenticatedSmokeRequestTimeoutMs(path, options),
+      ...requestInit
+    } = init;
     const method = requestInit.method || "GET";
     const headers = new Headers(requestInit.headers || {});
     if (!anonymous && jar.size && !headers.has("cookie")) headers.set("cookie", cookieHeader(jar));
@@ -127,7 +144,7 @@ export async function runAuthenticatedSmoke(rawOrigin, credentials, options = {}
       ...requestInit,
       headers,
       redirect: "error",
-      signal: AbortSignal.timeout(options.timeoutMs || REQUEST_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     mergeCookies(jar, response);
     const payload = await responsePayload(response);

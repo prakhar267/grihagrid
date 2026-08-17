@@ -4,7 +4,13 @@ import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promise
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { reportShareCapabilityToken, runAuthenticatedSmoke } from "../scripts/authenticated-smoke.mjs";
+import {
+  AUTHENTICATED_SMOKE_LOGIN_TIMEOUT_MS,
+  AUTHENTICATED_SMOKE_REQUEST_TIMEOUT_MS,
+  authenticatedSmokeRequestTimeoutMs,
+  reportShareCapabilityToken,
+  runAuthenticatedSmoke,
+} from "../scripts/authenticated-smoke.mjs";
 import {
   buildCanaryResidueSql,
   buildPreMigrationEvidence,
@@ -178,6 +184,53 @@ test("exact-version latency gates block canaries and enter every rollback path",
         : "Fail closed after a production release or monitoring failure",
     );
     assert.match(finalFailure, /steps\.readiness_latency\.outcome == 'failure'/u);
+  }
+});
+
+test("authenticated release canaries restore only sessions created after their account snapshot", async () => {
+  const workflow = await readFile(new URL("../.github/workflows/deploy.yml", import.meta.url), "utf8");
+  const wrapper = await readFile(new URL("../scripts/run-canary-session-fence.sh", import.meta.url), "utf8");
+  assert.equal((workflow.match(/node scripts\/authenticated-smoke\.mjs "\$ORIGIN"/gu) || []).length, 4);
+  assert.equal((workflow.match(/run-canary-session-fence\.sh snapshot/gu) || []).length, 4);
+  assert.equal((workflow.match(/run-canary-session-fence\.sh restore/gu) || []).length, 4);
+  const rawBaseline = wrapper.indexOf('> "$before_json"');
+  const validatedBaseline = wrapper.indexOf("canary-session-fence.mjs validate-snapshot");
+  assert.ok(rawBaseline >= 0 && rawBaseline < validatedBaseline);
+  assert.match(wrapper, /stabilization_seconds=40/u);
+  assert.match(wrapper, /while true/u);
+  assert.match(wrapper, /CANARY_SESSION_PREVIOUS_PROOF/u);
+  assert.match(wrapper, /CANARY_SESSION_STABILIZED_FOR_MS/u);
+  assert.match(wrapper, /--command "\$query_sql_text"/u);
+  assert.match(wrapper, /--command "\$cleanup_sql_text"/u);
+  assert.doesNotMatch(wrapper, /--file/u);
+  assert.match(wrapper, /if \[ "\$stabilized_for_ms" -ge "\$stabilization_ms" \]/u);
+
+  for (const environment of ["staging", "production"]) {
+    const canary = workflowStep(workflow, `Run ${environment} authenticated canary under bounded handoff activation`);
+    const snapshot = canary.indexOf(`run-canary-session-fence.sh snapshot ${environment} candidate`);
+    const trap = canary.indexOf("trap reclose_report_handoff_after_canary EXIT");
+    const login = canary.indexOf("authenticated-smoke.mjs");
+    assert.ok(snapshot >= 0 && snapshot < trap && trap < login);
+    assert.match(canary, new RegExp(`run-canary-session-fence\\.sh restore ${environment} candidate`, "u"));
+    assert.match(canary, new RegExp(`release-evidence/${environment}/canary-session-cleanup\\.json`, "u"));
+    assert.match(canary, /\[ "\$session_cleanup_status" -ne 0 \]/u);
+    assert.match(canary, /attempt_outcome=ambiguous/u);
+    assert.doesNotMatch(canary, /release-evidence\/[\w/-]+canary-session-(?:before|observed|final)\.json/u);
+
+    const rollback = workflowStep(workflow, `Rehearse rollback Worker against migrated ${environment} schema`);
+    const rollbackSnapshot = rollback.indexOf(`run-canary-session-fence.sh snapshot ${environment} rollback`);
+    const rollbackTrap = rollback.indexOf("trap restore_rollback_canary_sessions EXIT");
+    const rollbackLogin = rollback.indexOf("node scripts/authenticated-smoke.mjs");
+    assert.ok(rollbackSnapshot >= 0 && rollbackSnapshot < rollbackTrap && rollbackTrap < rollbackLogin);
+    assert.match(rollback, new RegExp(`run-canary-session-fence\\.sh restore ${environment} rollback`, "u"));
+    assert.match(rollback, new RegExp(`release-evidence/${environment}/rollback-canary-session-cleanup\\.json`, "u"));
+    assert.match(rollback, /attempt_outcome=ambiguous/u);
+
+    const runnerCleanup = workflowStep(workflow, `Remove ${environment} backup material from the runner`);
+    for (const raw of ["query.sql", "before.json", "observed.json", "cleanup.sql", "cleanup.json", "final.json"]) {
+      assert.match(runnerCleanup, new RegExp(`\\$RUNNER_TEMP/${environment}-canary-session-${raw.replaceAll(".", "\\.")}`, "u"));
+      assert.match(runnerCleanup, new RegExp(`\\$RUNNER_TEMP/${environment}-rollback-canary-session-${raw.replaceAll(".", "\\.")}`, "u"));
+    }
   }
 });
 
@@ -773,6 +826,24 @@ test("report handoff capability parsing never includes a bearer in assertion err
     assert.ok(error instanceof Error);
     assert.equal(String(error.message).includes(bearer),false);
   }
+});
+
+test("authenticated smoke gives login a distinct bounded response window", () => {
+  assert.equal(AUTHENTICATED_SMOKE_REQUEST_TIMEOUT_MS, 15_000);
+  assert.equal(AUTHENTICATED_SMOKE_LOGIN_TIMEOUT_MS, 30_000);
+  assert.ok(AUTHENTICATED_SMOKE_LOGIN_TIMEOUT_MS > AUTHENTICATED_SMOKE_REQUEST_TIMEOUT_MS);
+  assert.equal(authenticatedSmokeRequestTimeoutMs("/api/auth/login"), 30_000);
+  assert.equal(authenticatedSmokeRequestTimeoutMs("/api/readiness"), 15_000);
+  assert.equal(authenticatedSmokeRequestTimeoutMs("/api/auth/login", { loginTimeoutMs: 45_000 }), 45_000);
+  assert.equal(authenticatedSmokeRequestTimeoutMs("/api/readiness", { timeoutMs: 20_000 }), 20_000);
+  assert.throws(
+    () => authenticatedSmokeRequestTimeoutMs("/api/auth/login", { loginTimeoutMs: 60_001 }),
+    /between 1 and 60000 ms/u,
+  );
+  assert.throws(
+    () => authenticatedSmokeRequestTimeoutMs("/api/readiness", { timeoutMs: 0 }),
+    /between 1 and 60000 ms/u,
+  );
 });
 
 test("authenticated smoke proves current and rollback-compatible Worker paths fail closed", async () => {

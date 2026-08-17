@@ -606,7 +606,13 @@ Attach to the release record, without secrets or customer data:
 - strict registration/login schema matrices; PBKDF2 call-count proof for
   unknown/wrong/deleted/malformed/short/long/fenced states; 12→13 distributed
   account admission and fixed-expiry proof; KV/D1 fail-closed injection; exact
-  session/rotation fence clears; `0017` empty-first-apply inventory, expiry cron,
+  session/rotation fence clears; a 30-second login-only canary window plus a
+  15-second default request window; exact account-scoped pre/post session-set
+  reconciliation around both previous-Worker and candidate smokes after
+  successful logout and lost login responses; pre-login baseline rejection and
+  40-second repeated delayed-insert reconciliation, with
+  malformed/duplicate/different-user/over-delete/under-delete/final-drift
+  rejection and identifier-free count-only evidence; `0017` empty-first-apply inventory, expiry cron,
   additive rollback security-downgrade record, aggregate-only monitoring and
   registration-enumeration/targeted-lockout residual-risk sign-off;
 - encrypted D1 backup checksum, isolated restore counts and measured RTO; and

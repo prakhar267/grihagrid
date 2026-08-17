@@ -75,7 +75,9 @@ remain physically separate before paid launch:
 
 Maintain explicit Wrangler environments. Never use production bindings merely
 because a staging deployment is short-lived. Use a different canary email and
-payment account in each environment.
+payment account in each environment. Canary accounts are release-automation
+identities only: operators must not log into them interactively or reuse their
+credentials in parallel tests while a release is running.
 
 ### Required production configuration
 
@@ -422,7 +424,21 @@ Keep the D1 switch closed through at least three exact candidate-version public
 smoke samples sustained for a full minute; reset the window on any old-version
 or failed sample. The authenticated canary step may then enable `report_handoff` only
 inside one bounded shell scope with an EXIT trap that always writes and verifies
-disabled state, regardless of canary success or failure. After the canary,
+disabled state, regardless of canary success or failure. Before login, snapshot
+only the dedicated canary account's exact session IDs and validate that baseline
+before any login or handoff mutation. The reusable EXIT-trap fence covers both
+the previous-Worker compatibility rehearsal and the candidate canary: it queries
+that account again, deletes only IDs created after the snapshot, and proves the
+final set is byte-for-byte equivalent to the baseline. After an ambiguous smoke
+failure it repeats that exact reconciliation for at least 40 seconds, covering
+Cloudflare's documented 30-second post-disconnect `waitUntil()` allowance with a
+ten-second margin. Raw email, user ID and session IDs are held in mode-0600
+runner-temporary files and expanded into non-traced Wrangler command arguments;
+they are never retained as release artifacts. The retained artifact contains only
+per-pass and cumulative counts, stabilization duration and the restoration result.
+A missing canary user,
+multiple matching active users, malformed ID, over/under-delete, skipped pass,
+query failure or final-set drift fails the release. After the canary,
 verify exact-ID cleanup, read the already-closed row without masking a failed
 trap, require readiness capability false and a structurally valid nonexistent
 bearer request to return `503 report_handoff_disabled`. Only when propagation,
@@ -553,9 +569,12 @@ window. It then runs the
 closed, preserves every raw sample plus nearest-rank p95, and requires p95
 strictly below 500 ms before any authenticated canary mutation. It then runs the
 authenticated create → read → deterministic report → feedback → delete →
-logout canary,
-proves that paid-order creation and private upload both return their expected
-closed errors,
+logout canary. Login alone has a reviewed 30-second response window; every other
+request remains bounded to 15 seconds. Exact pre/post session reconciliation in
+the canary EXIT trap removes and verifies only sessions that this attempt added,
+including when the login response is lost; failed smokes repeat the proof for at
+least 40 seconds before rollback. The canary also proves that
+paid-order creation and private upload both return their expected closed errors,
 reconfirms staging after the production hold, and monitors both invocation
 errors and handled `outcome=server_error` completion logs for that version.
 Expected fail-closed payment, fulfillment, plan, and upload responses are
@@ -589,6 +608,9 @@ Then use the dedicated production canary account to verify:
    or row details. Exercise the 12→13 distributed cap, fixed expiry reset,
    generic failure envelope and KV/D1 failure injection in local and isolated
    staging fixtures—not against a real production account.
+   For every release canary, capture the dedicated account's exact session set
+   before login and prove the EXIT-trap cleanup restores that set after logout
+   or an ambiguous login timeout; retained evidence may include counts only.
 2. Create, read, update, report-generate, and delete one canary project.
 3. When `0012` is in the release, open Brief Check, preview one synthetic
    change, prove the preview does not change any row, accept and save it, retry
