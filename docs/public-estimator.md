@@ -35,18 +35,21 @@ for measured site information and licensed local professionals.
    an invalid tuple blocks handoff. The estimator-to-start transition carries
    only the five safe scenario fields, a fixed source marker, and an opaque
    project-creation retry key.
-7. After the visitor completes the private brief, an authentication continuation
-   carries a strict allowlist of that structured draft plus the same retry key in
-   same-tab history state, with a session-storage mirror for refresh recovery.
-   Neither is placed in the URL. If storage is blocked, navigation state remains
-   authoritative through account-mode switches and reloads. Explicit Home/Exit
-   abandons and clears the continuation; a later unrelated login cannot create it.
+7. Once the visitor first saves or edits the full private brief, its strict
+   allowlist moves into one versioned local browser envelope and the estimator
+   tuple is consumed from navigation/session state. Authentication navigation
+   then carries only a continuation marker, project retry key, expected write
+   UUID/revision, and bounded source marker—never the brief payload or a URL
+   value. A true memory-only fallback is same-tab only; any branch descended from
+   shared storage must be revalidated before it can continue. Explicit Home/Exit
+   abandons the handoff, and a later unrelated login cannot create the draft.
 8. The first-party client adds `x-grihagrid-entry-point: public_estimator` only
    to the attributed project-creation request and sends the retry key as
    `Idempotency-Key`. Project creation validates the full brief, recalculates the
    estimate, and inserts the project before the Worker attempts the aggregate
-   measurement. A lost success can replay the same project without a duplicate
-   row or aggregate. The browser result is never accepted as a stored estimate.
+   measurement. Within the same account, a lost success can replay the same
+   project without a duplicate row or aggregate. The browser result is never
+   accepted as a stored estimate.
 
 ## Public API contract
 
@@ -173,17 +176,20 @@ the Worker-owned rules. Invalid tuples remain blocked.
   merged into a request.
 - Handoff stores a separate fixed `public_estimator` source marker and an opaque,
   bounded project-creation idempotency key. Neither is an authentication token,
-  project identifier, or user identity. The first-party client consumes the
-  estimator tuple/source/key after successful project creation.
+  project identifier, or user identity. The first local draft envelope consumes
+  the estimator tuple/source/key from transient handoff state while retaining
+  the bounded source and key inside the envelope; successful creation clears the
+  remaining attribution state.
 - The estimator-to-start transition carries only the validated five-field tuple,
-  marker, and retry key. After the visitor explicitly completes the full brief,
-  auth continuation carries a strict allowlist of those private structured facts
-  plus that key in same-tab history state and session storage. It never carries
-  a dedicated address, contact, or account field, upload, browser estimate,
-  arbitrary nested value, session credential, or CSRF token. User-entered name
-  and style remain private draft text and may themselves contain identifying
-  content, so continuation state is never written to the URL. Explicit
-  abandonment clears the draft, key, and attribution marker.
+  marker, and retry key. After the visitor first saves or edits the full brief,
+  that private structured payload lives only in the strict local envelope. Auth
+  navigation carries only the continuation marker, key, expected write
+  UUID/revision, and bounded source marker. It never carries a dedicated address,
+  contact, or account field, upload, browser estimate, arbitrary nested value,
+  session credential, CSRF token, or full brief. User-entered name and style may
+  themselves contain identifying content, so they remain confined to the local
+  envelope and authenticated project request. Explicit abandonment clears the
+  exact draft, key, and attribution marker.
 - `x-grihagrid-entry-point` is measurement metadata on the authenticated project
   creation request, not an authorization or calculation-trust signal. It cannot
   change the normalized project, estimate, ownership, or response.
@@ -230,16 +236,18 @@ the Worker-owned rules. Invalid tuples remain blocked.
 6. Estimator-to-start handoff stores and transfers only the five allowlisted tuple
    fields, fixed marker, and opaque retry key. It is available for a valid current
    tuple in loading, unavailable, and confirmed states, and unavailable for every
-   invalid tuple. Auth continuation may carry only the documented full-draft
-   allowlist and same key after the visitor completes the private brief. No
-   browser estimate is transferred or trusted by project creation.
+   invalid tuple. After the visitor edits the private brief, the exact full-draft
+   allowlist moves to the sole versioned local draft envelope. Auth navigation
+   carries only a continuation marker, the same key, expected write UUID and
+   revision, and fixed source marker. No browser estimate is transferred or
+   trusted by project creation.
 7. Anonymous estimate requests omit credentials and CSRF material. Browser
    state contains no dedicated account/contact/address field, upload, bearer
-   credential, arbitrary nested value, or browser estimate; the private draft can
-   contain identifying text entered as project name or style. Operational logs
-   contain neither tuple nor draft. Blocked storage still reaches the start/auth journey through
-   bounded same-tab state, and an abandoned continuation cannot be recovered by
-   an unrelated login.
+   credential, arbitrary nested value, or browser estimate; the local private
+   draft can contain identifying text entered as its project name. Operational
+   logs contain neither tuple nor draft. Blocked storage still reaches the
+   start/auth journey through a same-tab in-memory copy, and an abandoned
+   continuation cannot be recovered by an unrelated login.
 8. Only an attributed project-creation request carries the exact entry-point
    header. Invalid, unauthorized, failed, and direct-start project requests do
    not increment the estimator aggregate, and measurement failure cannot change
@@ -293,9 +301,11 @@ nullable columns. Readiness is not current until both columns and the index are
 present.
 
 The browser retains the safe scenario tuple, fixed source marker, and opaque
-retry key for the immediate start journey. Once the visitor finishes the full
-brief, only its documented allowlist and that key are mirrored for an explicit
-authentication continuation. Project creation's aggregate table receives only a
+retry key for the immediate start journey. Once the visitor begins editing the
+full brief, one strict local envelope becomes the only persisted payload source.
+Navigation into authentication retains only the explicit continuation marker,
+matching retry key, expected write UUID/revision, and bounded source marker; it
+never mirrors the full brief into history or session storage. Project creation's aggregate table receives only a
 best-effort daily counter update after the first attributed insert; idempotent
 replay never increments it again.
 

@@ -556,9 +556,9 @@ new paid capability.
 - [ ] Migration `0014` is applied under the encrypted backup, canonical-data
   invariance, old-Worker compatibility, readiness, and exact canary-residue gates;
   `checks.projectCreationSchema=current` is required before promotion.
-- [ ] Same-key/same-draft retry returns one canonical project, conflicting reuse
-  is `409`, and concurrent unique-index plus 49→50 account-cap races produce one
-  row and at most one estimator KPI increment.
+- [ ] Same-account, same-key/same-draft retry returns one canonical project,
+  conflicting reuse is `409`, and concurrent unique-index plus 49→50 account-cap
+  races produce one row and at most one estimator KPI increment.
 - [ ] Estimator-to-start state contains only the tuple, source marker, and opaque
   retry key. Auth continuation accepts only the full-draft allowlist, never uses
   the URL, survives storage denial, and explicit abandonment prevents a later
@@ -570,6 +570,35 @@ new paid capability.
 - [ ] The merged SHA passes protected CI and CodeQL, staging then production
   smoke/authenticated canaries, exact-version cleanup, and the 30-minute
   production error-tail observation with paid and upload capabilities closed.
+
+## Anonymous brief resume release gate
+
+- [ ] One versioned local envelope is the only persisted full-draft copy. Exact
+  keys, primitive/enumerated values, normalized text, UUID-v4 creation key,
+  12,000-character ceiling, monotonic revision and seven-day timestamps all
+  fail closed; private fields and files cannot enter as dedicated fields, while
+  disclosure warns that user-entered project-name text remains in the draft.
+- [ ] Recovery is value-free before explicit Resume, and Save & exit is distinct
+  from Discard. Reads do not extend expiry, storage failure is described as
+  same-tab only, and expiry/removal occurs on the next app run without claiming
+  a closed-browser timer.
+- [ ] One exclusive same-origin Web Lock spans `/start` through explicit auth
+  continuation before shared-storage access. Contention is value-free and
+  read-only, unsupported locks use memory only, `pagehide` releases, and
+  `pageshow` reacquires and revalidates before controls enable.
+- [ ] Navigation/session state carries no full draft. Current and legacy history
+  entries are scrubbed when visited; discard, expiry, creation and back/forward
+  cannot resurrect a payload. Storage/focus/pageshow/visibility reconciliation
+  fences stale tabs and conditional cleanup never erases a newer draft.
+- [ ] Bounded auth navigation carries the key plus expected write UUID/revision
+  and rejects any substituted version. Registration and login bodies remain
+  credentials-only. The authenticated project request freezes and reuses the
+  exact draft plus original key; lost
+  `201` replay is `200` with one project, conflicting reuse is `409`, and no
+  anonymous endpoint, D1 row, cookie, event or migration is added.
+- [ ] Automated contracts, real-D1 project-create security, browser recovery,
+  keyboard, 390 px, 200% zoom, console/network, staging smoke, production smoke,
+  CodeQL and the 30-minute exact-version monitor all pass with dated evidence.
 
 ## Account Security release gate
 

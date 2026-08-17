@@ -86,6 +86,19 @@ idempotency key: a lost successful response replays the same canonical project
 without a duplicate row or attribution increment, while conflicting key reuse is
 rejected.
 
+An anonymous visitor may keep one unfinished structured brief on the same
+browser for up to seven days after the last edit. Recovery is explicit and
+value-free until the visitor chooses Resume; Save & exit and Discard are
+separate controls. The full allowlisted brief lives only in one versioned local
+browser envelope (or a same-tab memory fallback)—never a URL, cookie, navigation
+history, session storage, analytics event, or anonymous API. Authentication
+navigation carries only a continuation marker, opaque project/write identities,
+revision, and bounded source marker; it carries no brief value. Dedicated file,
+credential, estimate, report, and server-response fields are excluded; the
+user-entered project name remains part of the browser copy. Project creation
+remains the authenticated, CSRF-protected Worker boundary and reuses the
+original account-scoped key; see `docs/anonymous-brief-resume.md`.
+
 See `docs/product-blueprint.md` for the product specification and `docs/operations-runbook.md` for the launch/rollback checklist.
 The fail-closed schema snapshot, single-read healthy-path budget, and exact-version latency
 validation are defined in `docs/readiness-performance.md`.

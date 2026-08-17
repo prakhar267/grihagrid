@@ -442,6 +442,19 @@ KV absence or read/write failure returns fail-closed
 independently enforces the exact concurrency-safe ceiling of 50 projects per
 account and returns `429 project_limit_reached`.
 
+The anonymous resume feature adds no endpoint and sends no draft before this
+authenticated create. It retains one strict local envelope and a UUID-v4
+creation key for at most seven days after the last actual edit. Authentication
+requests remain credential-only. One exclusive same-origin Web Lock spans the
+planner through explicit auth continuation; bounded navigation carries the
+expected write UUID/revision but no draft. Immediately before this project request may
+reach the Worker, the client freezes the exact canonical local snapshot and
+keeps the same key across timeouts, `5xx`, auth interruption, and `409` review.
+Only a confirmed `201` or exact `200` replay conditionally consumes the matching
+browser revision. Full draft data never enters navigation history,
+`sessionStorage`, a cookie, a query, analytics, or operational logs. See
+`docs/anonymous-brief-resume.md`.
+
 The first-party estimator journey adds the exact header
 `x-grihagrid-entry-point: public_estimator` to this request only when its
 bounded same-tab navigation-state handoff or refresh-safe session-storage mirror

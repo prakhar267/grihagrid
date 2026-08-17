@@ -4,22 +4,18 @@ import {
   ESTIMATOR_CITIES,
   ESTIMATOR_FLOORS,
   ESTIMATOR_QUALITIES,
+  consumeEstimatorHandoffPayload,
   consumePublicEstimatorAttribution,
-  estimatorAuthContinuationState,
   estimatorRequestKey,
   isPublicEstimatorAttribution,
   normalizePublicEstimateEnvelope,
-  parsePendingProjectDraft,
   parseStoredEstimatorScenario,
   publicEstimatorAttributionHeaders,
   readStoredEstimatorScenario,
   safeSessionStorage,
-  selectAuthPendingProjectDraft,
   selectAuthProjectCreationKey,
   selectEstimatorScenario,
-  selectPendingProjectDraft,
   storeEstimatorHandoff,
-  validProjectCreationKey,
   validateEstimatorScenario,
 } from "../src/public-estimator.js";
 
@@ -151,34 +147,25 @@ test("stored estimator parsing returns only allowlisted valid fields", () => {
 test("current navigation state wins over stale readable storage", () => {
   const stale = { ...puneRequest, city: "Jaipur", quality: "Essential" };
   const current = { ...puneRequest, city: "Bengaluru", quality: "Premium" };
-  const stalePending = { name: "Stale brief", ...stale };
-  const currentPending = { name: "Current brief", ...current };
   const storage = {
     getItem(key) {
       if (key === "grihagrid.estimator") return JSON.stringify(stale);
-      if (key === "grihagrid.pendingProject") return JSON.stringify(stalePending);
       return null;
     },
   };
   assert.deepEqual(selectEstimatorScenario(storage, { estimatorScenario: current }), current);
-  assert.deepEqual(selectPendingProjectDraft(storage, { pendingProject: currentPending }), currentPending);
   assert.deepEqual(selectEstimatorScenario(storage, {}), stale);
-  assert.deepEqual(selectPendingProjectDraft(storage, {}), stalePending);
 });
 
-test("auth recovery requires an explicit continuation and ignores abandoned storage", () => {
+test("auth retry-key recovery requires an explicit continuation", () => {
   const key = "project-create-key-0001";
-  const pending = { name: "Pending brief", ...puneRequest };
   const storage = {
     getItem(storageKey) {
-      if (storageKey === "grihagrid.pendingProject") return JSON.stringify(pending);
       if (storageKey === "grihagrid.projectCreationKey") return key;
       return null;
     },
   };
-  assert.equal(selectAuthPendingProjectDraft(storage, {}), null);
   assert.equal(selectAuthProjectCreationKey(storage, {}), null);
-  assert.deepEqual(selectAuthPendingProjectDraft(storage, { projectContinuation: true }), pending);
   assert.equal(selectAuthProjectCreationKey(storage, { projectContinuation: true }), key);
   assert.equal(selectAuthProjectCreationKey(storage, {
     projectContinuation: true,
@@ -209,6 +196,30 @@ test("estimator attribution is consumed once and storage failures cannot break p
     removeItem() { throw new DOMException("blocked", "SecurityError"); },
   };
   assert.equal(consumePublicEstimatorAttribution(blocked), false);
+});
+
+test("the first anonymous envelope consumes every estimator payload source", () => {
+  const values = new Map([
+    ["grihagrid.estimator", JSON.stringify(puneRequest)],
+    ["grihagrid.estimatorSource", "public_estimator"],
+    ["grihagrid.estimatorCreationKey", "project-create-key-0001"],
+  ]);
+  const storage = {
+    getItem(key) { return values.get(key) ?? null; },
+    removeItem(key) { values.delete(key); },
+  };
+  const consumed = consumeEstimatorHandoffPayload(storage, {
+    projectCreationKey: "project-create-key-0001",
+    estimatorSource: "public_estimator",
+    estimatorScenario: puneRequest,
+  });
+  assert.equal(consumed.attributed, true);
+  assert.deepEqual(consumed.navigationState, {
+    projectCreationKey: "project-create-key-0001",
+    estimatorSource: "public_estimator",
+  });
+  assert.equal(selectEstimatorScenario(storage, consumed.navigationState), null);
+  assert.equal(values.size, 0);
 });
 
 test("estimator handoff survives blocked storage through bounded navigation state", () => {
@@ -242,51 +253,6 @@ test("estimator handoff survives blocked storage through bounded navigation stat
   assert.deepEqual(publicEstimatorAttributionHeaders(blocked, {}, projectCreationKey), {});
   assert.equal(storeEstimatorHandoff(storage, { ...puneRequest, width: 2 }, projectCreationKey), false);
   assert.equal(storeEstimatorHandoff(storage, puneRequest, "bad key!"), false);
-});
-
-test("account-mode switches preserve only the pending project and estimator attribution fallback", () => {
-  const blocked = {
-    getItem() { throw new DOMException("blocked", "SecurityError"); },
-  };
-  const pendingProject = { name: "Pending brief", ...puneRequest, privateServerField: "must-not-survive" };
-  const sanitizedProject = { name: "Pending brief", ...puneRequest };
-  const projectCreationKey = "project-create-key-0001";
-  const continuation = estimatorAuthContinuationState(
-    blocked,
-    {
-      pendingProject,
-      estimatorSource: "public_estimator",
-      estimatorScenario: puneRequest,
-      projectCreationKey,
-      token: "must-not-survive",
-    },
-    pendingProject,
-    projectCreationKey,
-  );
-  assert.deepEqual(continuation, {
-    projectContinuation: true,
-    pendingProject: sanitizedProject,
-    estimatorSource: "public_estimator",
-    projectCreationKey,
-  });
-  assert.deepEqual(estimatorAuthContinuationState(blocked, { estimatorSource: "forged" }, pendingProject, "bad key!"), {
-    projectContinuation: true,
-    pendingProject: sanitizedProject,
-  });
-  assert.deepEqual(estimatorAuthContinuationState(blocked, { estimatorSource: "public_estimator" }, null), {});
-  assert.deepEqual(parsePendingProjectDraft(JSON.stringify(pendingProject)), sanitizedProject);
-  assert.equal(JSON.stringify(continuation).includes("must-not-survive"), false);
-  assert.equal(validProjectCreationKey(projectCreationKey), projectCreationKey);
-  assert.equal(validProjectCreationKey("bad key!"), null);
-});
-
-test("pending project recovery rejects nested private values and drops unknown fields", () => {
-  assert.equal(parsePendingProjectDraft({ ...puneRequest, name: { token: "secret" } }), null);
-  assert.equal(parsePendingProjectDraft({ ...puneRequest, style: { token: "secret" } }), null);
-  assert.deepEqual(
-    parsePendingProjectDraft({ ...puneRequest, name: "Safe project", nested: { token: "secret" } }),
-    { name: "Safe project", ...puneRequest },
-  );
 });
 
 test("a throwing browser storage getter degrades to the bounded navigation fallback", () => {
