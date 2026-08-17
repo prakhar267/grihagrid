@@ -165,6 +165,8 @@ const FAMILY_ALIGNMENT_CONFIDENCE = new Set(["high", "medium", "low"]);
 const FAMILY_ALIGNMENT_REASONS = new Set(["budget", "space", "parking", "accessibility", "future_expansion", "construction_complexity"]);
 const FAMILY_ALIGNMENT_RESPONSE_LIMIT = 5;
 const FAMILY_ALIGNMENT_HISTORY_LIMIT = 20;
+const FAMILY_ALIGNMENT_PUBLIC_READ_BODY_BYTES = 512;
+const FAMILY_ALIGNMENT_PUBLIC_WRITE_BODY_BYTES = 1_536;
 const REPORT_SHARE_SECTIONS = Object.freeze([
   "overview",
   "programme",
@@ -5247,7 +5249,7 @@ async function createFamilyAlignment(request, env, projectId) {
   }
   const row = { id, project_id: projectId, user_id: session.user_id, comparison_id: comparison.id, comparison_version: comparison.version, response_count: 0, access_count: 0, expires_at: expiresAt, created_at: createdAt, revoked_at: null };
   await familyAlignmentEvent(db, "family_alignment_room_created", "owner_compare");
-  return json({ room: { ...familyAlignmentRoomMetadata(row), url: `${appOrigin}/align/${token}` } }, 201);
+  return json({ room: { ...familyAlignmentRoomMetadata(row), url: `${appOrigin}/align#${token}` } }, 201);
 }
 
 async function revokeFamilyAlignment(request, env, projectId, roomId) {
@@ -5412,6 +5414,71 @@ function normalizeFamilyAlignmentResponse(body) {
   return { role: body.role, preference: body.preference, confidence: body.confidence, reasons: body.reasons };
 }
 
+function normalizePublicFamilyAlignmentRequest(body, includeResponse = false) {
+  const fields = includeResponse ? ["token", "response"] : ["token"];
+  if (!body || typeof body !== "object" || Array.isArray(body)
+      || Object.getPrototypeOf(body) !== Object.prototype
+      || Object.keys(body).length !== fields.length
+      || fields.some((field) => !Object.hasOwn(body, field))
+      || typeof body.token !== "string"
+      || !/^[A-Za-z0-9_-]{43}$/u.test(body.token)) {
+    throw new HttpError(404, "review room not found", "family_alignment_not_found");
+  }
+  return includeResponse
+    ? { token: body.token, response: body.response }
+    : { token: body.token };
+}
+
+async function readPublicFamilyAlignmentRequest(request, includeResponse = false) {
+  const limit = includeResponse
+    ? FAMILY_ALIGNMENT_PUBLIC_WRITE_BODY_BYTES
+    : FAMILY_ALIGNMENT_PUBLIC_READ_BODY_BYTES;
+  const mediaType = String(request.headers.get("content-type") || "")
+    .split(";", 1)[0]
+    .trim()
+    .toLowerCase();
+  if (mediaType !== "application/json") {
+    throw new HttpError(404, "review room not found", "family_alignment_not_found");
+  }
+  const declared = request.headers.get("content-length");
+  if (declared != null && (!/^\d+$/u.test(declared.trim()) || Number(declared) > limit)) {
+    throw new HttpError(404, "review room not found", "family_alignment_not_found");
+  }
+  if (!request.body) throw new HttpError(404, "review room not found", "family_alignment_not_found");
+  const reader = request.body.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!(value instanceof Uint8Array)) throw new Error("invalid request chunk");
+      total += value.byteLength;
+      if (total > limit) {
+        await reader.cancel().catch(() => {});
+        throw new Error("request body is too large");
+      }
+      chunks.push(value);
+    }
+    const bytes = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    const body = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    return normalizePublicFamilyAlignmentRequest(body, includeResponse);
+  } catch (error) {
+    if (error instanceof HttpError
+        && ["family_alignment_not_found", "invalid_family_alignment_response"].includes(error.code)) {
+      throw error;
+    }
+    throw new HttpError(404, "review room not found", "family_alignment_not_found");
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 function familyResponseToken(request) {
   const token = String(request.headers.get("x-family-response-token") || "").trim();
   if (!/^[A-Za-z0-9_-]{40,128}$/u.test(token)) {
@@ -5445,11 +5512,13 @@ async function updateFamilyAlignmentReceipt(db, roomId, receiptHash, responseId,
   }
 }
 
-async function putPublicFamilyAlignmentResponse(request, env, token) {
+async function putPublicFamilyAlignmentResponse(request, env, token, responseBody = undefined) {
   requireTrustedOrigin(request, env);
   const { db, room } = await publicFamilyAlignmentRoom(request, env, token);
   await rateLimit(request, env, "family-alignment-response", 60, 60 * 60);
-  const normalized = normalizeFamilyAlignmentResponse(await readJson(request));
+  const normalized = normalizeFamilyAlignmentResponse(
+    responseBody === undefined ? await readJson(request) : responseBody,
+  );
   const receiptHash = await digestHex(`family-alignment:${room.id}:${familyResponseToken(request)}`);
   const existing = await db.prepare(
     "SELECT id FROM family_alignment_responses WHERE room_id=? AND receipt_hash=?",
@@ -5521,6 +5590,30 @@ async function putPublicFamilyAlignmentResponse(request, env, token) {
   }
   await familyAlignmentEvent(db, "family_alignment_response_submitted", "family_review");
   return json({ response: normalized, saved: true, updated: false }, 201);
+}
+
+async function getSharedFamilyAlignment(request, env) {
+  let body;
+  try {
+    requireTrustedOrigin(request, env);
+    body = await readPublicFamilyAlignmentRequest(request);
+  } catch (error) {
+    await settleUnreadRequestBody(request);
+    throw error;
+  }
+  return getPublicFamilyAlignment(request, env, body.token);
+}
+
+async function putSharedFamilyAlignmentResponse(request, env) {
+  let body;
+  try {
+    requireTrustedOrigin(request, env);
+    body = await readPublicFamilyAlignmentRequest(request, true);
+  } catch (error) {
+    await settleUnreadRequestBody(request);
+    throw error;
+  }
+  return putPublicFamilyAlignmentResponse(request, env, body.token, body.response);
 }
 
 async function chooseDecisionScenario(request, env, projectId) {
@@ -7854,6 +7947,16 @@ async function api(request, env, ctx, url) {
     if (url.pathname === "/api/events/aggregate") {
       return request.method === "GET" ? await getProductEventAggregates(request, env, url) : methodNotAllowed(["GET"]);
     }
+    if (url.pathname === "/api/shared/family-alignment") {
+      return request.method === "POST"
+        ? await getSharedFamilyAlignment(request, env)
+        : methodNotAllowed(["POST"]);
+    }
+    if (url.pathname === "/api/shared/family-alignment/response") {
+      return request.method === "PUT"
+        ? await putSharedFamilyAlignmentResponse(request, env)
+        : methodNotAllowed(["PUT"]);
+    }
     const publicFamilyResponseMatch = url.pathname.match(/^\/api\/family-alignment\/([^/]+)\/response$/u);
     if (publicFamilyResponseMatch) {
       // Family bearer tokens are strict base64url. Keep the raw path segment so
@@ -8118,6 +8221,8 @@ function isApiRoute(pathname) {
     "/api/events",
     "/api/events/aggregate",
     "/api/shared/report",
+    "/api/shared/family-alignment",
+    "/api/shared/family-alignment/response",
     "/api/payments/razorpay/webhook",
   ]).has(pathname)
     || /^\/api\/orders\/[^/]+(?:\/(?:fulfillment|artifact|progress))?$/u.test(pathname)
@@ -8139,10 +8244,13 @@ function isAppNavigation(request, url) {
 function operationalRoute(pathname) {
   if (/^\/api\/shared\/decision-compare\/[^/]+$/u.test(pathname)) return "/api/shared/decision-compare/:token";
   if (pathname === "/api/shared/report") return "/api/shared/report";
+  if (pathname === "/api/shared/family-alignment") return "/api/shared/family-alignment";
+  if (pathname === "/api/shared/family-alignment/response") return "/api/shared/family-alignment/response";
   if (/^\/api\/family-alignment\/[^/]+\/response$/u.test(pathname)) return "/api/family-alignment/:token/response";
   if (/^\/api\/family-alignment\/[^/]+$/u.test(pathname)) return "/api/family-alignment/:token";
   if (/^\/share\/decision\/[^/]+$/u.test(pathname)) return "/share/decision/:token";
   if (pathname === "/share/report") return "/share/report";
+  if (pathname === "/align") return "/align";
   if (/^\/align\/[^/]+$/u.test(pathname)) return "/align/:token";
   if (isApiRoute(pathname)) {
     return pathname
@@ -8200,6 +8308,17 @@ function protectSharedEstimatorDocument(response) {
   });
 }
 
+function protectPrivateFamilyAlignmentDocument(response) {
+  const headers = new Headers(response.headers);
+  headers.set("cache-control", "no-store");
+  headers.set("x-robots-tag", "noindex,nofollow,noarchive");
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 function sharedEstimatorAppShellRequest(request) {
   const indexUrl = new URL(request.url);
   indexUrl.pathname = "/index.html";
@@ -8207,6 +8326,20 @@ function sharedEstimatorAppShellRequest(request) {
   indexUrl.hash = "";
   // Do not clone the navigation request: its canonical scenario query and any
   // ambient account cookies or authorization headers are not asset inputs.
+  return new Request(indexUrl, { method: request.method });
+}
+
+function privateFamilyAlignmentDocumentPath(pathname) {
+  return pathname === "/align" || pathname.startsWith("/align/");
+}
+
+function privateFamilyAlignmentAppShellRequest(request) {
+  const indexUrl = new URL(request.url);
+  indexUrl.pathname = "/index.html";
+  indexUrl.search = "";
+  indexUrl.hash = "";
+  // The legacy path may contain the bearer. Neither it nor ambient account
+  // credentials are inputs to the public application shell.
   return new Request(indexUrl, { method: request.method });
 }
 
@@ -8237,6 +8370,8 @@ export default {
       finalResponse = secure(await api(request, env, ctx, url));
     } else if (url.pathname === "/estimate" && ["GET", "HEAD"].includes(request.method)) {
       finalResponse = secure(await env.ASSETS.fetch(sharedEstimatorAppShellRequest(request)));
+    } else if (privateFamilyAlignmentDocumentPath(url.pathname) && ["GET", "HEAD"].includes(request.method)) {
+      finalResponse = secure(await env.ASSETS.fetch(privateFamilyAlignmentAppShellRequest(request)));
     } else {
       const response = await env.ASSETS.fetch(request);
       const isHtmlNavigation = isAppNavigation(request, url);
@@ -8257,6 +8392,9 @@ export default {
     }
     if (url.pathname === "/estimate" && ["GET", "HEAD"].includes(request.method)) {
       finalResponse = protectSharedEstimatorDocument(finalResponse);
+    }
+    if (privateFamilyAlignmentDocumentPath(url.pathname) && ["GET", "HEAD"].includes(request.method)) {
+      finalResponse = protectPrivateFamilyAlignmentDocument(finalResponse);
     }
     logOperationalRequest(request, env, finalResponse, startedAt, requestId);
     return withRequestId(finalResponse, requestId);
@@ -8338,6 +8476,11 @@ export const __test = {
   familyAlignmentPublicProjection,
   familyAlignmentSummary,
   normalizeFamilyAlignmentResponse,
+  normalizePublicFamilyAlignmentRequest,
+  readPublicFamilyAlignmentRequest,
+  protectPrivateFamilyAlignmentDocument,
+  privateFamilyAlignmentAppShellRequest,
+  privateFamilyAlignmentDocumentPath,
   scopedIdempotencyKey,
   stableStringify,
   publicDecisionArtifact,

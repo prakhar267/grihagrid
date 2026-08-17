@@ -130,6 +130,15 @@ existing login fence. Release preflight must report no unexpected pending
 migration. Worker rollback removes the UI/routes but cannot and must not undo a
 completed generation bump or resurrect deleted sessions.
 
+The Family Alignment privacy-transport cut also adds no migration. New room
+capabilities live in `/align` fragments and cross the network only inside
+strict JSON bodies sent to constant anonymous API paths. The Worker serves the
+document through a clean credential-free `/index.html` asset request and keeps
+the existing D1 digest, admission, receipt-cap, closure and retention model.
+Legacy token paths remain templated and compatible only for their seven-day
+drain window. Rolling back to the prior client is data-safe but temporarily
+cannot render newly issued fragment links; roll forward restores them.
+
 ## Reliability targets
 
 - Public calculator availability: 99.9% monthly.

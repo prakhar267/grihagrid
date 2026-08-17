@@ -151,6 +151,85 @@ test("shared-estimate documents are no-store, noindex, and never log query value
   }
 });
 
+test("canonical and legacy Family Alignment documents fetch a clean credential-free app shell", async () => {
+  const legacyToken = "l".repeat(43);
+  const privateQuery = "source=private-family-message";
+  const logs = [];
+  const originalLog = console.log;
+  console.log = (line) => { logs.push(String(line)); };
+  try {
+    for (const [pathname, expectedRoute] of [
+      ["/align", "/align"],
+      [`/align/${legacyToken}`, "/align/:token"],
+      ["/align/", "/:frontend"],
+      [`/align/${legacyToken}/`, "/:frontend"],
+      [`/align/${legacyToken}/extra`, "/:frontend"],
+    ]) {
+      for (const method of ["GET", "HEAD"]) {
+        const calls = [];
+        const response = await worker.fetch(new Request(`https://example.test${pathname}?${privateQuery}`, {
+          method,
+          headers: {
+            accept: "text/html",
+            authorization: "Bearer private-account-token",
+            cookie: "__Host-grihagrid_session=private-session; grihagrid_csrf=private-csrf",
+            "x-csrf-token": "private-csrf",
+            "x-family-response-token": "private-response-receipt",
+          },
+        }), {
+          APP_ENV: "test",
+          CF_VERSION_METADATA: { id: "family-document-test-version" },
+          ASSETS: {
+            fetch: async (request) => {
+              const url = new URL(request.url);
+              calls.push({
+                url: `${url.pathname}${url.search}${url.hash}`,
+                method: request.method,
+                authorization: request.headers.get("authorization"),
+                cookie: request.headers.get("cookie"),
+                csrf: request.headers.get("x-csrf-token"),
+                receipt: request.headers.get("x-family-response-token"),
+              });
+              assert.equal(url.pathname, "/index.html");
+              return new Response(method === "HEAD" ? null : "app", {
+                status: 200,
+                headers: {
+                  "cache-control": "public, max-age=3600",
+                  "content-type": "text/html; charset=utf-8",
+                  "x-robots-tag": "index,follow",
+                },
+              });
+            },
+          },
+        });
+
+        assert.equal(response.status, 200);
+        assert.equal(await response.text(), method === "HEAD" ? "" : "app");
+        assert.equal(response.headers.get("cache-control"), "no-store");
+        assert.equal(response.headers.get("x-robots-tag"), "noindex,nofollow,noarchive");
+        assert.equal(response.headers.get("referrer-policy"), "no-referrer");
+        assert.deepEqual(calls, [{
+          url: "/index.html",
+          method,
+          authorization: null,
+          cookie: null,
+          csrf: null,
+          receipt: null,
+        }]);
+
+        const completion = JSON.parse(logs.at(-1));
+        assert.equal(completion.route, expectedRoute);
+        assert.equal(completion.method, method);
+        assert.equal(completion.status, 200);
+        assert.equal(logs.at(-1).includes(legacyToken), false);
+        assert.equal(logs.at(-1).includes(privateQuery), false);
+      }
+    }
+  } finally {
+    console.log = originalLog;
+  }
+});
+
 test("overrides platform HTML fallbacks for known SPA routes", async () => {
   const calls = [];
   const response = await worker.fetch(

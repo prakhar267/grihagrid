@@ -320,14 +320,16 @@ function extractCookies(response, csrfToken) {
   return `__Host-grihagrid_session=${session}; grihagrid_csrf=${csrfToken}`;
 }
 
-async function call(origin, pathname, { method = "GET", body, auth, headers = {} } = {}) {
+async function call(origin, pathname, {
+  method = "GET", body, auth, headers = {}, originHeader = origin,
+} = {}) {
   const requestHeaders = new Headers(headers);
   if (body !== undefined) requestHeaders.set("content-type", "application/json");
   if (auth) {
     requestHeaders.set("cookie", auth.cookie);
     requestHeaders.set("x-csrf-token", auth.csrf);
   }
-  if (!["GET", "HEAD"].includes(method)) requestHeaders.set("origin", origin);
+  if (!["GET", "HEAD"].includes(method)) requestHeaders.set("origin", originHeader);
   const response = await fetch(`${origin}${pathname}`, {
     method,
     headers: requestHeaders,
@@ -412,8 +414,8 @@ async function createRoom(origin, auth, decision, key) {
 }
 
 function roomToken(room) {
-  assert.match(room.url, /^https:\/\/app\.example\.test\/align\/[A-Za-z0-9_-]{40,64}$/u);
-  return room.url.split("/").at(-1);
+  assert.match(room.url, /^https:\/\/app\.example\.test\/align#[A-Za-z0-9_-]{43}$/u);
+  return new URL(room.url).hash.slice(1);
 }
 
 function responseToken() {
@@ -421,11 +423,27 @@ function responseToken() {
 }
 
 async function submitResponse(origin, token, receipt, body) {
-  return call(origin, `/api/family-alignment/${token}/response`, {
+  return call(origin, "/api/shared/family-alignment/response", {
     method: "PUT",
     headers: { "x-family-response-token": receipt },
-    body,
+    body: { token, response: body },
   });
+}
+
+async function readRoom(origin, token, options = {}) {
+  return call(origin, "/api/shared/family-alignment", {
+    method: "POST",
+    body: { token },
+    ...options,
+  });
+}
+
+function assertGenericFamilyNotFound(result, context) {
+  assert.equal(result.response.status, 404, `${context}: ${JSON.stringify(result.payload)}`);
+  assert.deepEqual(result.payload, {
+    error: "review room not found",
+    code: "family_alignment_not_found",
+  }, context);
 }
 
 function assertNoForbiddenPublicFields(value) {
@@ -510,7 +528,98 @@ test("Family Alignment is redacted, bounded, owner-scoped, revocable, and retain
       [1, 1],
       `created room expiry must be canonical: ${JSON.stringify(initialExpiryState)}`,
     );
-    const publicRead = await call(server.origin, `/api/family-alignment/${mainToken}`);
+
+    // Reject transport and envelope failures before either fixed endpoint can
+    // admit a read or write against the room. Token failures deliberately share
+    // one generic response so parsing does not become a capability oracle.
+    const rejectedResponseBody = {
+      role: "spouse", preference: "A", confidence: "high", reasons: ["budget"],
+    };
+    const malformedBearer = "z".repeat(43);
+    const untrustedRead = await readRoom(server.origin, mainToken, {
+      originHeader: "https://evil.example.test",
+    });
+    assert.equal(untrustedRead.response.status, 403);
+    assert.equal(untrustedRead.payload.code, "origin_rejected");
+    const untrustedWrite = await call(server.origin, "/api/shared/family-alignment/response", {
+      method: "PUT",
+      originHeader: "https://evil.example.test",
+      headers: { "x-family-response-token": responseToken() },
+      body: { token: mainToken, response: rejectedResponseBody },
+    });
+    assert.equal(untrustedWrite.response.status, 403);
+    assert.equal(untrustedWrite.payload.code, "origin_rejected");
+
+    for (const [context, body] of [
+      ["missing token", {}],
+      ["array envelope", []],
+      ["malformed token", { token: "short" }],
+      ["unknown token", { token: malformedBearer }],
+      ["unsupported read field", { token: mainToken, extra: true }],
+    ]) {
+      assertGenericFamilyNotFound(
+        await readRoom(server.origin, malformedBearer, { body }),
+        context,
+      );
+    }
+    const malformedWrite = await call(server.origin, "/api/shared/family-alignment/response", {
+      method: "PUT",
+      headers: { "x-family-response-token": responseToken() },
+      body: { token: "short", response: rejectedResponseBody },
+    });
+    assertGenericFamilyNotFound(malformedWrite, "malformed response token envelope");
+    const unsupportedWriteField = await call(server.origin, "/api/shared/family-alignment/response", {
+      method: "PUT",
+      headers: { "x-family-response-token": responseToken() },
+      body: { token: mainToken, response: rejectedResponseBody, extra: true },
+    });
+    assertGenericFamilyNotFound(unsupportedWriteField, "unsupported response envelope field");
+
+    const sameOriginTextResponse = await fetch(`${server.origin}/api/shared/family-alignment`, {
+      method: "POST",
+      headers: { origin: server.origin, "content-type": "text/plain; charset=utf-8" },
+      body: JSON.stringify({ token: mainToken }),
+    });
+    assertGenericFamilyNotFound({
+      response: sameOriginTextResponse,
+      payload: await sameOriginTextResponse.json(),
+    }, "unsupported read media type");
+    const canonicalJsonResponse = await fetch(`${server.origin}/api/shared/family-alignment`, {
+      method: "POST",
+      headers: {
+        origin: "https://app.example.test",
+        "content-type": "Application/JSON; charset=utf-8",
+      },
+      body: JSON.stringify({ token: malformedBearer }),
+    });
+    assertGenericFamilyNotFound({
+      response: canonicalJsonResponse,
+      payload: await canonicalJsonResponse.json(),
+    }, "canonical origin and parameterized JSON");
+    const oversizedRead = await readRoom(server.origin, mainToken, {
+      body: { token: mainToken, padding: "x".repeat(70 * 1024) },
+    });
+    assertGenericFamilyNotFound(oversizedRead, "oversized read envelope");
+
+    // Miniflare may retire its internal HTTP/1 socket after the Worker rejects
+    // an unread oversized body. Restart against the same persisted D1 state so
+    // the next assertion measures admission rather than harness connection reuse.
+    capturedLogs.push(server.logs());
+    await stopWorker(server);
+    server = null;
+    server = await startWorker(stateDirectory, assetsDirectory, port);
+
+    const rejectedAdmissionState = (await liveQuery(server, `
+      SELECT access_count,last_accessed_at,response_count,
+             (SELECT COUNT(*) FROM family_alignment_responses f WHERE f.room_id=r.id) AS actual_count
+        FROM family_alignment_rooms r WHERE r.id=${sqlLiteral(mainRoom.id)};
+    `))[0];
+    assert.equal(Number(rejectedAdmissionState.access_count), 0);
+    assert.equal(rejectedAdmissionState.last_accessed_at, null);
+    assert.equal(Number(rejectedAdmissionState.response_count), 0);
+    assert.equal(Number(rejectedAdmissionState.actual_count), 0);
+
+    const publicRead = await readRoom(server.origin, mainToken);
     assert.equal(publicRead.response.status, 200, JSON.stringify(publicRead.payload));
     assert.deepEqual(Object.keys(publicRead.payload), ["room"]);
     assert.deepEqual(
@@ -529,6 +638,60 @@ test("Family Alignment is redacted, bounded, owner-scoped, revocable, and retain
     `))[0];
     assert.equal(Number(successfulReadState.access_count), 1, "one admitted read must increment exactly once");
     assert.ok(successfulReadState.last_accessed_at, "one admitted read must record its access time");
+
+    // Keep the prior path-based APIs functional during the fragment-link
+    // transition. Isolate this compatibility proof so legacy traffic cannot
+    // alter the primary room's response cap, closure races, or retention math.
+    const legacyCompatibility = await createDecision(
+      server.origin,
+      owner,
+      "LEGACY_COMPATIBILITY",
+      [38, 62],
+      "Jaipur",
+    );
+    const legacyCompatibilityCreated = await createRoom(
+      server.origin,
+      owner,
+      legacyCompatibility,
+      "family-legacy-compatibility-create",
+    );
+    assert.equal(
+      legacyCompatibilityCreated.response.status,
+      201,
+      JSON.stringify(legacyCompatibilityCreated.payload),
+    );
+    const legacyRoom = legacyCompatibilityCreated.payload.room;
+    const legacyToken = roomToken(legacyRoom);
+    const legacyReceipt = responseToken();
+    const legacyRead = await call(server.origin, `/api/family-alignment/${legacyToken}`);
+    assert.equal(legacyRead.response.status, 200, JSON.stringify(legacyRead.payload));
+    assertNoForbiddenPublicFields(legacyRead.payload);
+    assert.equal(legacyRead.payload.room.responseCount, 0);
+    const legacyBody = {
+      role: "advisor", preference: "B", confidence: "medium", reasons: ["accessibility"],
+    };
+    const legacyWrite = await call(server.origin, `/api/family-alignment/${legacyToken}/response`, {
+      method: "PUT",
+      headers: { "x-family-response-token": legacyReceipt },
+      body: legacyBody,
+    });
+    assert.equal(legacyWrite.response.status, 201, JSON.stringify(legacyWrite.payload));
+    assert.deepEqual(legacyWrite.payload, { response: legacyBody, saved: true, updated: false });
+    const legacyCanonicalRead = await readRoom(server.origin, legacyToken);
+    assert.equal(legacyCanonicalRead.response.status, 200, JSON.stringify(legacyCanonicalRead.payload));
+    assert.equal(legacyCanonicalRead.payload.room.responseCount, 1);
+    const deletedLegacyProject = await call(
+      server.origin,
+      `/api/projects/${legacyCompatibility.project.id}`,
+      { method: "DELETE", auth: owner },
+    );
+    assert.equal(deletedLegacyProject.response.status, 204, JSON.stringify(deletedLegacyProject.payload));
+    const deletedLegacyRows = (await liveQuery(server, `
+      SELECT
+        (SELECT COUNT(*) FROM family_alignment_rooms WHERE id=${sqlLiteral(legacyRoom.id)}) AS room_count,
+        (SELECT COUNT(*) FROM family_alignment_responses WHERE room_id=${sqlLiteral(legacyRoom.id)}) AS response_count;
+    `))[0];
+    assert.deepEqual(deletedLegacyRows, { room_count: 0, response_count: 0 });
 
     // The public comparison must not survive a dependency failure or a revoke
     // that wins after the initial token lookup but before final read admission.
@@ -562,10 +725,7 @@ test("Family Alignment is redacted, bounded, owner-scoped, revocable, and retain
        END;`,
       "installing the read-admission failure failed",
     );
-    const failedAdmission = await call(
-      server.origin,
-      `/api/family-alignment/${readAdmissionToken}`,
-    );
+    const failedAdmission = await readRoom(server.origin, readAdmissionToken);
     assert.equal(failedAdmission.response.status, 503, JSON.stringify(failedAdmission.payload));
     assert.equal(Object.hasOwn(failedAdmission.payload, "room"), false);
     assert.equal(JSON.stringify(failedAdmission.payload).includes("synthetic private read admission outage"), false);
@@ -581,10 +741,7 @@ test("Family Alignment is redacted, bounded, owner-scoped, revocable, and retain
        END;`,
       "installing the read-vs-revoke interleaving failed",
     );
-    const revokeWonAdmission = await call(
-      server.origin,
-      `/api/family-alignment/${readAdmissionToken}`,
-    );
+    const revokeWonAdmission = await readRoom(server.origin, readAdmissionToken);
     assert.equal(revokeWonAdmission.response.status, 410, JSON.stringify(revokeWonAdmission.payload));
     assert.equal(revokeWonAdmission.payload.code, "family_alignment_unavailable");
     assert.equal(Object.hasOwn(revokeWonAdmission.payload, "room"), false);
@@ -628,10 +785,7 @@ test("Family Alignment is redacted, bounded, owner-scoped, revocable, and retain
        END;`,
       "installing the read-vs-archive interleaving failed",
     );
-    const archiveWonAdmission = await call(
-      server.origin,
-      `/api/family-alignment/${archiveAdmissionToken}`,
-    );
+    const archiveWonAdmission = await readRoom(server.origin, archiveAdmissionToken);
     assert.equal(archiveWonAdmission.response.status, 410, JSON.stringify(archiveWonAdmission.payload));
     assert.equal(archiveWonAdmission.payload.code, "family_alignment_unavailable");
     assert.equal(Object.hasOwn(archiveWonAdmission.payload, "room"), false);
@@ -701,10 +855,7 @@ test("Family Alignment is redacted, bounded, owner-scoped, revocable, and retain
        END;`,
       "installing malformed and expired read-admission interleavings failed",
     );
-    const invalidExpiryRead = await call(
-      server.origin,
-      `/api/family-alignment/${invalidExpiryToken}`,
-    );
+    const invalidExpiryRead = await readRoom(server.origin, invalidExpiryToken);
     assert.equal(invalidExpiryRead.response.status, 503, JSON.stringify(invalidExpiryRead.payload));
     assert.equal(Object.hasOwn(invalidExpiryRead.payload, "room"), false);
     assert.equal(JSON.stringify(invalidExpiryRead.payload).includes("2027-02-30"), false);
@@ -714,17 +865,11 @@ test("Family Alignment is redacted, bounded, owner-scoped, revocable, and retain
         WHERE id=${sqlLiteral(invalidExpiryRoom.id)};`,
       "installing a non-canonical stored expiry failed",
     );
-    const nonCanonicalExpiryRead = await call(
-      server.origin,
-      `/api/family-alignment/${invalidExpiryToken}`,
-    );
+    const nonCanonicalExpiryRead = await readRoom(server.origin, invalidExpiryToken);
     assert.equal(nonCanonicalExpiryRead.response.status, 503, JSON.stringify(nonCanonicalExpiryRead.payload));
     assert.equal(Object.hasOwn(nonCanonicalExpiryRead.payload, "room"), false);
     assert.equal(JSON.stringify(nonCanonicalExpiryRead.payload).includes("2099-01-02"), false);
-    const expiryWonAdmission = await call(
-      server.origin,
-      `/api/family-alignment/${expiryAdmissionToken}`,
-    );
+    const expiryWonAdmission = await readRoom(server.origin, expiryAdmissionToken);
     assert.equal(expiryWonAdmission.response.status, 410, JSON.stringify(expiryWonAdmission.payload));
     assert.equal(expiryWonAdmission.payload.code, "family_alignment_expired");
     assert.equal(Object.hasOwn(expiryWonAdmission.payload, "room"), false);
@@ -784,9 +929,12 @@ test("Family Alignment is redacted, bounded, owner-scoped, revocable, and retain
       comment: "PRIVATE_FREE_TEXT_DO_NOT_STORE",
     });
     assert.equal(invalidBody.response.status, 400);
-    const missingReceipt = await call(server.origin, `/api/family-alignment/${mainToken}/response`, {
+    const missingReceipt = await call(server.origin, "/api/shared/family-alignment/response", {
       method: "PUT",
-      body: { role: "spouse", preference: "A", confidence: "high", reasons: ["budget"] },
+      body: {
+        token: mainToken,
+        response: { role: "spouse", preference: "A", confidence: "high", reasons: ["budget"] },
+      },
     });
     assert.equal(missingReceipt.response.status, 400);
 
@@ -844,7 +992,7 @@ test("Family Alignment is redacted, bounded, owner-scoped, revocable, and retain
       body: { scenarioId: chosenScenarioId },
     });
     assert.equal(chosen.response.status, 201, JSON.stringify(chosen.payload));
-    const afterChoicePublic = await call(server.origin, `/api/family-alignment/${mainToken}`);
+    const afterChoicePublic = await readRoom(server.origin, mainToken);
     assert.equal(afterChoicePublic.response.status, 200);
     assertNoForbiddenPublicFields(afterChoicePublic.payload);
     assert.equal(JSON.stringify(afterChoicePublic.payload).includes(chosenScenarioId), false);
@@ -865,7 +1013,7 @@ test("Family Alignment is redacted, bounded, owner-scoped, revocable, and retain
       auth: owner,
     });
     assert.equal(revokeReplay.response.status, 204);
-    const revokedRead = await call(server.origin, `/api/family-alignment/${mainToken}`);
+    const revokedRead = await readRoom(server.origin, mainToken);
     assert.equal(revokedRead.response.status, 410);
     const revokedUpdate = await submitResponse(server.origin, mainToken, receipts[0], updatedBody);
     assert.equal(revokedUpdate.response.status, 410);
@@ -930,7 +1078,7 @@ test("Family Alignment is redacted, bounded, owner-scoped, revocable, and retain
     ]);
     assert.equal(racedRevoke.response.status, 204);
     assert.ok([201, 410].includes(racedWrite.response.status), JSON.stringify(racedWrite.payload));
-    const closedV2Read = await call(server.origin, `/api/family-alignment/${mainV2Token}`);
+    const closedV2Read = await readRoom(server.origin, mainV2Token);
     assert.equal(closedV2Read.response.status, 410);
     const racedState = (await liveQuery(server, `
       SELECT r.response_count,(SELECT COUNT(*) FROM family_alignment_responses f WHERE f.room_id=r.id) AS actual_count
@@ -1071,12 +1219,12 @@ test("Family Alignment is redacted, bounded, owner-scoped, revocable, and retain
     )[0].count, 2);
 
     server = await startWorker(stateDirectory, assetsDirectory, port);
-    const expiredRead = await call(server.origin, `/api/family-alignment/${concurrentToken}`);
+    const expiredRead = await readRoom(server.origin, concurrentToken);
     assert.equal(expiredRead.response.status, 410);
     assert.equal(expiredRead.payload.code, "family_alignment_expired");
-    const activeRead = await call(server.origin, `/api/family-alignment/${activeToken}`);
+    const activeRead = await readRoom(server.origin, activeToken);
     assert.equal(activeRead.response.status, 200);
-    const recentClosedRead = await call(server.origin, `/api/family-alignment/${recentToken}`);
+    const recentClosedRead = await readRoom(server.origin, recentToken);
     assert.equal(recentClosedRead.response.status, 410);
 
     const scheduled = await fetch(`${server.origin}/__scheduled?cron=17+2+*+*+*`);
@@ -1124,12 +1272,18 @@ test("Family Alignment is redacted, bounded, owner-scoped, revocable, and retain
       .filter((line) => line.includes('"type":"request_complete"') || line.includes("Family Alignment aggregate recording failed"))
       .join("\n");
     assert.match(applicationLogs, /Family Alignment aggregate recording failed/u);
-    for (const secret of [mainToken, mainV2Token, raceReceipt, concurrentToken, activeToken, recentToken, ...receipts, ...concurrentReceipts]) {
+    for (const secret of [
+      mainToken, malformedBearer, legacyToken, legacyReceipt, mainV2Token, raceReceipt,
+      concurrentToken, activeToken, recentToken, ...receipts, ...concurrentReceipts,
+    ]) {
       assert.equal(applicationLogs.includes(secret), false, `raw Family Alignment bearer material entered Worker logs: ${secret}`);
     }
     for (const privateValue of main.privateValues) assert.equal(applicationLogs.includes(privateValue), false);
     assert.equal(applicationLogs.includes("PRIVATE_FREE_TEXT_DO_NOT_STORE"), false);
-    assert.match(applicationLogs, /"route":"\/api\/family-alignment\/:token(?:\/response)?"/u);
+    assert.match(applicationLogs, /"route":"\/api\/shared\/family-alignment"/u);
+    assert.match(applicationLogs, /"route":"\/api\/shared\/family-alignment\/response"/u);
+    assert.match(applicationLogs, /"route":"\/api\/family-alignment\/:token"/u);
+    assert.match(applicationLogs, /"route":"\/api\/family-alignment\/:token\/response"/u);
     assert.match(applicationLogs, /"route":"\/api\/projects\/:projectId\/family-alignment\/:roomId"/u);
   } finally {
     if (server) capturedLogs.push(server.logs());

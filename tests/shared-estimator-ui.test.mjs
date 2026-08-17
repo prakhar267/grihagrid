@@ -23,7 +23,7 @@ const appComponent = app.slice(appStart);
 
 test("the shared estimator route is authentication-free and never bootstraps or revalidates a session", () => {
   const authenticationFree = app.slice(app.indexOf("function isAuthenticationFreePath("), app.indexOf("function reportShareCapabilityToken("));
-  assert.match(authenticationFree, /isPublicReportSharePath\(pathname\)\|\|pathname==="\/estimate"/u);
+  assert.match(authenticationFree, /isPublicReportSharePath\(pathname\)\|\|isFamilyAlignmentPath\(pathname\)\|\|pathname==="\/estimate"/u);
   assert.match(appComponent, /useState\(\(\)=>isAuthenticationFreePath\(window\.location\.pathname\)\?null:undefined\)/u);
   assert.match(appComponent, /if\(isAuthenticationFreePath\(path\)\)\{[\s\S]*?authenticatedSession\.current=false;setUser\(null\);return\}[\s\S]*?api\('\/api\/auth\/me'\)/u);
   assert.match(appComponent, /if\(isAuthenticationFreePath\(pathname\)\)\{authenticatedSession\.current=false;setUser\(null\);return\}[\s\S]*?if\(checking\|\|!shouldRevalidateSession/u);

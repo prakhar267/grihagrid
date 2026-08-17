@@ -363,6 +363,18 @@ interleaved within their own real-D1 fixtures.
   idempotent retry/concurrency; no secret reissue on replay; later comparison
   version may create a different room; foreign/missing comparison is the same
   ownership-safe `404`.
+- Family Alignment public transport: new owner responses return only
+  `/align#<43-character token>`. GET/HEAD `/align` fetch a clean `/index.html`
+  asset request without query, capability, cookies, authorization or CSRF and
+  return no-store/noindex/no-referrer. The client performs no auth bootstrap,
+  uses credential-omitting `POST /api/shared/family-alignment` and `PUT
+  /api/shared/family-alignment/response`, never constructs a token-bearing HTTP
+  URL, and scrubs the fragment for terminal states and print. A legacy
+  `/align/:token` document rewrites to the fragment without reload and uses the
+  canonical APIs; legacy API paths remain behavior-equivalent during the drain
+  window. Reject missing/wrong origin, media type, unknown outer fields,
+  malformed JSON/token and streamed/declaration oversize before D1 admission,
+  with one generic `404` and unchanged counters.
 - Family Alignment public read: valid active token returns only room
   ID/expiry/count/max-five and exactly two redacted A/B scenarios. Assert one
   admitted read increments the access counter exactly once and records its
@@ -403,7 +415,8 @@ interleaved within their own real-D1 fixtures.
   snapshot and finance rows remain byte-for-byte unchanged. Project deletion
   or archive follows the documented ownership/retention contract without
   orphaning room data.
-- Family Alignment observability: public token routes are templated and raw
+- Family Alignment observability: canonical routes are fixed and legacy public
+  token routes are templated. Raw
   room/response tokens, token hashes, referrer, query strings, response body,
   structured choices, and private source data never reach logs. Only
   server-side daily aggregate events
@@ -506,7 +519,8 @@ interleaved within their own real-D1 fixtures.
 | Area | Test | Required result |
 |---|---|---|
 | Owner entry | Save a comparison and create a room twice | One room; seven-day expiry; secret URL appears only on first creation; clear privacy/cap copy |
-| Redaction | Open the public URL and inspect DOM, network, page source and share metadata | Only neutral A/B review facts; no recommendation, selection, owner/project identity, raw input, notes or secret disclosure |
+| Redaction | Open the fragment URL and inspect DOM, network, page source, history, print and share metadata | Only neutral A/B review facts; capability appears in no HTTP URL, DOM/print output, referrer, log or analytics event; no recommendation, selection, owner/project identity, raw input or notes |
+| Transport | Open a new and pre-release legacy URL with ambient account cookies set; inspect the top-level, internal asset and API requests | New link is `/align#…`; legacy path rewrites without reload; the Worker performs no session lookup, strips the incoming navigation credentials from its clean `/index.html` asset fetch, and fixed JSON APIs omit cookies/auth/CSRF; strict envelopes and no-store/noindex/no-referrer hold |
 | Reviewer happy path | Submit with each input method, reload, then update from the same browser | One receipt; recorded then updated announcement; count unchanged; identity is not requested or implied |
 | Capacity | Fill five slots, open from a sixth browser, then update an existing response | Sixth browser is honestly non-submittable; retained receipt can still update; count stays five |
 | Closure | Keep reviewer form open while owner revokes; repeat across expiry | Submit cannot commit; stable accessible closed state; no stale private content remains |

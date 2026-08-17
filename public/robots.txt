@@ -7,6 +7,7 @@ Disallow: /orders
 Disallow: /checkout/
 Disallow: /share/decision/
 Disallow: /share/report
+Disallow: /align
 Disallow: /login
 Disallow: /register
 Disallow: /start

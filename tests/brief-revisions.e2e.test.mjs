@@ -307,7 +307,10 @@ async function createFamilyRoom(origin, auth, projectId, comparisonId, suffix) {
     body: { comparisonId },
   });
   assert.equal(result.response.status, 201, JSON.stringify(result.payload));
-  const token = /\/align\/([^/?#]+)/u.exec(result.payload.room.url)?.[1];
+  const invite = new URL(result.payload.room.url);
+  assert.equal(invite.pathname, "/align");
+  assert.equal(invite.search, "");
+  const token = /^#([A-Za-z0-9_-]{43})$/u.exec(invite.hash)?.[1];
   assert.ok(token, "first Family Alignment creation must return its one-time token URL");
   return { room: result.payload.room, token };
 }
@@ -798,7 +801,10 @@ test("Brief Check revisions are truthful, immutable, owner-scoped, and race safe
     assert.equal(currentHistoricalReport.payload.revision.current, true);
     assertNoInternalRevisionKeys(currentHistoricalReport.payload, { allowReportInputHash: true });
 
-    const closedFamily = await call(server.origin, `/api/family-alignment/${family.token}`);
+    const closedFamily = await call(server.origin, "/api/shared/family-alignment", {
+      method: "POST",
+      body: { token: family.token },
+    });
     assert.equal(closedFamily.response.status, 410, JSON.stringify(closedFamily.payload));
     const currentHome = await call(server.origin, `/api/projects/${project.id}/home`, { auth: owner });
     assert.equal(currentHome.response.status, 200, JSON.stringify(currentHome.payload));

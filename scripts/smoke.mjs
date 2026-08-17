@@ -82,6 +82,22 @@ async function reportShareDocumentCheck(origin, method) {
   return {path,method,status:response.status,latencyMs,attempts};
 }
 
+async function familyAlignmentDocumentCheck(origin, method) {
+  const path="/align";
+  const {response,latencyMs,attempts}=await timedFetch(new URL(path,origin),{
+    method,
+    headers:{accept:"text/html"},
+  });
+  assert.equal(response.status,200,`${method} ${path} returned ${response.status}`);
+  assertSecurityHeaders(response,path);
+  assert.match(response.headers.get("content-type")||"",/^text\/html\b/u,`${method} ${path} must return HTML`);
+  assert.equal(response.headers.get("cache-control"),"no-store",`${method} ${path} must not be cached`);
+  assert.equal(response.headers.get("x-robots-tag"),"noindex,nofollow,noarchive",`${method} ${path} must not be indexed`);
+  assert.equal(response.headers.get("referrer-policy"),"no-referrer",`${method} ${path} must not forward its capability`);
+  await response.body?.cancel();
+  return {path,method,status:response.status,latencyMs,attempts};
+}
+
 async function sharedEstimateDocumentCheck(origin, method) {
   const path="/estimate?v=1&width=30&length=50&city=Pune&floors=G%2B1&quality=Signature";
   const {response,latencyMs,attempts}=await timedFetch(new URL(path,origin),{
@@ -126,6 +142,8 @@ export async function runSmoke(rawOrigin, options = {}) {
   if (!legacyWorker) {
     checks.push(await reportShareDocumentCheck(origin,"GET"));
     checks.push(await reportShareDocumentCheck(origin,"HEAD"));
+    checks.push(await familyAlignmentDocumentCheck(origin,"GET"));
+    checks.push(await familyAlignmentDocumentCheck(origin,"HEAD"));
     checks.push(await sharedEstimateDocumentCheck(origin,"GET"));
     checks.push(await sharedEstimateDocumentCheck(origin,"HEAD"));
   }

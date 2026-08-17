@@ -44,6 +44,55 @@ test("public estimator requests omit cookies and CSRF material", async () => {
   }
 });
 
+test("public Family Alignment writes omit ambient credentials but retain the opaque response receipt", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalWindow = globalThis.window;
+  const originalDocument = globalThis.document;
+  let captured;
+  globalThis.window = { setTimeout, clearTimeout };
+  globalThis.document = { cookie: "grihagrid_csrf=private-cookie-csrf" };
+  globalThis.fetch = async (path, options) => {
+    captured = { path, options };
+    return new Response(JSON.stringify({ saved: true }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  try {
+    const receipt = "r".repeat(43);
+    const token = "f".repeat(43);
+    await publicApi("/api/shared/family-alignment/response", {
+      method: "PUT",
+      headers: {
+        authorization: "Bearer private-account-token",
+        cookie: "__Host-grihagrid_session=private-session",
+        "x-csrf-token": "private-explicit-csrf",
+        "x-family-response-token": receipt,
+      },
+      body: {
+        token,
+        response: { role: "parent", preference: "A", confidence: "medium", reasons: ["budget"] },
+      },
+    });
+
+    assert.equal(captured.path, "/api/shared/family-alignment/response");
+    assert.equal(captured.options.credentials, "omit");
+    assert.equal(captured.options.headers.get("authorization"), null);
+    assert.equal(captured.options.headers.get("cookie"), null);
+    assert.equal(captured.options.headers.get("x-csrf-token"), null);
+    assert.equal(captured.options.headers.get("x-family-response-token"), receipt);
+    assert.equal(captured.options.headers.get("content-type"), "application/json");
+    assert.deepEqual(JSON.parse(captured.options.body), {
+      token,
+      response: { role: "parent", preference: "A", confidence: "medium", reasons: ["budget"] },
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    globalThis.window = originalWindow;
+    globalThis.document = originalDocument;
+  }
+});
+
 test("public estimator requests forward caller cancellation", async () => {
   const originalFetch = globalThis.fetch;
   const originalWindow = globalThis.window;

@@ -812,9 +812,15 @@ unattended cohort.
   project/account identity, raw input/location/dimensions, notes/questions,
   internal IDs, individual receipts and all raw/digested bearer values.
 - [x] Room and response secrets have reviewed entropy, digest-only D1 storage,
-  room scoping and one-time delivery. Invocation logs remain disabled; custom
-  logs template `/align/<token>` and corresponding API paths; CSP and referrer
-  policy prevent third-party disclosure.
+  room scoping and one-time delivery. New room URLs use `/align#<token>` and
+  reviewer read/write use constant API paths with credentials omitted; GET and
+  HEAD are no-store/noindex/no-referrer. Invocation logs remain disabled while
+  custom logs template the draining legacy `/align/<token>` and API paths.
+- [x] Strict 512/1536-byte public envelopes, canonical-origin admission,
+  generic pre-admission `404`s, credential-free asset and API requests,
+  fragment/hashchange/terminal/print scrubbing, robots exclusion, and seven-day
+  legacy-link compatibility are covered by executed unit, Worker and real-D1
+  tests. There is no schema migration.
 - [x] Owner create/read/revoke passes session, canonical-origin, CSRF and IDOR
   tests. Public read/write passes malformed token, abuse limit, cross-room
   token, response takeover, unknown-field, duplicate-reason, HTML/free-text,
