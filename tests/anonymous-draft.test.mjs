@@ -226,6 +226,38 @@ test("shared attribution sidecars are exact, bounded, key-bound, and compare-del
   clearEphemeralAnonymousDraft();
 });
 
+test("shared attribution deletion is successful only after storage confirms absence", () => {
+  clearEphemeralAnonymousDraft();
+  const storage = memoryStorage();
+  const envelope = save(storage, { entryPoint: null }).record;
+  assert.equal(retainAnonymousDraftAttribution(storage, envelope, "shared_estimate", NOW).persisted, true);
+  const retained = storage.getItem(ANONYMOUS_DRAFT_ATTRIBUTION_STORAGE_KEY);
+
+  storage.removeItem = () => {};
+  assert.equal(clearAnonymousDraftAttribution(storage, KEY, NOW), false);
+  assert.equal(storage.getItem(ANONYMOUS_DRAFT_ATTRIBUTION_STORAGE_KEY), retained);
+  assert.equal(readAnonymousDraftAttribution(storage, envelope, NOW), "shared_estimate");
+  clearEphemeralAnonymousDraft();
+});
+
+test("shared attribution deletion fails closed when the exact sidecar cannot be read", () => {
+  clearEphemeralAnonymousDraft();
+  const storage = memoryStorage();
+  const envelope = save(storage, { entryPoint: null }).record;
+  retainAnonymousDraftAttribution(storage, envelope, "shared_estimate", NOW);
+  const getItem = storage.getItem.bind(storage);
+  storage.getItem = key => {
+    if (key === ANONYMOUS_DRAFT_ATTRIBUTION_STORAGE_KEY) throw new DOMException("blocked", "SecurityError");
+    return getItem(key);
+  };
+
+  assert.equal(clearAnonymousDraftAttribution(storage, KEY, NOW), false);
+  assert.equal(storage.values.has(ANONYMOUS_DRAFT_ATTRIBUTION_STORAGE_KEY), true);
+  assert.deepEqual(clearAnonymousDraft(storage, envelope, NOW), { ok: false, removed: true, reason: "unavailable" });
+  assert.equal(storage.values.has(ANONYMOUS_DRAFT_ATTRIBUTION_STORAGE_KEY), true);
+  clearEphemeralAnonymousDraft();
+});
+
 test("the persisted project shape is an exact allowlist with strict scalar values", () => {
   assert.deepEqual(canonicalAnonymousProjectDraft(validDraft), validDraft);
   assert.equal(canonicalAnonymousProjectDraft({ ...validDraft, name: "  My\u00a0 family   home  " }).name, "My family home");
@@ -353,6 +385,51 @@ test("general app boot purges expired drafts only under an available exclusive l
   assert.equal(await purgeInvalidAnonymousDraftOnBoot(contendedWindow, record.expiresAtMs), "contended");
   assert.notEqual(contendedStorage.getItem(ANONYMOUS_DRAFT_STORAGE_KEY), null);
   assert.equal(await purgeInvalidAnonymousDraftOnBoot({ navigator: {} }, record.expiresAtMs), "unsupported");
+});
+
+test("application boot does not report an unconfirmed attribution-sidecar deletion", async () => {
+  clearEphemeralAnonymousDraft();
+  const storage = memoryStorage();
+  const record = save(storage, { entryPoint: null }).record;
+  retainAnonymousDraftAttribution(storage, record, "shared_estimate", NOW);
+  storage.values.delete(ANONYMOUS_DRAFT_STORAGE_KEY);
+  storage.removeItem = () => {};
+  const windowObject = {
+    localStorage: storage,
+    navigator: { locks: { request: (_name, _options, callback) => callback({ name: ANONYMOUS_DRAFT_LOCK_NAME }) } },
+  };
+
+  assert.equal(await purgeInvalidAnonymousDraftOnBoot(windowObject, NOW), "unavailable");
+  assert.notEqual(storage.getItem(ANONYMOUS_DRAFT_ATTRIBUTION_STORAGE_KEY), null);
+  clearEphemeralAnonymousDraft();
+});
+
+test("application boot fails closed when orphan or retained sidecar state is unreadable", async () => {
+  clearEphemeralAnonymousDraft();
+  const windowFor = storage => ({
+    localStorage: storage,
+    navigator: { locks: { request: (_name, _options, callback) => callback({ name: ANONYMOUS_DRAFT_LOCK_NAME }) } },
+  });
+  const unreadableAttribution = storage => {
+    const getItem = storage.getItem.bind(storage);
+    storage.getItem = key => {
+      if (key === ANONYMOUS_DRAFT_ATTRIBUTION_STORAGE_KEY) throw new DOMException("blocked", "SecurityError");
+      return getItem(key);
+    };
+    return storage;
+  };
+
+  const orphan = memoryStorage({ [ANONYMOUS_DRAFT_ATTRIBUTION_STORAGE_KEY]: "unreadable" });
+  assert.equal(await purgeInvalidAnonymousDraftOnBoot(windowFor(unreadableAttribution(orphan)), NOW), "unavailable");
+  assert.equal(orphan.values.has(ANONYMOUS_DRAFT_ATTRIBUTION_STORAGE_KEY), true);
+
+  const retained = memoryStorage();
+  const record = save(retained, { entryPoint: null }).record;
+  retainAnonymousDraftAttribution(retained, record, "shared_estimate", NOW);
+  assert.equal(await purgeInvalidAnonymousDraftOnBoot(windowFor(unreadableAttribution(retained)), NOW), "unavailable");
+  assert.equal(retained.values.has(ANONYMOUS_DRAFT_STORAGE_KEY), true);
+  assert.equal(retained.values.has(ANONYMOUS_DRAFT_ATTRIBUTION_STORAGE_KEY), true);
+  clearEphemeralAnonymousDraft();
 });
 
 test("an exclusive Web Lock is held until release and contention never enters the critical section", async () => {
@@ -624,6 +701,17 @@ test("silent storage writes and removals are never reported as confirmed", () =>
   retained.removeItem = () => {};
   assert.deepEqual(clearAnonymousDraft(retained, record, NOW), { ok: false, removed: false, reason: "unavailable" });
   assert.deepEqual(readAnonymousDraft(retained, NOW), record);
+
+  const sidecarStorage = memoryStorage();
+  const attributed = save(sidecarStorage, { entryPoint: null }).record;
+  retainAnonymousDraftAttribution(sidecarStorage, attributed, "shared_estimate", NOW);
+  sidecarStorage.removeItem = key => {
+    if (key === ANONYMOUS_DRAFT_STORAGE_KEY) sidecarStorage.values.delete(key);
+  };
+  assert.deepEqual(clearAnonymousDraft(sidecarStorage, attributed, NOW), { ok: false, removed: true, reason: "unavailable" });
+  assert.equal(sidecarStorage.getItem(ANONYMOUS_DRAFT_STORAGE_KEY), null);
+  assert.notEqual(sidecarStorage.getItem(ANONYMOUS_DRAFT_ATTRIBUTION_STORAGE_KEY), null);
+  clearEphemeralAnonymousDraft();
 });
 
 test("a released storage handle cannot falsely clear a persisted in-flight submission", () => {

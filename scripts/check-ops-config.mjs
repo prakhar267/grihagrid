@@ -13,6 +13,8 @@ const files = Object.freeze({
   waitForRelease: new URL("./wait-for-release.mjs", import.meta.url),
   readinessLatency: new URL("./readiness-latency.mjs", import.meta.url),
   authenticatedSmoke: new URL("./authenticated-smoke.mjs", import.meta.url),
+  canarySessionFence: new URL("./canary-session-fence.mjs", import.meta.url),
+  runCanarySessionFence: new URL("./run-canary-session-fence.sh", import.meta.url),
   releaseDbEvidence: new URL("./release-db-evidence.mjs", import.meta.url),
   worker: new URL("../worker/index.js", import.meta.url),
 });
@@ -46,7 +48,7 @@ function workflowStep(source, name) {
 }
 
 export async function checkOpsConfig() {
-  const [wrangler, packageText, gitignore, ci, smokeWorkflow, deployWorkflow, releaseScope, smoke, waitForRelease, readinessLatency, authenticatedSmoke, releaseDbEvidence, worker] = await Promise.all(
+  const [wrangler, packageText, gitignore, ci, smokeWorkflow, deployWorkflow, releaseScope, smoke, waitForRelease, readinessLatency, authenticatedSmoke, canarySessionFence, runCanarySessionFence, releaseDbEvidence, worker] = await Promise.all(
     Object.values(files).map((file) => readFile(file, "utf8")),
   );
   const packageJson = JSON.parse(packageText);
@@ -197,6 +199,14 @@ export async function checkOpsConfig() {
   assert.match(deployWorkflow, /Create protected staging export and recovery point/u, "Cloudflare export credentials must be isolated from encryption");
   assert.match(deployWorkflow, /Encrypt and verify protected staging export/u, "backup encryption must be a separate least-privilege step");
   assert.match(deployWorkflow, /authenticated-smoke\.mjs/u, "each environment must run an authenticated canary");
+  assert.equal((deployWorkflow.match(/node scripts\/authenticated-smoke\.mjs "\$ORIGIN"/gu) || []).length, 4, "release workflow must contain exactly four mutating authenticated smokes");
+  assert.equal((deployWorkflow.match(/run-canary-session-fence\.sh snapshot (?:staging|production) (?:candidate|rollback)/gu) || []).length, 4, "every mutating authenticated smoke must have an exact pre-login session snapshot");
+  assert.equal((deployWorkflow.match(/run-canary-session-fence\.sh restore (?:staging|production) (?:candidate|rollback)/gu) || []).length, 4, "every mutating authenticated smoke must have trap-protected session restoration");
+  assert.match(authenticatedSmoke, /AUTHENTICATED_SMOKE_REQUEST_TIMEOUT_MS = 15_000/u, "authenticated requests must remain tightly bounded");
+  assert.match(authenticatedSmoke, /AUTHENTICATED_SMOKE_LOGIN_TIMEOUT_MS = 30_000/u, "the mutating login request must have a distinct bounded response window");
+  assert.match(authenticatedSmoke, /path === "\/api\/auth\/login"/u, "only canary login may use the longer request window");
+  assert.match(authenticatedSmoke, /timeoutMs = authenticatedSmokeRequestTimeoutMs\(path, options\)/u, "every authenticated canary request must select its reviewed timeout");
+  assert.doesNotMatch(authenticatedSmoke, /\.\.\.requestInit,[\s\S]{0,160}timeoutMs,/u, "the private timeout option must never be sent as a fetch option");
   assert.match(authenticatedSmoke, /const legacyWorker = options\.legacyWorker === true/u, "the current authenticated harness must support previous-Worker compatibility mode");
   assert.match(authenticatedSmoke, /LEGACY_WORKER_COMPAT === "true"/u, "the authenticated CLI must expose reviewed legacy-Worker mode");
   assert.match(authenticatedSmoke, /canaryProjectIds: \[\.\.\.cleanupIds\]\.sort\(\)/u, "authenticated smoke evidence must identify every synthetic project");
@@ -209,6 +219,25 @@ export async function checkOpsConfig() {
   assert.match(authenticatedSmoke, /Object\.keys\(publicShare\?\.share \|\| \{\}\)\.sort\(\), \["expiresAt", "sections"\]/u, "the authenticated canary must enforce the minimal public handoff envelope");
   assert.doesNotMatch(authenticatedSmoke, /publicShare\?\.share\?\.report/u, "the authenticated canary must not expect the retired public report wrapper");
   assert.match(authenticatedSmoke, /\[410\]/u, "the authenticated canary must prove revoked report handoffs are gone");
+  assert.match(canarySessionFence, /WHERE email = \$\{emailLiteral\}/u, "canary session snapshots must bind the exact normalized account email");
+  assert.match(canarySessionFence, /AND deleted_at IS NULL/u, "canary session snapshots must reject deleted accounts");
+  assert.match(canarySessionFence, /assert\.equal\(users\.length, 1/u, "canary session cleanup must require exactly one active account");
+  assert.match(canarySessionFence, /const delta = newSessionIds\(before, observed\)/u, "canary session cleanup must derive only the post-login session delta");
+  assert.match(canarySessionFence, /AND user_id = \$\{userId\}/u, "canary session deletes must remain scoped to the exact account ID");
+  assert.match(canarySessionFence, /sameSet\(removed, delta/u, "canary session proof must verify the exact deleted ID set");
+  assert.match(canarySessionFence, /sameSet\(final\.sessionIds, before\.sessionIds/u, "canary session proof must verify exact baseline restoration");
+  assert.match(canarySessionFence, /restoredExactly: true/u, "canary session release evidence must be count-only and fail closed before success");
+  assert.match(canarySessionFence, /mode === "validate-snapshot"/u, "canary session baselines must be parsed before any mutating login");
+  assert.match(canarySessionFence, /accumulateCanarySessionCleanupEvidence/u, "delayed reconciliation passes must retain bounded cumulative evidence");
+  assert.match(runCanarySessionFence, /node scripts\/canary-session-fence\.mjs validate-snapshot/u, "the session wrapper must fail before login on an unsafe D1 baseline");
+  assert.match(runCanarySessionFence, /stabilization_seconds=40/u, "ambiguous login cleanup must outlast the documented post-disconnect work window");
+  assert.match(runCanarySessionFence, /while true/u, "ambiguous login cleanup must repeat exact reconciliation through stabilization");
+  assert.match(runCanarySessionFence, /CANARY_SESSION_PREVIOUS_PROOF/u, "repeated session cleanup must accumulate count-only proof");
+  assert.match(runCanarySessionFence, /--command "\$query_sql_text"/u, "result-bearing session snapshots must use Wrangler's remote command path");
+  assert.match(runCanarySessionFence, /--command "\$cleanup_sql_text"/u, "result-bearing session deletes must use Wrangler's remote command path");
+  assert.doesNotMatch(runCanarySessionFence, /--file/u, "session fencing must not use Wrangler's metadata-only remote file path");
+  assert.match(runCanarySessionFence, /if \[ "\$stabilized_for_ms" -ge "\$stabilization_ms" \]/u, "ambiguous cleanup may stop only after its retained final snapshot reaches the stabilization bound");
+  assert.match(runCanarySessionFence, /env -u GRIHAGRID_CANARY_EMAIL -u GRIHAGRID_CANARY_PASSWORD[\s\\]+wrangler d1 execute/u, "raw D1 session calls must not inherit canary credentials");
   assert.match(smoke, /const legacyWorker = options\.legacyWorker === true/u, "public smoke must support previous-Worker compatibility mode");
   assert.match(smoke, /const expectReportHandoff = options\.expectReportHandoff !== false/u, "public smoke must support exact-version checks while handoff is closed");
   assert.match(smoke, /expectReportHandoff \? "enabled" : "disabled"/u, "public smoke must verify the requested report-handoff control state");
@@ -492,6 +521,20 @@ export async function checkOpsConfig() {
 
     const rollbackCompatibility = workflowStep(deployWorkflow, `Rehearse rollback Worker against migrated ${environment} schema`);
     assert.match(rollbackCompatibility, /if: needs\.authorize\.outputs\.migrations == 'true'/u, `${environment} rollback compatibility must follow the authorized migration-bearing release diff`);
+    assert.match(rollbackCompatibility, /CLOUDFLARE_API_TOKEN:\s*\$\{\{ secrets\.CLOUDFLARE_API_TOKEN \}\}/u, `${environment} rollback session proof must have step-scoped D1 authority`);
+    assert.match(rollbackCompatibility, new RegExp(`run-canary-session-fence\\.sh snapshot ${environment} rollback`, "u"), `${environment} rollback canary must validate its session baseline before login`);
+    assert.match(rollbackCompatibility, /trap restore_rollback_canary_sessions EXIT/u, `${environment} rollback canary must install unconditional session cleanup`);
+    assert.match(rollbackCompatibility, new RegExp(`run-canary-session-fence\\.sh restore ${environment} rollback`, "u"), `${environment} rollback canary trap must prove exact session restoration`);
+    assert.match(rollbackCompatibility, new RegExp(`release-evidence/${environment}/rollback-canary-session-cleanup\\.json`, "u"), `${environment} rollback canary must retain count-only session proof`);
+    assert.match(rollbackCompatibility, /attempt_outcome=ambiguous/u, `${environment} failed rollback canaries must enter delayed reconciliation`);
+    assert.match(rollbackCompatibility, /env -u CLOUDFLARE_API_TOKEN -u CLOUDFLARE_ACCOUNT_ID[\s\\]+node scripts\/authenticated-smoke\.mjs/u, `${environment} rollback smoke must not inherit D1 deployment authority`);
+    assert.ok(
+      rollbackCompatibility.indexOf(`run-canary-session-fence.sh snapshot ${environment} rollback`)
+        < rollbackCompatibility.indexOf("trap restore_rollback_canary_sessions EXIT")
+        && rollbackCompatibility.indexOf("trap restore_rollback_canary_sessions EXIT")
+          < rollbackCompatibility.indexOf("node scripts/authenticated-smoke.mjs"),
+      `${environment} rollback session snapshot and trap must precede authenticated mutation`,
+    );
     for (const backupStepName of [
       `Create protected ${environment} export and recovery point`,
       `Encrypt and verify protected ${environment} export`,
@@ -555,6 +598,15 @@ export async function checkOpsConfig() {
     assert.match(canary, /REPORT_HANDOFF_EXPECTED_ENABLED=true/u, `${environment} authenticated canary must prove its bounded activation`);
     assert.match(canary, /REPORT_HANDOFF_EXPECTED_ENABLED=false/u, `${environment} authenticated canary trap must prove it reclosed`);
     assert.match(canary, /authenticated-smoke\.mjs/u, `${environment} bounded activation must contain the authenticated canary`);
+    assert.match(canary, new RegExp(`run-canary-session-fence\\.sh snapshot ${environment} candidate`, "u"), `${environment} canary must validate and snapshot its exact account sessions before login`);
+    assert.ok(
+      canary.indexOf(`run-canary-session-fence.sh snapshot ${environment} candidate`) < canary.indexOf("trap reclose_report_handoff_after_canary EXIT"),
+      `${environment} session baseline must be captured before the bounded canary starts`,
+    );
+    assert.match(canary, new RegExp(`run-canary-session-fence\\.sh restore ${environment} candidate`, "u"), `${environment} canary trap must restore and prove the exact session baseline`);
+    assert.match(canary, new RegExp(`release-evidence/${environment}/canary-session-cleanup\\.json`, "u"), `${environment} must persist bounded session-cleanup evidence`);
+    assert.match(canary, /\[ "\$session_cleanup_status" -ne 0 \]/u, `${environment} canary must fail closed when session restoration is unverified`);
+    assert.match(canary, /attempt_outcome=ambiguous/u, `${environment} failed canaries must enter delayed session reconciliation`);
 
     const disabled = workflowStep(deployWorkflow, `Prove ${environment} report handoff reclosed after authenticated canary`);
     assert.doesNotMatch(disabled, /UPDATE report_handoff_controls/u, `${environment} post-canary proof must not mask a failed EXIT-trap reclose`);
@@ -679,6 +731,18 @@ export async function checkOpsConfig() {
       "rollback-residue.json",
       "canary-residue.sql",
       "canary-residue.json",
+      "canary-session-query.sql",
+      "canary-session-before.json",
+      "canary-session-observed.json",
+      "canary-session-cleanup.sql",
+      "canary-session-cleanup.json",
+      "canary-session-final.json",
+      "rollback-canary-session-query.sql",
+      "rollback-canary-session-before.json",
+      "rollback-canary-session-observed.json",
+      "rollback-canary-session-cleanup.sql",
+      "rollback-canary-session-cleanup.json",
+      "rollback-canary-session-final.json",
     ]) {
       assert.match(
         cleanup,

@@ -692,6 +692,8 @@ jobs:
         id: rollback_compat
         if: needs.authorize.outputs.migrations == 'true'
         env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           EXPECT_RELEASE_ID: ${{ steps.previous.outputs.previous_version }}
           LEGACY_WORKER_COMPAT: "true"
           GRIHAGRID_CANARY_EMAIL: ${{ secrets.GRIHAGRID_CANARY_EMAIL }}
@@ -703,7 +705,26 @@ jobs:
           test -n "$GRIHAGRID_CANARY_PASSWORD"
           sha256sum scripts/authenticated-smoke.mjs \
             > release-evidence/staging/rollback-smoke-source.sha256
-          node scripts/authenticated-smoke.mjs "$ORIGIN" \
+          bash scripts/run-canary-session-fence.sh snapshot staging rollback
+          restore_rollback_canary_sessions() {
+            status=$?
+            trap - EXIT
+            set +e
+            attempt_outcome=completed
+            if [ "$status" -ne 0 ]; then attempt_outcome=ambiguous; fi
+            session_cleanup_status=0
+            bash scripts/run-canary-session-fence.sh restore staging rollback \
+              release-evidence/staging/rollback-canary-session-cleanup.json "$attempt_outcome" \
+              || session_cleanup_status=1
+            if [ "$session_cleanup_status" -ne 0 ]; then
+              echo "failed to restore the exact staging rollback-canary session baseline" >&2
+            fi
+            if [ "$status" -eq 0 ] && [ "$session_cleanup_status" -ne 0 ]; then status=1; fi
+            exit "$status"
+          }
+          trap restore_rollback_canary_sessions EXIT
+          env -u CLOUDFLARE_API_TOKEN -u CLOUDFLARE_ACCOUNT_ID \
+            node scripts/authenticated-smoke.mjs "$ORIGIN" \
             | tee release-evidence/staging/rollback-compatibility-smoke.json
 
       - name: Prove staging rollback rehearsal left zero database residue
@@ -886,6 +907,7 @@ jobs:
           umask 077
           test -n "$GRIHAGRID_CANARY_EMAIL"
           test -n "$GRIHAGRID_CANARY_PASSWORD"
+          bash scripts/run-canary-session-fence.sh snapshot staging candidate
           reclose_report_handoff_after_canary() {
             status=$?
             trap - EXIT
@@ -907,7 +929,16 @@ jobs:
               proof_status=1
               echo "failed to re-close staging report handoff after the authenticated canary" >&2
             fi
-            if [ "$status" -eq 0 ] && { [ "$reclose_status" -ne 0 ] || [ "$proof_status" -ne 0 ]; }; then
+            session_cleanup_status=0
+            attempt_outcome=completed
+            if [ "$status" -ne 0 ]; then attempt_outcome=ambiguous; fi
+            bash scripts/run-canary-session-fence.sh restore staging candidate \
+              release-evidence/staging/canary-session-cleanup.json "$attempt_outcome" \
+              || session_cleanup_status=1
+            if [ "$session_cleanup_status" -ne 0 ]; then
+              echo "failed to restore the exact staging canary session baseline" >&2
+            fi
+            if [ "$status" -eq 0 ] && { [ "$reclose_status" -ne 0 ] || [ "$proof_status" -ne 0 ] || [ "$session_cleanup_status" -ne 0 ]; }; then
               status=1
             fi
             exit "$status"
@@ -1218,7 +1249,19 @@ jobs:
             "$RUNNER_TEMP/staging-rollback-residue.sql" \
             "$RUNNER_TEMP/staging-rollback-residue.json" \
             "$RUNNER_TEMP/staging-canary-residue.sql" \
-            "$RUNNER_TEMP/staging-canary-residue.json"
+            "$RUNNER_TEMP/staging-canary-residue.json" \
+            "$RUNNER_TEMP/staging-canary-session-query.sql" \
+            "$RUNNER_TEMP/staging-canary-session-before.json" \
+            "$RUNNER_TEMP/staging-canary-session-observed.json" \
+            "$RUNNER_TEMP/staging-canary-session-cleanup.sql" \
+            "$RUNNER_TEMP/staging-canary-session-cleanup.json" \
+            "$RUNNER_TEMP/staging-canary-session-final.json" \
+            "$RUNNER_TEMP/staging-rollback-canary-session-query.sql" \
+            "$RUNNER_TEMP/staging-rollback-canary-session-before.json" \
+            "$RUNNER_TEMP/staging-rollback-canary-session-observed.json" \
+            "$RUNNER_TEMP/staging-rollback-canary-session-cleanup.sql" \
+            "$RUNNER_TEMP/staging-rollback-canary-session-cleanup.json" \
+            "$RUNNER_TEMP/staging-rollback-canary-session-final.json"
 
       - name: Upload staging release evidence
         if: always()
@@ -1594,6 +1637,8 @@ jobs:
         id: rollback_compat
         if: needs.authorize.outputs.migrations == 'true'
         env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           EXPECT_RELEASE_ID: ${{ steps.previous.outputs.previous_version }}
           LEGACY_WORKER_COMPAT: "true"
           GRIHAGRID_CANARY_EMAIL: ${{ secrets.GRIHAGRID_CANARY_EMAIL }}
@@ -1605,7 +1650,26 @@ jobs:
           test -n "$GRIHAGRID_CANARY_PASSWORD"
           sha256sum scripts/authenticated-smoke.mjs \
             > release-evidence/production/rollback-smoke-source.sha256
-          node scripts/authenticated-smoke.mjs "$ORIGIN" \
+          bash scripts/run-canary-session-fence.sh snapshot production rollback
+          restore_rollback_canary_sessions() {
+            status=$?
+            trap - EXIT
+            set +e
+            attempt_outcome=completed
+            if [ "$status" -ne 0 ]; then attempt_outcome=ambiguous; fi
+            session_cleanup_status=0
+            bash scripts/run-canary-session-fence.sh restore production rollback \
+              release-evidence/production/rollback-canary-session-cleanup.json "$attempt_outcome" \
+              || session_cleanup_status=1
+            if [ "$session_cleanup_status" -ne 0 ]; then
+              echo "failed to restore the exact production rollback-canary session baseline" >&2
+            fi
+            if [ "$status" -eq 0 ] && [ "$session_cleanup_status" -ne 0 ]; then status=1; fi
+            exit "$status"
+          }
+          trap restore_rollback_canary_sessions EXIT
+          env -u CLOUDFLARE_API_TOKEN -u CLOUDFLARE_ACCOUNT_ID \
+            node scripts/authenticated-smoke.mjs "$ORIGIN" \
             | tee release-evidence/production/rollback-compatibility-smoke.json
 
       - name: Prove production rollback rehearsal left zero database residue
@@ -1788,6 +1852,7 @@ jobs:
           umask 077
           test -n "$GRIHAGRID_CANARY_EMAIL"
           test -n "$GRIHAGRID_CANARY_PASSWORD"
+          bash scripts/run-canary-session-fence.sh snapshot production candidate
           reclose_report_handoff_after_canary() {
             status=$?
             trap - EXIT
@@ -1809,7 +1874,16 @@ jobs:
               proof_status=1
               echo "failed to re-close production report handoff after the authenticated canary" >&2
             fi
-            if [ "$status" -eq 0 ] && { [ "$reclose_status" -ne 0 ] || [ "$proof_status" -ne 0 ]; }; then
+            session_cleanup_status=0
+            attempt_outcome=completed
+            if [ "$status" -ne 0 ]; then attempt_outcome=ambiguous; fi
+            bash scripts/run-canary-session-fence.sh restore production candidate \
+              release-evidence/production/canary-session-cleanup.json "$attempt_outcome" \
+              || session_cleanup_status=1
+            if [ "$session_cleanup_status" -ne 0 ]; then
+              echo "failed to restore the exact production canary session baseline" >&2
+            fi
+            if [ "$status" -eq 0 ] && { [ "$reclose_status" -ne 0 ] || [ "$proof_status" -ne 0 ] || [ "$session_cleanup_status" -ne 0 ]; }; then
               status=1
             fi
             exit "$status"
@@ -2269,7 +2343,19 @@ jobs:
             "$RUNNER_TEMP/production-rollback-residue.sql" \
             "$RUNNER_TEMP/production-rollback-residue.json" \
             "$RUNNER_TEMP/production-canary-residue.sql" \
-            "$RUNNER_TEMP/production-canary-residue.json"
+            "$RUNNER_TEMP/production-canary-residue.json" \
+            "$RUNNER_TEMP/production-canary-session-query.sql" \
+            "$RUNNER_TEMP/production-canary-session-before.json" \
+            "$RUNNER_TEMP/production-canary-session-observed.json" \
+            "$RUNNER_TEMP/production-canary-session-cleanup.sql" \
+            "$RUNNER_TEMP/production-canary-session-cleanup.json" \
+            "$RUNNER_TEMP/production-canary-session-final.json" \
+            "$RUNNER_TEMP/production-rollback-canary-session-query.sql" \
+            "$RUNNER_TEMP/production-rollback-canary-session-before.json" \
+            "$RUNNER_TEMP/production-rollback-canary-session-observed.json" \
+            "$RUNNER_TEMP/production-rollback-canary-session-cleanup.sql" \
+            "$RUNNER_TEMP/production-rollback-canary-session-cleanup.json" \
+            "$RUNNER_TEMP/production-rollback-canary-session-final.json"
 
       - name: Upload production release evidence
         if: always()

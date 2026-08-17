@@ -126,6 +126,13 @@ both environments must show no pending migration and pass all of these gates:
   `overview`, `risks`, and `nextActions` are
   returned, revokes the link, observes `410`, deletes its project and revokes
   its session;
+- before either the previous-Worker rehearsal or candidate canary logs in,
+  automation validates a snapshot of only its dedicated account's exact session
+  set. Its EXIT trap removes only sessions introduced by the attempt and proves
+  exact baseline restoration; after an ambiguous failure it repeats for at least
+  40 seconds and retains only cumulative counts, duration and a boolean, never
+  the email, user ID or session IDs. Canary credentials remain exclusive to
+  serialized release automation;
 - direct exact-project residue queries return zero projects, revisions, reports,
   revision reports, feedback and `report_shares` after both the previous-Worker
   compatibility rehearsal and candidate canary, including failed canaries;
@@ -602,7 +609,8 @@ server write, bearer authorization, payment, upload, or professional claim.
   `public_estimator`; shared attribution uses an exact-key/expiry-bound
   source-only sidecar. The previous assets ignore that sidecar while retaining
   the draft, and Back/Exit/fresh-Start tests prove stale tuples cannot hydrate
-  under a different retry key.
+  under a different retry key. Explicit and boot cleanup re-read the sidecar
+  after removal and never claim success when storage silently retains it.
 - [ ] D1/KV inspection proves no scenario, share token, anonymous visit or
   browser identity was added and no `0018` migration is pending. The KPI is
   first-created attributed projects over 7/30 days—not an anonymous conversion
