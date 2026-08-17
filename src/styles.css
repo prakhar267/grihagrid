@@ -2829,6 +2829,12 @@ blockquote {
   font-weight: 600;
 }
 
+.security-session-loading:focus,
+.security-session-summary:focus {
+  outline: 2px solid var(--copper);
+  outline-offset: 5px;
+}
+
 .security-session-list {
   margin: 0;
   padding: 0;
@@ -3235,7 +3241,7 @@ blockquote {
 
   .security-session-step-up > div {
     align-items: stretch;
-    flex-direction: column-reverse;
+    flex-direction: column;
   }
 
   .security-session-step-up > div .outline-button,

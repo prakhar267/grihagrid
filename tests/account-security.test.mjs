@@ -180,6 +180,50 @@ async function withPasswordDerivationCount(action) {
   }
 }
 
+async function withPasswordDerivationBarrier(barrierDerivations, expectedDerivations, action) {
+  const original = crypto.subtle.deriveBits;
+  let derivations = 0;
+  let barrierReached = false;
+  let released = false;
+  let release;
+  const barrier = new Promise((resolve) => { release = resolve; });
+  const releaseBarrier = () => {
+    if (released) return;
+    released = true;
+    release();
+  };
+  const timeout = setTimeout(releaseBarrier, 5_000);
+  crypto.subtle.deriveBits = async function barrierDeriveBits(...arguments_) {
+    if (arguments_[0]?.name === "PBKDF2") {
+      derivations += 1;
+      if (derivations === barrierDerivations) {
+        barrierReached = true;
+        releaseBarrier();
+      }
+      await barrier;
+    }
+    return original.apply(this, arguments_);
+  };
+  try {
+    const result = await action();
+    assert.equal(
+      barrierReached,
+      true,
+      "both racing requests must reach current-password verification before the barrier is released",
+    );
+    assert.equal(
+      derivations,
+      expectedDerivations,
+      "the race must perform only the expected password derivations",
+    );
+    return result;
+  } finally {
+    clearTimeout(timeout);
+    releaseBarrier();
+    crypto.subtle.deriveBits = original;
+  }
+}
+
 function passwordRequest(auth, currentPassword, newPassword, extra = {}) {
   return {
     method: "PUT",
@@ -1020,4 +1064,87 @@ test("password-confirmed session revocation is strict, atomic, generation-fenced
   assert.equal((await call(env, "/api/auth/me", { auth: winnerAuth })).response.status, 200);
   assert.equal((await call(env, "/api/auth/me", { auth: replacement })).response.status, 401);
   assert.equal((await call(env, "/api/auth/me", { auth: postBoundaryLogin.auth })).response.status, 401);
+});
+
+test("session revocation and password rotation have exactly one winner after concurrent password verification", { timeout: 120_000 }, async (context) => {
+  const db = await realD1(context, "session-revoke-password-race");
+  await applyMigrations(db, (await migrationNames()).filter((name) => [
+    "0001_initial.sql",
+    "0002_backend.sql",
+    "0015_account_security.sql",
+    "0017_login_attempt_fence.sql",
+  ].includes(name)));
+  const kv = new MemoryKv();
+  const env = {
+    ASSETS: assets,
+    DB: db,
+    GRIHAGRID_CACHE: kv,
+    APP_ORIGIN: ORIGIN,
+    PAID_CHECKOUT_ENABLED: "false",
+    DECISION_COMPARE_FULFILLMENT_ENABLED: "false",
+    ENABLED_PAYMENT_PLANS: "",
+  };
+  const email = "session-revoke-password-race@example.test";
+  const primary = await register(env, email);
+  const otherLogin = await login(env, email, INITIAL_PASSWORD);
+  assert.equal(otherLogin.response.status, 200);
+
+  await clearPasswordAttempts(db, primary.user.id);
+  kv.clear();
+  const seededFence = await login(env, email, "wrong current password");
+  assert.equal(seededFence.response.status, 401);
+  const fenceBefore = await db.prepare("SELECT * FROM login_attempt_fences WHERE user_id=?")
+    .bind(primary.user.id).first();
+  assert.equal(fenceBefore.request_count, 1);
+  const baseline = await accountSnapshot(db, primary.user.id);
+  assert.equal(baseline.sessions.length, 2);
+
+  kv.clear();
+  const [revocation, rotation] = await withPasswordDerivationBarrier(2, 3, () => Promise.all([
+    call(env, "/api/auth/sessions/revoke-others", sessionRevocationRequest(primary, INITIAL_PASSWORD)),
+    call(env, "/api/auth/password", passwordRequest(primary, INITIAL_PASSWORD, SECOND_PASSWORD)),
+  ]));
+  const winners = [revocation, rotation].filter((result) => result.response.status === 200);
+  const losers = [revocation, rotation].filter((result) => result.response.status !== 200);
+  assert.equal(winners.length, 1, JSON.stringify([revocation.response.status, rotation.response.status]));
+  assert.equal(losers.length, 1);
+  assert.ok([401, 409].includes(losers[0].response.status));
+  if (losers[0].response.status === 401) assert.equal(losers[0].payload.code, "unauthenticated");
+  if (losers[0].response.status === 409) assert.equal(losers[0].payload.code, "auth_state_changed");
+  assert.deepEqual(losers[0].response.headers.getSetCookie(), [], "the losing boundary must not rotate cookies");
+
+  const revocationWon = revocation.response.status === 200;
+  const winningResponse = revocationWon ? revocation : rotation;
+  const winnerAuth = authFromResponse(winningResponse.response, winningResponse.payload);
+  const committed = await accountSnapshot(db, primary.user.id);
+  assert.equal(committed.user.auth_generation, baseline.user.auth_generation + 1);
+  assert.notEqual(committed.user.auth_revision_id, baseline.user.auth_revision_id);
+  assert.equal(committed.sessions.length, 1);
+  assert.equal(committed.sessions[0].auth_generation, committed.user.auth_generation);
+  assert.equal(committed.sessions[0].auth_revision_id, committed.user.auth_revision_id);
+  assert.equal((await call(env, "/api/auth/me", { auth: winnerAuth })).response.status, 200);
+  for (const stale of [primary, otherLogin.auth]) {
+    const rejected = await call(env, "/api/auth/me", { auth: stale });
+    assert.equal(rejected.response.status, 401);
+    assert.equal(rejected.payload.code, "unauthenticated");
+  }
+
+  const fenceAfter = await db.prepare("SELECT * FROM login_attempt_fences WHERE user_id=?")
+    .bind(primary.user.id).first();
+  if (revocationWon) {
+    for (const field of ["password_hash", "password_salt", "password_iterations", "password_algorithm", "password_changed_at"]) {
+      assert.equal(committed.user[field], baseline.user[field], `${field} must survive a winning session-only boundary`);
+    }
+    assert.deepEqual(fenceAfter, fenceBefore, "a winning session-only boundary must preserve the login fence");
+    assert.equal((await login(env, email, SECOND_PASSWORD)).response.status, 401);
+    assert.equal((await login(env, email, INITIAL_PASSWORD)).response.status, 200);
+  } else {
+    assert.notEqual(committed.user.password_hash, baseline.user.password_hash);
+    assert.notEqual(committed.user.password_salt, baseline.user.password_salt);
+    assert.equal(committed.user.password_iterations, baseline.user.password_iterations);
+    assert.equal(committed.user.password_algorithm, baseline.user.password_algorithm);
+    assert.equal(fenceAfter, null, "a winning password rotation must clear the login fence");
+    assert.equal((await login(env, email, INITIAL_PASSWORD)).response.status, 401);
+    assert.equal((await login(env, email, SECOND_PASSWORD)).response.status, 200);
+  }
 });
