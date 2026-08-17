@@ -326,6 +326,10 @@ jobs:
           assert.ok(analyses.length > 0, "missing exact-SHA JavaScript/TypeScript CodeQL analysis");
           assert.ok(analyses.length <= 32, "too many exact-SHA CodeQL analyses for bounded release evidence");
           const minimumRulesCount = 103;
+          const trustedAnalysisKeys = new Set([
+            "dynamic/github-code-scanning/codeql:analyze",
+            "dynamic/github-code-scanning/codeql:upload",
+          ]);
           const normalizedAnalyses = analyses.map((analysis) => {
             assert.ok(Number.isSafeInteger(analysis.id) && analysis.id > 0, "invalid CodeQL analysis ID");
             assert.ok(Number.isSafeInteger(analysis.results_count) && analysis.results_count >= 0, "invalid CodeQL result count");
@@ -337,12 +341,9 @@ jobs:
             assert.equal(String(analysis.error || ""), "", "exact-SHA CodeQL analysis contains an error");
             assert.equal(String(analysis.warning || ""), "", "exact-SHA CodeQL analysis contains a warning");
             assert.ok(Number.isFinite(Date.parse(String(analysis.created_at || ""))), "invalid CodeQL analysis timestamp");
+            assert.ok(trustedAnalysisKeys.has(analysis.analysis_key), "untrusted dynamic CodeQL analysis key");
             return { analysis, resultsCount, rulesCount };
           });
-          assert.ok(
-            normalizedAnalyses.some(({ analysis }) => analysis.analysis_key === "dynamic/github-code-scanning/codeql:upload"),
-            "missing trusted dynamic CodeQL analysis key",
-          );
           assert.equal(
             new Set(normalizedAnalyses.map(({ analysis }) => analysis.id)).size,
             normalizedAnalyses.length,
@@ -356,6 +357,7 @@ jobs:
           }
           assert.equal(alerts.length, 0, "main has open CodeQL alerts after the exact-SHA JavaScript/TypeScript analysis");
           const analysisIds = normalizedAnalyses.map(({ analysis }) => analysis.id).sort((left, right) => left - right);
+          const analysisKeys = [...new Set(normalizedAnalyses.map(({ analysis }) => analysis.analysis_key))].sort();
           const categories = [...new Set(normalizedAnalyses.map(({ analysis }) => analysis.category))].sort();
           const observedMinimumRulesCount = Math.min(...normalizedAnalyses.map(({ rulesCount }) => rulesCount));
           const observedMaximumRulesCount = Math.max(...normalizedAnalyses.map(({ rulesCount }) => rulesCount));
@@ -367,6 +369,7 @@ jobs:
             workflowConclusion: "success",
             language: "javascript-typescript",
             analysisIds,
+            analysisKeys,
             categories,
             analysisCount: normalizedAnalyses.length,
             resultsCount: 0,
