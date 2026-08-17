@@ -199,7 +199,9 @@ export async function checkOpsConfig() {
   assert.match(deployWorkflow, /language:javascript-typescript/u, "release gate must require JavaScript\/TypeScript CodeQL analysis");
   assert.doesNotMatch(deployWorkflow, /code-scanning\/default-setup/u, "release gate must not require the administration-only CodeQL setup endpoint");
   assert.match(deployWorkflow, /const minimumRulesCount = 103/u, "release gate must retain the reviewed extended-suite rule floor");
-  assert.match(deployWorkflow, /analysis\.analysis_key === "dynamic\/github-code-scanning\/codeql:upload"/u, "release gate must require the trusted dynamic analysis key");
+  assert.match(deployWorkflow, /"dynamic\/github-code-scanning\/codeql:analyze"/u, "release gate must trust the default-setup CodeQL analysis key");
+  assert.match(deployWorkflow, /"dynamic\/github-code-scanning\/codeql:upload"/u, "release gate must trust the explicit-upload CodeQL analysis key");
+  assert.match(deployWorkflow, /trustedAnalysisKeys\.has\(analysis\.analysis_key\)/u, "release gate must reject every untrusted dynamic analysis key");
   assert.match(deployWorkflow, /runs\.some\(\(run\) => run\.status !== "completed"\)/u, "release gate must wait for every exact-SHA CodeQL run to settle");
   assert.match(deployWorkflow, /run\.run_number/u, "release gate must fingerprint GitHub workflow execution numbers");
   assert.match(deployWorkflow, /run\.run_attempt/u, "release gate must fingerprint GitHub rerun attempts");

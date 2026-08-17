@@ -118,7 +118,9 @@ test("deployment authorization requires bounded exact-main CodeQL evidence", asy
   assert.match(workflow, /language:javascript-typescript/u);
   assert.doesNotMatch(workflow, /code-scanning\/default-setup/u);
   assert.match(workflow, /const minimumRulesCount = 103/u);
-  assert.match(workflow, /analysis\.analysis_key === "dynamic\/github-code-scanning\/codeql:upload"/u);
+  assert.match(workflow, /"dynamic\/github-code-scanning\/codeql:analyze"/u);
+  assert.match(workflow, /"dynamic\/github-code-scanning\/codeql:upload"/u);
+  assert.match(workflow, /trustedAnalysisKeys\.has\(analysis\.analysis_key\)/u);
   assert.match(workflow, /runs\.some\(\(run\) => run\.status !== "completed"\)/u);
   assert.match(workflow, /run\.run_number/u);
   assert.match(workflow, /run\.run_attempt/u);
@@ -158,11 +160,18 @@ test("CodeQL release evidence validates every exact analysis and the reviewed ru
   });
 
   const passed = await runCodeqlEvidenceParser(parser, {
-    analyses: [[analysis(), analysis({ id: 102, rules_count: 111, created_at: "2026-08-17T16:01:00Z" })]],
+    analyses: [[
+      analysis({ analysis_key: "dynamic/github-code-scanning/codeql:analyze" }),
+      analysis({ id: 102, rules_count: 111, created_at: "2026-08-17T16:01:00Z" }),
+    ]],
     alerts: [[]],
   });
   assert.equal(passed.result.status, 0, passed.result.stderr);
   assert.deepEqual(passed.evidence.analysisIds, [101, 102]);
+  assert.deepEqual(passed.evidence.analysisKeys, [
+    "dynamic/github-code-scanning/codeql:analyze",
+    "dynamic/github-code-scanning/codeql:upload",
+  ]);
   assert.equal(passed.evidence.analysisCount, 2);
   assert.equal(passed.evidence.minimumRulesCount, 103);
   assert.equal(passed.evidence.maximumRulesCount, 111);
@@ -226,10 +235,16 @@ test("CodeQL release evidence validates every exact analysis and the reviewed ru
       error: /contains a warning/u,
     },
     {
-      name: "the trusted analysis key is absent",
+      name: "an analysis key is outside the exact trusted set",
       analyses: [[analysis({ analysis_key: "untrusted/upload" })]],
       alerts: [[]],
-      error: /missing trusted dynamic CodeQL analysis key/u,
+      error: /untrusted dynamic CodeQL analysis key/u,
+    },
+    {
+      name: "one untrusted analysis cannot hide beside a trusted analysis",
+      analyses: [[analysis(), analysis({ id: 206, analysis_key: "untrusted/upload" })]],
+      alerts: [[]],
+      error: /untrusted dynamic CodeQL analysis key/u,
     },
     {
       name: "an open alert remains",

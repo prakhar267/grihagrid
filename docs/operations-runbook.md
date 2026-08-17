@@ -205,11 +205,13 @@ empirically reviewed floor of at least 103 rules and zero results in every
 exact-SHA JavaScript/TypeScript analysis, not only the newest rerun, plus zero
 open `main` alerts. The floor is a monitored coverage heuristic, not durable
 query-suite identity: repository administration must verify the extended setup
-whenever managed packs change. Authorization also requires the trusted dynamic
-analysis key, waits for all exact-SHA CodeQL runs to settle, requires the most
-recently started attempt (or every attempt tied at GitHub's timestamp
-resolution) to succeed, fingerprints the run number, attempt number, start
-timestamp and state, and rejects changing run, analysis, or alert snapshots.
+whenever managed packs change. Authorization also requires every analysis to
+use one of the two exact GitHub-managed dynamic keys: `:analyze` from default
+setup or `:upload` from the explicit upload path. It waits for all exact-SHA
+CodeQL runs to settle, requires the most recently started attempt (or every attempt
+tied at GitHub's timestamp resolution) to succeed, fingerprints the run number,
+attempt number, start timestamp and state, and rejects changing run, analysis,
+or alert snapshots.
 Read-only GitHub evidence uses four bounded attempts with short backoff so
 transient 429/5xx responses do not create an immediate false block, while
 exhaustion still fails closed. A lower-coverage rerun therefore cannot erase
