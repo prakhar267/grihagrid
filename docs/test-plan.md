@@ -664,7 +664,12 @@ Attach to the release record, without secrets or customer data:
   injection, unchanged password/`password_changed_at`/login-fence comparison,
   same-password post-boundary login, no-unexpected-pending-migration evidence,
   compatibility rollback rehearsal, ambiguous-response UX, and exact-version
-  staging/production synthetic cleanup and observation;
+  staging/production synthetic cleanup and observation; account-canary and
+  migration-policy symlink-entry execution, fixed entrypoint-resolution errors,
+  descriptor-bound non-symlink migration reads, and multi-analysis CodeQL gates
+  that retain any same-SHA finding across lower-coverage or same-ID reruns,
+  require every latest-starting attempt to succeed, and tolerate only bounded
+  transient evidence-read failures;
 - strict registration/login schema matrices; PBKDF2 call-count proof for
   unknown/wrong/deleted/malformed/short/long/fenced states; 12→13 distributed
   account admission and fixed-expiry proof; KV/D1 fail-closed injection; exact

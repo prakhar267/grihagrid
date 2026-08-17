@@ -198,6 +198,25 @@ checkout, dependency installation, build, validation, or artifact actions. Do
 not copy a personal Wrangler OAuth credential into GitHub. The commands below
 remain the inspected break-glass procedure, not the routine path.
 
+CodeQL default setup must stay configured for JavaScript/TypeScript with the
+extended query suite. The release token deliberately cannot call the
+administration-only default-setup endpoint. Authorization instead requires the
+empirically reviewed floor of at least 103 rules and zero results in every
+exact-SHA JavaScript/TypeScript analysis, not only the newest rerun, plus zero
+open `main` alerts. The floor is a monitored coverage heuristic, not durable
+query-suite identity: repository administration must verify the extended setup
+whenever managed packs change. Authorization also requires the trusted dynamic
+analysis key, waits for all exact-SHA CodeQL runs to settle, requires the most
+recently started attempt (or every attempt tied at GitHub's timestamp
+resolution) to succeed, fingerprints the run number, attempt number, start
+timestamp and state, and rejects changing run, analysis, or alert snapshots.
+Read-only GitHub evidence uses four bounded attempts with short backoff so
+transient 429/5xx responses do not create an immediate false block, while
+exhaustion still fails closed. A lower-coverage rerun therefore cannot erase
+an earlier same-commit finding.
+Change the reviewed rule floor only with evidence for the replacement query
+suite; never lower it merely to unblock a release.
+
 The validation build runs on an unprivileged runner. Staging and production
 each start on a fresh runner, restore only that exact build artifact, and
 install the workflow-pinned Wrangler release with package lifecycle scripts
@@ -516,6 +535,20 @@ email. Delete only that exact ID through a conditional statement carrying all
 of those zero-row guards, then prove the user, sessions, password-step-up/login
 fences and report-share counters are absent. Never retain the raw email, user
 ID, session IDs, passwords, cookies or cleanup SQL in release artifacts.
+
+The canary CLI, operational-configuration check and automatic migration-policy
+gate resolve the physical entrypoint before deciding whether to execute, so a
+symlinked runner or macOS `/var` to `/private/var` alias cannot turn a release
+check into a silent exit-zero no-op. Resolution failures use fixed
+identifier-free errors. Migration files are opened once with `O_NOFOLLOW`,
+validated with `fstat` and read through that same file descriptor. On every
+platform, the exact leaf `Dirent` must match Wrangler's regular-file filter
+before and after opening, and the path identity must match the opened
+descriptor before reading it. Platforms without `O_NOFOLLOW` retain those same
+checks as the portable fallback. A symlinked, unknown-type, or unrecognized
+reparse-point migration is rejected because pinned Wrangler would omit it from
+the applied set; do not reintroduce separate path-based metadata and content
+reads or scanner/apply set drift.
 
 `externalAccountCleanupRequired` is only a warning, not deletion authority. If
 registration was ambiguous and the canary could not emit a verified account-ID

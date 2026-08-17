@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { createHash, randomUUID } from "node:crypto";
-import { pathToFileURL } from "node:url";
+import { realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 const MAX_RECORDED_CHECKS = 32;
@@ -14,6 +15,17 @@ class AccountSecurityCanaryError extends Error {
     super(`account-security canary failed during ${phase}`);
     this.name = "AccountSecurityCanaryError";
     this.phase = phase;
+  }
+}
+
+function isDirectExecution() {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1]);
+  } catch {
+    process.stderr.write("account-security canary failed during entrypoint_resolution\n");
+    process.exitCode = 1;
+    return false;
   }
 }
 
@@ -532,7 +544,7 @@ export async function runAccountSecurityCanary(rawOrigin, credentials, options =
   return evidence;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (isDirectExecution()) {
   try {
     const result = await runAccountSecurityCanary(
       process.argv[2] || process.env.GRIHAGRID_ACCOUNT_SECURITY_ORIGIN,

@@ -1,16 +1,51 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, dirname, join } from "node:path";
 import test from "node:test";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { checkOpsConfig } from "../scripts/check-ops-config.mjs";
 import { runSmoke } from "../scripts/smoke.mjs";
 import worker from "../worker/index.js";
 
 const assets = { fetch: async () => new Response("missing", { status: 404 }) };
+const opsScript = fileURLToPath(new URL("../scripts/check-ops-config.mjs", import.meta.url));
 
 test("version-controlled production and staging configuration stays isolated and paid-closed", async () => {
   const result = await checkOpsConfig();
   assert.equal(result.paidDefaults, "closed");
   assert.equal(result.productionOrigin, "https://grihagrid.prakhargupta267.workers.dev");
   assert.equal(result.stagingOrigin, "https://grihagrid-staging.prakhargupta267.workers.dev");
+});
+
+test("operational configuration CLI executes through a symlinked script directory", () => {
+  const directory = mkdtempSync(join(tmpdir(), "grihagrid-ops-cli-"));
+  const aliasDirectory = join(directory, "scripts-alias");
+  try {
+    symlinkSync(dirname(opsScript), aliasDirectory, process.platform === "win32" ? "junction" : "dir");
+    const result = spawnSync(process.execPath, [join(aliasDirectory, basename(opsScript))], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.signal, null);
+    assert.match(result.stdout, /^Operational configuration valid:/u);
+    assert.equal(result.stderr, "");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("operational configuration entrypoint resolution fails with a fixed path-free error", () => {
+  const missingEntrypoint = join(tmpdir(), "grihagrid-ops-entrypoint-does-not-exist.mjs");
+  const result = spawnSync(process.execPath, [
+    "--input-type=module",
+    "--eval",
+    `process.argv[1] = ${JSON.stringify(missingEntrypoint)}; await import(${JSON.stringify(pathToFileURL(opsScript).href)});`,
+  ], { encoding: "utf8" });
+  assert.equal(result.status, 1);
+  assert.equal(result.signal, null);
+  assert.equal(result.stdout, "");
+  assert.equal(result.stderr, "operational configuration check failed during entrypoint resolution\n");
+  assert.equal(result.stderr.includes(missingEntrypoint), false);
 });
 
 test("read-only smoke rejects unsafe targets before network access", async () => {

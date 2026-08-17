@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -38,6 +38,18 @@ function cleanup(sessionIds = []) {
     success: true,
     results: sessionIds.map((id) => ({ id })),
   }];
+}
+
+function readPrivateRegularFile(filename) {
+  const fileDescriptor = openSync(filename, "r");
+  try {
+    const metadata = fstatSync(fileDescriptor);
+    assert.ok(metadata.isFile(), `${filename}: expected a regular file`);
+    assert.equal(metadata.mode & 0o777, 0o600);
+    return readFileSync(fileDescriptor, "utf8");
+  } finally {
+    closeSync(fileDescriptor);
+  }
 }
 
 test("validates the environment and normalizes a bounded canary email", () => {
@@ -395,8 +407,7 @@ test("CLI writes private SQL files and produces proof without an email environme
       env: { ...withoutEmail, GRIHAGRID_CANARY_EMAIL: CANARY_EMAIL },
     });
     assert.equal(query.status, 0, query.stderr);
-    assert.equal(statSync(querySqlFile).mode & 0o777, 0o600);
-    assert.match(readFileSync(querySqlFile, "utf8"), /canary@example\.com/u);
+    assert.match(readPrivateRegularFile(querySqlFile), /canary@example\.com/u);
 
     const validated = spawnSync(
       process.execPath,
@@ -412,8 +423,7 @@ test("CLI writes private SQL files and produces proof without an email environme
       { encoding: "utf8", env: { ...withoutEmail, GRIHAGRID_CANARY_EMAIL: CANARY_EMAIL } },
     );
     assert.equal(cleanupRun.status, 0, cleanupRun.stderr);
-    assert.equal(statSync(cleanupSqlFile).mode & 0o777, 0o600);
-    assert.match(readFileSync(cleanupSqlFile, "utf8"), new RegExp(NEW_SESSION, "u"));
+    assert.match(readPrivateRegularFile(cleanupSqlFile), new RegExp(NEW_SESSION, "u"));
 
     const proof = spawnSync(
       process.execPath,
