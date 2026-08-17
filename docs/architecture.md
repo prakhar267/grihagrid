@@ -62,6 +62,17 @@ External boundaries: Google Gemini, email provider, Razorpay, and architect oper
   generation plus opaque revision, and replace every earlier session atomically.
   A login verified against stale authentication state cannot insert a surviving
   session.
+- Session review is a bounded, read-only projection of the current session plus
+  at most the 20 newest other matching sessions. It includes only a current flag,
+  start time, expiry time and top-level truncation signal; D1 session/account
+  identifiers, UA/browser/device fingerprints, IP, location and last-active
+  state never cross the API boundary.
+- Password-confirmed bulk revocation uses the same generation/revision fence but
+  performs a generation-only transition: conditionally bump user auth state,
+  delete every existing session and insert one replacement in one D1 batch.
+  It preserves the complete password record, `password_changed_at` and the
+  login-attempt fence. A copied bearer therefore closes even when review shows
+  only the current row, while the unchanged password may create a later login.
 - Registration accepts only email/password/optional-name primitive fields;
   login accepts exactly primitive email/password fields. Unsupported or
   confused-type fields fail before account lookup.
@@ -75,8 +86,10 @@ External boundaries: Google Gemini, email provider, Razorpay, and architect oper
   fenced session insert and its fence clear commit in one batch; password
   rotation clears the fence through its exact replacement-session batch.
 - Per-account D1 controls supplement per-IP abuse controls on password change,
-  project creation, public shares and provider spend. Checkout abuse KV remains
-  a brake rather than a money or entitlement ledger.
+  session bulk revocation, project creation, public shares and provider spend.
+  Password change and session revocation share one five-check-per-account fixed
+  15-minute admission boundary. Checkout abuse KV remains a brake rather than a
+  money or entitlement ledger.
 - File type is verified by signature, not extension; size/count limits are applied before R2 persistence.
 - Strict CSP, HSTS, `X-Content-Type-Options`, `Referrer-Policy` and frame protections at the edge.
 - Webhook signatures use constant-time comparison and a bounded replay window.
@@ -90,6 +103,10 @@ External boundaries: Google Gemini, email provider, Razorpay, and architect oper
 - Authentication logs also exclude email, IP, account/fence identifiers,
   password shape and every password-derived value; monitoring is aggregate by
   templated route, bounded outcome/status, release and latency.
+- Session-review and revocation monitoring likewise remains aggregate. It does
+  not add device telemetry, persist a viewed session list, or emit a product
+  event with session times. Important-security-event notifications are not yet
+  implemented, so ID-06 remains partial.
 - Gemini requests use a Worker secret, `store: false`, provider core-harm protection,
   adult consent, and sanitized inputs that exclude identity, project names,
   precise addresses, coordinates, payments, and uploads.
@@ -106,6 +123,12 @@ External boundaries: Google Gemini, email provider, Razorpay, and architect oper
 ## Environments
 
 Separate `dev`, `staging` and `production` D1/R2/KV resources and secrets. Production deployments come from protected GitHub branches; database migrations run before traffic promotion. Preview deployments use synthetic data only.
+
+The ID-06 session-review cut adds no schema migration. It reuses migration
+0015's explicitly permitted generation-only transition and migration 0017's
+existing login fence. Release preflight must report no unexpected pending
+migration. Worker rollback removes the UI/routes but cannot and must not undo a
+completed generation bump or resurrect deleted sessions.
 
 ## Reliability targets
 

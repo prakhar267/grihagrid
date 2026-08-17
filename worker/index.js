@@ -32,6 +32,7 @@ const LOGIN_ACCOUNT_LIMIT = 12;
 const LOGIN_ACCOUNT_WINDOW_SECONDS = 15 * 60;
 const PASSWORD_CHANGE_ACCOUNT_LIMIT = 5;
 const PASSWORD_CHANGE_WINDOW_SECONDS = 15 * 60;
+const SESSION_REVIEW_MAX_OTHERS = 20;
 const MAX_JSON_BYTES = 64 * 1024;
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const MAX_WEBHOOK_BYTES = 256 * 1024;
@@ -2790,6 +2791,162 @@ async function me(request, env) {
   const session = await getSession(request, env);
   const csrfToken = parseCookies(request)[CSRF_COOKIE] || null;
   return json({ user: publicUser(session), csrfToken });
+}
+
+function sessionReviewUnavailable() {
+  return new HttpError(503, "session review is temporarily unavailable", "session_review_unavailable");
+}
+
+function publicSessionTime(row, current) {
+  const startedAt = parseCanonicalSqliteTimestamp(row?.created_at);
+  const expiresAt = parseCanonicalSqliteTimestamp(row?.expires_at);
+  if (startedAt === null || expiresAt === null || expiresAt <= startedAt) {
+    throw sessionReviewUnavailable();
+  }
+  return { current, startedAt: row.created_at, expiresAt: row.expires_at };
+}
+
+async function listAuthSessions(request, env) {
+  const db = requireDatabase(env);
+  const currentSession = await getSession(request, env);
+  let rows;
+  try {
+    rows = (await db.prepare(
+      `WITH current_session AS (
+         SELECT s.id AS sort_id,s.created_at,s.expires_at,1 AS is_current
+           FROM sessions s
+          WHERE s.id=? AND s.user_id=? AND s.expires_at>datetime('now')
+            AND s.auth_generation=? AND s.auth_revision_id IS ?
+          LIMIT 2
+       ), other_sessions AS (
+         SELECT s.id AS sort_id,s.created_at,s.expires_at,0 AS is_current
+           FROM sessions s
+          WHERE s.user_id=? AND s.id!=? AND s.expires_at>datetime('now')
+            AND s.auth_generation=? AND s.auth_revision_id IS ?
+          ORDER BY s.created_at DESC,s.id DESC
+          LIMIT ?
+       )
+       SELECT sort_id,created_at,expires_at,is_current FROM current_session
+       UNION ALL
+       SELECT sort_id,created_at,expires_at,is_current FROM other_sessions
+       ORDER BY is_current DESC,created_at DESC,sort_id DESC`,
+    ).bind(
+      currentSession.session_id,
+      currentSession.user_id,
+      currentSession.auth_generation,
+      currentSession.auth_revision_id || null,
+      currentSession.user_id,
+      currentSession.session_id,
+      currentSession.auth_generation,
+      currentSession.auth_revision_id || null,
+      SESSION_REVIEW_MAX_OTHERS + 1,
+    ).all()).results;
+  } catch {
+    throw sessionReviewUnavailable();
+  }
+  if (!Array.isArray(rows) || rows.length < 1 || rows.length > SESSION_REVIEW_MAX_OTHERS + 2) {
+    throw sessionReviewUnavailable();
+  }
+  const currentRows = rows.filter((row) => Number(row?.is_current) === 1);
+  const otherRows = rows.filter((row) => Number(row?.is_current) === 0);
+  if (currentRows.length !== 1 || currentRows.length + otherRows.length !== rows.length) throw sessionReviewUnavailable();
+  const hasMore = otherRows.length > SESSION_REVIEW_MAX_OTHERS;
+  return json({
+    sessions: [
+      publicSessionTime(currentRows[0], true),
+      ...otherRows.slice(0, SESSION_REVIEW_MAX_OTHERS).map((row) => publicSessionTime(row, false)),
+    ],
+    hasMore,
+  });
+}
+
+async function revokeOtherAuthSessions(request, env) {
+  requireTrustedOrigin(request, env);
+  const db = requireDatabase(env);
+  const currentSession = await getSession(request, env);
+  await requireCsrf(request, currentSession);
+  requireAbuseControl(env);
+  await rateLimit(request, env, "session-revoke", 10, PASSWORD_CHANGE_WINDOW_SECONDS);
+
+  const body = await readJson(request);
+  requireStrictStringObject(
+    body,
+    ["currentPassword"],
+    [],
+    "currentPassword is the only supported field",
+    "invalid_session_revocation",
+  );
+  await acquirePasswordChangeAdmission(db, currentSession.user_id);
+  const passwordRecord = await currentPasswordRecord(db, currentSession);
+  const suppliedPassword = body.currentPassword;
+  const passwordShapeValid = suppliedPassword.length >= 10 && suppliedPassword.length <= 128;
+  const currentPassword = suppliedPassword.slice(0, 128) || "\0";
+  let passwordValid = false;
+  if (passwordShapeValid) {
+    passwordValid = await verifyPassword(currentPassword, passwordRecord);
+  } else {
+    await derivePassword(currentPassword, new TextEncoder().encode("grihagrid-session-revoke-dummy-salt"));
+  }
+  if (!passwordValid) {
+    throw new HttpError(401, "current password is incorrect", "current_password_incorrect");
+  }
+
+  const currentGeneration = Number(passwordRecord.auth_generation);
+  if (!Number.isSafeInteger(currentGeneration) || currentGeneration < 1 || currentGeneration >= 2_147_483_647) {
+    throw new HttpError(409, "authentication state changed; retry the request", "auth_state_changed");
+  }
+  const nextGeneration = currentGeneration + 1;
+  const nextRevisionId = crypto.randomUUID();
+  const replacement = await sessionRecord(currentSession.user_id, nextGeneration, nextRevisionId);
+  const results = await db.batch([
+    db.prepare(
+      `UPDATE users
+          SET auth_generation=?,auth_revision_id=?
+        WHERE id=? AND deleted_at IS NULL
+          AND auth_generation=? AND auth_revision_id IS ?
+          AND password_hash=? AND password_salt=?
+          AND password_iterations=? AND password_algorithm=?`,
+    ).bind(
+      nextGeneration,
+      nextRevisionId,
+      currentSession.user_id,
+      currentGeneration,
+      passwordRecord.auth_revision_id || null,
+      passwordRecord.password_hash,
+      passwordRecord.password_salt,
+      passwordRecord.password_iterations,
+      passwordRecord.password_algorithm,
+    ),
+    db.prepare(
+      `DELETE FROM sessions
+        WHERE user_id=?
+          AND EXISTS (
+            SELECT 1 FROM users u
+             WHERE u.id=? AND u.deleted_at IS NULL
+               AND u.auth_generation=? AND u.auth_revision_id IS ?
+               AND u.password_hash=?
+          )`,
+    ).bind(
+      currentSession.user_id,
+      currentSession.user_id,
+      nextGeneration,
+      nextRevisionId,
+      passwordRecord.password_hash,
+    ),
+    insertSessionStatement(db, replacement, passwordRecord.password_hash),
+  ]);
+  const inserted = results?.[2]?.results?.[0];
+  if (!inserted || inserted.id !== replacement.id) {
+    throw new HttpError(409, "authentication state changed; sign in and retry", "auth_state_changed");
+  }
+
+  const response = json({
+    user: publicUser(currentSession),
+    csrfToken: replacement.csrfToken,
+    sessions: [{ current: true, startedAt: replacement.createdAt, expiresAt: replacement.expiresAt }],
+    hasMore: false,
+  });
+  return withCookies(response, sessionCookies(replacement.sessionToken, replacement.csrfToken));
 }
 
 async function changePassword(request, env) {
@@ -7735,6 +7892,12 @@ async function api(request, env, ctx, url) {
     if (url.pathname === "/api/auth/password") {
       return request.method === "PUT" ? await changePassword(request, env) : methodNotAllowed(["PUT"]);
     }
+    if (url.pathname === "/api/auth/sessions") {
+      return request.method === "GET" ? await listAuthSessions(request, env) : methodNotAllowed(["GET"]);
+    }
+    if (url.pathname === "/api/auth/sessions/revoke-others") {
+      return request.method === "POST" ? await revokeOtherAuthSessions(request, env) : methodNotAllowed(["POST"]);
+    }
     if (url.pathname === "/api/projects") {
       if (request.method === "GET") return await listProjects(request, env, url);
       if (request.method === "POST") return await createProject(request, env);
@@ -7948,6 +8111,8 @@ function isApiRoute(pathname) {
     "/api/auth/logout",
     "/api/auth/me",
     "/api/auth/password",
+    "/api/auth/sessions",
+    "/api/auth/sessions/revoke-others",
     "/api/projects",
     "/api/orders",
     "/api/events",

@@ -18,6 +18,10 @@ function digest(value) {
   return createHash("sha256").update(value).digest("hex");
 }
 
+function sqliteTimestamp(epochMs) {
+  return new Date(epochMs).toISOString().slice(0, 19).replace("T", " ");
+}
+
 function cookies(request) {
   const values = new Map();
   for (const part of (request.headers.get("cookie") || "").split(";")) {
@@ -48,9 +52,14 @@ class FakeAccountSecurityServer {
     this.sessions = new Map();
     this.nextSession = 1;
     this.requests = [];
-    this.preChangeTokens = [];
-    this.rejectedPreChangeTokens = new Set();
+    this.sessionReviewCount = 0;
+    this.preRevokeTokens = [];
+    this.rejectedPreRevokeTokens = new Set();
+    this.prePasswordTokens = [];
+    this.rejectedPrePasswordTokens = new Set();
+    this.sessionRevocationCount = 0;
     this.passwordRotationCount = 0;
+    this.logoutRequestCount = 0;
   }
 
   sessionCookies(session, clear = false) {
@@ -69,9 +78,12 @@ class FakeAccountSecurityServer {
   createSession() {
     const sequence = this.nextSession;
     this.nextSession += 1;
+    const now = Date.now();
     const session = {
       token: `private-session-token-${sequence}`,
       csrf: `private-csrf-token-${sequence}`,
+      startedAt: sqliteTimestamp(now - sequence * 1_000),
+      expiresAt: sqliteTimestamp(now + 7 * 24 * 60 * 60 * 1_000),
     };
     this.sessions.set(session.token, session);
     return session;
@@ -85,6 +97,14 @@ class FakeAccountSecurityServer {
     return {
       user: { id: USER_ID, email: this.user.email, name: "Account Security Release Canary" },
       csrfToken,
+    };
+  }
+
+  publicSession(session, current) {
+    return {
+      current,
+      startedAt: session.startedAt,
+      expiresAt: session.expiresAt,
     };
   }
 
@@ -134,10 +154,80 @@ class FakeAccountSecurityServer {
       const suppliedToken = cookies(request).get("__Host-grihagrid_session");
       const session = this.authenticated(request);
       if (!session) {
-        if (this.preChangeTokens.includes(suppliedToken)) this.rejectedPreChangeTokens.add(suppliedToken);
+        if (this.preRevokeTokens.includes(suppliedToken)) this.rejectedPreRevokeTokens.add(suppliedToken);
+        if (this.prePasswordTokens.includes(suppliedToken)) this.rejectedPrePasswordTokens.add(suppliedToken);
         return json({ code: "unauthenticated" }, 401);
       }
       return json(this.userPayload(session.csrf));
+    }
+
+    if (url.pathname === "/api/auth/sessions" && request.method === "GET") {
+      const suppliedToken = cookies(request).get("__Host-grihagrid_session");
+      const session = this.authenticated(request);
+      if (!session) return json({ code: "unauthenticated" }, 401);
+      this.sessionReviewCount += 1;
+      let reviewedSessions = [
+        this.publicSession(session, true),
+        ...[...this.sessions.values()]
+          .filter((candidate) => candidate.token !== suppliedToken)
+          .map((candidate) => this.publicSession(candidate, false)),
+      ];
+      if (this.failure === "pre_session_review_identifier" && this.sessionReviewCount === 1) {
+        reviewedSessions[0].sessionId = "private-session-identifier";
+      }
+      if (this.failure === "pre_session_review_order" && this.sessionReviewCount === 1) {
+        reviewedSessions = reviewedSessions.reverse();
+      }
+      if (this.failure === "pre_session_review_expired" && this.sessionReviewCount === 1) {
+        reviewedSessions[1].expiresAt = "2020-01-02 00:00:00";
+      }
+      if (this.failure === "post_session_review_identifier" && this.sessionReviewCount === 2) {
+        reviewedSessions[1].sessionId = "private-session-identifier";
+      }
+      return json({ sessions: reviewedSessions, hasMore: false });
+    }
+
+    if (url.pathname === "/api/auth/sessions/revoke-others" && request.method === "POST") {
+      const session = this.authenticated(request);
+      const requestCookies = cookies(request);
+      if (!session
+          || request.headers.get("origin") !== ORIGIN
+          || request.headers.get("x-csrf-token") !== session.csrf
+          || requestCookies.get("grihagrid_csrf") !== session.csrf) {
+        return json({ code: "csrf_rejected" }, 403);
+      }
+      if (this.failure === "session_revocation") {
+        return json({
+          code: "private_failure",
+          password: body.currentPassword,
+          cookie: request.headers.get("cookie"),
+          userId: USER_ID,
+        }, 500);
+      }
+      if (body.currentPassword !== this.user.password) {
+        return json({ code: "current_password_incorrect" }, 401);
+      }
+      if (this.failure === "session_revocation_no_rotation") {
+        return json({
+          ...this.userPayload(session.csrf),
+          sessions: [this.publicSession(session, true)],
+          hasMore: false,
+        });
+      }
+      this.preRevokeTokens = [...this.sessions.keys()];
+      if (this.failure === "session_revocation_retains_current") {
+        this.sessions.clear();
+        this.sessions.set(session.token, session);
+      } else {
+        this.sessions.clear();
+      }
+      this.sessionRevocationCount += 1;
+      const replacement = this.createSession();
+      return json({
+        ...this.userPayload(replacement.csrf),
+        sessions: [this.publicSession(replacement, true)],
+        hasMore: false,
+      }, 200, this.sessionCookies(replacement));
     }
 
     if (url.pathname === "/api/auth/password" && request.method === "PUT") {
@@ -160,8 +250,13 @@ class FakeAccountSecurityServer {
       if (body.currentPassword !== this.user.password) {
         return json({ code: "current_password_incorrect" }, 401);
       }
-      this.preChangeTokens = [...this.sessions.keys()];
-      this.sessions.clear();
+      this.prePasswordTokens = [...this.sessions.keys()];
+      if (this.failure === "password_rotation_retains_current") {
+        this.sessions.clear();
+        this.sessions.set(session.token, session);
+      } else {
+        this.sessions.clear();
+      }
       this.user.password = body.newPassword;
       this.passwordRotationCount += 1;
       const replacement = this.createSession();
@@ -169,10 +264,22 @@ class FakeAccountSecurityServer {
     }
 
     if (url.pathname === "/api/auth/logout" && request.method === "POST") {
+      this.logoutRequestCount += 1;
       const suppliedToken = cookies(request).get("__Host-grihagrid_session");
       const session = this.sessions.get(suppliedToken);
       if (session && request.headers.get("x-csrf-token") !== session.csrf) {
         return json({ code: "csrf_rejected" }, 403);
+      }
+      if ((this.failure === "logout_once" && this.logoutRequestCount === 1)
+          || (this.failure === "second_logout_once" && this.logoutRequestCount === 2)) {
+        return json({
+          code: "private_failure",
+          cookie: request.headers.get("cookie"),
+          userId: USER_ID,
+        }, 500);
+      }
+      if (this.failure === "logout_retains_session" && this.logoutRequestCount === 1) {
+        return empty(204, this.sessionCookies(null, true));
       }
       this.sessions.delete(suppliedToken);
       return empty(204, this.sessionCookies(null, true));
@@ -210,12 +317,13 @@ function assertNoSecretMaterial(value) {
     USER_ID,
     "private-session-token",
     "private-csrf-token",
+    "private-session-identifier",
   ]) {
     assert.equal(serialized.includes(secret), false, `evidence leaked ${secret}`);
   }
 }
 
-test("account-security canary proves rotation, global old-session revocation, re-login, and logout without secret output", async () => {
+test("account-security canary proves identifier-free review, revoke-others, password rotation, and logout without secret output", async () => {
   const server = new FakeAccountSecurityServer();
   const result = await runAccountSecurityCanary(ORIGIN, credentials(), options(server));
 
@@ -233,25 +341,73 @@ test("account-security canary proves rotation, global old-session revocation, re
     launchControlsClosed: true,
     accountRegistered: true,
     accountIdentityVerified: true,
-    secondOldSessionCreated: true,
+    secondPreBoundarySessionCreated: true,
+    preBoundarySessionsListedIdentifierFree: true,
+    revokeOthersBoundaryRotated: true,
+    bothPreBoundarySessionsRevoked: true,
+    revokeReplacementSessionWorks: true,
+    unchangedPasswordCreatedPostBoundarySession: true,
+    postBoundarySessionsListedIdentifierFree: true,
     passwordRotated: true,
-    bothPreChangeSessionsRevoked: true,
-    replacementSessionWorks: true,
+    bothPrePasswordChangeSessionsRevoked: true,
+    passwordReplacementSessionWorks: true,
     oldPasswordRejected: true,
     newPasswordAccepted: true,
-    replacementSessionLoggedOut: true,
-    newLoginSessionLoggedOut: true,
+    passwordReplacementSessionLoggedOut: true,
+    newPasswordSessionLoggedOut: true,
   });
   assert.deepEqual(result.cleanup, { logoutAttempts: 2, logoutAcknowledged: 2, logoutFailures: 0 });
   assert.equal(result.failurePhase, null);
-  assert.equal(result.requestCount, 14);
+  assert.equal(result.requestCount, 21);
   assert.equal(result.checks.length, result.requestCount);
   assert.ok(result.checks.length <= 32);
-  assert.deepEqual(server.preChangeTokens.length, 2);
-  assert.equal(server.rejectedPreChangeTokens.size, 2);
+  assert.deepEqual(result.checks.map((check) => check.name), [
+    "readiness",
+    "register",
+    "registered_session_identity",
+    "second_pre_boundary_login",
+    "pre_boundary_session_review",
+    "revoke_other_sessions",
+    "first_pre_boundary_session_rejected",
+    "second_pre_boundary_session_rejected",
+    "revoke_replacement_session_identity",
+    "unchanged_password_post_boundary_login",
+    "post_boundary_session_review",
+    "password_rotation",
+    "first_pre_password_change_session_rejected",
+    "second_pre_password_change_session_rejected",
+    "password_replacement_session_identity",
+    "old_password_rejected",
+    "new_password_accepted",
+    "password_replacement_session_logout",
+    "password_replacement_session_logout_replay",
+    "new_password_session_logout",
+    "new_password_session_logout_replay",
+  ]);
+  assert.equal(server.sessionReviewCount, 2);
+  assert.equal(server.sessionRevocationCount, 1);
+  assert.equal(server.preRevokeTokens.length, 2);
+  assert.equal(server.rejectedPreRevokeTokens.size, 2);
+  assert.equal(server.prePasswordTokens.length, 2);
+  assert.equal(server.rejectedPrePasswordTokens.size, 2);
   assert.equal(server.passwordRotationCount, 1);
   assert.equal(server.sessions.size, 0);
   assert.equal(server.user.password, NEXT_PASSWORD);
+  assert.deepEqual(
+    server.requests
+      .filter((request) => request.path === "/api/auth/sessions")
+      .map(({ method, path, body }) => ({ method, path, body })),
+    [
+      { method: "GET", path: "/api/auth/sessions", body: null },
+      { method: "GET", path: "/api/auth/sessions", body: null },
+    ],
+  );
+  const revokeRequests = server.requests.filter((request) => request.path === "/api/auth/sessions/revoke-others");
+  assert.deepEqual(revokeRequests, [{
+    method: "POST",
+    path: "/api/auth/sessions/revoke-others",
+    body: { currentPassword: INITIAL_PASSWORD },
+  }]);
   assertNoSecretMaterial(result);
 });
 
@@ -276,7 +432,99 @@ test("a wrong Worker version stops before creating a synthetic account", async (
   assert.equal(server.sessions.size, 0);
 });
 
-test("rotation failures return bounded evidence and best-effort logout every working session", async () => {
+test("pre-boundary review fails closed on identifiers, expired entries, or non-current-first ordering and cleans up", async () => {
+  for (const failure of [
+    "pre_session_review_identifier",
+    "pre_session_review_expired",
+    "pre_session_review_order",
+  ]) {
+    const server = new FakeAccountSecurityServer({ failure });
+    await assert.rejects(
+      () => runAccountSecurityCanary(ORIGIN, credentials(), options(server)),
+      (error) => {
+        const evidence = evidenceFrom(error);
+        assert.equal(error.message, "account-security canary failed during pre_boundary_session_review");
+        assert.equal(evidence.failurePhase, "pre_boundary_session_review");
+        assert.equal(evidence.proofs.secondPreBoundarySessionCreated, true);
+        assert.equal(evidence.proofs.preBoundarySessionsListedIdentifierFree, false);
+        assert.equal(evidence.proofs.revokeOthersBoundaryRotated, false);
+        assert.deepEqual(evidence.cleanup, { logoutAttempts: 2, logoutAcknowledged: 2, logoutFailures: 0 });
+        assert.equal(evidence.requestCount, 7);
+        assertNoSecretMaterial(error);
+        return true;
+      },
+    );
+    assert.equal(server.sessions.size, 0);
+    assert.equal(server.sessionRevocationCount, 0);
+  }
+});
+
+test("revoke-others failures and missing cookie rotation stay bounded and clean up both pre-boundary sessions", async () => {
+  for (const failure of ["session_revocation", "session_revocation_no_rotation"]) {
+    const server = new FakeAccountSecurityServer({ failure });
+    await assert.rejects(
+      () => runAccountSecurityCanary(ORIGIN, credentials(), options(server)),
+      (error) => {
+        const evidence = evidenceFrom(error);
+        assert.equal(error.message, "account-security canary failed during revoke_other_sessions");
+        assert.equal(evidence.failurePhase, "revoke_other_sessions");
+        assert.equal(evidence.proofs.preBoundarySessionsListedIdentifierFree, true);
+        assert.equal(evidence.proofs.revokeOthersBoundaryRotated, false);
+        assert.equal(evidence.proofs.bothPreBoundarySessionsRevoked, false);
+        assert.deepEqual(evidence.cleanup, { logoutAttempts: 2, logoutAcknowledged: 2, logoutFailures: 0 });
+        assert.equal(evidence.requestCount, 8);
+        assertNoSecretMaterial(error);
+        return true;
+      },
+    );
+    assert.equal(server.sessions.size, 0);
+  }
+});
+
+test("a rotated revoke response that retains the prior current cookie fails closed and logs out every represented jar", async () => {
+  const server = new FakeAccountSecurityServer({ failure: "session_revocation_retains_current" });
+  await assert.rejects(
+    () => runAccountSecurityCanary(ORIGIN, credentials(), options(server)),
+    (error) => {
+      const evidence = evidenceFrom(error);
+      assert.equal(error.message, "account-security canary failed during first_pre_boundary_session_rejected");
+      assert.equal(evidence.failurePhase, "first_pre_boundary_session_rejected");
+      assert.equal(evidence.proofs.revokeOthersBoundaryRotated, true);
+      assert.equal(evidence.proofs.bothPreBoundarySessionsRevoked, false);
+      assert.deepEqual(evidence.cleanup, { logoutAttempts: 3, logoutAcknowledged: 3, logoutFailures: 0 });
+      assert.equal(evidence.requestCount, 10);
+      assertNoSecretMaterial(error);
+      return true;
+    },
+  );
+  assert.equal(server.sessions.size, 0);
+  assert.equal(server.logoutRequestCount, 3);
+});
+
+test("post-boundary review rejects identifier-bearing session entries and logs out both live jars", async () => {
+  const server = new FakeAccountSecurityServer({ failure: "post_session_review_identifier" });
+  await assert.rejects(
+    () => runAccountSecurityCanary(ORIGIN, credentials(), options(server)),
+    (error) => {
+      const evidence = evidenceFrom(error);
+      assert.equal(error.message, "account-security canary failed during post_boundary_session_review");
+      assert.equal(evidence.failurePhase, "post_boundary_session_review");
+      assert.equal(evidence.proofs.revokeOthersBoundaryRotated, true);
+      assert.equal(evidence.proofs.bothPreBoundarySessionsRevoked, true);
+      assert.equal(evidence.proofs.unchangedPasswordCreatedPostBoundarySession, true);
+      assert.equal(evidence.proofs.postBoundarySessionsListedIdentifierFree, false);
+      assert.equal(evidence.proofs.passwordRotated, false);
+      assert.deepEqual(evidence.cleanup, { logoutAttempts: 2, logoutAcknowledged: 2, logoutFailures: 0 });
+      assert.equal(evidence.requestCount, 13);
+      assertNoSecretMaterial(error);
+      return true;
+    },
+  );
+  assert.equal(server.sessions.size, 0);
+  assert.equal(server.user.password, INITIAL_PASSWORD);
+});
+
+test("password-rotation failures after revoke-others return bounded evidence and logout every live session", async () => {
   const server = new FakeAccountSecurityServer({ failure: "password_rotation" });
   await assert.rejects(
     () => runAccountSecurityCanary(ORIGIN, credentials(), options(server)),
@@ -286,17 +534,104 @@ test("rotation failures return bounded evidence and best-effort logout every wor
       assert.equal(evidence.outcome, "failed");
       assert.equal(evidence.failurePhase, "password_rotation");
       assert.equal(evidence.proofs.accountRegistered, true);
-      assert.equal(evidence.proofs.secondOldSessionCreated, true);
+      assert.equal(evidence.proofs.preBoundarySessionsListedIdentifierFree, true);
+      assert.equal(evidence.proofs.revokeOthersBoundaryRotated, true);
+      assert.equal(evidence.proofs.bothPreBoundarySessionsRevoked, true);
+      assert.equal(evidence.proofs.unchangedPasswordCreatedPostBoundarySession, true);
+      assert.equal(evidence.proofs.postBoundarySessionsListedIdentifierFree, true);
       assert.equal(evidence.proofs.passwordRotated, false);
       assert.deepEqual(evidence.cleanup, { logoutAttempts: 2, logoutAcknowledged: 2, logoutFailures: 0 });
       assert.equal(evidence.externalAccountCleanupRequired, true);
-      assert.equal(evidence.requestCount, 7);
+      assert.equal(evidence.requestCount, 14);
       assertNoSecretMaterial(error);
       return true;
     },
   );
   assert.equal(server.sessions.size, 0);
   assert.equal(server.user.password, INITIAL_PASSWORD);
+});
+
+test("a rotated password response that retains its prior current cookie fails closed and cleans every represented jar", async () => {
+  const server = new FakeAccountSecurityServer({ failure: "password_rotation_retains_current" });
+  await assert.rejects(
+    () => runAccountSecurityCanary(ORIGIN, credentials(), options(server)),
+    (error) => {
+      const evidence = evidenceFrom(error);
+      assert.equal(error.message, "account-security canary failed during first_pre_password_change_session_rejected");
+      assert.equal(evidence.failurePhase, "first_pre_password_change_session_rejected");
+      assert.equal(evidence.proofs.passwordRotated, true);
+      assert.equal(evidence.proofs.bothPrePasswordChangeSessionsRevoked, false);
+      assert.deepEqual(evidence.cleanup, { logoutAttempts: 3, logoutAcknowledged: 3, logoutFailures: 0 });
+      assert.equal(evidence.requestCount, 16);
+      assertNoSecretMaterial(error);
+      return true;
+    },
+  );
+  assert.equal(server.sessions.size, 0);
+  assert.equal(server.user.password, NEXT_PASSWORD);
+  assert.equal(server.logoutRequestCount, 3);
+});
+
+test("a failed explicit logout is counted and each distinct live session is retried during cleanup", async () => {
+  const server = new FakeAccountSecurityServer({ failure: "logout_once" });
+  await assert.rejects(
+    () => runAccountSecurityCanary(ORIGIN, credentials(), options(server)),
+    (error) => {
+      const evidence = evidenceFrom(error);
+      assert.equal(error.message, "account-security canary failed during password_replacement_session_logout");
+      assert.equal(evidence.failurePhase, "password_replacement_session_logout");
+      assert.equal(evidence.proofs.newPasswordAccepted, true);
+      assert.equal(evidence.proofs.passwordReplacementSessionLoggedOut, false);
+      assert.equal(evidence.proofs.newPasswordSessionLoggedOut, false);
+      assert.deepEqual(evidence.cleanup, { logoutAttempts: 3, logoutAcknowledged: 2, logoutFailures: 1 });
+      assert.equal(evidence.requestCount, 20);
+      assertNoSecretMaterial(error);
+      return true;
+    },
+  );
+  assert.equal(server.sessions.size, 0);
+  assert.equal(server.logoutRequestCount, 3);
+});
+
+test("a logout acknowledgement that retains the session is caught by replay and the replay jar is cleaned", async () => {
+  const server = new FakeAccountSecurityServer({ failure: "logout_retains_session" });
+  await assert.rejects(
+    () => runAccountSecurityCanary(ORIGIN, credentials(), options(server)),
+    (error) => {
+      const evidence = evidenceFrom(error);
+      assert.equal(error.message, "account-security canary failed during password_replacement_session_logout_replay");
+      assert.equal(evidence.failurePhase, "password_replacement_session_logout_replay");
+      assert.equal(evidence.proofs.newPasswordAccepted, true);
+      assert.equal(evidence.proofs.passwordReplacementSessionLoggedOut, false);
+      assert.equal(evidence.proofs.newPasswordSessionLoggedOut, false);
+      assert.deepEqual(evidence.cleanup, { logoutAttempts: 3, logoutAcknowledged: 3, logoutFailures: 0 });
+      assert.equal(evidence.requestCount, 21);
+      assertNoSecretMaterial(error);
+      return true;
+    },
+  );
+  assert.equal(server.sessions.size, 0);
+  assert.equal(server.logoutRequestCount, 3);
+});
+
+test("a failed second explicit logout keeps its replay jar available for exact cleanup", async () => {
+  const server = new FakeAccountSecurityServer({ failure: "second_logout_once" });
+  await assert.rejects(
+    () => runAccountSecurityCanary(ORIGIN, credentials(), options(server)),
+    (error) => {
+      const evidence = evidenceFrom(error);
+      assert.equal(error.message, "account-security canary failed during new_password_session_logout");
+      assert.equal(evidence.failurePhase, "new_password_session_logout");
+      assert.equal(evidence.proofs.passwordReplacementSessionLoggedOut, true);
+      assert.equal(evidence.proofs.newPasswordSessionLoggedOut, false);
+      assert.deepEqual(evidence.cleanup, { logoutAttempts: 3, logoutAcknowledged: 2, logoutFailures: 1 });
+      assert.equal(evidence.requestCount, 21);
+      assertNoSecretMaterial(error);
+      return true;
+    },
+  );
+  assert.equal(server.sessions.size, 0);
+  assert.equal(server.logoutRequestCount, 3);
 });
 
 test("an ambiguous registration network failure never echoes the thrown secret and flags exact external cleanup", async () => {

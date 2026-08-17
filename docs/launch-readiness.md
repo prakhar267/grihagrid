@@ -655,35 +655,77 @@ server write, bearer authorization, payment, upload, or professional claim.
 
 ## Account Security release gate
 
+The ID-06 candidate adds privacy-minimized session review and password-confirmed
+bulk revocation to the existing password-rotation surface. It is **not recorded
+as live until the exact protected release evidence below is complete**. It does
+not add device recognition, location history, email recovery, MFA, or important-
+security-event notifications; ID-06 remains partial until notifications have a
+separate privacy, delivery, abuse and recovery design.
+
 - [ ] Migrations `0015` and `0017` preserve every existing credential and session at
   authentication generation one with its legacy null revision, changes no
   protected row count or canonical user/session/project/report bytes, and
   report `authSchema=current` in both environments. A first 0017 application
   creates an empty `login_attempt_fences` table and its exact expiry index.
+- [ ] The ID-06 cut adds no migration. Migration 0015's existing trigger
+  explicitly permits a one-step generation-only bump with a fresh revision
+  while forbidding a `password_changed_at` change when credential fields are
+  unchanged. Staging and production preflight show zero unexpected pending
+  migrations; no empty migration or applied-history rewrite is introduced.
 - [ ] Registration/login enforce their strict primitive-string allowlists;
   missing/failing KV or D1 login admission fails closed before PBKDF2/session
   mutation. Twelve distributed account reservations are the maximum in one
   fixed non-sliding window, and every credential/fence failure has one
   real-or-dummy derivation plus the generic 401 envelope.
-- [ ] The current-password endpoint enforces exact input, trusted origin, live
-  session, CSRF, fail-closed IP KV and an atomic five-attempt D1 account limit
-  before credential mutation; no password, bearer, hash, generation or session
-  identifier reaches output, analytics or operational logs.
+- [ ] `GET /api/auth/sessions` returns exactly the current row first plus at
+  most 20 newest other current-generation/revision, unexpired rows and an exact
+  `hasMore` flag. Rows contain only current/start/expiry; expired and stale-auth
+  rows are excluded; malformed authoritative state fails closed; the read does
+  not update `last_seen_at`, prune, rotate or write anything.
+- [ ] Session review exposes no session/account ID, bearer/CSRF value, email,
+  UA/browser/device, IP, location, last-active, generation or revision in the
+  API, DOM, storage, analytics, print or operational logs. Measurement remains
+  aggregate by templated route, bounded outcome/status, version and latency.
+- [ ] Both current-password writes enforce their exact independent body shape,
+  trusted origin, live session, CSRF and fail-closed IP KV. Password rotation
+  and bulk revocation share the same atomic five-attempt-per-account D1 limit
+  in each fixed 15-minute window; concurrent mixed attempts cannot perform a
+  sixth verification.
 - [ ] One successful D1 batch changes the independently salted password record,
   advances the generation, revokes every older session and returns one working
   replacement session; old password and retained old cookies all fail. The
   exact replacement-session batch also clears the login-attempt fence.
+- [ ] One successful bulk-revocation batch advances only authentication
+  generation/revision, deletes every pre-existing session and returns one
+  replacement. Every password field, `password_changed_at` and the
+  login-attempt fence remain byte-equivalent; every retained bearer fails; the
+  unchanged password can create a later post-boundary session.
 - [ ] Concurrent password changes produce one winner, a stale verified login
   cannot insert a surviving session, and injected failures roll back credentials
-  plus sessions without split state.
-- [ ] `/security` passes keyboard, screen-reader announcements, visible focus,
-  390 px, 200% zoom/text spacing, high contrast, reduced motion, print and
-  slow/error-state checks without claiming lost-password recovery.
-- [ ] The exact merged SHA passes protected CI and CodeQL, encrypted migration
-  backup, old-Worker rollback rehearsal, staging and production password-change
-  canaries with exact synthetic cleanup, public/authenticated smoke, and a
-  30-minute exact-version observation while paid checkout, fulfillment and
-  uploads remain closed.
+  plus sessions without split state. Concurrent bulk revocations also produce
+  one winner, and failures roll back the generation, delete and insert without
+  touching the credential or login fence.
+- [ ] `/security` keeps **Sign out other sessions** useful when only the current
+  row appears, explains copied-bearer limits and same-password re-login, and
+  passes loading/current-only/truncated/wrong-password/expired/ambiguous/conflict/
+  success states with keyboard, screen-reader announcements, stable visible
+  focus, 390 px, 200% zoom/text spacing, high contrast, reduced motion, print
+  and slow-network checks without claiming recovery or device identification.
+- [ ] The exact merged SHA passes protected CI and CodeQL, zero-pending-migration
+  preflight, staging and production account-security canaries with exact
+  synthetic cleanup, public/authenticated smoke, and a 30-minute exact-version
+  observation while paid checkout, fulfillment and uploads remain closed.
+  Record the active prior Worker and its successful release as the known-good
+  schema-free rollback target. A previous-Worker compatibility rehearsal plus
+  normal encrypted backup/Time Travel evidence becomes mandatory only if a
+  separate pending migration enters the release.
+- [ ] The same release record includes real-D1 current-plus-20/`hasMore` and
+  read-purity proof, privacy-negative scans, mixed five-attempt admission,
+  copied-bearer invalidation, generation-only failure/race injection, unchanged
+  credential/timestamp/login-fence hashes, same-password post-boundary login,
+  exact Worker version and staging/production synthetic cleanup. Rollback to
+  the recorded prior Worker removes the capability but cannot decrement a
+  generation or resurrect a deleted session; roll-forward restores ID-06.
 
 ## Project Decision Home release gate
 

@@ -772,6 +772,17 @@ test("release tails suppress the Wrangler banner while preserving warnings and e
   assert.match(observe, /Number\(process\.env\.SERVER_STDERR_BYTES\) !== 0/u);
   assert.match(observe, /process\.env\.TAILS_ALIVE !== "true"/u);
   assert.match(observe, /invocation\.eventCount > 0 \|\| server\.eventCount > 0/u);
+  const waitsFinished = observe.indexOf('wait "$server_pid"');
+  const invocationStderrMeasured = observe.indexOf('invocation_stderr_bytes="$(wc -c < "$invocation_stderr")"');
+  const serverStderrMeasured = observe.indexOf('server_stderr_bytes="$(wc -c < "$server_stderr")"');
+  const stderrRemoved = observe.indexOf('rm -f -- "$invocation_stderr" "$server_stderr"');
+  assert.ok(
+    waitsFinished >= 0
+      && invocationStderrMeasured > waitsFinished
+      && serverStderrMeasured > invocationStderrMeasured
+      && stderrRemoved > serverStderrMeasured,
+    "tail stderr must be measured only after both supervised processes finish and before the private files are removed",
+  );
 
   const wrangler = fileURLToPath(new URL("../node_modules/wrangler/bin/wrangler.js", import.meta.url));
   const runWrangler = (level) => spawnSync(
@@ -823,6 +834,53 @@ test("release tails suppress the Wrangler banner while preserving warnings and e
     wranglerSource,
     /logger2\.warn\(\s*`Tail connection lost\. Reconnecting \(attempt/su,
   );
+});
+
+test("release tail processes fail closed unless both finish by operator SIGTERM", async () => {
+  const workflow = await readFile(new URL("../.github/workflows/deploy.yml", import.meta.url), "utf8");
+  const observe = workflowStep(workflow, "Observe the exact production version for 30 minutes");
+  assert.match(
+    observe,
+    /const tailsStoppedByOperator = invocationStatus === 143 && serverStatus === 143;/u,
+  );
+  assert.match(observe, /\|\| !tailsStoppedByOperator;/u);
+  assert.match(observe, /^\s*tailsStoppedByOperator,$/mu);
+
+  const healthyTailState = {
+    invocationStatus: 143,
+    serverStatus: 143,
+    monitorInfrastructureFailure: false,
+    tailsAlive: true,
+    invocationStderrBytes: 0,
+    serverStderrBytes: 0,
+  };
+  const isInfrastructureFailure = (state) => state.monitorInfrastructureFailure
+    || !state.tailsAlive
+    || state.invocationStderrBytes !== 0
+    || state.serverStderrBytes !== 0
+    || state.invocationStatus !== 143
+    || state.serverStatus !== 143;
+  assert.equal(isInfrastructureFailure(healthyTailState), false);
+  for (const unexpectedStatus of [undefined, null, Number.NaN, 0, 1, 3, 124, 130, 137, 255]) {
+    assert.equal(
+      isInfrastructureFailure({ ...healthyTailState, invocationStatus: unexpectedStatus }),
+      true,
+      `invocation tail status ${String(unexpectedStatus)} must fail closed`,
+    );
+    assert.equal(
+      isInfrastructureFailure({ ...healthyTailState, serverStatus: unexpectedStatus }),
+      true,
+      `handled-server-error tail status ${String(unexpectedStatus)} must fail closed`,
+    );
+  }
+  for (const infrastructureSignal of [
+    { monitorInfrastructureFailure: true },
+    { tailsAlive: false },
+    { invocationStderrBytes: 1 },
+    { serverStderrBytes: 1 },
+  ]) {
+    assert.equal(isInfrastructureFailure({ ...healthyTailState, ...infrastructureSignal }), true);
+  }
 });
 
 test("release rollback polling propagates legacy Worker compatibility to every smoke sample", async () => {

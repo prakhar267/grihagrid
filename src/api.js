@@ -40,7 +40,10 @@ async function apiRequest(path, options = {}) {
     body = JSON.stringify(body);
   }
   if (!anonymous && !["GET", "HEAD", "OPTIONS"].includes(method)) {
-    const token = csrfToken || readCookie("grihagrid_csrf");
+    // Session rotations update the shared browser cookie immediately. Prefer
+    // that live value so sibling tabs never keep sending an older in-memory
+    // token after password change or session revocation.
+    const token = readCookie("grihagrid_csrf") || csrfToken;
     if (token) headers.set("x-csrf-token", token);
   }
   if (anonymous) {

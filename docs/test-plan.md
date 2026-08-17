@@ -63,6 +63,15 @@ interleaved within their own real-D1 fixtures.
     Repeat with expiry, corrupt/blocked/quota storage, back/forward navigation,
     two-tab edit/discard races, lost project response, successful cleanup, 390 px,
     keyboard-only operation, and 200% zoom.
+15. Register → create 22 additional current-authentication sessions plus expired
+    and stale-generation fixtures → open Account security → require current plus
+    20 newest matching others and `hasMore` without identifiers/fingerprints →
+    confirm **Sign out other sessions** with the current password → retain every
+    pre-boundary bearer and require each to fail while the replacement succeeds.
+    Repeat with a current-only copied bearer, unchanged-password login after the
+    boundary, mixed password-change/revoke rate-limit attempts, concurrent
+    revokes, injected D1 failures, response loss, 390 px, keyboard, screen reader,
+    200% zoom and print.
 
 ## API cases
 
@@ -132,6 +141,33 @@ interleaved within their own real-D1 fixtures.
   response is lost after deletion, client reconciliation may complete logout only
   after `/api/auth/me` proves `401`; `200` or an unavailable check keeps the private
   UI open with an accessible retry.
+- `GET /api/auth/sessions`: require a live session, `no-store`, exactly one
+  current row first, at most 20 newest other rows matching the current
+  generation/revision and unexpired by database time, and exact top-level
+  `{ sessions, hasMore }`. Every row is exactly
+  `{ current, startedAt, expiresAt }`; the 21st other matching row sets
+  `hasMore=true` but is not returned. Seed expired and stale-generation rows,
+  duplicate/missing current results, invalid timestamps, reversed time pairs
+  and query failures. Require exclusion or fail-closed
+  `503 session_review_unavailable` as documented and byte-equivalent D1 before/
+  after, including `last_seen_at`. Search response/logs/DOM for session/account
+  IDs, bearer/CSRF values, email, UA/browser/device, IP, location, last-active,
+  generation and revision; none may appear in the review projection.
+- `POST /api/auth/sessions/revoke-others`: require only primitive-string
+  `currentPassword`, trusted origin, live session, matching CSRF, healthy KV and
+  the shared D1 current-password admission. Missing/extra/confused fields are
+  `400 invalid_session_revocation`; wrong/invalid-length password performs real
+  or dummy bounded PBKDF2 and returns `401 current_password_incorrect`; missing/
+  failing abuse control is `503`; exhausted admission is `429`; a stale auth
+  race is bounded `401`/`409`. Interleave three guesses here and three at
+  `PUT /api/auth/password`; exactly five total account checks reach verification
+  in the fixed 15-minute window. Inject failure at generation/revision update,
+  all-session delete and replacement insert, then race two revokes and a login.
+  Success must leave exactly one new session, invalidate every retained bearer,
+  preserve every password field, `password_changed_at` and
+  `login_attempt_fences`, and permit a new login with the unchanged password.
+  The success body is exact `{ user, csrfToken, sessions, hasMore }`, with one
+  current time-only session and `hasMore=false`; no path claims partial success.
 - `POST /api/projects`: valid project, normalized estimate, length-limited name
   and invalid dimensions. Require exact root/nested allowlists and typed
   categorical bounds; NFKC-normalize names and reject control/bidi text; reject
@@ -534,14 +570,18 @@ interleaved within their own real-D1 fixtures.
 | Distributed account fence | Send 13 concurrent requests for one user from distinct IP fixtures, inspect the row, wait/advance past expiry, and repeat | At most 12 are admitted; request 13 is generic 401 with dummy work; one `user_id`-only canonical row exists; expiry never slides and resets atomically |
 | Abuse-control failure | Remove/fail KV; remove/fail/corrupt the D1 fence query/state; exhaust only the IP window | Missing/unhealthy authority is `503` before PBKDF2/session mutation; IP exhaustion is `429`; no fail-open or account-state leak occurs |
 | Exact login commit | Seed a fence, log in correctly, then inject session-batch failure and race password rotation | Only an exact committed session clears its fence; a failure/stale race leaves no usable session and cannot clear another fence; exact rotation clears atomically |
+| Session review bounds | Seed current plus 0/1/20/21+ other current-auth sessions, expired rows, stale-generation rows and malformed times; snapshot D1 before/after | Current is first; at most 20 newest matching unexpired others appear; `hasMore` is exact; malformed authoritative state fails closed; no row or `last_seen_at` changes |
+| Session review privacy | Inspect API, DOM, storage, print, analytics and templated logs with identifying fixture values | Review contains only current/start/expiry plus `hasMore`; no session/account ID, bearer/CSRF, email, UA/browser/device, IP, location, last-active, generation or revision escapes |
+| Current-only copied bearer | Duplicate the current bearer while review shows one row, invoke the still-visible action, then replay both copies | Both old copies fail, the replacement works, and copy explains why a copied bearer cannot appear as a separate device |
+| Password-confirmed bulk revocation | Create three sessions, seed a login fence, revoke from one, compare credential/auth rows and then log in again with the same password | Generation/revision alone advance; all old sessions fail; exactly one replacement works; password fields, `password_changed_at` and login fence are unchanged; the unchanged password creates a valid later session |
 | Password rotation | Change from a valid current password to a different valid password, then try both credentials | The old password fails, the new password logs in, and the current response carries one working replacement session/CSRF pair |
-| Session revocation | Create two sessions before the change, retain both bearer cookies, then rotate through one | Both retained cookies return `401`; only the returned replacement session works |
-| Strict boundary | Try wrong current password, same password, 9/129-character values, non-string values, missing/extra fields, malformed JSON and oversized bodies | Each returns the documented bounded error with zero user/session mutation and no password material in response/logs |
+| Password-rotation revocation | Create two sessions before the change, retain both bearer cookies, then rotate through one | Both retained cookies return `401`; only the returned replacement session works |
+| Strict current-password boundaries | For each write, try wrong current password, 9/129-character values, non-string values, missing/extra fields, malformed JSON and oversized bodies; for rotation also try reusing the same password | Each returns its documented bounded error with zero unauthorized user/session mutation and no password material in response/logs |
 | Browser defences | Repeat without origin, from a foreign origin, without matching CSRF and with missing/failing KV or D1 admission | Origin/CSRF/abuse checks fail closed before PBKDF2 or credential mutation |
-| Concurrency | Race 20 password guesses through deliberately non-atomic KV, race two different changes, and pause a login after old-password verification while a change wins | Exactly five guesses reach verification and 15 are D1-limited; one change commits; the loser cannot delete the winner's session; the stale login inserts no usable session |
-| Atomicity | Inject failure at credential update, old-session delete and replacement-session insert | The D1 batch rolls back completely: either old credentials/sessions work or only the new credentials/replacement works |
-| Migration, cleanup and rollback | Upgrade populated 0014 data through 0017, inspect defaults/guards/fence inventory, run cron and the prior Worker, then restore the new Worker | Existing credentials/sessions survive; the first fence table is empty, expiry cleanup is exact and retention-only, protected hashes/counts do not change; old Worker is schema-compatible but explicitly loses the account fence, and roll-forward restores it |
-| Accessibility | Exercise keyboard, screen reader, 390 px, 200% zoom/text spacing, high contrast, reduced motion and print | Persistent labels/autocomplete, visible focus, announced validation/result states, no overlap/overflow, and no credential form in print |
+| Shared step-up concurrency | Race 20 mixed password-change/revoke guesses through deliberately non-atomic KV, race two changes, race two revokes, and pause a login after verification | Exactly five mixed guesses reach verification and 15 are D1-limited; each mutation race has one winner; no loser deletes a winner and no stale login survives |
+| Atomicity | Inject failure at credential/generation update, old-session delete and replacement-session insert for rotation and generation-only revocation | Each D1 batch rolls back completely: the whole prior boundary works or only the one new replacement works; revocation never changes the credential/login fence |
+| Migration, cleanup and rollback | Upgrade populated 0014 data through 0017, inspect defaults/guards/fence inventory, run cron and the prior Worker, then restore the new Worker; deploy the ID-06 cut with no migration | Existing credentials/sessions survive; the first fence table is empty, expiry cleanup is exact and retention-only, protected hashes/counts do not change; 0015 accepts a fresh-revision generation-only bump; no unexpected migration is pending; rollback cannot resurrect a deleted session |
+| Accessibility | Exercise review loading/current-only/truncated/error/success and both password forms with keyboard, screen reader, 390 px, 200% zoom/text spacing, high contrast, reduced motion and print | Persistent labels/autocomplete, visible stable focus, announced validation/result/ambiguous states, no overlap/overflow, and no session times or credential controls in print |
 | Privacy | Search URL, history, storage, analytics, API response, custom logs and D1 outside credential/session columns | No current/new password, bearer/CSRF token, password hash/salt, generation or session ID is exposed; route logging remains templated |
 | Paid containment | Inspect catalog/readiness and order/upload paths before and after change | Checkout, fulfillment and uploads remain closed; project/report/order/payment bytes are unchanged |
 
@@ -603,6 +643,14 @@ Attach to the release record, without secrets or customer data:
   pre-change-bearer rejection, concurrent-change and stale-login race evidence,
   D1 rollback injection, populated migration/old-Worker compatibility, bounded
   route logs, and keyboard/screen-reader/reflow/print results;
+- ID-06 current-plus-20/`hasMore` fixtures, expired/stale-generation exclusion,
+  identifier/fingerprint-negative response and log scan, byte-equivalent
+  read-only D1 snapshot, current-only copied-bearer revocation, mixed shared
+  five-per-account password-admission proof, generation-only atomicity/race
+  injection, unchanged password/`password_changed_at`/login-fence comparison,
+  same-password post-boundary login, no-unexpected-pending-migration evidence,
+  compatibility rollback rehearsal, ambiguous-response UX, and exact-version
+  staging/production synthetic cleanup and observation;
 - strict registration/login schema matrices; PBKDF2 call-count proof for
   unknown/wrong/deleted/malformed/short/long/fenced states; 12→13 distributed
   account admission and fixed-expiry proof; KV/D1 fail-closed injection; exact

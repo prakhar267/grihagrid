@@ -496,6 +496,32 @@ cleanup proof after a canary attempt, or any matching row is a failed release.
 This marker-specific proof is unaffected by unrelated legitimate customer
 writes and must not be replaced with global before/after row-count equality.
 
+The standalone `npm run canary:account-security` journey is intentionally not
+wired into the persistent authenticated-smoke account: its generation-only
+session boundary deletes that account's baseline sessions and cannot be undone.
+For a release proof, generate a collision-resistant email and password in a
+mode-0600 runner-temporary context, require the exact candidate Worker version,
+and retain only the script's bounded hash/count evidence. A successful canary
+must return a verified account-ID SHA-256. Before removing the synthetic user,
+query by the still-private exact email and require one active row named exactly
+`Account Security Release Canary`; hash the queried ID and require it to equal
+the canary evidence. Also require zero rows for that ID in every customer-owned
+project, order, report, file, AI, comparison, selection, snapshot, share,
+fulfillment, Family Alignment and feedback surface, plus zero lead rows for the
+email. Delete only that exact ID through a conditional statement carrying all
+of those zero-row guards, then prove the user, sessions, password-step-up/login
+fences and report-share counters are absent. Never retain the raw email, user
+ID, session IDs, passwords, cookies or cleanup SQL in release artifacts.
+
+`externalAccountCleanupRequired` is only a warning, not deletion authority. If
+registration was ambiguous and the canary could not emit a verified account-ID
+hash, do not automate deletion even when the random email appears to match;
+preserve bounded evidence, stop the release and investigate the exact account
+manually. Any identity/hash mismatch, nonzero customer-owned row, conditional
+delete no-op, query failure or final residue also stops the release. A passed
+canary therefore has exact synthetic-account cleanup; an ambiguous canary never
+turns a privacy-preserving locator into a destructive guess.
+
 Apply the exact files to staging first and complete its smoke suite before
 production. Automation rejects deletion, rename, or modification of an
 existing migration between the reviewed base and release SHA. Every CI and
@@ -586,8 +612,8 @@ The pinned Wrangler tail processes run at `WRANGLER_LOG=warn` with
 `WRANGLER_HIDE_BANNER=true`, so the routine startup and available-update banner
 does not masquerade as an infrastructure failure. Wrangler warnings—including
 tail keep-alive loss and reconnect attempts—and errors still reach stderr. Any
-non-empty stderr, dead tail process, missing or malformed aggregate, public
-regression, or
+non-empty stderr, dead tail process, exit other than the operator-requested
+SIGTERM status `143`, missing or malformed aggregate, public regression, or
 matching error event fails the release closed. Wrangler disk logs are disabled
 on those runners so no provider-side diagnostic copy survives the job.
 Automation may roll the Worker back after a confirmed application regression
