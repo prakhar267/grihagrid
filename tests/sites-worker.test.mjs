@@ -70,6 +70,64 @@ test("serves the app shell to extensionless health-check requests with Accept */
   assert.deepEqual(calls, ["/pricing", "/index.html"]);
 });
 
+test("shared-estimate documents are no-store, noindex, and never log query values for GET or HEAD", async () => {
+  const query = "v=1&width=499.9&length=488.8&city=Mumbai&floors=G%2B2&quality=Luxury";
+  const forbiddenLogValues = [query, "499.9", "488.8", "Mumbai", "G%2B2", "Luxury"];
+
+  for (const method of ["GET", "HEAD"]) {
+    const calls = [];
+    const logs = [];
+    const originalLog = console.log;
+    console.log = (line) => { logs.push(String(line)); };
+    let response;
+    try {
+      response = await worker.fetch(new Request(`https://example.test/estimate?${query}`, {
+        method,
+        headers: { accept: "text/html" },
+      }), {
+        APP_ENV: "test",
+        CF_VERSION_METADATA: { id: "shared-estimate-test-version" },
+        ASSETS: {
+          fetch: async (request) => {
+            const url = new URL(request.url);
+            calls.push(`${url.pathname}${url.search}`);
+            if (url.pathname !== "/index.html") return new Response(null, { status: 404 });
+            return new Response(method === "HEAD" ? null : "app", {
+              status: 200,
+              headers: {
+                "cache-control": "public, max-age=3600",
+                "content-type": "text/html; charset=utf-8",
+                "x-robots-tag": "index,follow",
+              },
+            });
+          },
+        },
+      });
+    } finally {
+      console.log = originalLog;
+    }
+
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("cache-control"), "no-store");
+    assert.equal(response.headers.get("x-robots-tag"), "noindex,nofollow,noarchive");
+    assert.equal(await response.text(), method === "HEAD" ? "" : "app");
+    assert.equal(calls.length, 2);
+    assert.ok(calls[0].startsWith("/estimate?"));
+    assert.equal(calls[1], "/index.html", "the app-shell fallback must strip the shared query");
+
+    const completionLogs = logs.filter((line) => line.includes('"type":"request_complete"'));
+    assert.equal(completionLogs.length, 1, JSON.stringify(logs));
+    const completion = JSON.parse(completionLogs[0]);
+    assert.equal(completion.method, method);
+    assert.equal(completion.route, "/:frontend");
+    assert.equal(completion.status, 200);
+    assert.equal(completion.outcome, "success");
+    for (const forbidden of forbiddenLogValues) {
+      assert.equal(completionLogs[0].includes(forbidden), false, `${method} log leaked query value: ${forbidden}`);
+    }
+  }
+});
+
 test("overrides platform HTML fallbacks for known SPA routes", async () => {
   const calls = [];
   const response = await worker.fetch(

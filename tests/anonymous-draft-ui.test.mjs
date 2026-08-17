@@ -32,7 +32,8 @@ test("the wizard exposes honest save, expiry, exit, discard, conflict, and exact
   assert.match(start, /window\.addEventListener\("pageshow",reconcile\)/u);
   assert.match(start, /if\(!draftAccess\.usableRef\.current\)return/u);
   assert.match(start, /document\.addEventListener\("visibilitychange",onVisibility\)/u);
-  assert.match(start, /if\(!user&&!record&&!dirtyRef\.current\)\{clearLegacyPendingProjectState\(\);route\("\/"\);return\}/u);
+  assert.match(start, /if\(!user&&!record&&!dirtyRef\.current\)\{abandonPendingProjectHandoff\(\);clearDraftNavigationState\(\);route\("\/"\);return\}/u);
+  assert.match(start, /if\(user&&!record\)\{abandonPendingProjectHandoff\(\);clearDraftNavigationState\(\);route\("\/"\);return\}/u);
   assert.match(start, /activeDraft\|\|\(!user&&dirtyRef\.current\)\?"Save & exit":"Exit"/u);
   assert.match(start, /claimAnonymousDraftPayloadSource\(result\.record\)/u);
 });
@@ -53,6 +54,7 @@ test("full draft payloads no longer enter session storage or navigation history"
 test("auth continuation carries credentials separately from the exact browser draft", () => {
   const auth = app.slice(app.indexOf("function AuthPage("), app.indexOf("function accountSecurityFailure("));
   assert.match(auth, /const authBody=isLogin\?\{email:form\.email,password:form\.password\}:\{name:form\.name,email:form\.email,password:form\.password\}/u);
+  assert.match(auth, /type="password"[^>]*value=\{form\.password\}[^>]*onChange=\{e=>setForm\(\{\.\.\.form,password:e\.target\.value\}\)\}/u);
   assert.match(auth, /readAnonymousDraftContinuation\(localStorageRef\.current,projectCreationKey\)/u);
   assert.match(auth, /'idempotency-key':pending\.projectCreationKey/u);
   assert.match(auth, /body:projectRequestBody\(pending\.draft\)/u);
@@ -78,6 +80,10 @@ test("auth continuation carries credentials separately from the exact browser dr
   assert.match(app, /projectContinuation:true/u);
   assert.match(app, /anonymousDraftWriteId: envelope\.writeId/u);
   assert.match(app, /anonymousDraftRevision: envelope\.revision/u);
+  assert.match(app, /readAnonymousDraftAttribution\(storage, envelope\)/u);
+  assert.match(app, /retainAnonymousDraftAttribution\(localStorageRef\.current,result\.record,entryPoint\)/u);
+  assert.match(storage, /!\[null, "public_estimator"\]\.includes\(value\.entryPoint\)/u);
+  assert.doesNotMatch(storage, /\[null, "public_estimator", "shared_estimate"\]/u);
 });
 
 test("all shared draft access is gated by one workflow-scoped Web Lock", () => {
@@ -117,6 +123,9 @@ test("resume and validation transitions preserve truthful disclosure and focus",
   assert.match(start, /resumeFocusPendingRef\.current=true/u);
   assert.equal([...start.matchAll(/resumeFocusPendingRef\.current=true/gu)].length, 2);
   assert.match(start, /document\.querySelector\("\.wizard-sheet h1"\)/u);
+  assert.match(start, /const sameHandoff=window\.history\.state\?\.projectCreationKey===projectCreationKey/u);
+  assert.match(start, /const scenario=sameHandoff\?parseStoredEstimatorScenario/u);
+  assert.match(start, /if\(projectCreationKey!==current\.projectCreationKey\)\{abandonPendingProjectHandoff\(\);clearDraftNavigationState\(\)\}/u);
   assert.match(start, /if\(!canonical\)[\s\S]*An older saved value will not be submitted/u);
   assert.match(start, /prepareAnonymousDraftSubmission\(data,activeDraftRef\.current\)/u);
   assert.match(start, /prepareAnonymousDraftExit\(data,step,record\)/u);
@@ -127,7 +136,7 @@ test("resume and validation transitions preserve truthful disclosure and focus",
   assert.match(start, /sameAnonymousDraftVersion\(recoverable,record\)/u);
   assert.match(start, /sameAnonymousDraftVersion\(readAnonymousDraftContinuation\(localStorageRef\.current,submission\.projectCreationKey\),submission\)/u);
   assert.match(start, /const retained=submission\?markDraftStatus[\s\S]*if\(submission&&!retained\)return/u);
-  assert.match(start, /err\.status===401[\s\S]*onSessionEnded\(\);replaceRoute\("\/login",anonymousDraftContinuationState\(pending\)\)/u);
+  assert.match(start, /err\.status===401[\s\S]*onSessionEnded\(\);replaceRoute\("\/login",anonymousDraftContinuationState\(pending,localStorageRef\.current\)\)/u);
   assert.match(start, /projectRequestDispatched\?"This tab lost exclusive access while the save was in flight/u);
   const routeFocus = app.slice(app.indexOf("const settleRouteScroll="), app.indexOf("const Route=routes[path]"));
   assert.match(routeFocus, /else window\.scrollTo\(\{top:0,behavior:'auto'\}\)/u);

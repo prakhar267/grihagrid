@@ -625,10 +625,226 @@ blockquote {
   margin-top: 0.2rem;
 }
 
-.estimate-instrument .text-link {
+.instrument-actions {
   margin-top: 0.85rem;
-  margin-left: auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.estimate-instrument .text-link {
   font-size: 0.85rem;
+}
+
+.instrument-share {
+  min-height: 44px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  border: 0;
+  border-bottom: 1px solid var(--rule-strong);
+  background: transparent;
+  color: var(--ink-soft);
+  font-family: var(--serif);
+  font-size: 0.85rem;
+}
+
+.instrument-share svg {
+  width: 17px;
+  height: 17px;
+  color: var(--copper);
+}
+
+.instrument-share:hover:not(:disabled) {
+  border-color: var(--copper);
+  color: var(--copper);
+}
+
+.instrument-share-message {
+  margin: 0.6rem 0 0;
+  padding: 0.65rem 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+  border-top: 1px dotted var(--rule);
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+
+.instrument-share-message svg {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 auto;
+  color: var(--good);
+}
+
+.instrument-share-message--error {
+  color: var(--danger);
+}
+
+.instrument-share-message--error svg {
+  color: var(--danger);
+}
+
+.instrument-share-message:focus {
+  outline: 2px solid var(--copper);
+  outline-offset: 4px;
+}
+
+/* Shared, non-personal estimate */
+.shared-estimate-page {
+  min-height: 100svh;
+  overflow-x: clip;
+  background-color: var(--paper-pale);
+  background-image: url("/assets/v2/ivory-paper.jpg");
+  background-size: 720px 720px;
+}
+
+.shared-estimate-page > header {
+  height: 88px;
+  padding: 0 clamp(1.25rem, 4vw, 4rem);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border-bottom: 1px solid var(--rule-strong);
+}
+
+.shared-estimate-page > header > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+  color: var(--muted);
+  font-family: var(--serif);
+  font-size: 0.82rem;
+}
+
+.shared-estimate-page > header > span svg {
+  width: 17px;
+  height: 17px;
+  color: var(--copper);
+}
+
+.shared-estimate-intro {
+  padding: clamp(3.5rem, 7vw, 8rem) clamp(1.25rem, 7vw, 8rem) clamp(3rem, 5vw, 5.5rem);
+  display: grid;
+  grid-template-columns: minmax(0, 1.12fr) minmax(280px, 0.88fr);
+  align-items: end;
+  gap: clamp(2rem, 7vw, 8rem);
+}
+
+.shared-estimate-intro h1 {
+  margin: 1rem 0 0;
+  font-size: clamp(4.5rem, 8.4vw, 9.5rem);
+  letter-spacing: -0.065em;
+  line-height: 0.78;
+}
+
+.shared-estimate-intro h1 i {
+  color: var(--copper);
+  font-weight: 400;
+}
+
+.shared-estimate-intro > div:last-child {
+  padding-bottom: 0.3rem;
+}
+
+.shared-estimate-intro p {
+  margin: 0 0 1.35rem;
+  color: var(--ink-soft);
+  font-family: var(--serif);
+  font-size: clamp(1.05rem, 1.45vw, 1.3rem);
+  line-height: 1.65;
+}
+
+.shared-estimate-intro > div:last-child > span {
+  padding-top: 1rem;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  border-top: 1px solid var(--rule-strong);
+  color: var(--muted);
+  font-size: 0.74rem;
+  line-height: 1.55;
+}
+
+.shared-estimate-intro > div:last-child > span svg {
+  width: 19px;
+  height: 19px;
+  flex: 0 0 auto;
+  color: var(--copper);
+}
+
+.shared-estimate-workbench {
+  margin: 0 clamp(1.25rem, 4vw, 4rem) clamp(4rem, 8vw, 8rem);
+  padding: clamp(2rem, 4.5vw, 5rem);
+  border: 1px solid var(--rule-strong);
+  background: rgba(248, 245, 237, 0.84);
+}
+
+.shared-estimate-workbench > header {
+  margin-bottom: clamp(2rem, 4vw, 4rem);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 0.7fr);
+  align-items: end;
+  gap: 2rem;
+}
+
+.shared-estimate-workbench h2 {
+  margin: 0.7rem 0 0;
+  font-size: clamp(3rem, 5.5vw, 6rem);
+  letter-spacing: -0.055em;
+  line-height: 0.88;
+}
+
+.shared-estimate-workbench > header > p {
+  margin: 0;
+  color: var(--muted);
+  font-family: var(--serif);
+  font-size: 1rem;
+  line-height: 1.65;
+}
+
+.shared-estimate-workbench .estimate-instrument {
+  padding-bottom: 0;
+}
+
+.shared-estimate-invalid {
+  width: min(760px, calc(100% - 2.5rem));
+  margin: auto;
+  padding: clamp(4rem, 10vw, 9rem) 0;
+  text-align: center;
+}
+
+.shared-estimate-invalid > svg {
+  width: 48px;
+  height: 48px;
+  margin-bottom: 1.5rem;
+  color: var(--copper);
+  stroke-width: 1.2;
+}
+
+.shared-estimate-invalid h1 {
+  margin: 0.9rem 0 0.8rem;
+  font-size: clamp(3.5rem, 8vw, 6.8rem);
+  letter-spacing: -0.055em;
+  line-height: 0.9;
+}
+
+.shared-estimate-invalid p {
+  max-width: 620px;
+  margin: 0 auto;
+  color: var(--muted);
+  font-family: var(--serif);
+  font-size: 1.08rem;
+  line-height: 1.65;
+}
+
+.shared-estimate-invalid .copper-button {
+  margin-top: 2rem;
 }
 
 .hero-steps {
@@ -4497,6 +4713,67 @@ blockquote {
     margin-left: 0;
   }
 
+  .instrument-actions {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+
+  .instrument-actions .text-link,
+  .instrument-share {
+    min-height: 48px;
+  }
+
+  .shared-estimate-page > header {
+    height: 72px;
+    padding-inline: 1.2rem;
+  }
+
+  .shared-estimate-page > header > span {
+    max-width: 12rem;
+    font-size: 0.68rem;
+    line-height: 1.35;
+    text-align: right;
+  }
+
+  .shared-estimate-intro {
+    padding: 4rem 1.25rem 3rem;
+    grid-template-columns: 1fr;
+    align-items: start;
+    gap: 2.5rem;
+  }
+
+  .shared-estimate-intro h1 {
+    font-size: clamp(3.75rem, 18vw, 5.2rem);
+    line-height: 0.82;
+  }
+
+  .shared-estimate-workbench {
+    margin: 0 0 4rem;
+    padding: 3rem 1.25rem;
+    border-inline: 0;
+  }
+
+  .shared-estimate-workbench > header {
+    margin-bottom: 2.5rem;
+    grid-template-columns: 1fr;
+    align-items: start;
+    gap: 1rem;
+  }
+
+  .shared-estimate-workbench h2 {
+    font-size: 3.6rem;
+  }
+
+  .shared-estimate-invalid {
+    width: calc(100% - 2.5rem);
+    padding-block: 5rem;
+  }
+
+  .shared-estimate-invalid .copper-button {
+    width: 100%;
+  }
+
   .hero-steps {
     margin: 1.55rem 1.25rem 0;
     order: 7;
@@ -5122,6 +5399,26 @@ blockquote {
 
 @media print {
   body {
+    background: #fff;
+  }
+
+  .shared-estimate-page {
+    min-height: 0;
+    background: #fff;
+  }
+
+  .shared-estimate-page > header,
+  .shared-estimate-intro,
+  .instrument-actions,
+  .instrument-share-message,
+  .shared-estimate-page + .site-footer {
+    display: none !important;
+  }
+
+  .shared-estimate-workbench {
+    margin: 0;
+    padding: 0;
+    border: 0;
     background: #fff;
   }
 

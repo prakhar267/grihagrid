@@ -841,7 +841,11 @@ test("authenticated smoke proves current and rollback-compatible Worker paths fa
     if (url.pathname === "/api/projects" && method === "POST") {
       createCalls += 1;
       marker = JSON.parse(init.body).name;
-      if (!legacyResponse) assert.match(new Headers(init.headers).get("idempotency-key") || "", /^release-canary-/u);
+      if (!legacyResponse) {
+        const headers = new Headers(init.headers);
+        assert.match(headers.get("idempotency-key") || "", /^release-canary-/u);
+        assert.equal(headers.get("x-grihagrid-entry-point"), "shared_estimate");
+      }
       return Response.json({ project: {
         id: projectId,
         inputRevision: 1,
@@ -1041,6 +1045,7 @@ test("authenticated smoke deletes only its exact marker after an ambiguous creat
       });
     }
     if (url.pathname === "/api/projects" && init.method === "POST") {
+      assert.equal(new Headers(init.headers).get("x-grihagrid-entry-point"), "shared_estimate");
       marker = JSON.parse(init.body).name;
       throw new DOMException("ambiguous timeout", "TimeoutError");
     }

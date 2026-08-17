@@ -21,17 +21,20 @@ import {
   canonicalAnonymousProjectDraft,
   clearAnonymousDraft,
   clearAnonymousDraftAfterCreation,
+  clearAnonymousDraftAttribution,
   clearLegacyPendingProjectState,
   holdAnonymousDraftLock,
   prepareAnonymousDraftExit,
   prepareAnonymousDraftSubmission,
   purgeInvalidAnonymousDraftOnBoot,
   readAnonymousDraft,
+  readAnonymousDraftAttribution,
   readAnonymousDraftContinuation,
   readRecoverableAnonymousDraft,
   safeLocalStorage,
   sameAnonymousDraftVersion,
   saveAnonymousDraft,
+  retainAnonymousDraftAttribution,
   updateAnonymousDraftStatus,
   validAnonymousProjectName,
 } from "./anonymous-draft.js";
@@ -39,17 +42,20 @@ import {
   ESTIMATOR_CITIES,
   ESTIMATOR_FLOORS,
   ESTIMATOR_QUALITIES,
+  buildSharedEstimatorPath,
+  consumeEstimatorAttribution,
   consumeEstimatorHandoffPayload,
-  consumePublicEstimatorAttribution,
+  estimatorAttributionEntryPoint,
+  estimatorAttributionHeaders,
   estimatorRequestKey,
-  isPublicEstimatorAttribution,
   normalizePublicEstimateEnvelope,
+  parseSharedEstimatorLocation,
   parseStoredEstimatorScenario,
-  publicEstimatorAttributionHeaders,
   safeSessionStorage,
   selectAuthProjectCreationKey,
   selectEstimatorScenario,
   storeEstimatorHandoff,
+  validEstimatorEntryPoint,
   validProjectCreationKey,
   validateEstimatorScenario,
 } from "./public-estimator.js";
@@ -127,9 +133,11 @@ function replaceRoute(path, state = {}) {
   window.dispatchEvent(new PopStateEvent("popstate"));
 }
 
-function completePublicEstimatorHandoff() {
-  consumePublicEstimatorAttribution(safeSessionStorage());
+function completeEstimatorHandoff(projectCreationKey = window.history.state?.projectCreationKey, storage = safeLocalStorage()) {
+  consumeEstimatorAttribution(safeSessionStorage());
   removeSessionValue("grihagrid.projectCreationKey");
+  const key=validProjectCreationKey(projectCreationKey);
+  if(key)clearAnonymousDraftAttribution(storage,key);
 }
 
 function claimAnonymousDraftPayloadSource(record) {
@@ -150,7 +158,7 @@ function clearDraftNavigationState() {
 
 function abandonPendingProjectHandoff() {
   clearLegacyPendingProjectState();
-  completePublicEstimatorHandoff();
+  completeEstimatorHandoff();
 }
 
 function useAnonymousDraftStorageAccess(enabled) {
@@ -200,14 +208,21 @@ function removeSessionValue(key) {
   try { safeSessionStorage()?.removeItem(key); } catch { /* Browser storage cleanup is ancillary. */ }
 }
 
-function anonymousDraftContinuationState(envelope) {
+function anonymousDraftEstimatorEntryPoint(envelope, storage, navigationState = window.history.state) {
+  if (envelope?.entryPoint === "public_estimator") return "public_estimator";
+  return readAnonymousDraftAttribution(storage, envelope)
+    || estimatorAttributionEntryPoint(safeSessionStorage(), navigationState, envelope?.projectCreationKey);
+}
+
+function anonymousDraftContinuationState(envelope, storage = safeLocalStorage()) {
   if (!envelope) return {};
+  const estimatorSource=anonymousDraftEstimatorEntryPoint(envelope,storage);
   return {
     projectContinuation: true,
     projectCreationKey: envelope.projectCreationKey,
     anonymousDraftWriteId: envelope.writeId,
     anonymousDraftRevision: envelope.revision,
-    ...(envelope.entryPoint === "public_estimator" ? { estimatorSource: "public_estimator" } : {}),
+    ...(estimatorSource ? { estimatorSource } : {}),
   };
 }
 
@@ -218,10 +233,10 @@ function useProjectCreationKey(recoverStored = false) {
   useEffect(() => {
     const current=window.history.state;
     const continuation=current?.projectContinuation===true;
-    const estimatorSource=current?.estimatorSource==="public_estimator";
+    const estimatorSource=validEstimatorEntryPoint(current?.estimatorSource);
     const writeId=validProjectCreationKey(current?.anonymousDraftWriteId);
     const revision=Number.isSafeInteger(current?.anonymousDraftRevision)&&current.anonymousDraftRevision>0?current.anonymousDraftRevision:null;
-    const safeState={projectCreationKey:key,...(continuation?{projectContinuation:true}:{}),...(continuation&&writeId&&revision?{anonymousDraftWriteId:writeId,anonymousDraftRevision:revision}:{}),...(estimatorSource?{estimatorSource:"public_estimator"}:{})};
+    const safeState={projectCreationKey:key,...(continuation?{projectContinuation:true}:{}),...(continuation&&writeId&&revision?{anonymousDraftWriteId:writeId,anonymousDraftRevision:revision}:{}),...(estimatorSource?{estimatorSource}:{})};
     if(JSON.stringify(current)===JSON.stringify(safeState))return;
     window.history.replaceState(safeState, "", window.location.href);
   }, [key]);
@@ -234,6 +249,10 @@ function isPrivateAccountPath(pathname) {
 
 function isPublicReportSharePath(pathname) {
   return pathname==="/share/report";
+}
+
+function isAuthenticationFreePath(pathname) {
+  return isPublicReportSharePath(pathname)||pathname==="/estimate";
 }
 
 function reportShareCapabilityToken(location=window.location) {
@@ -455,7 +474,7 @@ function SectionHeading({ kicker, title, copy, align = "left" }) {
   return <div className={`section-heading section-heading--${align}`}>{kicker && <span className="kicker">{kicker}</span>}<h2>{title}</h2>{copy && <p>{copy}</p>}</div>;
 }
 
-function EstimateInstrument({ condensed = false, initial }) {
+function EstimateInstrument({ condensed = false, initial, entryPoint = "public_estimator", id }) {
   const defaultScenario = { width: 30, length: 50, city: "Bengaluru", floors: "G+1", quality: "Signature" };
   const startingScenario = parseStoredEstimatorScenario({ ...defaultScenario, ...initial }) || defaultScenario;
   const [width, setWidth] = useState(String(startingScenario.width));
@@ -465,10 +484,12 @@ function EstimateInstrument({ condensed = false, initial }) {
   const [quality, setQuality] = useState(startingScenario.quality);
   const [retry, setRetry] = useState(0);
   const [result, setResult] = useState({ phase: "loading", requestKey: "", envelope: null, message: "" });
+  const [shareState, setShareState] = useState({ phase: "idle", message: "" });
   const latestRequestKey = useRef("");
   const retryFocusRequested = useRef(false);
   const retryFocusRequestKey = useRef("");
   const statusRef = useRef(null);
+  const shareMessageRef = useRef(null);
   const widthErrorId = useId();
   const lengthErrorId = useId();
   const scenarioErrorId = useId();
@@ -486,6 +507,10 @@ function EstimateInstrument({ condensed = false, initial }) {
     retryFocusRequested.current = false;
     retryFocusRequestKey.current = "";
   }
+
+  useEffect(() => {
+    setShareState({ phase: "idle", message: "" });
+  }, [requestKey]);
 
   useEffect(() => {
     if (!validation.valid) return undefined;
@@ -548,12 +573,42 @@ function EstimateInstrument({ condensed = false, initial }) {
   function continueWithScenario() {
     if (!validation.valid) return;
     const projectCreationKey = crypto.randomUUID();
-    storeEstimatorHandoff(safeSessionStorage(), validation.request, projectCreationKey);
+    const source = validEstimatorEntryPoint(entryPoint) || "public_estimator";
+    storeEstimatorHandoff(safeSessionStorage(), validation.request, projectCreationKey, source);
     route("/start", {
       estimatorScenario: validation.request,
-      estimatorSource: "public_estimator",
+      estimatorSource: source,
       projectCreationKey,
     });
+  }
+
+  async function shareScenario() {
+    if (!validation.valid || shareState.phase === "sharing") return;
+    const url = new URL(buildSharedEstimatorPath(validation.request), window.location.origin).href;
+    setShareState({ phase: "sharing", message: "Opening sharing options…" });
+    try {
+      if (typeof navigator.share === "function") {
+        try {
+          await navigator.share({
+            title: "GrihaGrid plot-cost scenario",
+            text: "Recheck this non-personal plot and finish scenario with GrihaGrid's current planning basis.",
+            url,
+          });
+          setShareState({ phase: "success", message: "Scenario shared. The link contains only these five planning inputs." });
+          return;
+        } catch (error) {
+          if (error?.name === "AbortError") {
+            setShareState({ phase: "idle", message: "" });
+            return;
+          }
+        }
+      }
+      await copyText(url);
+      setShareState({ phase: "success", message: "Link copied. It contains only these five planning inputs." });
+    } catch {
+      setShareState({ phase: "error", message: "This browser could not share or copy the link. Your scenario is unchanged." });
+      window.requestAnimationFrame(() => shareMessageRef.current?.focus({ preventScroll: true }));
+    }
   }
 
   function retryEstimate() {
@@ -564,7 +619,7 @@ function EstimateInstrument({ condensed = false, initial }) {
     setRetry(value => value + 1);
   }
 
-  return <div className={`estimate-instrument ${condensed ? "estimate-instrument--condensed" : ""}`}>
+  return <div id={id} className={`estimate-instrument ${condensed ? "estimate-instrument--condensed" : ""}`}>
     <div className="instrument-title"><span>Plot–cost estimator</span><span ref={statusRef} tabIndex="-1" className={`instrument-status instrument-status--${phase}`} role="status" aria-live="polite"><StatusIcon aria-hidden="true"/> {status.label}</span></div>
     <div className="instrument-inputs">
       <label className="instrument-input instrument-input--plot"><span>Plot size</span><div className="dimension-inputs"><input aria-label="Plot width in feet" aria-invalid={Boolean(validation.errors.width)} aria-describedby={validation.errors.width ? widthErrorId : undefined} inputMode="decimal" type="number" min="10" max="500" step="0.1" value={width} onChange={e => setWidth(e.target.value)}/><b>×</b><input aria-label="Plot length in feet" aria-invalid={Boolean(validation.errors.length)} aria-describedby={validation.errors.length ? lengthErrorId : undefined} inputMode="decimal" type="number" min="10" max="500" step="0.1" value={length} onChange={e => setLength(e.target.value)}/><em>ft</em></div></label>
@@ -580,8 +635,41 @@ function EstimateInstrument({ condensed = false, initial }) {
       {["error", "retrying"].includes(phase)&&<><strong>{phase === "retrying" ? "Checking current basis…" : "Range temporarily unavailable"}</strong><small>{phase === "retrying" ? "Retrying the server check without changing your details." : result.message}</small><button type="button" className="instrument-retry" aria-disabled={phase === "retrying"} aria-busy={phase === "retrying"} onClick={retryEstimate}>{phase === "retrying" ? "Checking again…" : "Retry server check"}</button></>}
     </div>
     {envelope&&<details className="instrument-basis"><summary>Basis and exclusions</summary><div><p><strong>Area method:</strong> {envelope.basis.areaMethod}. {envelope.estimate.plotSqft.toLocaleString("en-IN")} sq ft plot × {envelope.basis.floorFactor.toLocaleString("en-IN", { maximumFractionDigits: 2 })} floor factor = <strong>{envelope.estimate.builtUpSqft.toLocaleString("en-IN")} sq ft</strong> likely built-up.</p><p><strong>Cost method:</strong> {envelope.basis.costMethod}. ₹{envelope.basis.finishRateInrPerSqft.toLocaleString("en-IN")}/sq ft internal finish benchmark × {envelope.basis.cityFactor.toLocaleString("en-IN", { maximumFractionDigits: 2 })} city factor, with a {envelope.basis.lowFactor.toLocaleString("en-IN", { maximumFractionDigits: 2 })}×–{envelope.basis.highFactor.toLocaleString("en-IN", { maximumFractionDigits: 2 })}× directional band.</p><p>Calculation rule published {formatDate(envelope.basis.rulePublishedDate)} · v{envelope.basis.ruleVersion}. Current-market calibration has not been independently verified. Taxes and statutory fees are excluded.</p><p>{envelope.basis.marketWarning}</p><ul>{envelope.basis.exclusions.map(item => <li key={item}>{item}</li>)}</ul><p>{envelope.estimate.disclaimer}</p></div></details>}
-    <button type="button" className="text-link" disabled={!validation.valid} onClick={continueWithScenario}>{phase === "ready" ? "Use calculation-checked details" : phase === "error" ? "Continue without a range" : "Continue with these details"} <ArrowRight/></button>
+    <div className="instrument-actions">
+      <button type="button" className="instrument-share" disabled={!validation.valid||shareState.phase==="sharing"} aria-busy={shareState.phase==="sharing"} onClick={shareScenario}><ShareNetwork/> {shareState.phase==="sharing"?"Preparing link…":"Share scenario"}</button>
+      <button type="button" className="text-link" disabled={!validation.valid} onClick={continueWithScenario}>{phase === "ready" ? "Use calculation-checked details" : phase === "error" ? "Continue without a range" : "Continue with these details"} <ArrowRight/></button>
+    </div>
+    {shareState.message&&<p ref={shareMessageRef} className={`instrument-share-message instrument-share-message--${shareState.phase}`} tabIndex={shareState.phase==="error"?"-1":undefined} role={shareState.phase==="error"?"alert":"status"} aria-live="polite"><ShieldCheck aria-hidden="true"/> {shareState.message}</p>}
   </div>;
+}
+
+function SharedEstimatorPage() {
+  const [locationRevision,setLocationRevision]=useState(()=>`${window.location.pathname}${window.location.search}${window.location.hash}`);
+  const scenario=useMemo(()=>parseSharedEstimatorLocation(window.location),[locationRevision]);
+  useEffect(()=>{
+    const onPop=()=>setLocationRevision(`${window.location.pathname}${window.location.search}${window.location.hash}`);
+    window.addEventListener("popstate",onPop);
+    return()=>window.removeEventListener("popstate",onPop);
+  },[]);
+  useEffect(()=>{
+    const robots=document.querySelector('meta[name="robots"]');
+    const previous=robots?.getAttribute("content");
+    robots?.setAttribute("content","noindex,nofollow,noarchive");
+    return()=>{if(robots&&previous!=null)robots.setAttribute("content",previous)};
+  },[]);
+  useEffect(()=>{
+    if(!scenario){
+      if(window.location.pathname==="/estimate"&&(window.location.search||window.location.hash))window.history.replaceState({},"","/estimate");
+      return;
+    }
+    const canonical=buildSharedEstimatorPath(scenario);
+    window.history.replaceState({},"",canonical);
+  },[scenario]);
+
+  if(!scenario)return <main className="shared-estimate-page shared-estimate-page--invalid"><header><Brand onHome={()=>route("/")}/><span><LockKey/> No private project opened</span></header><section className="shared-estimate-invalid" role="alert"><WarningCircle/><span className="kicker">Shared scenario unavailable</span><h1>This estimate link is incomplete.</h1><p>GrihaGrid did not load partial values or substitute defaults. Ask the sender for a fresh link, or open a new estimator without carrying anything from this address.</p><button type="button" className="copper-button" onClick={()=>route("/#plot-cost-estimator")}>Open a fresh estimator <ArrowRight/></button></section></main>;
+
+  const canonicalPath=buildSharedEstimatorPath(scenario);
+  return <><main className="shared-estimate-page"><header><Brand onHome={()=>route("/")}/><span><LockKey/> Non-personal scenario · recalculated live</span></header><section className="shared-estimate-intro"><div><span className="kicker">Scenario shared with you</span><h1>Recheck the range.<br/><i>Make it yours.</i></h1></div><div><p>This link carries only plot width, length, city, floor programme and finish—not a saved price, address, account or project. GrihaGrid recalculates it against the current planning rule each time it opens, so the range may change when the published method changes.</p><span><ShieldCheck/> No sign-in, cookie-backed account check or anonymous server record is needed to view this scenario.</span></div></section><section className="shared-estimate-workbench" aria-labelledby="shared-estimate-title"><header><div><span className="kicker">Live planning instrument</span><h2 id="shared-estimate-title">Test this starting point.</h2></div><p>Edit any input before sharing it again or carrying it into your own private Brief Check.</p></header><EstimateInstrument key={canonicalPath} initial={scenario} entryPoint="shared_estimate"/></section></main><Footer/></>;
 }
 
 function HomePage({ user }) {
@@ -595,7 +683,7 @@ function HomePage({ user }) {
         <h1>Know what fits.<br/>Know what it costs.</h1>
         <p>Enter your plot details. See the evidence gaps and programme pressure, get an indicative construction range, and walk into your first architect meeting prepared.</p>
         <div className="hero-actions"><button className="copper-button copper-button--large" onClick={() => route("/start")}>Plan my home <ArrowRight/></button><button className="underlined-action" onClick={() => route("/plans")}>See a sample plan</button></div>
-        <EstimateInstrument condensed/>
+        <EstimateInstrument id="plot-cost-estimator" condensed/>
         <div className="hero-steps" aria-label="How GrihaGrid works">
           <div><span>01</span><UploadSimple/><p>Share plot<br/>details</p></div>
           <div><span>02</span><Blueprint/><p>Check the brief<br/>& likely cost</p></div>
@@ -719,7 +807,7 @@ function StartPage({ user, draftAccess, onSessionEnded }) {
   const [projectCreationKey,setProjectCreationKey]=useState(()=>validProjectCreationKey(window.history.state?.projectCreationKey)||crypto.randomUUID());
   const active=useRef(true);
   useEffect(()=>{active.current=true;return()=>{active.current=false}},[]);
-  const [data,setData]=useState(()=>newProjectDraft(selectEstimatorScenario(safeSessionStorage(),window.history.state)||{}));
+  const [data,setData]=useState(()=>newProjectDraft(selectEstimatorScenario(safeSessionStorage(),window.history.state,projectCreationKey)||{}));
   useEffect(()=>{recoveryRef.current=recovery},[recovery]);
   useEffect(()=>{
     if(recovery||!resumeFocusPendingRef.current)return undefined;
@@ -737,8 +825,9 @@ function StartPage({ user, draftAccess, onSessionEnded }) {
     return()=>{window.cancelAnimationFrame(frame);restoreTabIndex()};
   },[recovery]);
   useEffect(()=>{
-    const scenario=parseStoredEstimatorScenario(window.history.state?.estimatorScenario);
-    const estimatorSource=window.history.state?.estimatorSource==="public_estimator"?"public_estimator":undefined;
+    const sameHandoff=window.history.state?.projectCreationKey===projectCreationKey;
+    const scenario=sameHandoff?parseStoredEstimatorScenario(window.history.state?.estimatorScenario):null;
+    const estimatorSource=sameHandoff?(validEstimatorEntryPoint(window.history.state?.estimatorSource)||undefined):undefined;
     window.history.replaceState({projectCreationKey,...(scenario?{estimatorScenario:scenario}:{}),...(estimatorSource?{estimatorSource}:{} )},"",window.location.href);
   },[projectCreationKey]);
   useEffect(()=>{
@@ -779,11 +868,12 @@ function StartPage({ user, draftAccess, onSessionEnded }) {
     return()=>{window.removeEventListener("storage",onStorage);window.removeEventListener("focus",reconcile);window.removeEventListener("pageshow",reconcile);document.removeEventListener("visibilitychange",onVisibility)};
   },[draftAccess.phase]);
   function entryPointFor(key,expected){
-    if(expected?.entryPoint==="public_estimator")return "public_estimator";
-    return isPublicEstimatorAttribution(safeSessionStorage(),window.history.state,key)?"public_estimator":null;
+    return (expected?anonymousDraftEstimatorEntryPoint(expected,localStorageRef.current):null)
+      ||estimatorAttributionEntryPoint(safeSessionStorage(),window.history.state,key);
   }
-  function acceptSavedRecord(result){
+  function acceptSavedRecord(result,entryPoint=null){
     if(!result.record)return null;
+    retainAnonymousDraftAttribution(localStorageRef.current,result.record,entryPoint);
     claimAnonymousDraftPayloadSource(result.record);
     activeDraftRef.current=result.record;setActiveDraft(result.record);
     if(result.reason==="unavailable")setSaveState("unavailable");
@@ -794,7 +884,8 @@ function StartPage({ user, draftAccess, onSessionEnded }) {
     if(persistenceBlockedRef.current)return null;
     const expected=activeDraftRef.current;
     if(!force&&user&& !expected)return null;
-    const result=saveAnonymousDraft(localStorageRef.current,{draft:nextData,step:nextStep,projectCreationKey,entryPoint:entryPointFor(projectCreationKey,expected),status},expected,Date.now(),{touch});
+    const entryPoint=entryPointFor(projectCreationKey,expected);
+    const result=saveAnonymousDraft(localStorageRef.current,{draft:nextData,step:nextStep,projectCreationKey,entryPoint:entryPoint==="public_estimator"?entryPoint:null,status},expected,Date.now(),{touch});
     if(result.reason==="conflict"){
       persistenceBlockedRef.current=true;setSaveState("conflict");setError("This browser draft changed in another tab. Reload before continuing so an older copy cannot overwrite it.");return null;
     }
@@ -804,10 +895,11 @@ function StartPage({ user, draftAccess, onSessionEnded }) {
     if(result.reason==="invalid"){
       setSaveState("invalid");return null;
     }
-    return acceptSavedRecord(result);
+    return acceptSavedRecord(result,entryPoint);
   }
   function markDraftStatus(record,status){
     if(!record)return null;
+    const entryPoint=anonymousDraftEstimatorEntryPoint(record,localStorageRef.current);
     const result=updateAnonymousDraftStatus(localStorageRef.current,record,status);
     if(result.reason==="conflict"){
       persistenceBlockedRef.current=true;setSaveState("conflict");setError("This browser draft changed in another tab. Reload before retrying.");return null;
@@ -815,7 +907,7 @@ function StartPage({ user, draftAccess, onSessionEnded }) {
     if(result.reason==="expired"){
       persistenceBlockedRef.current=true;setSaveState("expired");setError("This browser copy reached its seven-day limit. Nothing was submitted; reload to begin from a clean brief.");return null;
     }
-    return acceptSavedRecord(result);
+    return acceptSavedRecord(result,entryPoint);
   }
   function update(key,value){
     if(activeDraftRef.current&&activeDraftRef.current.status!=="editing")return;
@@ -827,6 +919,7 @@ function StartPage({ user, draftAccess, onSessionEnded }) {
     if(!sameAnonymousDraftVersion(current,recovery)){
       setRecovery(current);setError(current?"The saved brief changed in another tab. Review the current recovery choice.":"That saved brief is no longer available on this browser.");return;
     }
+    if(projectCreationKey!==current.projectCreationKey){abandonPendingProjectHandoff();clearDraftNavigationState()}
     const persisted=readAnonymousDraft(localStorageRef.current,Date.now(),false);
     resumeFocusPendingRef.current=true;setData(current.draft);setStep(current.step);setProjectCreationKey(current.projectCreationKey);activeDraftRef.current=current;setActiveDraft(current);persistenceBlockedRef.current=false;setSaveState(sameAnonymousDraftVersion(persisted,current)?"saved":"unavailable");setRecovery(null);setError("");
   }
@@ -843,8 +936,8 @@ function StartPage({ user, draftAccess, onSessionEnded }) {
   function saveAndExit(){
     if(busy)return;
     let record=activeDraftRef.current;
-    if(!user&&!record&&!dirtyRef.current){clearLegacyPendingProjectState();route("/");return}
-    if(user&&!record){clearLegacyPendingProjectState();route("/");return}
+    if(!user&&!record&&!dirtyRef.current){abandonPendingProjectHandoff();clearDraftNavigationState();route("/");return}
+    if(user&&!record){abandonPendingProjectHandoff();clearDraftNavigationState();route("/");return}
     const prepared=prepareAnonymousDraftExit(data,step,record);
     if(!prepared){
       setSaveState("invalid");setError("Save & exit paused because the visible brief is not valid. Correct the highlighted value; the older browser copy was not substituted.");
@@ -875,7 +968,7 @@ function StartPage({ user, draftAccess, onSessionEnded }) {
     else if(submission&&submission.status==="editing")submission=markDraftStatus(submission,"awaiting_auth");
     if(!user){
       if(!submission){setError("This browser could not preserve an exact copy for account creation. Keep this tab open and try again.");return}
-      clearLegacyPendingProjectState();replaceRoute("/register",anonymousDraftContinuationState(submission));return;
+      clearLegacyPendingProjectState();replaceRoute("/register",anonymousDraftContinuationState(submission,localStorageRef.current));return;
     }
     if(submission&&submission.status!=="submitting")submission=markDraftStatus(submission,"submitting");
     if(activeDraftRef.current&&!submission)return;
@@ -883,7 +976,8 @@ function StartPage({ user, draftAccess, onSessionEnded }) {
       persistenceBlockedRef.current=true;setSaveState("expired");setError("This browser copy expired or changed before submission. Nothing was sent. Reload and review the current recovery state.");return;
     }
     const request=projectRequestBody(submission?.draft||prepared.draft);
-    const attributed=submission?.entryPoint==="public_estimator"?{"x-grihagrid-entry-point":"public_estimator"}:publicEstimatorAttributionHeaders(safeSessionStorage(),window.history.state,projectCreationKey);
+    const entryPoint=submission?anonymousDraftEstimatorEntryPoint(submission,localStorageRef.current):null;
+    const attributed=entryPoint?{"x-grihagrid-entry-point":entryPoint}:estimatorAttributionHeaders(safeSessionStorage(),window.history.state,projectCreationKey);
     const attributionHeaders={...attributed,"idempotency-key":submission?.projectCreationKey||projectCreationKey};
     const accessEpoch=draftAccess.epochRef.current;
     const accessStillCurrent=()=>draftAccess.usableRef.current&&draftAccess.epochRef.current===accessEpoch;
@@ -901,14 +995,14 @@ function StartPage({ user, draftAccess, onSessionEnded }) {
       }else result=await api("/api/projects",{method:"POST",headers:attributionHeaders,body:request});
       if(!active.current)return;
       if(submission){const cleanup=accessStillCurrent()?clearAnonymousDraftAfterCreation(localStorageRef.current,submission):{ok:false};if(!cleanup.ok)setSessionValue(`grihagrid.draftCleanupWarning.${result.project.id}`,"Project saved, but this browser would not clear the unfinished copy. Discard that browser draft before starting another brief.")}
-      clearLegacyPendingProjectState();completePublicEstimatorHandoff();
+      clearLegacyPendingProjectState();completeEstimatorHandoff(submission?.projectCreationKey||projectCreationKey,localStorageRef.current);
       const failed=[];const uploadQueue=privateUploads.enabled?files:[];
       for(const file of uploadQueue){const form=new FormData();form.append('file',file);form.append('kind','reference');try{await api(`/api/projects/${result.project.id}/files`,{method:'POST',body:form})}catch{failed.push(file.name)}}
       if(!active.current)return;
       if(failed.length)setSessionValue(`grihagrid.uploadWarning.${result.project.id}`,`${failed.length} file${failed.length===1?'':'s'} could not be saved. Add them again from the report.`);
       replaceRoute(`/projects/${result.project.id}`);
     }
-    catch(err){if(!active.current)return;if(submission&&!accessStillCurrent())setError(projectRequestDispatched?"This tab lost exclusive access while the save was in flight. It may already have reached GrihaGrid; no additional project request was sent after access was lost. Wait for access to return, then review the current copy.":"This tab lost exclusive access before the project request was sent. Wait for access to return, then review the current copy before retrying.");else if(err instanceof ApiError&&err.status===401){let pending=submission||persistDraft(data,3,"awaiting_auth",{force:true});if(pending?.status!=="awaiting_auth")pending=markDraftStatus(pending,"awaiting_auth");if(pending){onSessionEnded();replaceRoute("/login",anonymousDraftContinuationState(pending))}else setError("Your session ended and this browser could not preserve the exact brief. Keep this tab open and try again.")}else{const retained=submission?markDraftStatus(activeDraftRef.current||submission,"retry_required"):null;if(submission&&!retained)return;setError(submission?"The save was not confirmed. Your exact brief and retry key are frozen so Retry recovers one project in this account.":err.message)}}
+    catch(err){if(!active.current)return;if(submission&&!accessStillCurrent())setError(projectRequestDispatched?"This tab lost exclusive access while the save was in flight. It may already have reached GrihaGrid; no additional project request was sent after access was lost. Wait for access to return, then review the current copy.":"This tab lost exclusive access before the project request was sent. Wait for access to return, then review the current copy before retrying.");else if(err instanceof ApiError&&err.status===401){let pending=submission||persistDraft(data,3,"awaiting_auth",{force:true});if(pending?.status!=="awaiting_auth")pending=markDraftStatus(pending,"awaiting_auth");if(pending){onSessionEnded();replaceRoute("/login",anonymousDraftContinuationState(pending,localStorageRef.current))}else setError("Your session ended and this browser could not preserve the exact brief. Keep this tab open and try again.")}else{const retained=submission?markDraftStatus(activeDraftRef.current||submission,"retry_required"):null;if(submission&&!retained)return;setError(submission?"The save was not confirmed. Your exact brief and retry key are frozen so Retry recovers one project in this account.":err.message)}}
     finally{if(active.current)setBusy(false)}
   }
   const recoveryPersisted=Boolean(recovery&&draftAccess.phase==="ready"&&sameAnonymousDraftVersion(readAnonymousDraft(localStorageRef.current,Date.now(),false),recovery));
@@ -978,11 +1072,13 @@ function AuthPage({ mode, user, draftAccess, onAuthenticated }) {
     setContinuation(current);
     setContinuationFailure(current.writeId===expectedWriteId&&current.revision===expectedRevision?"":"conflict");
   },[continuationRequested,draftAccess.phase,projectCreationKey,expectedWriteId,expectedRevision]);
-  const back=()=>{if(continuation)replaceRoute("/start",anonymousDraftContinuationState(continuation));else{abandonPendingProjectHandoff();route('/')}};
+  const back=()=>{if(continuation)replaceRoute("/start",anonymousDraftContinuationState(continuation,localStorageRef.current));else{abandonPendingProjectHandoff();route('/')}};
   function markContinuation(record,status){
+    const entryPoint=anonymousDraftEstimatorEntryPoint(record,localStorageRef.current);
     const result=updateAnonymousDraftStatus(localStorageRef.current,record,status);
     if(!result.record||result.reason==="conflict"||result.reason==="expired"){setError(result.reason==="expired"?"This browser copy reached its seven-day limit. Nothing was submitted; return to the planner to begin a clean brief.":"This browser draft changed in another tab. Return to the brief and review the current copy.");return null}
-    window.history.replaceState(anonymousDraftContinuationState(result.record),"",window.location.href);setContinuation(result.record);setContinuationFailure("");return result.record;
+    retainAnonymousDraftAttribution(localStorageRef.current,result.record,entryPoint);
+    window.history.replaceState(anonymousDraftContinuationState(result.record,localStorageRef.current),"",window.location.href);setContinuation(result.record);setContinuationFailure("");return result.record;
   }
   async function submit(e){
     e.preventDefault();setBusy(true);setError("");let authenticating=!authenticated;const accessEpoch=draftAccess.epochRef.current;const accessStillCurrent=()=>draftAccess.usableRef.current&&draftAccess.epochRef.current===accessEpoch;
@@ -998,7 +1094,7 @@ function AuthPage({ mode, user, draftAccess, onAuthenticated }) {
       pending=continuationRequested?readAnonymousDraftContinuation(localStorageRef.current,projectCreationKey):null;
       if(continuationRequested&&!pending)throw new Error("draft_unavailable");
       if(pending&&!sameAnonymousDraftVersion(pending,continuation))throw new Error("draft_conflict");
-      if(pending){if(!accessStillCurrent())throw new Error("draft_access_lost");if(pending.status!=="submitting")pending=markContinuation(pending,"submitting");if(!pending)return;const exactPending=readAnonymousDraftContinuation(localStorageRef.current,pending.projectCreationKey);if(!exactPending)throw new Error("draft_unavailable");if(!sameAnonymousDraftVersion(exactPending,pending))throw new Error("draft_conflict");if(!accessStillCurrent())throw new Error("draft_access_lost");const attributed=pending.entryPoint==="public_estimator"?{"x-grihagrid-entry-point":"public_estimator"}:{};projectRequestDispatched=true;const response=await apiResponse('/api/projects',{method:'POST',headers:{...attributed,'idempotency-key':pending.projectCreationKey},body:projectRequestBody(pending.draft)});const project=acceptedAnonymousProjectCreationResponse(response.payload,response.status,pending);if(!project)throw new Error("project_response_invalid");if(!active.current)return;const cleanup=accessStillCurrent()?clearAnonymousDraftAfterCreation(localStorageRef.current,pending):{ok:false};if(!cleanup.ok)setSessionValue(`grihagrid.draftCleanupWarning.${project.id}`,"Project saved, but this browser would not clear the unfinished copy. Discard that browser draft before starting another brief.");clearLegacyPendingProjectState();completePublicEstimatorHandoff();replaceRoute(`/projects/${project.id}`)}
+      if(pending){if(!accessStillCurrent())throw new Error("draft_access_lost");if(pending.status!=="submitting")pending=markContinuation(pending,"submitting");if(!pending)return;const exactPending=readAnonymousDraftContinuation(localStorageRef.current,pending.projectCreationKey);if(!exactPending)throw new Error("draft_unavailable");if(!sameAnonymousDraftVersion(exactPending,pending))throw new Error("draft_conflict");if(!accessStillCurrent())throw new Error("draft_access_lost");const entryPoint=anonymousDraftEstimatorEntryPoint(pending,localStorageRef.current);const attributed=entryPoint?{"x-grihagrid-entry-point":entryPoint}:{};projectRequestDispatched=true;const response=await apiResponse('/api/projects',{method:'POST',headers:{...attributed,'idempotency-key':pending.projectCreationKey},body:projectRequestBody(pending.draft)});const project=acceptedAnonymousProjectCreationResponse(response.payload,response.status,pending);if(!project)throw new Error("project_response_invalid");if(!active.current)return;const cleanup=accessStillCurrent()?clearAnonymousDraftAfterCreation(localStorageRef.current,pending):{ok:false};if(!cleanup.ok)setSessionValue(`grihagrid.draftCleanupWarning.${project.id}`,"Project saved, but this browser would not clear the unfinished copy. Discard that browser draft before starting another brief.");clearLegacyPendingProjectState();completeEstimatorHandoff(pending.projectCreationKey,localStorageRef.current);replaceRoute(`/projects/${project.id}`)}
       else route('/dashboard');
     }catch(err){
       if(!active.current)return;
@@ -1022,7 +1118,7 @@ function AuthPage({ mode, user, draftAccess, onAuthenticated }) {
   const continuationMissing=continuationRequested&&(!continuation||Boolean(continuationFailure));
   const heading=authenticated&&continuation?"Finish saving your brief.":isLogin?'Welcome back.':'Create your account.';
   const copy=authenticated&&continuation?"Your account is ready. The exact browser copy and original retry key will be used once.":isLogin?'Return to your saved home plans.':'Save the brief you just created and keep every decision together.';
-  return <main className="auth-page"><div className="auth-architecture"><img width="1536" height="1024" src="/assets/v2/monograph-house-v2.jpg" onError={e=>{e.currentTarget.src='/assets/grihagrid-hero.jpg'}} alt="Contemporary Indian home"/><div><Brand inverted disabled={busy} onHome={back}/><blockquote>Start with clarity.<br/>Build with confidence.</blockquote></div></div><section className="auth-form"><button className="back-action" disabled={busy} onClick={back}><ArrowLeft/> {continuation?'Back to brief':'Home'}</button><span className="kicker">Private project workspace</span><h1>{heading}</h1><p>{copy}</p>{continuationMissing?<div className="auth-continuation-missing"><WarningCircle/><p><strong>{continuationFailure==="conflict"?"This browser draft changed after this account page opened.":"No recoverable browser copy was found."}</strong> {continuationFailure==="conflict"?"Nothing was submitted. Review the current browser copy before continuing.":"It may have expired, been discarded, or been cleared by this device. GrihaGrid will not reconstruct it from browser history or submit partial details."}</p>{error&&<p ref={errorRef} className="form-error" tabIndex="-1" role="alert">{error}</p>}<button className="copper-button" onClick={()=>replaceRoute('/start',continuation?anonymousDraftContinuationState(continuation):{})}>{continuationFailure==="conflict"?"Review current brief":"Start a new brief"} <ArrowRight/></button></div>:<form onSubmit={submit} aria-busy={busy}>{continuation&&<div className="auth-continuation-ready" role="status"><LockKey/><p>{authenticated?<><strong>Exact retry protected.</strong> No dedicated password, account-detail, file or estimate field is stored with this browser draft.</>:<><strong>Your brief stays separate.</strong> Account creation sends only your name, email and password. After it succeeds, GrihaGrid uses the exact browser copy and original retry key.</>}</p></div>}{!authenticated&&<>{!isLogin&&<label>Full name<input required disabled={busy} maxLength="80" autoComplete="name" value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label>}<label>Email address<input required disabled={busy} type="email" maxLength="254" autoComplete="email" autoCapitalize="none" spellCheck="false" value={form.email} onChange={e=>setForm({...form,email:e.target.value})}/></label><label>Password<input required disabled={busy} type="password" minLength="10" maxLength="128" autoComplete={isLogin?'current-password':'new-password'} autoCapitalize="none" spellCheck="false" value={form.password} onChange={e=>setForm({...form,password:e.target.value})}/><small>10–128 characters</small></label></>}{error&&<p ref={errorRef} className="form-error" tabIndex="-1" role="alert">{error}</p>}<button disabled={busy} className="copper-button" type="submit">{busy?'Please wait…':authenticated&&continuation?'Save exact brief':isLogin?'Log in':'Create account'} <ArrowRight/></button></form>}{!continuationMissing&&!authenticated&&<p className="auth-switch">{isLogin?'New to GrihaGrid?':'Already have an account?'} <button disabled={busy} onClick={()=>replaceRoute(isLogin?'/register':'/login',anonymousDraftContinuationState(continuation))}>{isLogin?'Create account':'Log in'}</button></p>}</section></main>;
+  return <main className="auth-page"><div className="auth-architecture"><img width="1536" height="1024" src="/assets/v2/monograph-house-v2.jpg" onError={e=>{e.currentTarget.src='/assets/grihagrid-hero.jpg'}} alt="Contemporary Indian home"/><div><Brand inverted disabled={busy} onHome={back}/><blockquote>Start with clarity.<br/>Build with confidence.</blockquote></div></div><section className="auth-form"><button className="back-action" disabled={busy} onClick={back}><ArrowLeft/> {continuation?'Back to brief':'Home'}</button><span className="kicker">Private project workspace</span><h1>{heading}</h1><p>{copy}</p>{continuationMissing?<div className="auth-continuation-missing"><WarningCircle/><p><strong>{continuationFailure==="conflict"?"This browser draft changed after this account page opened.":"No recoverable browser copy was found."}</strong> {continuationFailure==="conflict"?"Nothing was submitted. Review the current browser copy before continuing.":"It may have expired, been discarded, or been cleared by this device. GrihaGrid will not reconstruct it from browser history or submit partial details."}</p>{error&&<p ref={errorRef} className="form-error" tabIndex="-1" role="alert">{error}</p>}<button className="copper-button" onClick={()=>replaceRoute('/start',continuation?anonymousDraftContinuationState(continuation,localStorageRef.current):{})}>{continuationFailure==="conflict"?"Review current brief":"Start a new brief"} <ArrowRight/></button></div>:<form onSubmit={submit} aria-busy={busy}>{continuation&&<div className="auth-continuation-ready" role="status"><LockKey/><p>{authenticated?<><strong>Exact retry protected.</strong> No dedicated password, account-detail, file or estimate field is stored with this browser draft.</>:<><strong>Your brief stays separate.</strong> Account creation sends only your name, email and password. After it succeeds, GrihaGrid uses the exact browser copy and original retry key.</>}</p></div>}{!authenticated&&<>{!isLogin&&<label>Full name<input required disabled={busy} maxLength="80" autoComplete="name" value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label>}<label>Email address<input required disabled={busy} type="email" maxLength="254" autoComplete="email" autoCapitalize="none" spellCheck="false" value={form.email} onChange={e=>setForm({...form,email:e.target.value})}/></label><label>Password<input required disabled={busy} type="password" minLength="10" maxLength="128" autoComplete={isLogin?'current-password':'new-password'} autoCapitalize="none" spellCheck="false" value={form.password} onChange={e=>setForm({...form,password:e.target.value})}/><small>10–128 characters</small></label></>}{error&&<p ref={errorRef} className="form-error" tabIndex="-1" role="alert">{error}</p>}<button disabled={busy} className="copper-button" type="submit">{busy?'Please wait…':authenticated&&continuation?'Save exact brief':isLogin?'Log in':'Create account'} <ArrowRight/></button></form>}{!continuationMissing&&!authenticated&&<p className="auth-switch">{isLogin?'New to GrihaGrid?':'Already have an account?'} <button disabled={busy} onClick={()=>replaceRoute(isLogin?'/register':'/login',anonymousDraftContinuationState(continuation,localStorageRef.current))}>{isLogin?'Create account':'Log in'}</button></p>}</section></main>;
 }
 
 function accountSecurityFailure(error) {
@@ -3091,7 +3187,7 @@ function NotFoundPage() { return <main className="error-page"><Compass/><span cl
 function AppShell({ user, children }) { return <><a className="skip-link" href="#main-content">Skip to content</a><Header user={user}/><div id="main-content">{children}</div><Footer/></>; }
 
 export function App() {
-  const [path,setPath]=useState(window.location.pathname);const [user,setUser]=useState(()=>isPublicReportSharePath(window.location.pathname)?null:undefined);
+  const [path,setPath]=useState(window.location.pathname);const [user,setUser]=useState(()=>isAuthenticationFreePath(window.location.pathname)?null:undefined);
   const draftWorkflow=path==="/start"||((path==="/login"||path==="/register")&&window.history.state?.projectContinuation===true);
   const draftAccess=useAnonymousDraftStorageAccess(draftWorkflow);
   const focusedPath=useRef(path);
@@ -3110,7 +3206,7 @@ export function App() {
     return()=>{window.removeEventListener('storage',onStorage);if(channel){channel.removeEventListener('message',onChannel);channel.close()}};
   },[]);
   useEffect(()=>{
-    if(isPublicReportSharePath(path)){if(authBootstrapComplete.current)authRevision.current+=1;authBootstrapComplete.current=false;authenticatedSession.current=false;setUser(null);return}
+    if(isAuthenticationFreePath(path)){if(authBootstrapComplete.current)authRevision.current+=1;authBootstrapComplete.current=false;authenticatedSession.current=false;setUser(null);return}
     if(authBootstrapComplete.current)return;
     authBootstrapComplete.current=true;
     const revision=authRevision.current;
@@ -3123,7 +3219,7 @@ export function App() {
       const requestedLocation=`${pathname}${window.location.search}${window.location.hash}`;
       const privatePath=isPrivateAccountPath(pathname);
       const confirmationVisible=window.history.state?.logoutConfirmed===true;
-      if(isPublicReportSharePath(pathname)){authenticatedSession.current=false;setUser(null);return}
+      if(isAuthenticationFreePath(pathname)){authenticatedSession.current=false;setUser(null);return}
       if(checking||!shouldRevalidateSession(privatePath,window.history.state))return;
       checking=true;const revision=authRevision.current;
       const targetIsCurrent=()=>isCurrentSessionRevalidationTarget(
@@ -3150,7 +3246,7 @@ export function App() {
     window.addEventListener('focus',revalidate);window.addEventListener('pageshow',revalidate);document.addEventListener('visibilitychange',onVisibility);
     return()=>{window.removeEventListener('focus',revalidate);window.removeEventListener('pageshow',revalidate);document.removeEventListener('visibilitychange',onVisibility)};
   },[]);
-  useEffect(()=>{const titles={'/':'GrihaGrid — Know what fits. Know what it costs.','/pricing':'Pricing — GrihaGrid','/about':'About — GrihaGrid','/plans':'Sample plan — GrihaGrid','/compare/sample':'Sample Decision Compare — GrihaGrid','/start':'Plan my home — GrihaGrid','/login':'Log in — GrihaGrid','/register':'Create account — GrihaGrid','/dashboard':'My projects — GrihaGrid','/security':'Account security — GrihaGrid','/orders':'Orders — GrihaGrid','/privacy':'Privacy — GrihaGrid','/terms':'Terms — GrihaGrid','/refund':'Refunds — GrihaGrid'};document.title=path.startsWith('/report/')?'Decision book — GrihaGrid':path.startsWith('/projects/')&&path.endsWith('/brief')?'Brief Check — GrihaGrid':path.startsWith('/projects/')&&path.endsWith('/compare')?'Decision Compare — GrihaGrid':path.startsWith('/projects/')?'Project home — GrihaGrid':path.startsWith('/orders/')?'Purchased artifact — GrihaGrid':path==='/share/report'?'Professional handoff — GrihaGrid':path.startsWith('/share/decision/')?'Shared decision — GrihaGrid':path.startsWith('/align/')?'Family review — GrihaGrid':(titles[path]||'Page not found — GrihaGrid')},[path]);
+  useEffect(()=>{const titles={'/':'GrihaGrid — Know what fits. Know what it costs.','/estimate':'Shared estimate — GrihaGrid','/pricing':'Pricing — GrihaGrid','/about':'About — GrihaGrid','/plans':'Sample plan — GrihaGrid','/compare/sample':'Sample Decision Compare — GrihaGrid','/start':'Plan my home — GrihaGrid','/login':'Log in — GrihaGrid','/register':'Create account — GrihaGrid','/dashboard':'My projects — GrihaGrid','/security':'Account security — GrihaGrid','/orders':'Orders — GrihaGrid','/privacy':'Privacy — GrihaGrid','/terms':'Terms — GrihaGrid','/refund':'Refunds — GrihaGrid'};document.title=path.startsWith('/report/')?'Decision book — GrihaGrid':path.startsWith('/projects/')&&path.endsWith('/brief')?'Brief Check — GrihaGrid':path.startsWith('/projects/')&&path.endsWith('/compare')?'Decision Compare — GrihaGrid':path.startsWith('/projects/')?'Project home — GrihaGrid':path.startsWith('/orders/')?'Purchased artifact — GrihaGrid':path==='/share/report'?'Professional handoff — GrihaGrid':path.startsWith('/share/decision/')?'Shared decision — GrihaGrid':path.startsWith('/align/')?'Family review — GrihaGrid':(titles[path]||'Page not found — GrihaGrid')},[path]);
   useEffect(()=>{
     if(focusedPath.current===path)return undefined;
     focusedPath.current=path;
@@ -3205,6 +3301,7 @@ export function App() {
   const shareMatch=path.match(/^\/share\/decision\/([^/]+)$/);
   const alignmentMatch=path.match(/^\/align\/([^/]+)$/);
   const checkoutOrder=path==='/checkout/return'?new URLSearchParams(window.location.search).get('order'):null;
+  if(path==='/estimate')return <SharedEstimatorPage/>;
   if(path==='/start')return <StartPage user={user} draftAccess={draftAccess} onSessionEnded={()=>{authRevision.current+=1;authenticatedSession.current=false;setUser(null)}}/>;
   if(path==='/login'||path==='/register')return <AuthPage key={path} mode={path.slice(1)} user={user} draftAccess={draftAccess} onAuthenticated={authenticated=>{authRevision.current+=1;authenticatedSession.current=Boolean(authenticated);setUser(authenticated)}}/>;
   if(path==='/dashboard')return <Dashboard user={user} onLogout={()=>{authRevision.current+=1;authenticatedSession.current=false;setUser(null)}}/>;

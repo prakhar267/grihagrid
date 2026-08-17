@@ -10,5 +10,6 @@ Disallow: /share/report
 Disallow: /login
 Disallow: /register
 Disallow: /start
+Disallow: /estimate
 
 Sitemap: https://grihagrid.prakhargupta267.workers.dev/sitemap.xml

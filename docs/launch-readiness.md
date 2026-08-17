@@ -574,6 +574,44 @@ new paid capability.
   smoke/authenticated canaries, exact-version cleanup, and the 30-minute
   production error-tail observation with paid and upload capabilities closed.
 
+## Shareable estimator scenario release gate
+
+DISC-07 is **not recorded as live until the protected release finishes**. It is
+a free, non-personal scenario link and introduces no migration, anonymous
+server write, bearer authorization, payment, upload, or professional claim.
+
+- [ ] `/estimate` accepts exactly version plus width, length, city, floors and
+  quality. Missing, duplicate, unknown, malformed, unsupported, hashed,
+  overlength and out-of-range input fails as one value-free page, with zero
+  partial defaults and zero estimate/auth requests; rejected query/fragment
+  values are replaced with value-free `/estimate` on the current history entry.
+- [ ] Every valid open performs a credential-free current `/api/estimate`
+  recalculation and labels it as directional, not frozen. The browser reconciles
+  the full response/basis, discards stale/malformed results, and never transfers
+  a displayed range into project creation.
+- [ ] Native share, copy fallback, cancellation and copy failure have bounded
+  accessible states. Editing and re-sharing is canonical. GET/HEAD are
+  no-store/noindex/no-referrer, robots disallows the route, and the document
+  retains the production-root canonical link.
+- [ ] Continue carries only the five-field tuple, fixed `shared_estimate` marker
+  and UUID retry key into the existing anonymous-draft/auth flow. Project create
+  recalculates and records `shared_estimate_brief_started` only after a first
+  successful insert; replay, conflict, failure, concurrent loser and release
+  canary record none.
+- [ ] The existing v1 full-draft envelope still accepts only `null` or
+  `public_estimator`; shared attribution uses an exact-key/expiry-bound
+  source-only sidecar. The previous assets ignore that sidecar while retaining
+  the draft, and Back/Exit/fresh-Start tests prove stale tuples cannot hydrate
+  under a different retry key.
+- [ ] D1/KV inspection proves no scenario, share token, anonymous visit or
+  browser identity was added and no `0018` migration is pending. The KPI is
+  first-created attributed projects over 7/30 days—not an anonymous conversion
+  rate without a separately privacy-reviewed denominator.
+- [ ] Exact-head and exact-main CI/CodeQL, both Worker dry-runs, public and
+  authenticated canaries, staging/production currentness, paid/upload closure,
+  smoke, 390 px/200%/keyboard/reduced-motion/print checks and the 30-minute
+  exact-version production observation pass with dated evidence.
+
 ## Anonymous brief resume release gate
 
 - [ ] One versioned local envelope is the only persisted full-draft copy. Exact

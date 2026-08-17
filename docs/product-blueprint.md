@@ -167,7 +167,7 @@ Priority definitions: **P0** is required to sell responsibly; **P1** improves co
 | DISC-04 | P0 | Visitor compares tiers | Each tier states artifact, turnaround, revision rights, professional involvement, and refund boundary in plain language. |
 | DISC-05 | P0 | Visitor verifies trust and contact details | Methodology summary, privacy/terms/refund pages, support contact, and professional boundary are reachable before account creation. |
 | DISC-06 | P1 | Returning visitor resumes an unfinished anonymous brief | Draft is restored locally with explicit expiry/clear control; sensitive uploads are never stored anonymously. |
-| DISC-07 | P1 | Visitor shares a non-personal estimate scenario | Link encodes only safe scenario inputs, not address, account, or private project identifiers. |
+| DISC-07 | P1 | Visitor shares a non-personal estimate scenario | Versioned link encodes only the five safe inputs, recalculates live without auth or anonymous storage, and can continue with aggregate-only first-create attribution; no price, address, account, token, or private project identifier enters the URL. |
 | DISC-08 | P2 | Visitor switches language/units | Core flows support selected Indian languages and ft/m without changing canonical stored units. |
 
 ### B. Identity, session, and consent
@@ -513,6 +513,7 @@ This prevents “reports generated” from becoming a vanity metric. Define and 
 | Acquisition | Qualified landing sessions by source | Are we attracting plot owners, not generic inspiration traffic? |
 | Engagement | Calculator meaningful-use rate | Did a visitor change at least two substantive inputs and view the result? |
 | Intent | Brief start rate | Does the promise create enough confidence to disclose project details? |
+| Referral intent | Shared-estimate first-created projects over 7/30 days | Do non-personal scenarios create qualified project starts without visitor tracking? |
 | Completion | Valid brief completion rate | Where do users abandon or encounter contradictory inputs? |
 | Activation | Saved feasibility rate | Does the user receive a useful artifact in the first session? |
 | Value | Decision-action rate | Is the artifact being used, not merely opened? |

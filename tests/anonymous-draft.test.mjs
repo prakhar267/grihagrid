@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  ANONYMOUS_DRAFT_ATTRIBUTION_STORAGE_KEY,
   ANONYMOUS_DRAFT_RETENTION_MS,
   ANONYMOUS_DRAFT_LOCK_NAME,
   ANONYMOUS_DRAFT_STORAGE_KEY,
@@ -8,16 +9,20 @@ import {
   canonicalAnonymousProjectDraft,
   clearAnonymousDraft,
   clearAnonymousDraftAfterCreation,
+  clearAnonymousDraftAttribution,
   clearEphemeralAnonymousDraft,
   clearLegacyPendingProjectState,
   holdAnonymousDraftLock,
+  parseAnonymousDraftAttribution,
   parseAnonymousDraftEnvelope,
   prepareAnonymousDraftExit,
   prepareAnonymousDraftSubmission,
   purgeInvalidAnonymousDraftOnBoot,
   readAnonymousDraft,
+  readAnonymousDraftAttribution,
   readAnonymousDraftContinuation,
   readRecoverableAnonymousDraft,
+  retainAnonymousDraftAttribution,
   safeLocalStorage,
   sameAnonymousDraftPayload,
   sameAnonymousDraftVersion,
@@ -83,6 +88,142 @@ test("anonymous drafts round-trip one exact, versioned seven-day envelope", () =
   assert.deepEqual(readAnonymousDraft(storage, NOW), saved.record);
   assert.equal(storage.values.size, 1);
   assert.equal(storage.values.has(ANONYMOUS_DRAFT_STORAGE_KEY), true);
+});
+
+test("shared-estimate attribution uses a rollback-safe source-only sidecar through edit and retry", () => {
+  const storage = memoryStorage({ unrelated: "preserve" });
+  const initial = save(storage, { entryPoint: null, step: 0 }).record;
+  assert.equal(initial.entryPoint, null, "the old v1 envelope stays readable by the rollback target");
+  assert.deepEqual(parseAnonymousDraftEnvelope(JSON.stringify(initial), NOW), initial);
+  assert.deepEqual(readAnonymousDraftContinuation(storage, KEY, NOW), initial);
+  const retained = retainAnonymousDraftAttribution(storage, initial, "shared_estimate", NOW);
+  assert.equal(retained.persisted, true);
+  assert.equal(readAnonymousDraftAttribution(storage, initial, NOW), "shared_estimate");
+  assert.deepEqual(JSON.parse(storage.getItem(ANONYMOUS_DRAFT_ATTRIBUTION_STORAGE_KEY)), {
+    schemaVersion: 1,
+    projectCreationKey: KEY,
+    entryPoint: "shared_estimate",
+    expiresAtMs: initial.expiresAtMs,
+  });
+  assert.equal(storage.getItem(ANONYMOUS_DRAFT_ATTRIBUTION_STORAGE_KEY).includes("Pune"), false);
+
+  const edited = save(storage, {
+    draft: { ...validDraft, width: 31, city: "Jaipur" },
+    entryPoint: initial.entryPoint,
+    step: 2,
+  }, initial, NOW + 1).record;
+  assert.equal(edited.entryPoint, null);
+  assert.equal(edited.projectCreationKey, KEY);
+  assert.equal(edited.revision, initial.revision + 1);
+  assert.equal(edited.draft.width, 31);
+  assert.equal(edited.draft.city, "Jaipur");
+  assert.deepEqual(prepareAnonymousDraftExit(edited.draft, edited.step, edited), {
+    draft: edited.draft,
+    exactRecord: edited,
+  });
+  assert.equal(retainAnonymousDraftAttribution(storage, edited, "shared_estimate", NOW + 1).persisted, true);
+  assert.equal(readAnonymousDraftAttribution(storage, edited, NOW + 1), "shared_estimate");
+
+  const awaitingAuth = updateAnonymousDraftStatus(storage, edited, "awaiting_auth", NOW + 2).record;
+  const submitting = updateAnonymousDraftStatus(storage, awaitingAuth, "submitting", NOW + 3).record;
+  const retry = updateAnonymousDraftStatus(storage, submitting, "retry_required", NOW + 4).record;
+  for (const record of [awaitingAuth, submitting, retry]) {
+    assert.equal(record.entryPoint, null);
+    assert.equal(record.projectCreationKey, KEY);
+    assert.equal(record.updatedAtMs, edited.updatedAtMs);
+    assert.equal(record.expiresAtMs, edited.expiresAtMs);
+  }
+  assert.equal(readAnonymousDraftAttribution(storage, retry, NOW + 4), "shared_estimate");
+  assert.deepEqual(readAnonymousDraftContinuation(storage, KEY, NOW + 4), retry);
+  assert.equal(storage.getItem("unrelated"), "preserve");
+});
+
+test("the v1 envelope remains rollback-compatible and shared attribution is sidecar-only", () => {
+  for (const entryPoint of [null, "public_estimator"]) {
+    const storage = memoryStorage();
+    const result = save(storage, { entryPoint });
+    assert.equal(result.ok, true, String(entryPoint));
+    assert.equal(result.record.entryPoint, entryPoint);
+    assert.equal(parseAnonymousDraftEnvelope(result.record, NOW)?.entryPoint, entryPoint);
+  }
+
+  for (const entryPoint of [
+    "",
+    "shared_estimate",
+    "shared-estimate",
+    "SHARED_ESTIMATE",
+    "public-estimator",
+    "forged",
+    1,
+    ["shared_estimate"],
+    { source: "shared_estimate" },
+  ]) {
+    const result = save(memoryStorage(), { entryPoint });
+    assert.deepEqual(result, { ok: false, reason: "invalid", record: null }, String(entryPoint));
+  }
+
+  const valid = save(memoryStorage(), { entryPoint: null }).record;
+  for (const entryPoint of ["forged", "", undefined, 1]) {
+    assert.equal(parseAnonymousDraftEnvelope({ ...valid, entryPoint }, NOW), null, String(entryPoint));
+  }
+});
+
+test("v1 source substitution changes the exact version and loses the compare-and-set race", () => {
+  const storage = memoryStorage();
+  const unattributed = save(storage, { entryPoint: null }).record;
+  const substituted = { ...unattributed, entryPoint: "public_estimator" };
+  assert.equal(sameAnonymousDraftPayload(unattributed, substituted), true);
+  assert.equal(sameAnonymousDraftVersion(unattributed, substituted), false);
+  storage.setItem(ANONYMOUS_DRAFT_STORAGE_KEY, JSON.stringify(substituted));
+  const stale = save(storage, {
+    draft: { ...validDraft, city: "Delhi" },
+    entryPoint: unattributed.entryPoint,
+  }, unattributed, NOW + 1);
+  assert.equal(stale.ok, false);
+  assert.equal(stale.reason, "conflict");
+  assert.equal(stale.record.entryPoint, "public_estimator");
+  assert.equal(readAnonymousDraft(storage, NOW + 1).entryPoint, "public_estimator");
+});
+
+test("memory-only shared-estimate sidecar retains its exact source through auth retry state", () => {
+  clearEphemeralAnonymousDraft();
+  const initial = save(null, { entryPoint: null }).record;
+  assert.equal(initial.entryPoint, null);
+  assert.equal(retainAnonymousDraftAttribution(null, initial, "shared_estimate", NOW).persisted, false);
+  assert.equal(readAnonymousDraftAttribution(null, initial, NOW), "shared_estimate");
+  assert.deepEqual(readAnonymousDraftContinuation(null, KEY, NOW), initial);
+  const awaiting = updateAnonymousDraftStatus(null, initial, "awaiting_auth", NOW + 1).record;
+  const retry = updateAnonymousDraftStatus(null, awaiting, "retry_required", NOW + 2).record;
+  assert.equal(retry.entryPoint, null);
+  assert.equal(retry.projectCreationKey, KEY);
+  assert.equal(readAnonymousDraftAttribution(null, retry, NOW + 2), "shared_estimate");
+  assert.deepEqual(readAnonymousDraftContinuation(null, KEY, NOW + 2), retry);
+  clearEphemeralAnonymousDraft();
+});
+
+test("shared attribution sidecars are exact, bounded, key-bound, and compare-deleted", () => {
+  clearEphemeralAnonymousDraft();
+  const storage = memoryStorage();
+  const envelope = save(storage, { entryPoint: null }).record;
+  const marker = retainAnonymousDraftAttribution(storage, envelope, "shared_estimate", NOW);
+  assert.equal(marker.persisted, true);
+  assert.equal(readAnonymousDraftAttribution(storage, { ...envelope, projectCreationKey: OTHER_KEY }, NOW), null);
+  assert.equal(readAnonymousDraftAttribution(storage, { ...envelope, expiresAtMs: envelope.expiresAtMs - 1 }, NOW), null);
+  assert.equal(clearAnonymousDraftAttribution(storage, OTHER_KEY, NOW), true);
+  assert.notEqual(storage.getItem(ANONYMOUS_DRAFT_ATTRIBUTION_STORAGE_KEY), null);
+  assert.equal(clearAnonymousDraftAttribution(storage, KEY, NOW), true);
+  assert.equal(storage.getItem(ANONYMOUS_DRAFT_ATTRIBUTION_STORAGE_KEY), null);
+
+  for (const invalid of [
+    null,
+    "",
+    "not-json",
+    JSON.stringify({ ...marker, persisted: true }),
+    JSON.stringify({ schemaVersion: 1, projectCreationKey: KEY, entryPoint: "public_estimator", expiresAtMs: envelope.expiresAtMs }),
+    JSON.stringify({ schemaVersion: 1, projectCreationKey: KEY, entryPoint: "shared_estimate", expiresAtMs: NOW }),
+    JSON.stringify({ schemaVersion: 1, projectCreationKey: KEY, entryPoint: "shared_estimate", expiresAtMs: NOW + ANONYMOUS_DRAFT_RETENTION_MS + 6 * 60 * 1000 }),
+  ]) assert.equal(parseAnonymousDraftAttribution(invalid, NOW), null);
+  clearEphemeralAnonymousDraft();
 });
 
 test("the persisted project shape is an exact allowlist with strict scalar values", () => {
