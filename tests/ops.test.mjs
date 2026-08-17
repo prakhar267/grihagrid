@@ -22,7 +22,7 @@ test("read-only smoke rejects unsafe targets before network access", async () =>
   );
 });
 
-test("read-only smoke verifies health, readiness, estimate and fail-closed catalog", async () => {
+test("read-only smoke verifies private documents, health, readiness, estimate and fail-closed catalog", async () => {
   const originalFetch = globalThis.fetch;
   const requested = [];
   const readinessProbes = [];
@@ -46,6 +46,17 @@ test("read-only smoke verifies health, readiness, estimate and fail-closed catal
     }
     if (url.pathname === "/share/report") {
       return new Response(init.method==="HEAD"?null:"<!doctype html><title>Professional handoff</title>", {
+        headers: {
+          ...securityHeaders,
+          "content-type": "text/html; charset=utf-8",
+          "cache-control": "no-store",
+          "x-robots-tag": "noindex,nofollow,noarchive",
+          "referrer-policy": "no-referrer",
+        },
+      });
+    }
+    if (url.pathname === "/align") {
+      return new Response(init.method==="HEAD"?null:"<!doctype html><title>Family review</title>", {
         headers: {
           ...securityHeaders,
           "content-type": "text/html; charset=utf-8",
@@ -144,12 +155,14 @@ test("read-only smoke verifies health, readiness, estimate and fail-closed catal
 
   try {
     const result = await runSmoke("https://worker.example.test", { expectedReleaseId: "11111111-1111-4111-8111-111111111111" });
-    assert.equal(result.checks.length, 9);
+    assert.equal(result.checks.length, 11);
     assert.equal(result.checks.find((check) => check.path === "/api/readiness")?.attempts, 2);
     assert.deepEqual(requested, [
       { path: "/", method: "GET" },
       { path: "/share/report", method: "GET" },
       { path: "/share/report", method: "HEAD" },
+      { path: "/align", method: "GET" },
+      { path: "/align", method: "HEAD" },
       { path: "/estimate", method: "GET" },
       { path: "/estimate", method: "HEAD" },
       { path: "/api/health", method: "GET" },
@@ -179,7 +192,7 @@ test("read-only smoke verifies health, readiness, estimate and fail-closed catal
       expectReportHandoff: false,
     });
     assert.equal(closed.expectReportHandoff, false);
-    assert.equal(closed.checks.length, 9);
+    assert.equal(closed.checks.length, 11);
 
     requested.length = 0;
     readinessAttempts = 0;
@@ -191,6 +204,7 @@ test("read-only smoke verifies health, readiness, estimate and fail-closed catal
     assert.equal(legacy.legacyWorker, true);
     assert.equal(legacy.checks.length, 5);
     assert.equal(requested.some((request) => request.path === "/share/report"), false);
+    assert.equal(requested.some((request) => request.path === "/align"), false);
   } finally {
     globalThis.fetch = originalFetch;
   }

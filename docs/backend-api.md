@@ -756,7 +756,7 @@ creation returns `201` and the bearer URL exactly once:
     "responseCount": 0,
     "maxResponses": 5,
     "active": true,
-    "url": "https://app.example/align/secret"
+    "url": "https://app.example/align#secret"
   }
 }
 ```
@@ -775,9 +775,16 @@ family_alignment_not_found`. Revocation closes public reads and writes but
 does not delete or alter the immutable comparison. Archiving the parent project
 permanently closes its outstanding rooms under the same public `410` boundary.
 
-### `GET /api/family-alignment/:token`
+### `POST /api/shared/family-alignment`
 
-Requires KV and a valid high-entropy room bearer. It returns only an opaque
+This is the canonical anonymous read surface. It requires a trusted canonical
+origin, `Content-Type: application/json`, a body no larger than 512 bytes, and
+the exact envelope `{ "token": "43-character-base64url" }`. It does not use an
+account session or CSRF token; the browser sends it with credentials omitted.
+Malformed media, size, JSON, envelope, or bearer values use the same `404
+family_alignment_not_found` response and perform no D1 admission write.
+
+With a valid high-entropy room bearer, it returns only an opaque
 room ID, comparison version, creation/expiry, response count/cap, generic
 assumptions/disclaimer, and two neutral `Option A`/`Option B` projections. Each
 projection is an allowlist of floors, bedrooms, parking, quality, derived
@@ -800,18 +807,25 @@ also discloses no room body. A malformed stored expiry is treated as the same
 fail-closed dependency state rather than as an active room. The daily aggregate
 open event remains ancillary after a successful admission.
 
-### `PUT /api/family-alignment/:token/response`
+### `PUT /api/shared/family-alignment/response`
 
 Requires KV, same-origin request, and a 40–128 character high-entropy
 `x-family-response-token` header generated and retained by the browser. The
-exact JSON body is:
+request must be `application/json`, no larger than 1536 bytes, with the exact
+outer envelope below. The capability is admitted before the nested structured
+response is validated, so malformed or unknown bearers retain the generic
+`404` boundary while an admitted room can receive a bounded `400` for invalid
+choices.
 
 ```json
 {
-  "role": "spouse",
-  "preference": "A",
-  "confidence": "high",
-  "reasons": ["space", "future_expansion"]
+  "token": "43-character-base64url",
+  "response": {
+    "role": "spouse",
+    "preference": "A",
+    "confidence": "high",
+    "reasons": ["space", "future_expansion"]
+  }
 }
 ```
 
@@ -834,6 +848,13 @@ Closed-room data is removed by the scheduled job after the expiry or
 revocation boundary has been older than 90 days; response rows cascade with
 the room while comparisons, projects, orders and payment ledgers remain
 untouched.
+
+For compatibility with already-issued seven-day links, `GET
+/api/family-alignment/:token` and `PUT
+/api/family-alignment/:token/response` temporarily preserve the same public
+projection, receipt, closure, and concurrency semantics. New clients never
+construct those paths. Their operational route labels are templated, and they
+must be removed only after the documented minimum eight-day drain window.
 
 ## Decision Compare endpoints
 

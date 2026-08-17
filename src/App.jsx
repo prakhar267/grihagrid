@@ -251,8 +251,58 @@ function isPublicReportSharePath(pathname) {
   return pathname==="/share/report";
 }
 
+function isFamilyAlignmentPath(pathname) {
+  return pathname==="/align"||pathname.startsWith("/align/");
+}
+
 function isAuthenticationFreePath(pathname) {
-  return isPublicReportSharePath(pathname)||pathname==="/estimate";
+  return isPublicReportSharePath(pathname)||isFamilyAlignmentPath(pathname)||pathname==="/estimate";
+}
+
+function familyAlignmentCapabilityToken(location=window.location) {
+  if(location.pathname!=="/align"||location.search||!/^#[A-Za-z0-9_-]{43}$/u.test(location.hash))return "";
+  return location.hash.slice(1);
+}
+
+function migrateLegacyFamilyAlignmentCapability(location=window.location) {
+  if(location.search||location.hash)return "";
+  const match=location.pathname.match(/^\/align\/([A-Za-z0-9_-]{43})$/u);
+  if(!match)return "";
+  const token=match[1];
+  window.history.replaceState(window.history.state,"",`/align#${token}`);
+  return token;
+}
+
+function scrubClosedFamilyAlignmentCapability(token) {
+  if(typeof token!=="string"||!token)return;
+  if(window.location.pathname!=="/align"||window.location.search||window.location.hash!==`#${token}`)return;
+  window.history.replaceState(window.history.state,"","/align");
+}
+
+function familyAlignmentTerminalPhase(error) {
+  if(!(error instanceof ApiError))return "";
+  const code=error.payload?.code;
+  if(error.status===404&&code==="family_alignment_not_found")return "unavailable";
+  if(error.status===410&&["family_alignment_unavailable","family_alignment_expired"].includes(code))return "closed";
+  return "";
+}
+
+function scrubFamilyAlignmentCapabilityForPrint() {
+  const originalPath=window.location.pathname;
+  const originalSearch=window.location.search;
+  const originalHash=window.location.hash;
+  if(originalPath!=="/align"||originalSearch||!/^#[A-Za-z0-9_-]{43}$/u.test(originalHash))return null;
+  const originalState=window.history.state;
+  let restored=false;
+  const restore=()=>{
+    if(restored)return;
+    restored=true;
+    if(window.location.pathname===originalPath&&!window.location.search&&!window.location.hash){
+      window.history.replaceState(originalState,"",`${originalPath}${originalHash}`);
+    }
+  };
+  window.history.replaceState(originalState,"",originalPath);
+  return restore;
 }
 
 function reportShareCapabilityToken(location=window.location) {
@@ -2391,14 +2441,14 @@ function FamilyAlignmentPanel({ projectId, comparison, readonly = false }) {
         : typeof created.url==='string'&&created.url
           ? created.url
           : typeof result.token==='string'&&result.token
-            ? `${window.location.origin}/align/${encodeURIComponent(result.token)}`
+            ? `${window.location.origin}/align#${result.token}`
             : typeof created.token==='string'&&created.token
-              ? `${window.location.origin}/align/${encodeURIComponent(created.token)}`
+              ? `${window.location.origin}/align#${created.token}`
           : '';
       if(privateUrl){
         setSecretUrl(privateUrl);
-        try{await copyText(privateUrl);setMessage('Private review link copied. It is shown only during this creation session.');}
-        catch{setMessage('Review room created. Use “Copy link” to place its private link on your clipboard.');}
+        try{await copyText(privateUrl,{domFallback:false});setMessage('Private review link copied. It is shown only during this creation session.');}
+        catch{setMessage('Review room created. Keep this tab open and allow secure clipboard access before using “Copy link”.');}
       }else{
         setMessage('The review room is active, but its one-time secret link cannot be reissued. Save a new comparison version when you need a new review room.');
       }
@@ -2410,7 +2460,7 @@ function FamilyAlignmentPanel({ projectId, comparison, readonly = false }) {
   async function copyRoomLink() {
     if(readonly)return;
     setError("");setMessage("");
-    try{if(!secretUrl)throw new Error('For security, this link is shown only when the room is created.');await copyText(secretUrl);setMessage('Private review link copied.');}
+    try{if(!secretUrl)throw new Error('For security, this link is shown only when the room is created.');await copyText(secretUrl,{domFallback:false});setMessage('Private review link copied.');}
     catch(err){setError(err.message)}
   }
 
@@ -2827,7 +2877,10 @@ function FamilyReviewComparison({ scenarios, assumptions, disclaimer }) {
   </section>;
 }
 
-function FamilyAlignmentReviewPage({ token }) {
+function FamilyAlignmentReviewPage() {
+  const capabilityRef=useRef(familyAlignmentCapabilityToken());
+  const requestRevision=useRef(0);
+  const [capabilityRevision,setCapabilityRevision]=useState(0);
   const [phase,setPhase]=useState('loading');
   const [loadAttempt,setLoadAttempt]=useState(0);
   const [room,setRoom]=useState(null);
@@ -2838,11 +2891,18 @@ function FamilyAlignmentReviewPage({ token }) {
   const [savedMessage,setSavedMessage]=useState('');
   const stateHeadingRef=useRef(null);
 
-  useEffect(()=>{
-    const controller=new AbortController();
+  async function load(signal) {
+    const revision=++requestRevision.current;
     setPhase('loading');setError('');setRoom(null);
-    api(`/api/family-alignment/${encodeURIComponent(token)}`,{signal:controller.signal}).then(result=>{
-      if(controller.signal.aborted)return;
+    const token=capabilityRef.current;
+    if(!token){
+      if(isFamilyAlignmentPath(window.location.pathname)&&(window.location.pathname!=="/align"||window.location.search||window.location.hash))window.history.replaceState(window.history.state,"","/align");
+      setPhase('unavailable');
+      return;
+    }
+    try {
+      const result=await publicApi('/api/shared/family-alignment',{method:'POST',body:{token},signal});
+      if(signal?.aborted||revision!==requestRevision.current||token!==capabilityRef.current)return;
       const publicRoom=result.room||result;
       setRoom(publicRoom);
       const stored=readFamilyReceipt(publicRoom.id);
@@ -2850,14 +2910,51 @@ function FamilyAlignmentReviewPage({ token }) {
       const savedForm=stored?.response||stored?.pending;
       if(savedForm)setForm({role:savedForm.role||'',preference:savedForm.preference||'',confidence:savedForm.confidence||'',reasons:Array.isArray(savedForm.reasons)?savedForm.reasons.slice(0,3):[]});
       setPhase('ready');
-    }).catch(err=>{
-      if(controller.signal.aborted)return;
-      if(err.status===410)setPhase('closed');
-      else if(err.status===404)setPhase('unavailable');
+    } catch(err) {
+      if(signal?.aborted||revision!==requestRevision.current||token!==capabilityRef.current)return;
+      const terminalPhase=familyAlignmentTerminalPhase(err);
+      if(terminalPhase)scrubClosedFamilyAlignmentCapability(token);
+      if(terminalPhase)setPhase(terminalPhase);
       else{setError('The review remains private and nothing was submitted. Try this same link again in a moment.');setPhase('temporary')}
-    });
-    return()=>controller.abort();
-  },[token,loadAttempt]);
+    }
+  }
+
+  useEffect(()=>{
+    const refreshCapability=()=>{
+      migrateLegacyFamilyAlignmentCapability();
+      const next=familyAlignmentCapabilityToken();
+      if(next===capabilityRef.current)return;
+      capabilityRef.current=next;
+      requestRevision.current+=1;
+      setRoom(null);setReceipt(null);setForm({role:'',preference:'',confidence:'',reasons:[]});
+      setBusy(false);setError('');setSavedMessage('');setPhase('loading');
+      setCapabilityRevision(value=>value+1);
+    };
+    window.addEventListener('hashchange',refreshCapability);
+    window.addEventListener('popstate',refreshCapability);
+    return()=>{window.removeEventListener('hashchange',refreshCapability);window.removeEventListener('popstate',refreshCapability)};
+  },[]);
+
+  useEffect(()=>{
+    const robots=document.querySelector('meta[name="robots"]');
+    const previous=robots?.getAttribute('content');
+    robots?.setAttribute('content','noindex,nofollow,noarchive');
+    return()=>{if(robots&&previous!==null&&previous!==undefined)robots.setAttribute('content',previous)};
+  },[]);
+
+  useEffect(()=>{
+    let restore=null;
+    const finish=()=>{restore?.();restore=null};
+    const beforePrint=()=>{
+      if(restore)return;
+      try{restore=scrubFamilyAlignmentCapabilityForPrint()}catch{restore=null}
+    };
+    window.addEventListener('beforeprint',beforePrint);
+    window.addEventListener('afterprint',finish);
+    return()=>{window.removeEventListener('beforeprint',beforePrint);window.removeEventListener('afterprint',finish);finish()};
+  },[]);
+
+  useEffect(()=>{const controller=new AbortController();load(controller.signal);return()=>controller.abort()},[capabilityRevision,loadAttempt]);
 
   useEffect(()=>{
     if(['closed','unavailable','temporary'].includes(phase))stateHeadingRef.current?.focus();
@@ -2875,26 +2972,32 @@ function FamilyAlignmentReviewPage({ token }) {
   async function submit(event) {
     event.preventDefault();
     if(!room?.id||!form.role||!form.preference||!form.confidence||form.reasons.length<1){setError('Choose your role, one preference, confidence, and at least one reason.');return}
+    const token=capabilityRef.current;
+    if(!token){setPhase('unavailable');return}
+    const roomId=room.id;
     setBusy(true);setError('');setSavedMessage('');
     const responseToken=receipt?.token||familyResponseToken();
     const pendingReceipt={token:responseToken,response:receipt?.response||null,pending:form};
     // Persist the idempotent reviewer identity before the write. If the server
     // commits but the response is lost, a retry must update the same row rather
     // than consume another one of the five slots.
-    writeFamilyReceipt(room.id,pendingReceipt);setReceipt(pendingReceipt);
+    writeFamilyReceipt(roomId,pendingReceipt);setReceipt(pendingReceipt);
     try{
-      const result=await api(`/api/family-alignment/${encodeURIComponent(token)}/response`,{method:'PUT',headers:{'x-family-response-token':responseToken},body:form});
+      const result=await publicApi('/api/shared/family-alignment/response',{method:'PUT',headers:{'x-family-response-token':responseToken},body:{token,response:form}});
+      if(token!==capabilityRef.current)return;
       const saved=result.response||form;
       const nextReceipt={token:responseToken,response:saved,pending:null};
-      const retained=writeFamilyReceipt(room.id,nextReceipt);setReceipt(nextReceipt);setForm(saved);
+      const retained=writeFamilyReceipt(roomId,nextReceipt);setReceipt(nextReceipt);setForm(saved);
       setSavedMessage(retained
         ? (result.updated?'Your response was updated. Only this browser can amend it while the room remains open.':'Your private response was recorded. You may update it from this browser while the room remains open.')
         : 'Your private response was recorded, but this browser blocked the local receipt. Keep this page open if you may need to update it.');
     }catch(err){
-      if(err.status===410){setPhase('closed');return}
+      if(token!==capabilityRef.current)return;
+      const terminalPhase=familyAlignmentTerminalPhase(err);
+      if(terminalPhase){scrubClosedFamilyAlignmentCapability(token);setPhase(terminalPhase);return}
       if(err.status===409&&(err.payload?.code==='family_alignment_full'||err.payload?.code==='room_full')){clearFamilyReceipt(room.id);setReceipt(null);setPhase('full');return}
       setError('Your response could not be saved. Please check the choices and try again.');
-    }finally{setBusy(false)}
+    }finally{if(token===capabilityRef.current)setBusy(false)}
   }
 
   if(phase==='loading')return <main className="shared-state family-review-state"><Brand/><div role="status"><UserCircle/><span className="kicker">Private family review</span><h1>Opening the two options…</h1><p>No account is needed. The room is checked before any project facts are shown.</p></div></main>;
@@ -3340,7 +3443,7 @@ function NotFoundPage() { return <main className="error-page"><Compass/><span cl
 function AppShell({ user, children }) { return <><a className="skip-link" href="#main-content">Skip to content</a><Header user={user}/><div id="main-content">{children}</div><Footer/></>; }
 
 export function App() {
-  const [path,setPath]=useState(window.location.pathname);const [user,setUser]=useState(()=>isAuthenticationFreePath(window.location.pathname)?null:undefined);
+  const [path,setPath]=useState(()=>{migrateLegacyFamilyAlignmentCapability();return window.location.pathname});const [user,setUser]=useState(()=>isAuthenticationFreePath(window.location.pathname)?null:undefined);
   const draftWorkflow=path==="/start"||((path==="/login"||path==="/register")&&window.history.state?.projectContinuation===true);
   const draftAccess=useAnonymousDraftStorageAccess(draftWorkflow);
   const focusedPath=useRef(path);
@@ -3348,7 +3451,7 @@ export function App() {
   const authenticatedSession=useRef(false);
   const authBootstrapComplete=useRef(false);
   useEffect(()=>{clearLegacyPendingProjectState();purgeInvalidAnonymousDraftOnBoot()},[]);
-  useEffect(()=>{const onPop=()=>setPath(window.location.pathname);window.addEventListener('popstate',onPop);return()=>window.removeEventListener('popstate',onPop)},[]);
+  useEffect(()=>{const onPop=()=>{migrateLegacyFamilyAlignmentCapability();setPath(window.location.pathname)};window.addEventListener('popstate',onPop);return()=>window.removeEventListener('popstate',onPop)},[]);
   useEffect(()=>{
     const applyRemoteLogout=()=>{authRevision.current+=1;authenticatedSession.current=false;clearLocalLogoutState();setUser(null);if(isPrivateAccountPath(window.location.pathname))replaceRoute('/',{logoutConfirmed:true})};
     const onStorage=event=>{if(isLogoutBroadcast(event))applyRemoteLogout()};
@@ -3399,7 +3502,7 @@ export function App() {
     window.addEventListener('focus',revalidate);window.addEventListener('pageshow',revalidate);document.addEventListener('visibilitychange',onVisibility);
     return()=>{window.removeEventListener('focus',revalidate);window.removeEventListener('pageshow',revalidate);document.removeEventListener('visibilitychange',onVisibility)};
   },[]);
-  useEffect(()=>{const titles={'/':'GrihaGrid — Know what fits. Know what it costs.','/estimate':'Shared estimate — GrihaGrid','/pricing':'Pricing — GrihaGrid','/about':'About — GrihaGrid','/plans':'Sample plan — GrihaGrid','/compare/sample':'Sample Decision Compare — GrihaGrid','/start':'Plan my home — GrihaGrid','/login':'Log in — GrihaGrid','/register':'Create account — GrihaGrid','/dashboard':'My projects — GrihaGrid','/security':'Account security — GrihaGrid','/orders':'Orders — GrihaGrid','/privacy':'Privacy — GrihaGrid','/terms':'Terms — GrihaGrid','/refund':'Refunds — GrihaGrid'};document.title=path.startsWith('/report/')?'Decision book — GrihaGrid':path.startsWith('/projects/')&&path.endsWith('/brief')?'Brief Check — GrihaGrid':path.startsWith('/projects/')&&path.endsWith('/compare')?'Decision Compare — GrihaGrid':path.startsWith('/projects/')?'Project home — GrihaGrid':path.startsWith('/orders/')?'Purchased artifact — GrihaGrid':path==='/share/report'?'Professional handoff — GrihaGrid':path.startsWith('/share/decision/')?'Shared decision — GrihaGrid':path.startsWith('/align/')?'Family review — GrihaGrid':(titles[path]||'Page not found — GrihaGrid')},[path]);
+  useEffect(()=>{const titles={'/':'GrihaGrid — Know what fits. Know what it costs.','/estimate':'Shared estimate — GrihaGrid','/pricing':'Pricing — GrihaGrid','/about':'About — GrihaGrid','/plans':'Sample plan — GrihaGrid','/compare/sample':'Sample Decision Compare — GrihaGrid','/start':'Plan my home — GrihaGrid','/login':'Log in — GrihaGrid','/register':'Create account — GrihaGrid','/dashboard':'My projects — GrihaGrid','/security':'Account security — GrihaGrid','/orders':'Orders — GrihaGrid','/privacy':'Privacy — GrihaGrid','/terms':'Terms — GrihaGrid','/refund':'Refunds — GrihaGrid'};document.title=path.startsWith('/report/')?'Decision book — GrihaGrid':path.startsWith('/projects/')&&path.endsWith('/brief')?'Brief Check — GrihaGrid':path.startsWith('/projects/')&&path.endsWith('/compare')?'Decision Compare — GrihaGrid':path.startsWith('/projects/')?'Project home — GrihaGrid':path.startsWith('/orders/')?'Purchased artifact — GrihaGrid':path==='/share/report'?'Professional handoff — GrihaGrid':path.startsWith('/share/decision/')?'Shared decision — GrihaGrid':isFamilyAlignmentPath(path)?'Family review — GrihaGrid':(titles[path]||'Page not found — GrihaGrid')},[path]);
   useEffect(()=>{
     if(focusedPath.current===path)return undefined;
     focusedPath.current=path;
@@ -3421,7 +3524,7 @@ export function App() {
       heading.focus({preventScroll:true});
     };
     const settleRouteScroll=()=>{
-      const hash=isPublicReportSharePath(path)?"":window.location.hash.slice(1);
+      const hash=(isPublicReportSharePath(path)||isFamilyAlignmentPath(path))?"":window.location.hash.slice(1);
       const target=hash?document.getElementById(safeDecodePathSegment(hash)):null;
       if(target)target.scrollIntoView({block:'start'});
       else window.scrollTo({top:0,behavior:'auto'});
@@ -3452,7 +3555,6 @@ export function App() {
   const projectHomeMatch=path.match(/^\/projects\/([^/]+)$/);
   const artifactMatch=path.match(/^\/orders\/([^/]+)\/artifact$/);
   const shareMatch=path.match(/^\/share\/decision\/([^/]+)$/);
-  const alignmentMatch=path.match(/^\/align\/([^/]+)$/);
   const checkoutOrder=path==='/checkout/return'?new URLSearchParams(window.location.search).get('order'):null;
   if(path==='/estimate')return <SharedEstimatorPage/>;
   if(path==='/start')return <StartPage user={user} draftAccess={draftAccess} onSessionEnded={()=>{authRevision.current+=1;authenticatedSession.current=false;setUser(null)}}/>;
@@ -3468,7 +3570,7 @@ export function App() {
   if(artifactMatch)return <PurchasedArtifactPage orderId={safeDecodePathSegment(artifactMatch[1])}/>;
   if(path==='/share/report')return <SharedReportPage/>;
   if(shareMatch)return <SharedDecisionPage token={safeDecodePathSegment(shareMatch[1])}/>;
-  if(alignmentMatch)return <FamilyAlignmentReviewPage token={alignmentMatch[1]}/>;
+  if(isFamilyAlignmentPath(path))return <FamilyAlignmentReviewPage/>;
   if(path==='/checkout/return')return <CheckoutReturnPage orderId={checkoutOrder}/>;
   let page=path==='/'?<HomePage user={user}/>:<NotFoundPage/>;
   if(path==='/pricing')page=<PricingPage/>;else if(path==='/about')page=<AboutPage/>;else if(path==='/plans')page=<SamplePlanPage/>;else if(path==='/compare/sample')page=<SampleDecisionComparePage/>;else if(path==='/privacy'||path==='/terms'||path==='/refund')page=<LegalPage type={path.slice(1)}/>;

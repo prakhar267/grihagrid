@@ -483,12 +483,18 @@ test("Project Decision Home is owner-only, zero-write, lifecycle-correct, and pa
       body: { comparisonId: comparison.id },
     });
     assert.equal(roomCreated.response.status, 201, JSON.stringify(roomCreated.payload));
-    const roomToken = roomCreated.payload.room.url.split("/").at(-1);
+    const roomInvite = new URL(roomCreated.payload.room.url);
+    assert.equal(roomInvite.pathname, "/align");
+    assert.match(roomInvite.hash, /^#[A-Za-z0-9_-]{43}$/u);
+    const roomToken = roomInvite.hash.slice(1);
     const responseReceipt = randomBytes(32).toString("base64url");
-    const familyResponse = await call(server.origin, `/api/family-alignment/${roomToken}/response`, {
+    const familyResponse = await call(server.origin, "/api/shared/family-alignment/response", {
       method: "PUT",
       headers: { "x-family-response-token": responseReceipt },
-      body: { role: "spouse", preference: "B", confidence: "high", reasons: ["space", "future_expansion"] },
+      body: {
+        token: roomToken,
+        response: { role: "spouse", preference: "B", confidence: "high", reasons: ["space", "future_expansion"] },
+      },
     });
     assert.equal(familyResponse.response.status, 201, JSON.stringify(familyResponse.payload));
     homeResult = await call(server.origin, homePath, { auth: owner });
@@ -668,12 +674,18 @@ test("Project Decision Home is owner-only, zero-write, lifecycle-correct, and pa
     assert.equal(blockedProjectEdit.response.status, 409, JSON.stringify(blockedProjectEdit.payload));
     assert.equal(blockedProjectEdit.payload.code, "project_archived");
 
-    const archivedFamilyRead = await call(server.origin, `/api/family-alignment/${roomToken}`);
+    const archivedFamilyRead = await call(server.origin, "/api/shared/family-alignment", {
+      method: "POST",
+      body: { token: roomToken },
+    });
     assert.equal(archivedFamilyRead.response.status, 410, JSON.stringify(archivedFamilyRead.payload));
-    const archivedFamilyWrite = await call(server.origin, `/api/family-alignment/${roomToken}/response`, {
+    const archivedFamilyWrite = await call(server.origin, "/api/shared/family-alignment/response", {
       method: "PUT",
       headers: { "x-family-response-token": responseReceipt },
-      body: { role: "spouse", preference: "A", confidence: "medium", reasons: ["budget"] },
+      body: {
+        token: roomToken,
+        response: { role: "spouse", preference: "A", confidence: "medium", reasons: ["budget"] },
+      },
     });
     assert.equal(archivedFamilyWrite.response.status, 410, JSON.stringify(archivedFamilyWrite.payload));
 

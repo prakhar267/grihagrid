@@ -142,11 +142,12 @@ export function idempotencyKey(storageKey) {
   return value;
 }
 
-export async function copyText(value) {
+export async function copyText(value, { domFallback = true } = {}) {
   if (navigator.clipboard?.writeText) {
     await navigator.clipboard.writeText(value);
     return;
   }
+  if (!domFallback) throw new Error("Secure clipboard access is unavailable in this browser.");
   const field = document.createElement("textarea");
   field.value = value;
   field.setAttribute("readonly", "");

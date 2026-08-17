@@ -724,7 +724,7 @@ orders.
 | Daily | Full canary project/report CRUD | Create/read/update/report/delete completes without residue |
 | Daily while Brief Check is enabled | Authenticated preview → save → replay → history → explicit report v2 → delete | Preview is write-free; one revision/map/report snapshot exists; history/currentness is truthful; cleanup leaves no source, request or report rows |
 | Daily during pilot | Authenticated two-scenario comparison | Frozen A/B inputs and numeric deltas match fixture; choice is idempotent; cleanup leaves no rows |
-| Daily while Family Alignment is enabled | Synthetic room → public read → response update → owner summary → revoke | One room/receipt, redacted A/B projection, aggregate summary reconciles, revoked URL is `410`, cleanup leaves no rows or token in monitor output |
+| Daily while Family Alignment is enabled | Synthetic room → fragment-capability fixed-path read → response update → owner summary → revoke | New URL is `/align#…`; no account bootstrap occurs, the internal app-shell fetch and fixed APIs omit ambient credentials, and no capability enters an HTTP URL; one room/receipt, redacted A/B projection, reconciled aggregate, revoked `410`, no residue or token in monitor output |
 | Daily while Professional Handoff is enabled | Exact report → selected share → unauthenticated public read → revoke | Only selected sections render, URL path is `/share/report` with an unlogged fragment capability, constant-path POST returns `410` after revoke, and project cleanup leaves no `report_shares` or token in output |
 | Daily during pilot | Paid fulfillment age | Every verified payment is issued or explicitly paused inside the published promise |
 | Daily while AI enabled | Sanitized AI generation + cached read | Valid advisory schema, one provider call, cached replay, cleanup leaves no rows |
@@ -829,7 +829,10 @@ Page the on-call for:
 - two consecutive health failures or any five-minute outage;
 - Worker 5xx above 2% for five minutes with at least 20 requests;
 - any cross-account result, private R2 exposure, CSP/TLS failure, or secret leak;
-- any Family Alignment bearer value in logs/analytics/referrers, public private-
+- any Family Alignment bearer value in HTTP URLs, asset requests,
+  logs/analytics/referrers/DOM/print, any fixed reviewer API or private
+  app-shell binding request carrying account cookies/authorization/CSRF, any
+  `/align` session lookup/auth bootstrap, public private-
   field exposure, response takeover/cross-room update, sixth receipt, response
   committed after closure, or Family Alignment action changing an order or
   entitlement;
