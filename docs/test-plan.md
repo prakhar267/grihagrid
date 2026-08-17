@@ -134,13 +134,15 @@ interleaved within their own real-D1 fixtures.
   UI open with an accessible retry.
 - `POST /api/projects`: valid project, normalized estimate, length-limited name
   and invalid dimensions. Require exact root/nested allowlists and typed
-  categorical bounds; reject hidden `soilReport`/metadata claims, fail closed
-  on KV read **or** write failure, enforce isolated 20/hour account limits and
+  categorical bounds; NFKC-normalize names and reject control/bidi text; reject
+  hidden `soilReport`/metadata claims, fail closed on KV read, write, **or
+  malformed state**, enforce isolated 20/hour account limits and
   the SQL-time 50-project ceiling. Test an absent/malformed key, first `201`,
   same-key/same-normalized-request `200`, same-key/different-request `409`, lost
-  success, unique-index races, and the 49→50 trigger race. Every keyed replay
-  must return one canonical project for that account and increment estimator
-  attribution at most once. Seed exactly 50 active/archived projects, require create 51 to fail
+  success, same raw key across two accounts, unique-index races, and the 49→50
+  trigger race on real D1. Every keyed replay must return one canonical project
+  for that account and increment estimator attribution at most once. Seed
+  exactly 50 active/archived projects, require create 51 to fail
   without a partial row, and always retain the geotechnical-verification risk.
 - Unknown `/api/*`: JSON 404. Unknown browser route: SPA fallback.
 - Project Decision Home: `GET /api/projects/:projectId/home` is authenticated,
@@ -441,15 +443,15 @@ interleaved within their own real-D1 fixtures.
 
 | Area | Test | Required result |
 |---|---|---|
-| Recovery | Edit a non-default value, advance a step, Save & exit, reload and reopen `/start` | A value-free choice appears before hydration; Resume restores the exact step, normalized values, source and UUID key without extending expiry |
+| Recovery | Edit a non-default value, advance a step, Save & exit, reload and reopen `/start`; then make the visible project name invalid while an older version exists and try Save & exit | A value-free choice appears before hydration; Resume restores the exact step, normalized values, source and UUID key without extending expiry. Invalid visible input keeps the planner open, focuses the field, and never silently substitutes the older copy |
 | Discard | Discard from the prompt and active wizard, then reload, go Back/Forward and restore bfcache | No full draft reappears from local, session or navigation state; a stale tab cannot recreate or clear another version |
 | Retention | Read, reload and resume near expiry; edit once; cross the exact seven-day boundary | Passive activity never extends expiry; one valid user edit does; an expired copy is rejected and removed when the app next runs |
 | Storage failure | Deny the storage getter, writes, updates, removal and quota in turn | The open-tab flow remains usable and says it is not saved; an unverifiable discard never claims success; no anonymous server fallback appears |
 | Tab concurrency | Hold the draft Web Lock in tab A; attempt open/edit/discard/auth in tab B; release in both save/discard orders; repeat through `pagehide`/`pageshow` and without Web Locks | Tab B remains value-free and performs zero shared-storage or network mutation until Retry acquires; reacquisition sees the winner; unsupported locks use memory only; no newer write is deleted or stale branch resurrected |
 | Auth boundary | Capture register/login and project requests after a recovered brief | Auth bodies contain credentials only; the project POST alone contains the exact allowlist and original key; no URL, cookie, history, session, event or log contains the draft |
-| Retry | Lose a successful `201`, reload and retry; then force same-key/different-input reuse | Exact replay is `200` for one project row; ambiguous state stays frozen; conflict is `409` and the client never rotates the key |
+| Retry | Lose a successful `201`, reload and retry; then force same-key/different-input reuse and malformed/`202`/`204` successful responses | Exact replay is `200` for one project row; only a strict safe `200`/`201` envelope permits cleanup; ambiguous or malformed success stays frozen; conflict is `409` and the client never rotates the key |
 | Privacy | Inject extra keys, controls, bidi text, files, filenames, credentials, IDs, estimates and server output | The strict envelope rejects unknown/private fields; project-name text remains disclosed; the prompt reveals no project values and recovery copy accurately names plaintext browser-profile exposure |
-| Accessibility | Use keyboard, screen reader, 390 px, 200% zoom/text spacing, reduced motion and high contrast | Resume/Discard and status/error states have clear names, visible focus and announcements with no overlap or horizontal overflow |
+| Accessibility | Use keyboard, screen reader, 390 px, 200% zoom/text spacing, reduced motion and high contrast; follow step four directly into registration | Resume/Discard are initially visible at 390 px; status/error states have clear names, visible focus and announcements with no overlap or horizontal overflow; auth starts at scroll top with its focused H1 visible |
 
 ## Family Alignment manual acceptance matrix
 

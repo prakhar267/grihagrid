@@ -6,7 +6,7 @@ import {
   ShareNetwork, ShieldCheck, SignOut, Sparkle, Stack, Trash, UploadSimple, UserCircle,
   WarningCircle, X, XCircle,
 } from "@phosphor-icons/react";
-import { api, ApiError, copyText, formatDate, formatDateTime, formatLakh, idempotencyKey, publicApi, trackEvent } from "./api.js";
+import { api, apiResponse, ApiError, copyText, formatDate, formatDateTime, formatLakh, idempotencyKey, publicApi, trackEvent } from "./api.js";
 import {
   LOGOUT_CHANNEL_NAME, LOGOUT_FAILURE_MESSAGE, broadcastLogout, clearLocalLogoutState, confirmLogout,
   isApplicationUnauthenticated, isCurrentSessionRevalidationTarget, isLogoutBroadcast,
@@ -16,13 +16,16 @@ import { reportFeedbackConcernState, resolveArchivedReportFeedback } from "./rep
 import {
   ANONYMOUS_DRAFT_STORAGE_KEY,
   ANONYMOUS_DRAFT_STYLES,
+  acceptedAnonymousProjectCreationResponse,
   anonymousDraftExpiryLabel,
   canonicalAnonymousProjectDraft,
   clearAnonymousDraft,
   clearAnonymousDraftAfterCreation,
   clearLegacyPendingProjectState,
   holdAnonymousDraftLock,
+  prepareAnonymousDraftExit,
   prepareAnonymousDraftSubmission,
+  purgeInvalidAnonymousDraftOnBoot,
   readAnonymousDraft,
   readAnonymousDraftContinuation,
   readRecoverableAnonymousDraft,
@@ -30,6 +33,7 @@ import {
   sameAnonymousDraftVersion,
   saveAnonymousDraft,
   updateAnonymousDraftStatus,
+  validAnonymousProjectName,
 } from "./anonymous-draft.js";
 import {
   ESTIMATOR_CITIES,
@@ -815,6 +819,7 @@ function StartPage({ user, draftAccess, onSessionEnded }) {
   }
   function update(key,value){
     if(activeDraftRef.current&&activeDraftRef.current.status!=="editing")return;
+    if(Object.is(data[key],value))return;
     dirtyRef.current=true;const next={...data,[key]:value};setData(next);setError("");persistDraft(next,step);
   }
   function resumeDraft(){
@@ -839,8 +844,19 @@ function StartPage({ user, draftAccess, onSessionEnded }) {
     if(busy)return;
     let record=activeDraftRef.current;
     if(!user&&!record&&!dirtyRef.current){clearLegacyPendingProjectState();route("/");return}
-    if(!user&&!record)record=persistDraft(data,step,"editing",{force:true});
-    if(!user&&!record){setError("This brief cannot be saved on this browser yet. Correct the highlighted values or keep this tab open.");return}
+    if(user&&!record){clearLegacyPendingProjectState();route("/");return}
+    const prepared=prepareAnonymousDraftExit(data,step,record);
+    if(!prepared){
+      setSaveState("invalid");setError("Save & exit paused because the visible brief is not valid. Correct the highlighted value; the older browser copy was not substituted.");
+      window.requestAnimationFrame(()=>{const target=document.querySelector(".wizard-sheet :invalid")||document.querySelector('[data-draft-field="name"]');target?.focus({preventScroll:true});target?.scrollIntoView({block:"center"})});
+      return;
+    }
+    if(!prepared.exactRecord){
+      if(record&&record.status!=="editing"){setError("This exact retry is frozen and the visible brief no longer matches it. Reload before leaving this planner.");return}
+      record=persistDraft(prepared.draft,step,"editing",{force:!record});
+    }
+    const recoverable=record?readAnonymousDraftContinuation(localStorageRef.current,record.projectCreationKey):null;
+    if(!sameAnonymousDraftVersion(recoverable,record)){setError("This exact brief could not be confirmed outside the open planner. Keep this tab open, check browser storage access, and try Save & exit again.");return}
     clearLegacyPendingProjectState();route("/");
   }
   function advanceStep(){
@@ -876,7 +892,13 @@ function StartPage({ user, draftAccess, onSessionEnded }) {
     try {
       if(submission&&!accessStillCurrent())throw new Error("draft_access_lost");
       projectRequestDispatched=true;
-      const result=await api("/api/projects",{method:"POST",headers:attributionHeaders,body:request});
+      let result;
+      if(submission){
+        const response=await apiResponse("/api/projects",{method:"POST",headers:attributionHeaders,body:request});
+        const project=acceptedAnonymousProjectCreationResponse(response.payload,response.status,submission);
+        if(!project)throw new Error("project_response_invalid");
+        result={...response.payload,project};
+      }else result=await api("/api/projects",{method:"POST",headers:attributionHeaders,body:request});
       if(!active.current)return;
       if(submission){const cleanup=accessStillCurrent()?clearAnonymousDraftAfterCreation(localStorageRef.current,submission):{ok:false};if(!cleanup.ok)setSessionValue(`grihagrid.draftCleanupWarning.${result.project.id}`,"Project saved, but this browser would not clear the unfinished copy. Discard that browser draft before starting another brief.")}
       clearLegacyPendingProjectState();completePublicEstimatorHandoff();
@@ -897,14 +919,14 @@ function StartPage({ user, draftAccess, onSessionEnded }) {
   if(recovery)return <main className="wizard-page wizard-page--recovery" aria-labelledby="draft-resume-title" aria-describedby="draft-resume-copy"><div className="wizard-header"><Brand onHome={()=>route("/")}/><button className="quiet-action" onClick={()=>route("/")}>Not now</button></div><section className="draft-resume-sheet"><span className="kicker">{recoveryPersisted?"Saved on this browser":"Kept in this open tab"}</span><FloppyDisk className="draft-resume-sheet__mark" aria-hidden="true"/><h1 id="draft-resume-title">Continue where you left off.</h1><p id="draft-resume-copy">{recoveryAvailabilityCopy}</p><div className="draft-resume-boundary"><ShieldCheck/><p>{recoveryBoundaryCopy} The copy contains the structured brief, save/write metadata and one opaque project retry key. Dedicated account, password, estimate and upload fields are excluded. Project-name text is included—use a neutral label.</p></div>{error&&<p className="form-error" role="alert">{error}</p>}<div className="draft-resume-actions"><button className="copper-button" onClick={resumeDraft}>Resume brief <ArrowRight/></button><button className="outline-button" onClick={discardRecovery}><Trash/> Discard and start over</button></div></section></main>;
   const frozen=Boolean(activeDraft&&activeDraft.status!=="editing");
   const draftStatusCopy={saved:`Saved on this browser until ${anonymousDraftExpiryLabel(activeDraft)}`,unavailable:"The current exact copy is kept only in this open tab; reload may restore an older confirmed version or nothing.",invalid:"Finish the current value before continuing; an older saved value will not be submitted.",conflict:"Saving paused because another tab changed this draft.",expired:"The browser copy expired or was cleared elsewhere; this page will not recreate it.",idle:user?"Signed-in project; browser draft saving is not needed.":"Before you begin: this brief will be plaintext in this browser profile for up to seven days, may be seen by people or software using it, and may be cleared sooner. Project-name text is included—use a neutral label."}[saveState];
-  return <main className="wizard-page"><div className="wizard-header"><Brand disabled={busy} onHome={saveAndExit}/><div className="wizard-header__actions">{activeDraft&&<button className="quiet-action quiet-action--danger" disabled={busy} onClick={discardCurrent}>Discard draft</button>}<button className="quiet-action" disabled={busy} onClick={saveAndExit}>{activeDraft||(!user&&dirtyRef.current)?"Save & exit":"Exit"}</button></div></div><div className="wizard-progress" aria-label="Project brief progress">{wizardSteps.map((label,i)=><div className={i<=step?"active":""} aria-current={i===step?'step':undefined} key={label}><span>{i<step?<Check/>:i+1}</span><small>{label}</small></div>)}</div><form className="wizard-sheet" onSubmit={event=>{event.preventDefault();if(step<3)advanceStep();else createProject()}}>
+  return <main className="wizard-page"><div className="wizard-header"><Brand disabled={busy} onHome={saveAndExit}/><div className="wizard-header__actions">{activeDraft&&<button className="quiet-action quiet-action--danger" disabled={busy} onClick={discardCurrent}>Discard draft</button>}<button className="quiet-action" disabled={busy} onClick={saveAndExit}>{activeDraft||(!user&&dirtyRef.current)?"Save & exit":"Exit"}</button></div></div><div className="wizard-progress" aria-label="Project brief progress">{wizardSteps.map((label,i)=><div className={i<=step?"active":""} aria-current={i===step?'step':undefined} key={label}><span>{i<step?<Check/>:i+1}</span><small>{label}</small></div>)}</div><form className="wizard-sheet" aria-describedby={error?"draft-save-error":undefined} onSubmit={event=>{event.preventDefault();if(step<3)advanceStep();else createProject()}}>
     <div className={`anonymous-draft-status anonymous-draft-status--${saveState}`} role="status" aria-live="polite"><FloppyDisk aria-hidden="true"/><span>{draftStatusCopy}</span></div>
     {frozen&&<div className="anonymous-draft-frozen" role="status"><LockKey/><p><strong>Exact retry protected.</strong> This brief cannot be edited because a save may already have reached GrihaGrid. Retry with the same details and key to recover one canonical project in this account.</p></div>}
-    {step===0&&<><span className="kicker">Step one · The plot</span><h1>Begin with the measured ground.</h1><p>Use your sale deed or current survey where possible. Leave uncertain facts clearly marked—not guessed.</p><div className="form-grid"><label>Project name<input required value={data.name} onChange={e=>update('name',e.target.value)} maxLength="100"/></label><label>City<select value={data.city} onChange={e=>update('city',e.target.value)}>{ESTIMATOR_CITIES.map(c=><option key={c}>{c}</option>)}</select></label><label>Plot width <span>feet</span><input required type="number" min="10" max="500" step="any" inputMode="decimal" value={data.width} onChange={e=>update('width',+e.target.value)}/></label><label>Plot length <span>feet</span><input required type="number" min="10" max="500" step="any" inputMode="decimal" value={data.length} onChange={e=>update('length',+e.target.value)}/></label><label>Road-facing side<select value={data.facing} onChange={e=>update('facing',e.target.value)}>{['North','East','South','West'].map(x=><option key={x}>{x}</option>)}</select></label><label>Road width <span>feet · optional</span><input type="number" min="6" max="200" inputMode="decimal" value={data.roadWidthFt??''} placeholder="Not sure" onChange={e=>update('roadWidthFt',e.target.value===''?null:Number(e.target.value))}/><small>Leave blank until measured.</small></label><StructuredSelect label="Plot shape" value={data.plotShape||'unknown'} options={plotShapeOptions} onChange={value=>update('plotShape',value)}/></div></>}
+    {step===0&&<><span className="kicker">Step one · The plot</span><h1>Begin with the measured ground.</h1><p>Use your sale deed or current survey where possible. Leave uncertain facts clearly marked—not guessed.</p><div className="form-grid"><label>Project name<input required data-draft-field="name" aria-invalid={saveState==="invalid"&&!validAnonymousProjectName(data.name)?"true":undefined} aria-describedby={saveState==="invalid"&&!validAnonymousProjectName(data.name)?"draft-save-error":undefined} value={data.name} onChange={e=>update('name',e.target.value)} maxLength="100"/></label><label>City<select value={data.city} onChange={e=>update('city',e.target.value)}>{ESTIMATOR_CITIES.map(c=><option key={c}>{c}</option>)}</select></label><label>Plot width <span>feet</span><input required type="number" min="10" max="500" step="any" inputMode="decimal" value={data.width} onChange={e=>update('width',+e.target.value)}/></label><label>Plot length <span>feet</span><input required type="number" min="10" max="500" step="any" inputMode="decimal" value={data.length} onChange={e=>update('length',+e.target.value)}/></label><label>Road-facing side<select value={data.facing} onChange={e=>update('facing',e.target.value)}>{['North','East','South','West'].map(x=><option key={x}>{x}</option>)}</select></label><label>Road width <span>feet · optional</span><input type="number" min="6" max="200" inputMode="decimal" value={data.roadWidthFt??''} placeholder="Not sure" onChange={e=>update('roadWidthFt',e.target.value===''?null:Number(e.target.value))}/><small>Leave blank until measured.</small></label><StructuredSelect label="Plot shape" value={data.plotShape||'unknown'} options={plotShapeOptions} onChange={value=>update('plotShape',value)}/></div></>}
     {step===1&&<><span className="kicker">Step two · The home</span><h1>Describe the life it needs to hold.</h1><p>Choose the practical starting point. “Not sure” is useful information when the family has not decided.</p><Choice label="Floors" value={data.floors} choices={ESTIMATOR_FLOORS} onChange={v=>update('floors',v)}/><Choice label="Bedrooms" value={data.bedrooms} choices={[2,3,4,'5+']} onChange={v=>update('bedrooms',v)}/><div className="form-grid form-grid--programme"><label>Bathrooms <span>optional</span><select value={data.bathrooms??''} onChange={e=>update('bathrooms',e.target.value===''?null:Number(e.target.value))}><option value="">Not sure</option>{Array.from({length:12},(_,index)=>index+1).map(value=><option value={value} key={value}>{value}</option>)}</select></label><StructuredSelect label="Accessibility" value={data.accessibility||'unknown'} options={accessibilityOptions} onChange={value=>update('accessibility',value)}/><StructuredSelect label="Future use" value={data.futureUse||'unknown'} options={futureUseOptions} onChange={value=>update('futureUse',value)}/><label>Working budget <span>₹ lakh · optional</span><input type="number" min="5" max="10000" inputMode="decimal" value={data.budgetLakh??''} placeholder="Not sure" onChange={e=>update('budgetLakh',e.target.value===''?null:Number(e.target.value))}/><small>A planning limit, not a quotation.</small></label></div><Choice label="Parking" value={data.parking} choices={['None','1 car','2 cars']} onChange={v=>update('parking',v)}/><Choice label="Finish" value={data.quality} choices={ESTIMATOR_QUALITIES} onChange={v=>update('quality',v)}/></>}
     {step===2&&<><span className="kicker">Step three · Context</span><h1>Give the concept a sense of place.</h1><p>{privateUploads.enabled?'Site photographs are optional and are stored in private, account-scoped storage.':'Site photographs are not required for this Brief Check. Your structured facts are enough to identify what is known and what still needs verification.'}</p>{privateUploads.enabled?(user?<label className="upload-field"><UploadSimple/><strong>{files.length?`${files.length} photograph${files.length===1?'':'s'} selected`:'Choose plot photographs'}</strong><span>JPG, PNG or WebP · up to 10 MB each</span><input type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={e=>{if(privateUploads.enabled)setFiles([...e.target.files].filter(file=>file.size<=10*1024*1024))}}/></label>:<div className="account-note"><LockKey/><p>Create or log into your private account first, then add site photographs from the report.</p></div>):<div className="account-note upload-capability-note" role="status"><LockKey/><p>{privateUploads.phase==='loading'?'Checking private photo storage. Uploads stay closed until availability is verified; the Brief Check continues without them.':'Private photo storage is not enabled in this release. Keep site photos on your device and share them directly with your licensed professional when needed.'}</p></div>}<label className="select-block">Exterior direction<select value={data.style} onChange={e=>update('style',e.target.value)}>{ANONYMOUS_DRAFT_STYLES.map(x=><option key={x}>{x}</option>)}</select></label></>}
     {step===3&&<><span className="kicker">Step four · Review</span><h1>Ready for a Brief Check.</h1><p>These stated facts—and the facts left unknown—become the assumption record behind the planning range.</p><div className="brief-lines">{[['Plot',`${data.width} × ${data.length} ft · ${data.facing}-facing · ${plotShapeOptions.find(([value])=>value===data.plotShape)?.[1]||'Not sure'}`],['Access',data.roadWidthFt?`${data.roadWidthFt} ft road`:'Road width not known'],['Home',`${data.floors} · ${data.bedrooms} bedrooms · ${data.bathrooms??'Bathrooms not sure'}${data.bathrooms?' bathrooms':''} · ${data.parking}`],['Household',`${accessibilityOptions.find(([value])=>value===data.accessibility)?.[1]||'Not sure'} · ${futureUseOptions.find(([value])=>value===data.futureUse)?.[1]||'Not sure'}`],['Context',`${data.city} · ${data.style}`],['Budget & finish',`${data.budgetLakh?`₹${data.budgetLakh} lakh working limit`:'Budget not stated'} · ${data.quality}`]].map(([k,v])=><div key={k}><span>{k}</span><strong>{v}</strong></div>)}</div><div className="warning-note"><WarningCircle/><p>A Brief Check identifies evidence gaps and programme pressure. It does not validate site suitability, bylaws, design, structure or construction readiness.</p></div>{!user&&<div className="account-note"><LockKey/><p>You will create an account next so this project remains private and can be revisited.</p></div>}{user&&activeDraft&&<div className="account-note"><UserCircle/><p>This recovered browser brief will be saved to <strong>{user.email}</strong> only when you choose Create Brief Check.</p></div>}</>}
-    {error&&<p className="form-error" role="alert">{error}</p>}
+    {error&&<p className="form-error" id="draft-save-error" role="alert">{error}</p>}
     <div className="wizard-actions">{step>0&&<button type="button" disabled={busy||frozen} className="outline-button" onClick={()=>{const nextStep=step-1;setStep(nextStep);persistDraft(data,nextStep)}}><ArrowLeft/> Back</button>}<button type="submit" disabled={busy||persistenceBlockedRef.current} className="copper-button">{step<3?'Continue':busy?'Creating…':frozen?'Retry exact save':user?'Create Brief Check':'Secure my project'} <ArrowRight/></button></div>
   </form></main>;
 }
@@ -976,7 +998,7 @@ function AuthPage({ mode, user, draftAccess, onAuthenticated }) {
       pending=continuationRequested?readAnonymousDraftContinuation(localStorageRef.current,projectCreationKey):null;
       if(continuationRequested&&!pending)throw new Error("draft_unavailable");
       if(pending&&!sameAnonymousDraftVersion(pending,continuation))throw new Error("draft_conflict");
-      if(pending){if(!accessStillCurrent())throw new Error("draft_access_lost");if(pending.status!=="submitting")pending=markContinuation(pending,"submitting");if(!pending)return;const exactPending=readAnonymousDraftContinuation(localStorageRef.current,pending.projectCreationKey);if(!exactPending)throw new Error("draft_unavailable");if(!sameAnonymousDraftVersion(exactPending,pending))throw new Error("draft_conflict");if(!accessStillCurrent())throw new Error("draft_access_lost");const attributed=pending.entryPoint==="public_estimator"?{"x-grihagrid-entry-point":"public_estimator"}:{};projectRequestDispatched=true;const project=await api('/api/projects',{method:'POST',headers:{...attributed,'idempotency-key':pending.projectCreationKey},body:projectRequestBody(pending.draft)});if(!active.current)return;const cleanup=accessStillCurrent()?clearAnonymousDraftAfterCreation(localStorageRef.current,pending):{ok:false};if(!cleanup.ok)setSessionValue(`grihagrid.draftCleanupWarning.${project.project.id}`,"Project saved, but this browser would not clear the unfinished copy. Discard that browser draft before starting another brief.");clearLegacyPendingProjectState();completePublicEstimatorHandoff();replaceRoute(`/projects/${project.project.id}`)}
+      if(pending){if(!accessStillCurrent())throw new Error("draft_access_lost");if(pending.status!=="submitting")pending=markContinuation(pending,"submitting");if(!pending)return;const exactPending=readAnonymousDraftContinuation(localStorageRef.current,pending.projectCreationKey);if(!exactPending)throw new Error("draft_unavailable");if(!sameAnonymousDraftVersion(exactPending,pending))throw new Error("draft_conflict");if(!accessStillCurrent())throw new Error("draft_access_lost");const attributed=pending.entryPoint==="public_estimator"?{"x-grihagrid-entry-point":"public_estimator"}:{};projectRequestDispatched=true;const response=await apiResponse('/api/projects',{method:'POST',headers:{...attributed,'idempotency-key':pending.projectCreationKey},body:projectRequestBody(pending.draft)});const project=acceptedAnonymousProjectCreationResponse(response.payload,response.status,pending);if(!project)throw new Error("project_response_invalid");if(!active.current)return;const cleanup=accessStillCurrent()?clearAnonymousDraftAfterCreation(localStorageRef.current,pending):{ok:false};if(!cleanup.ok)setSessionValue(`grihagrid.draftCleanupWarning.${project.id}`,"Project saved, but this browser would not clear the unfinished copy. Discard that browser draft before starting another brief.");clearLegacyPendingProjectState();completePublicEstimatorHandoff();replaceRoute(`/projects/${project.id}`)}
       else route('/dashboard');
     }catch(err){
       if(!active.current)return;
@@ -3076,7 +3098,7 @@ export function App() {
   const authRevision=useRef(0);
   const authenticatedSession=useRef(false);
   const authBootstrapComplete=useRef(false);
-  useEffect(()=>{clearLegacyPendingProjectState()},[]);
+  useEffect(()=>{clearLegacyPendingProjectState();purgeInvalidAnonymousDraftOnBoot()},[]);
   useEffect(()=>{const onPop=()=>setPath(window.location.pathname);window.addEventListener('popstate',onPop);return()=>window.removeEventListener('popstate',onPop)},[]);
   useEffect(()=>{
     const applyRemoteLogout=()=>{authRevision.current+=1;authenticatedSession.current=false;clearLocalLogoutState();setUser(null);if(isPrivateAccountPath(window.location.pathname))replaceRoute('/',{logoutConfirmed:true})};
@@ -3149,19 +3171,22 @@ export function App() {
       heading.addEventListener('blur',restoreTabIndex,{once:true});
       heading.focus({preventScroll:true});
     };
-    frame=window.requestAnimationFrame(()=>{
-      focusHeading();
+    const settleRouteScroll=()=>{
       const hash=isPublicReportSharePath(path)?"":window.location.hash.slice(1);
       const target=hash?document.getElementById(safeDecodePathSegment(hash)):null;
       if(target)target.scrollIntoView({block:'start'});
       else window.scrollTo({top:0,behavior:'auto'});
+    };
+    frame=window.requestAnimationFrame(()=>{
+      focusHeading();
+      settleRouteScroll();
     });
     const observer=new MutationObserver(()=>{
       if(focusedHeading?.isConnected)return;
       const active=document.activeElement;
       if(active&&active!==document.body&&active!==document.documentElement)return;
       window.cancelAnimationFrame(frame);
-      frame=window.requestAnimationFrame(focusHeading);
+      frame=window.requestAnimationFrame(()=>{focusHeading();settleRouteScroll()});
     });
     observer.observe(document.body,{childList:true,subtree:true});
     return()=>{

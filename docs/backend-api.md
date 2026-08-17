@@ -435,9 +435,11 @@ account-cap boundary. The header remains optional for backward-compatible
 clients, whose unkeyed successful creates return `201` without replay semantics.
 Both request shapes are exact allowlists: unknown root or nested input fields,
 mistyped categories, non-finite/out-of-range values, and hidden claims such as
-an unverified soil report return `400 invalid_project_input`. Creation requires
+an unverified soil report return `400 invalid_project_input`. Project names are
+NFKC-normalized, whitespace-collapsed, and reject Unicode control and formatting
+characters before persistence. Creation requires
 healthy KV and uses a best-effort 20-attempt-per-account hourly edge throttle.
-KV absence or read/write failure returns fail-closed
+KV absence, read/write failure, or malformed counter state returns fail-closed
 `503 abuse_control_unavailable` with the internal `control_closed` outcome. D1
 independently enforces the exact concurrency-safe ceiling of 50 projects per
 account and returns `429 project_limit_reached`.
@@ -450,8 +452,10 @@ planner through explicit auth continuation; bounded navigation carries the
 expected write UUID/revision but no draft. Immediately before this project request may
 reach the Worker, the client freezes the exact canonical local snapshot and
 keeps the same key across timeouts, `5xx`, auth interruption, and `409` review.
-Only a confirmed `201` or exact `200` replay conditionally consumes the matching
-browser revision. Full draft data never enters navigation history,
+Only a confirmed `201` or exact `200` replay with a validated canonical project
+envelope conditionally consumes the matching browser revision. A `202`, `204`,
+malformed JSON shape, unsafe UUID/input, or mismatched `201` leaves the exact
+draft frozen for retry. Full draft data never enters navigation history,
 `sessionStorage`, a cookie, a query, analytics, or operational logs. See
 `docs/anonymous-brief-resume.md`.
 
