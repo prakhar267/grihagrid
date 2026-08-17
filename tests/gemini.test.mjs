@@ -977,10 +977,17 @@ test("readiness reports AI capability without exposing the configured secret", a
       ...(withBatch ? { batch: async () => [] } : {}),
       prepare(sql) {
         return {
-          all: async () => ({
-            success: true,
-            results: inventoryRows.filter((row) => !omitted.has(`${row.kind}:${row.scope}:${row.name}`)),
-          }),
+          all: async () => {
+            const results = inventoryRows.filter((row) => !omitted.has(`${row.kind}:${row.scope}:${row.name}`));
+            if (sql.includes("SELECT 'control' AS kind") && controlRow !== null) {
+              results.push({
+                kind: "control",
+                scope: "report_handoff",
+                name: controlRow?.enabled === 1 ? "enabled" : controlRow?.enabled === 0 ? "disabled" : "invalid",
+              });
+            }
+            return { success: true, results };
+          },
           first: async () => {
             if (sql.includes("FROM report_handoff_controls")) return controlRow;
             return null;

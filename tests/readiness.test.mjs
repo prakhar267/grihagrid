@@ -84,7 +84,17 @@ function observedDatabase(db, {
         async all() {
           executions.push({ method: "all", sql });
           if (failInventory) throw new Error("synthetic readiness inventory failure");
-          return transformInventory(await statement.all());
+          const includesControl = /SELECT 'control' AS kind/iu.test(sql);
+          if (failControl && includesControl) throw new Error("synthetic report handoff control failure");
+          const result = transformInventory(await statement.all());
+          if (!includesControl || !Array.isArray(result?.results)) return result;
+          const controlIndex = result.results.findIndex((row) => row?.kind === "control");
+          if (controlIndex < 0) return result;
+          const control = transformControl(result.results[controlIndex]);
+          const results = [...result.results];
+          if (control === null) results.splice(controlIndex, 1);
+          else results[controlIndex] = control;
+          return { ...result, results };
         },
         async first() {
           executions.push({ method: "first", sql });
@@ -114,8 +124,10 @@ async function readiness(DB) {
 
 function assertSelectOnly(executions) {
   for (const execution of executions) {
-    assert.match(execution.sql.trim(), /^(?:SELECT|WITH)\b/iu);
-    assert.doesNotMatch(execution.sql, /\b(?:INSERT|UPDATE|DELETE|REPLACE|DROP|ALTER|CREATE|VACUUM|ATTACH|DETACH)\b/iu);
+    for (const sql of Array.isArray(execution.sql) ? execution.sql : [execution.sql]) {
+      assert.match(sql.trim(), /^(?:SELECT|WITH)\b/iu);
+      assert.doesNotMatch(sql, /\b(?:INSERT|UPDATE|DELETE|REPLACE|DROP|ALTER|CREATE|VACUUM|ATTACH|DETACH)\b/iu);
+    }
   }
 }
 
@@ -145,7 +157,7 @@ test("readiness manifests stay pinned to the independently reviewed 299-key cont
   }
 });
 
-test("readiness inventories D1 once, reads only a complete live handoff control, and fails closed", { timeout: 60_000 }, async (context) => {
+test("readiness snapshots metadata and the live handoff control in one read and fails closed", { timeout: 60_000 }, async (context) => {
   const sourceDb = await realD1(context);
 
   const healthy = observedDatabase(sourceDb);
@@ -183,17 +195,27 @@ test("readiness inventories D1 once, reads only a complete live handoff control,
     projectCreationSchema: "current",
     authSchema: "current",
   });
-  assert.deepEqual(healthy.executions.map(({ method }) => method), ["all", "first"]);
+  assert.deepEqual(healthy.executions.map(({ method }) => method), ["all"]);
   assert.match(healthy.executions[0].sql, /FROM sqlite_master/iu);
   assert.match(healthy.executions[0].sql, /JOIN pragma_table_info\(target_tables\.table_name\)/iu);
+  assert.match(healthy.executions[0].sql, /SELECT 'control' AS kind,'report_handoff' AS scope/iu);
+  assert.match(healthy.executions[0].sql, /FROM report_handoff_controls/iu);
+  assert.match(healthy.executions[0].sql, /WHERE control_key='report_handoff'\s+LIMIT 2/iu);
   assert.deepEqual(
     querySources(healthy.executions[0].sql),
-    ["sqlite_master", "target_tables", "pragma_table_info"],
-    "the inventory must read only SQLite metadata and its bounded CTE",
+    ["sqlite_master", "target_tables", "pragma_table_info", "report_handoff_controls"],
+    "the snapshot must read only SQLite metadata, its bounded CTE, and the singleton control",
   );
-  assert.match(healthy.executions[1].sql, /FROM report_handoff_controls/iu);
-  assert.deepEqual(querySources(healthy.executions[1].sql), ["report_handoff_controls"]);
   assertSelectOnly(healthy.executions);
+
+  await sourceDb.prepare("UPDATE report_handoff_controls SET enabled=1 WHERE control_key='report_handoff'").run();
+  const enabledControl = observedDatabase(sourceDb);
+  const enabled = await readiness(enabledControl.db);
+  assert.equal(enabled.response.status, 200, JSON.stringify(enabled.payload));
+  assert.equal(enabled.payload.checks.reportHandoffControl, "enabled");
+  assert.equal(enabled.payload.capabilities.reportHandoff, true);
+  assert.deepEqual(enabledControl.executions.map(({ method }) => method), ["all"]);
+  await sourceDb.prepare("UPDATE report_handoff_controls SET enabled=0 WHERE control_key='report_handoff'").run();
 
   for (const { label, key, check, capability } of [
     {
@@ -236,7 +258,7 @@ test("readiness inventories D1 once, reads only a complete live handoff control,
     assert.equal(degraded.payload.checks.reportShareSchema, "current", `${label} must not hide unrelated schema state`);
     assert.equal(degraded.payload.checks.reportHandoffControl, "disabled", label);
     assert.equal(degraded.payload.capabilities[capability], false, label);
-    assert.deepEqual(partial.executions.map(({ method }) => method), ["all", "first"], label);
+    assert.deepEqual(partial.executions.map(({ method }) => method), ["all"], label);
     assertSelectOnly(partial.executions);
   }
 
@@ -259,29 +281,40 @@ test("readiness inventories D1 once, reads only a complete live handoff control,
   assert.equal(unavailableControl.payload.checks.database, "ok");
   assert.equal(unavailableControl.payload.checks.reportShareSchema, "outdated");
   assert.equal(unavailableControl.payload.checks.reportHandoffControl, "unavailable");
-  assert.deepEqual(controlFailure.executions.map(({ method }) => method), ["all", "first"]);
+  assert.deepEqual(controlFailure.executions.map(({ method }) => method), ["all", "all"]);
   assertSelectOnly(controlFailure.executions);
 
-  for (const [label, row] of [
-    ["missing row", null],
-    ["array row", []],
-    ["missing enabled", {}],
-    ["null enabled", { enabled: null }],
-    ["string enabled", { enabled: "1" }],
-    ["boolean enabled", { enabled: true }],
-    ["negative enabled", { enabled: -1 }],
-    ["out-of-range enabled", { enabled: 2 }],
+  for (const [label, row, database, reportShareSchema, control] of [
+    ["missing row", null, "ok", "outdated", "unavailable"],
+    ["normalized invalid state", { kind: "control", scope: "report_handoff", name: "invalid" }, "ok", "outdated", "unavailable"],
+    ["array row", [], "error", "unknown", "unknown"],
+    ["missing state", { kind: "control", scope: "report_handoff" }, "error", "unknown", "unknown"],
+    ["wrong scope", { kind: "control", scope: "other", name: "enabled" }, "error", "unknown", "unknown"],
+    ["unknown state", { kind: "control", scope: "report_handoff", name: "yes" }, "error", "unknown", "unknown"],
   ]) {
     const malformedControl = observedDatabase(sourceDb, { transformControl: () => row });
     const malformed = await readiness(malformedControl.db);
     assert.equal(malformed.response.status, 503, `${label}: ${JSON.stringify(malformed.payload)}`);
-    assert.equal(malformed.payload.checks.database, "ok", label);
-    assert.equal(malformed.payload.checks.reportShareSchema, "outdated", label);
-    assert.equal(malformed.payload.checks.reportHandoffControl, "unavailable", label);
+    assert.equal(malformed.payload.checks.database, database, label);
+    assert.equal(malformed.payload.checks.reportShareSchema, reportShareSchema, label);
+    assert.equal(malformed.payload.checks.reportHandoffControl, control, label);
     assert.equal(malformed.payload.capabilities.reportHandoff, false, label);
-    assert.deepEqual(malformedControl.executions.map(({ method }) => method), ["all", "first"], label);
+    assert.deepEqual(malformedControl.executions.map(({ method }) => method), ["all"], label);
     assertSelectOnly(malformedControl.executions);
   }
+
+  const duplicateControl = observedDatabase(sourceDb, {
+    transformInventory: (result) => ({
+      ...result,
+      results: [...result.results, result.results.find((row) => row.kind === "control")],
+    }),
+  });
+  const duplicate = await readiness(duplicateControl.db);
+  assert.equal(duplicate.response.status, 503, JSON.stringify(duplicate.payload));
+  assert.equal(duplicate.payload.checks.database, "error");
+  assert.equal(duplicate.payload.checks.reportHandoffControl, "unknown");
+  assert.deepEqual(duplicateControl.executions.map(({ method }) => method), ["all"]);
+  assertSelectOnly(duplicateControl.executions);
 
   const missingBatch = observedDatabase(sourceDb, { includeBatch: false });
   const unavailableAdmission = await readiness(missingBatch.db);
@@ -290,7 +323,7 @@ test("readiness inventories D1 once, reads only a complete live handoff control,
   assert.equal(unavailableAdmission.payload.checks.aiSchema, "current");
   assert.equal(unavailableAdmission.payload.checks.aiAbuseControl, "unavailable");
   assert.equal(unavailableAdmission.payload.checks.authSchema, "current");
-  assert.deepEqual(missingBatch.executions.map(({ method }) => method), ["all", "first"]);
+  assert.deepEqual(missingBatch.executions.map(({ method }) => method), ["all"]);
   assertSelectOnly(missingBatch.executions);
 
   const inventoryFailure = observedDatabase(sourceDb, { failInventory: true });
@@ -300,7 +333,7 @@ test("readiness inventories D1 once, reads only a complete live handoff control,
   assert.equal(unavailableDatabase.payload.checks.schema, "unknown");
   assert.equal(unavailableDatabase.payload.checks.reportShareSchema, "unknown");
   assert.equal(unavailableDatabase.payload.checks.reportHandoffControl, "unknown");
-  assert.deepEqual(inventoryFailure.executions.map(({ method }) => method), ["all"]);
+  assert.deepEqual(inventoryFailure.executions.map(({ method }) => method), ["all", "all"]);
   assertSelectOnly(inventoryFailure.executions);
 
   const malformedInventories = [
@@ -350,4 +383,41 @@ test("readiness inventories D1 once, reads only a complete live handoff control,
   assert.equal(empty.payload.checks.reportHandoffControl, "unavailable");
   assert.deepEqual(emptyInventory.executions.map(({ method }) => method), ["all"]);
   assertSelectOnly(emptyInventory.executions);
+
+  for (const [label, omittedKey] of [
+    ["missing control column", "column:report_handoff_controls:enabled"],
+  ]) {
+    const partialFallback = observedDatabase(sourceDb, {
+      failControl: true,
+      transformInventory: (inventoryResult) => ({
+        ...inventoryResult,
+        results: inventoryResult.results.filter((row) => `${row.kind}:${row.scope}:${row.name}` !== omittedKey),
+      }),
+    });
+    const fallback = await readiness(partialFallback.db);
+    assert.equal(fallback.response.status, 503, `${label}: ${JSON.stringify(fallback.payload)}`);
+    assert.equal(fallback.payload.checks.database, "ok", label);
+    assert.equal(fallback.payload.checks.schema, "outdated", label);
+    assert.equal(fallback.payload.checks.reportShareSchema, "outdated", label);
+    assert.equal(fallback.payload.checks.reportHandoffControl, "unavailable", label);
+    assert.equal(fallback.payload.checks.authSchema, "current", label);
+    assert.deepEqual(partialFallback.executions.map(({ method }) => method), ["all", "all"], label);
+    assert.ok(partialFallback.executions[0].sql.includes("report_handoff_controls"), label);
+    assert.doesNotMatch(partialFallback.executions[1].sql, /SELECT 'control' AS kind/iu, label);
+    assertSelectOnly(partialFallback.executions);
+  }
+
+  await sourceDb.prepare("DROP TABLE report_handoff_controls").run();
+  const absentControlTable = observedDatabase(sourceDb);
+  const absent = await readiness(absentControlTable.db);
+  assert.equal(absent.response.status, 503, JSON.stringify(absent.payload));
+  assert.equal(absent.payload.checks.database, "ok");
+  assert.equal(absent.payload.checks.schema, "outdated");
+  assert.equal(absent.payload.checks.reportShareSchema, "outdated");
+  assert.equal(absent.payload.checks.reportHandoffControl, "unavailable");
+  assert.equal(absent.payload.checks.authSchema, "current");
+  assert.deepEqual(absentControlTable.executions.map(({ method }) => method), ["all", "all"]);
+  assert.match(absentControlTable.executions[0].sql, /FROM report_handoff_controls/iu);
+  assert.doesNotMatch(absentControlTable.executions[1].sql, /FROM report_handoff_controls/iu);
+  assertSelectOnly(absentControlTable.executions);
 });

@@ -34,13 +34,16 @@ The Worker performs one read-only inventory query that returns only:
 - column names for the bounded set of readiness-owned tables through
   `pragma_table_info`.
 
-JavaScript compares that inventory with explicit per-capability manifests. It
-does not trust the D1 migration ledger as proof that a column or guard exists.
-When the complete Professional Handoff manifest is present, the Worker performs
-one additional uncached read of the singleton operations control. The healthy
-path is therefore two D1 executions, down from 39. No application row, schema
-SQL, account identifier, project data, token, or secret enters the inventory or
-response.
+The same read-only SQL statement appends at most two rows from the singleton
+Professional Handoff control lookup: zero means missing, one is normalized from
+an integer to `enabled`, `disabled`, or `invalid`, and two proves duplicate drift
+without transferring an unbounded result. JavaScript compares this atomic
+snapshot with explicit per-capability manifests; it does not trust the D1
+migration ledger as proof that a column or guard exists. The healthy path is
+therefore one D1 execution, down from 39. No unrelated application row, schema
+SQL, account identifier, project data, token, or secret enters the snapshot or
+response. If an old or partial schema cannot execute the control arm, readiness
+retries only the metadata inventory and forces the control unavailable.
 
 The following semantics remain unchanged:
 
@@ -58,9 +61,9 @@ The following semantics remain unchanged:
 
 ## Acceptance and guardrails
 
-- Current schema: exactly one inventory read and at most one control read.
-- Partial schema: granular `outdated` result without a query against a missing
-  application table.
+- Current schema: exactly one atomic metadata-and-control snapshot read.
+- Partial schema: at most one failed snapshot plus one metadata-only fallback,
+  with granular `outdated` state and no optimistic control capability.
 - Inventory failure or structurally invalid rows: database error, no optimistic
   capability.
 - No D1 mutation, cache, application-row scan, response-body expansion, or new
