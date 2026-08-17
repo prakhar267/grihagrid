@@ -5,6 +5,7 @@
 ```text
 Browser / PWA
   ├─ static React application (Cloudflare Worker assets)
+  ├─ one strict, seven-day local anonymous brief (same browser only)
   └─ /api/* requests
           │
           ▼
@@ -37,6 +38,14 @@ External boundaries: Google Gemini, email provider, Razorpay, and architect oper
   or entitlements.
 - R2 holds private site photos and report artifacts. Object keys use opaque project IDs; the public bucket URL stays disabled.
 - The frontend can calculate estimates optimistically, but the server recomputes and persists every paid/reportable result.
+- Before authentication, one versioned and strictly allowlisted brief may live
+  in browser storage for seven days after the last actual edit. It is the only
+  persisted full-payload copy; navigation and session state carry no draft.
+  Resume is explicit, reads do not extend retention, and one same-origin
+  exclusive Web Lock spans the planner through explicit auth continuation before
+  any shared-storage access. Contending tabs remain value-free; unsupported or
+  blocked storage falls back only to the open tab. Exact write identity and
+  revision fence the auth handoff. No anonymous API or D1 record exists.
 - Purchase creation uses idempotency keys. AI generation uses an atomic D1
   admission counter and an expiring per-project lease so concurrent requests
   cannot duplicate provider work. Payment webhooks are verified, replay-safe,
@@ -72,6 +81,12 @@ External boundaries: Google Gemini, email provider, Razorpay, and architect oper
 - Strict CSP, HSTS, `X-Content-Type-Options`, `Referrer-Policy` and frame protections at the edge.
 - Webhook signatures use constant-time comparison and a bounded replay window.
 - Logs exclude request bodies, tokens, addresses, photos and provider payload secrets.
+- Anonymous browser drafts have no dedicated fields for files, filenames,
+  addresses, coordinates, account or project identifiers, credentials, sessions,
+  estimates, reports, AI output, or server responses. The user-entered project
+  name may itself contain identifying text; recovery copy names that boundary,
+  browser-profile exposure, and early browser eviction. Discard targets only the
+  exact named record.
 - Authentication logs also exclude email, IP, account/fence identifiers,
   password shape and every password-derived value; monitoring is aggregate by
   templated route, bounded outcome/status, release and latency.

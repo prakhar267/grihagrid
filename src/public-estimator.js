@@ -44,24 +44,6 @@ const MAX_BASIS_METHOD_LENGTH = 240;
 const MAX_DISCLAIMER_LENGTH = 500;
 const MAX_EXCLUSION_LENGTH = 240;
 const PROJECT_CREATION_KEY_PATTERN = /^[A-Za-z0-9._:~-]{8,128}$/u;
-const PENDING_PROJECT_FIELDS = Object.freeze([
-  "name",
-  "width",
-  "length",
-  "city",
-  "facing",
-  "floors",
-  "bedrooms",
-  "bathrooms",
-  "parking",
-  "roadWidthFt",
-  "plotShape",
-  "accessibility",
-  "futureUse",
-  "budgetLakh",
-  "style",
-  "quality",
-]);
 
 function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -161,70 +143,6 @@ export function readStoredEstimatorScenario(storage) {
   }
 }
 
-export function parsePendingProjectDraft(value) {
-  let parsed = value;
-  if (typeof value === "string") {
-    try {
-      parsed = JSON.parse(value);
-    } catch {
-      return null;
-    }
-  }
-  if (!isRecord(parsed)) return null;
-  const draft = Object.fromEntries(
-    PENDING_PROJECT_FIELDS
-      .filter((field) => Object.hasOwn(parsed, field))
-      .map((field) => [field, parsed[field]]),
-  );
-  if (!validateEstimatorScenario(draft).valid) return null;
-  const allowed = {
-    facing: ["North", "East", "South", "West"],
-    parking: ["None", "1 car", "2 cars"],
-    plotShape: ["regular", "irregular", "corner", "unknown"],
-    accessibility: ["none", "step_free", "wheelchair_ready", "unknown"],
-    futureUse: ["none", "rental", "home_office", "vertical_expansion", "unknown"],
-  };
-  if (Object.hasOwn(draft, "name")
-      && (typeof draft.name !== "string" || !draft.name.trim() || draft.name.trim().length > 100)) return null;
-  if (Object.hasOwn(draft, "style")
-      && (typeof draft.style !== "string" || !draft.style.trim() || draft.style.trim().length > 80)) return null;
-  for (const [field, options] of Object.entries(allowed)) {
-    if (Object.hasOwn(draft, field)
-        && !(field === "parking" && typeof draft[field] === "boolean")
-        && (typeof draft[field] !== "string" || !options.includes(draft[field]))) return null;
-  }
-  if (Object.hasOwn(draft, "bedrooms")
-      && draft.bedrooms !== "5+"
-      && (!Number.isInteger(draft.bedrooms) || draft.bedrooms < 1 || draft.bedrooms > 10)) return null;
-  for (const [field, minimum, maximum, integer] of [
-    ["bathrooms", 1, 12, true],
-    ["roadWidthFt", 6, 200, false],
-    ["budgetLakh", 5, 10_000, false],
-  ]) {
-    if (!Object.hasOwn(draft, field) || draft[field] == null) continue;
-    if (typeof draft[field] !== "number" || !Number.isFinite(draft[field])
-        || draft[field] < minimum || draft[field] > maximum
-        || (integer && !Number.isInteger(draft[field]))) return null;
-  }
-  return draft;
-}
-
-export function selectPendingProjectDraft(storage, navigationState) {
-  const navigated = parsePendingProjectDraft(navigationState?.pendingProject);
-  if (navigated) return navigated;
-  try {
-    return parsePendingProjectDraft(storage?.getItem("grihagrid.pendingProject"));
-  } catch {
-    return null;
-  }
-}
-
-export function selectAuthPendingProjectDraft(storage, navigationState) {
-  return navigationState?.projectContinuation === true
-    ? selectPendingProjectDraft(storage, navigationState)
-    : null;
-}
-
 export function selectEstimatorScenario(storage, navigationState) {
   return parseStoredEstimatorScenario(navigationState?.estimatorScenario)
     || readStoredEstimatorScenario(storage);
@@ -286,20 +204,6 @@ export function publicEstimatorAttributionHeaders(storage, navigationState, proj
     : {};
 }
 
-export function estimatorAuthContinuationState(storage, navigationState, pendingProject, projectCreationKey) {
-  const draft = parsePendingProjectDraft(pendingProject);
-  if (!draft) return {};
-  const creationKey = validProjectCreationKey(projectCreationKey);
-  return {
-    projectContinuation: true,
-    pendingProject: draft,
-    ...(isPublicEstimatorAttribution(storage, navigationState, creationKey)
-      ? { estimatorSource: "public_estimator" }
-      : {}),
-    ...(creationKey ? { projectCreationKey: creationKey } : {}),
-  };
-}
-
 export function consumePublicEstimatorAttribution(storage) {
   try {
     const attributed = storage?.getItem("grihagrid.estimatorSource") === "public_estimator";
@@ -310,6 +214,13 @@ export function consumePublicEstimatorAttribution(storage) {
   } catch {
     return false;
   }
+}
+
+export function consumeEstimatorHandoffPayload(storage, navigationState) {
+  const attributed = consumePublicEstimatorAttribution(storage);
+  const next = isRecord(navigationState) ? { ...navigationState } : {};
+  delete next.estimatorScenario;
+  return { attributed, navigationState: next };
 }
 
 function contractError(message) {

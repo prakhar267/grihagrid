@@ -56,6 +56,13 @@ interleaved within their own real-D1 fixtures.
     exact session transaction clears the fence. Repeat with unknown/deleted
     accounts, malformed credential records, failed KV/D1, password rotation,
     concurrent requests, failed batches, cleanup and old-Worker compatibility.
+14. Enter a partial anonymous brief → Save & exit → reopen `/start` → require a
+    value-free Resume/Discard choice → Resume the exact step and values → finish
+    authentication → create exactly one project in that account with the original
+    retry key.
+    Repeat with expiry, corrupt/blocked/quota storage, back/forward navigation,
+    two-tab edit/discard races, lost project response, successful cleanup, 390 px,
+    keyboard-only operation, and 200% zoom.
 
 ## API cases
 
@@ -132,8 +139,8 @@ interleaved within their own real-D1 fixtures.
   the SQL-time 50-project ceiling. Test an absent/malformed key, first `201`,
   same-key/same-normalized-request `200`, same-key/different-request `409`, lost
   success, unique-index races, and the 49→50 trigger race. Every keyed replay
-  must return one canonical project and increment estimator attribution at most
-  once. Seed exactly 50 active/archived projects, require create 51 to fail
+  must return one canonical project for that account and increment estimator
+  attribution at most once. Seed exactly 50 active/archived projects, require create 51 to fail
   without a partial row, and always retain the geotechnical-verification risk.
 - Unknown `/api/*`: JSON 404. Unknown browser route: SPA fallback.
 - Project Decision Home: `GET /api/projects/:projectId/home` is authenticated,
@@ -408,7 +415,7 @@ interleaved within their own real-D1 fixtures.
 | Loading | Throttle the estimate request on initial load and after a valid edit, then continue before it resolves | The pending state is announced without focus theft; no stale range is labelled current; the five-field valid tuple is carried forward and successful project creation recalculates it on the Worker |
 | Unavailable | Inject timeout, offline, network reset, 5xx, non-JSON success, missing disclaimer, inverted/negative/non-finite output, stale input, and malformed/extra/missing basis fields, then continue with the valid tuple | Inputs remain editable and recoverable; the state is announced; no browser-price fallback, partial render, false confirmation, or estimate transfer occurs; project handoff remains available and creation recalculates the tuple on the Worker |
 | Basis and boundary | Open the methodology disclosure for Essential/Signature/Premium/Luxury and representative cities | Rule version/publication date, internal-benchmark status, absent current-market calibration date, market-change warning, directional confidence, methods, selected factors/rate, band, INR, tax/fee treatment, exclusions, and professional boundary are accurate and keyboard-readable |
-| Storage and navigation privacy | Seed session storage with valid fields plus address, account/project IDs, nested tokens, malformed JSON, incomplete tuples, and wrong scalar types; then make storage reads/writes throw through estimator → start → register. Explicitly abandon to Home, then perform an unrelated login | Estimator recovery restores only five tuple fields. Auth continuation carries only the documented full-draft allowlist, source marker, and opaque retry key in same-tab state/session storage; every arbitrary extra is discarded, no URL/estimate/identity/credential is added, blocked storage still works, and abandonment prevents later silent creation |
+| Storage and navigation privacy | Seed session storage with valid fields plus address, account/project IDs, nested tokens, malformed JSON, incomplete tuples, and wrong scalar types; then make storage reads/writes throw through estimator → start → register. Explicitly abandon to Home, then perform an unrelated login | Estimator recovery restores only five tuple fields. The first anonymous envelope consumes that tuple from history/session; auth navigation then carries only marker, source, creation key, and expected write UUID/revision. Every arbitrary extra is discarded, no URL/credential is added, blocked storage still works, and abandonment prevents later silent creation |
 | Anonymous transport | Use the estimator while logged out and while a valid account session/CSRF cookie exists; inspect request headers and Worker logs | Both requests use `credentials: omit`, send no cookie/CSRF, and log only the templated route/bounded outcome without tuple or private values |
 | Server-tied leading KPI | Create projects after confirmed, loading, unavailable, storage-backed, and navigation-fallback estimator handoffs; replay a lost `201` with the same key; race duplicate/conflicting bodies; repeat with invalid/unauthorized/rejected/direct-start requests, a direct generic event submission, and injected aggregate-write failure | The first-party client sends exact attribution plus matching `Idempotency-Key` only for its continuation. One insert and one aggregate result; exact retries return canonical `200`, conflicts return `409`, and all rejected/direct cases record none. Generic submission is `400 invalid_event`; aggregate failure preserves the project and `201`. The aggregate row contains no tuple, identity, resource ID, or client timestamp |
 | Accessibility | Complete per-field invalid → loading → confirmed → unavailable → retry → recovered flows using keyboard and VoiceOver/NVDA at 390 px, 200% zoom/text spacing, high contrast, and reduced motion; change the tuple during one retry | Width/length errors are individually associated and other errors are announced; labels/status/disclosure are programmatic; retry focus stays stable on pending/failure, moves to status only after success for the unchanged tuple, and is cancelled for a changed tuple; text—not colour—communicates state, targets reflow, and no horizontal overflow occurs |
@@ -429,6 +436,20 @@ interleaved within their own real-D1 fixtures.
 | Security | Cross-origin/CSRF/IDOR/XSS payloads in every customer string | Writes reject invalid origin/CSRF; foreign resource stays 404; output executes no markup |
 | Recovery | Restore a pre-release export into isolated D1 | Schema, counts, ownership, comparison and money invariants reconcile inside RTO |
 | Rollback | Roll back Worker while retaining expanded D1 schema | Known-good code remains compatible; health, estimate, auth, compare reads and webhooks pass |
+
+## Anonymous brief resume manual acceptance matrix
+
+| Area | Test | Required result |
+|---|---|---|
+| Recovery | Edit a non-default value, advance a step, Save & exit, reload and reopen `/start` | A value-free choice appears before hydration; Resume restores the exact step, normalized values, source and UUID key without extending expiry |
+| Discard | Discard from the prompt and active wizard, then reload, go Back/Forward and restore bfcache | No full draft reappears from local, session or navigation state; a stale tab cannot recreate or clear another version |
+| Retention | Read, reload and resume near expiry; edit once; cross the exact seven-day boundary | Passive activity never extends expiry; one valid user edit does; an expired copy is rejected and removed when the app next runs |
+| Storage failure | Deny the storage getter, writes, updates, removal and quota in turn | The open-tab flow remains usable and says it is not saved; an unverifiable discard never claims success; no anonymous server fallback appears |
+| Tab concurrency | Hold the draft Web Lock in tab A; attempt open/edit/discard/auth in tab B; release in both save/discard orders; repeat through `pagehide`/`pageshow` and without Web Locks | Tab B remains value-free and performs zero shared-storage or network mutation until Retry acquires; reacquisition sees the winner; unsupported locks use memory only; no newer write is deleted or stale branch resurrected |
+| Auth boundary | Capture register/login and project requests after a recovered brief | Auth bodies contain credentials only; the project POST alone contains the exact allowlist and original key; no URL, cookie, history, session, event or log contains the draft |
+| Retry | Lose a successful `201`, reload and retry; then force same-key/different-input reuse | Exact replay is `200` for one project row; ambiguous state stays frozen; conflict is `409` and the client never rotates the key |
+| Privacy | Inject extra keys, controls, bidi text, files, filenames, credentials, IDs, estimates and server output | The strict envelope rejects unknown/private fields; project-name text remains disclosed; the prompt reveals no project values and recovery copy accurately names plaintext browser-profile exposure |
+| Accessibility | Use keyboard, screen reader, 390 px, 200% zoom/text spacing, reduced motion and high contrast | Resume/Discard and status/error states have clear names, visible focus and announcements with no overlap or horizontal overflow |
 
 ## Family Alignment manual acceptance matrix
 

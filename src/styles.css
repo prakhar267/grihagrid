@@ -1583,6 +1583,125 @@ blockquote {
   border-bottom: 1px solid var(--rule-strong);
 }
 
+.wizard-header__actions {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+}
+
+.quiet-action--danger {
+  color: #8f2f24;
+}
+
+.draft-resume-sheet {
+  width: min(760px, 100%);
+  min-height: min(540px, calc(100svh - 130px));
+  margin: 1.5rem auto 0;
+  padding: clamp(2rem, 4.5vw, 3.75rem);
+  display: flex;
+  align-items: flex-start;
+  flex-direction: column;
+  justify-content: center;
+  border: 1px solid var(--rule-strong);
+  background: rgba(248, 245, 238, 0.72);
+}
+
+.draft-resume-sheet__mark {
+  width: 44px;
+  height: 44px;
+  margin: 1.25rem 0 0.8rem;
+  color: var(--copper);
+}
+
+.draft-resume-sheet h1 {
+  max-width: 620px;
+  margin: 0;
+  font-size: clamp(3.2rem, 5vw, 4.7rem);
+  letter-spacing: -0.055em;
+  line-height: 0.92;
+}
+
+.draft-resume-sheet > p {
+  max-width: 600px;
+  margin: 1rem 0 0;
+  color: var(--muted);
+  line-height: 1.75;
+}
+
+.draft-resume-sheet > p strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.draft-resume-boundary,
+.anonymous-draft-frozen,
+.auth-continuation-ready,
+.auth-continuation-missing {
+  width: 100%;
+  margin-top: 1.35rem;
+  padding: 1rem 1.1rem;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.8rem;
+  border-left: 3px solid var(--copper);
+  background: rgba(167, 83, 47, 0.07);
+  color: var(--ink-soft);
+}
+
+.draft-resume-boundary svg,
+.anonymous-draft-frozen svg,
+.auth-continuation-ready svg,
+.auth-continuation-missing > svg {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  color: var(--copper);
+}
+
+.draft-resume-boundary p,
+.anonymous-draft-frozen p,
+.auth-continuation-ready p,
+.auth-continuation-missing > p {
+  margin: 0;
+  line-height: 1.65;
+}
+
+.draft-resume-actions {
+  width: 100%;
+  margin-top: 1.35rem;
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+}
+
+.anonymous-draft-status {
+  margin: 0 0 2.4rem;
+  padding: 0.85rem 0;
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  border-block: 1px solid var(--rule);
+  color: var(--muted);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.anonymous-draft-status svg {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  color: var(--copper);
+}
+
+.anonymous-draft-status--conflict,
+.anonymous-draft-status--expired {
+  color: #8f2f24;
+}
+
+.anonymous-draft-frozen {
+  margin: 0 0 2rem;
+}
+
 .wizard-progress {
   width: min(760px, 100%);
   margin: 2.4rem auto 0;
@@ -1987,6 +2106,25 @@ blockquote {
 .auth-form form > .copper-button {
   width: 100%;
   margin-top: 0.6rem;
+}
+
+.auth-continuation-ready {
+  margin: 0 0 1rem;
+}
+
+.auth-continuation-missing {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.auth-continuation-missing .form-error,
+.auth-continuation-missing .copper-button {
+  grid-column: 1 / -1;
+}
+
+.auth-continuation-missing .copper-button {
+  width: 100%;
+  margin-top: 0.5rem;
 }
 
 .auth-switch {
@@ -4629,6 +4767,34 @@ blockquote {
 
   .wizard-header {
     height: 72px;
+  }
+
+  .wizard-header__actions {
+    gap: 0.75rem;
+  }
+
+  .wizard-header__actions .quiet-action {
+    font-size: 0.72rem;
+  }
+
+  .draft-resume-sheet {
+    min-height: 0;
+    margin-top: 1.3rem;
+    padding: 2rem 1.2rem;
+  }
+
+  .draft-resume-sheet h1 {
+    font-size: 3rem;
+  }
+
+  .draft-resume-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .draft-resume-actions .copper-button,
+  .draft-resume-actions .outline-button {
+    width: 100%;
   }
 
   .wizard-progress {

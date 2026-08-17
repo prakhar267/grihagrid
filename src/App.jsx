@@ -14,18 +14,35 @@ import {
 } from "./logout.js";
 import { reportFeedbackConcernState, resolveArchivedReportFeedback } from "./report-feedback-state.js";
 import {
+  ANONYMOUS_DRAFT_STORAGE_KEY,
+  ANONYMOUS_DRAFT_STYLES,
+  anonymousDraftExpiryLabel,
+  canonicalAnonymousProjectDraft,
+  clearAnonymousDraft,
+  clearAnonymousDraftAfterCreation,
+  clearLegacyPendingProjectState,
+  holdAnonymousDraftLock,
+  prepareAnonymousDraftSubmission,
+  readAnonymousDraft,
+  readAnonymousDraftContinuation,
+  readRecoverableAnonymousDraft,
+  safeLocalStorage,
+  sameAnonymousDraftVersion,
+  saveAnonymousDraft,
+  updateAnonymousDraftStatus,
+} from "./anonymous-draft.js";
+import {
   ESTIMATOR_CITIES,
   ESTIMATOR_FLOORS,
   ESTIMATOR_QUALITIES,
+  consumeEstimatorHandoffPayload,
   consumePublicEstimatorAttribution,
-  estimatorAuthContinuationState,
   estimatorRequestKey,
   isPublicEstimatorAttribution,
   normalizePublicEstimateEnvelope,
   parseStoredEstimatorScenario,
   publicEstimatorAttributionHeaders,
   safeSessionStorage,
-  selectAuthPendingProjectDraft,
   selectAuthProjectCreationKey,
   selectEstimatorScenario,
   storeEstimatorHandoff,
@@ -111,9 +128,64 @@ function completePublicEstimatorHandoff() {
   removeSessionValue("grihagrid.projectCreationKey");
 }
 
+function claimAnonymousDraftPayloadSource(record) {
+  if(!record)return;
+  const consumed=consumeEstimatorHandoffPayload(safeSessionStorage(),window.history.state);
+  removeSessionValue("grihagrid.projectCreationKey");
+  if(JSON.stringify(consumed.navigationState)===JSON.stringify(window.history.state))return;
+  window.history.replaceState(consumed.navigationState,"",window.location.href);
+}
+
+function clearDraftNavigationState() {
+  const current=window.history.state;
+  if(!current||typeof current!=="object"||Array.isArray(current))return;
+  const next={...current};
+  for(const field of ["pendingProject","projectContinuation","projectCreationKey","estimatorScenario","estimatorSource","anonymousDraftKey","anonymousDraftWriteId","anonymousDraftRevision"]){delete next[field]}
+  window.history.replaceState(next,"",window.location.href);
+}
+
 function abandonPendingProjectHandoff() {
-  removeSessionValue("grihagrid.pendingProject");
+  clearLegacyPendingProjectState();
   completePublicEstimatorHandoff();
+}
+
+function useAnonymousDraftStorageAccess(enabled) {
+  const storageRef=useRef(null);
+  const releaseRef=useRef(()=>{});
+  const pageReleasedRef=useRef(false);
+  const epochRef=useRef(0);
+  const usableRef=useRef(false);
+  const [attempt,setAttempt]=useState(0);
+  const [phase,setPhase]=useState(enabled?"checking":"inactive");
+  useEffect(()=>{
+    let active=true;
+    storageRef.current=null;usableRef.current=false;epochRef.current+=1;
+    if(!enabled){setPhase("inactive");releaseRef.current=()=>{};return()=>{active=false}}
+    setPhase("checking");
+    let lockManager=null;
+    try{lockManager=window.navigator?.locks||null}catch{/* Memory-only fallback below. */}
+    const release=holdAnonymousDraftLock(lockManager,status=>{
+      if(!active)return;
+      if(status==="acquired"){
+        const storage=safeLocalStorage();storageRef.current=storage;usableRef.current=true;epochRef.current+=1;setPhase(storage?"ready":"memory");return;
+      }
+      storageRef.current=null;usableRef.current=status!=="contended";epochRef.current+=1;setPhase(status==="contended"?"contended":"memory");
+    });
+    releaseRef.current=release;
+    return()=>{active=false;if(releaseRef.current===release)releaseRef.current=()=>{};release()};
+  },[enabled,attempt]);
+  useEffect(()=>{
+    const onPageHide=()=>{if(!enabled)return;pageReleasedRef.current=true;storageRef.current=null;usableRef.current=false;epochRef.current+=1;releaseRef.current();setPhase("checking")};
+    const onPageShow=()=>{if(!enabled||!pageReleasedRef.current)return;pageReleasedRef.current=false;setAttempt(value=>value+1)};
+    window.addEventListener("pagehide",onPageHide);window.addEventListener("pageshow",onPageShow);
+    return()=>{window.removeEventListener("pagehide",onPageHide);window.removeEventListener("pageshow",onPageShow)};
+  },[enabled]);
+  return {phase,storageRef,epochRef,usableRef,retry:()=>setAttempt(value=>value+1)};
+}
+
+function AnonymousDraftAccessGate({ phase, onRetry }) {
+  const contended=phase==="contended";
+  return <main className="wizard-page wizard-page--recovery" aria-labelledby="draft-access-title"><div className="wizard-header"><Brand onHome={()=>route("/")}/><button className="quiet-action" onClick={()=>route("/")}>Not now</button></div><section className="draft-resume-sheet"><span className="kicker">Saved on this browser</span><LockKey className="draft-resume-sheet__mark" aria-hidden="true"/><h1 id="draft-access-title">{contended?"This brief is open in another tab.":"Checking this browser."}</h1><p>{contended?"Close the other planner or account tab, then retry here. No saved values are shown or changed while that tab has the brief.":"GrihaGrid is securing exclusive access before it reads or changes an unfinished brief."}</p>{contended&&<div className="draft-resume-actions"><button className="copper-button" onClick={onRetry}>Retry access <ArrowClockwise/></button><button className="outline-button" onClick={()=>route("/")}>Not now</button></div>}</section></main>;
 }
 
 function setSessionValue(key, value) {
@@ -124,17 +196,15 @@ function removeSessionValue(key) {
   try { safeSessionStorage()?.removeItem(key); } catch { /* Browser storage cleanup is ancillary. */ }
 }
 
-function pendingProjectValue() {
-  return selectAuthPendingProjectDraft(safeSessionStorage(), window.history.state);
-}
-
-function pendingAuthContinuationState() {
-  return estimatorAuthContinuationState(
-    safeSessionStorage(),
-    window.history.state,
-    pendingProjectValue(),
-    window.history.state?.projectCreationKey,
-  );
+function anonymousDraftContinuationState(envelope) {
+  if (!envelope) return {};
+  return {
+    projectContinuation: true,
+    projectCreationKey: envelope.projectCreationKey,
+    anonymousDraftWriteId: envelope.writeId,
+    anonymousDraftRevision: envelope.revision,
+    ...(envelope.entryPoint === "public_estimator" ? { estimatorSource: "public_estimator" } : {}),
+  };
 }
 
 function useProjectCreationKey(recoverStored = false) {
@@ -142,8 +212,14 @@ function useProjectCreationKey(recoverStored = false) {
     || (recoverStored ? selectAuthProjectCreationKey(safeSessionStorage(), window.history.state) : null)
     || crypto.randomUUID());
   useEffect(() => {
-    if (window.history.state?.projectCreationKey === key) return;
-    window.history.replaceState({ ...(window.history.state || {}), projectCreationKey: key }, "", window.location.href);
+    const current=window.history.state;
+    const continuation=current?.projectContinuation===true;
+    const estimatorSource=current?.estimatorSource==="public_estimator";
+    const writeId=validProjectCreationKey(current?.anonymousDraftWriteId);
+    const revision=Number.isSafeInteger(current?.anonymousDraftRevision)&&current.anonymousDraftRevision>0?current.anonymousDraftRevision:null;
+    const safeState={projectCreationKey:key,...(continuation?{projectContinuation:true}:{}),...(continuation&&writeId&&revision?{anonymousDraftWriteId:writeId,anonymousDraftRevision:revision}:{}),...(estimatorSource?{estimatorSource:"public_estimator"}:{})};
+    if(JSON.stringify(current)===JSON.stringify(safeState))return;
+    window.history.replaceState(safeState, "", window.location.href);
   }, [key]);
   return key;
 }
@@ -617,42 +693,219 @@ function projectRequestBody(value={}) {
   return body;
 }
 
-function StartPage({ user }) {
+function newProjectDraft(scenario={}) {
+  return {name:"My family home",width:30,length:50,city:"Pune",facing:"East",floors:"G+1",bedrooms:3,bathrooms:null,parking:"1 car",roadWidthFt:null,plotShape:"unknown",accessibility:"unknown",futureUse:"unknown",budgetLakh:null,style:"Warm modern",quality:"Signature",...scenario};
+}
+
+function StartPage({ user, draftAccess, onSessionEnded }) {
   const [step,setStep]=useState(0);
   const [busy,setBusy]=useState(false);
   const [error,setError]=useState("");
   const [files,setFiles]=useState([]);
   const privateUploads=usePrivateUploadCapability();
-  const projectCreationKey=useProjectCreationKey();
+  const localStorageRef=draftAccess.storageRef;
+  const [recovery,setRecovery]=useState(undefined);
+  const recoveryRef=useRef(recovery);
+  const activeDraftRef=useRef(null);
+  const persistenceBlockedRef=useRef(false);
+  const dirtyRef=useRef(false);
+  const resumeFocusPendingRef=useRef(false);
+  const [activeDraft,setActiveDraft]=useState(null);
+  const [saveState,setSaveState]=useState("idle");
+  const [projectCreationKey,setProjectCreationKey]=useState(()=>validProjectCreationKey(window.history.state?.projectCreationKey)||crypto.randomUUID());
   const active=useRef(true);
   useEffect(()=>{active.current=true;return()=>{active.current=false}},[]);
-  const [data,setData]=useState(()=>{const scenario=selectEstimatorScenario(safeSessionStorage(),window.history.state)||{};return {name:"My family home",width:30,length:50,city:"Pune",facing:"East",floors:"G+1",bedrooms:3,bathrooms:null,parking:"1 car",roadWidthFt:null,plotShape:"unknown",accessibility:"unknown",futureUse:"unknown",budgetLakh:null,style:"Warm modern",quality:"Signature",...scenario}});
-  const update=(key,value)=>setData(prev=>({...prev,[key]:value}));
-  const abandon=()=>{abandonPendingProjectHandoff();route('/')};
+  const [data,setData]=useState(()=>newProjectDraft(selectEstimatorScenario(safeSessionStorage(),window.history.state)||{}));
+  useEffect(()=>{recoveryRef.current=recovery},[recovery]);
+  useEffect(()=>{
+    if(recovery||!resumeFocusPendingRef.current)return undefined;
+    resumeFocusPendingRef.current=false;
+    let restoreTabIndex=()=>{};
+    const frame=window.requestAnimationFrame(()=>{
+      const heading=document.querySelector(".wizard-sheet h1");
+      if(!heading)return;
+      const previous=heading.getAttribute("tabindex");
+      heading.setAttribute("tabindex","-1");
+      restoreTabIndex=()=>{if(previous===null)heading.removeAttribute("tabindex");else heading.setAttribute("tabindex",previous)};
+      heading.addEventListener("blur",restoreTabIndex,{once:true});
+      heading.focus({preventScroll:true});
+    });
+    return()=>{window.cancelAnimationFrame(frame);restoreTabIndex()};
+  },[recovery]);
+  useEffect(()=>{
+    const scenario=parseStoredEstimatorScenario(window.history.state?.estimatorScenario);
+    const estimatorSource=window.history.state?.estimatorSource==="public_estimator"?"public_estimator":undefined;
+    window.history.replaceState({projectCreationKey,...(scenario?{estimatorScenario:scenario}:{}),...(estimatorSource?{estimatorSource}:{} )},"",window.location.href);
+  },[projectCreationKey]);
+  useEffect(()=>{
+    if(draftAccess.phase!=="ready"&&draftAccess.phase!=="memory"){setRecovery(undefined);return}
+    const current=readRecoverableAnonymousDraft(localStorageRef.current);
+    const inUse=activeDraftRef.current;
+    if(draftAccess.phase==="memory"&&!inUse)setSaveState("unavailable");
+    if(inUse&&!sameAnonymousDraftVersion(current,inUse)){
+      persistenceBlockedRef.current=true;
+      setSaveState(current?"conflict":"expired");
+      setError(current?"This browser draft changed in another tab. Reload before continuing so an older copy cannot overwrite it.":"The seven-day browser copy expired or was cleared elsewhere. This open page remains visible, but it will not recreate that saved copy.");
+      return;
+    }
+    if(inUse){setRecovery(null);return}
+    setRecovery(current);if(!current)setError("");
+  },[draftAccess.phase]);
+  useEffect(()=>{
+    if(draftAccess.phase!=="ready"&&draftAccess.phase!=="memory")return undefined;
+    const reconcile=()=>{
+      if(!draftAccess.usableRef.current)return;
+      const current=readRecoverableAnonymousDraft(localStorageRef.current);
+      const inUse=activeDraftRef.current;
+      if(inUse&&!sameAnonymousDraftVersion(current,inUse)){
+        persistenceBlockedRef.current=true;
+        setSaveState(current?"conflict":"expired");
+        setError(current?"This browser draft changed in another tab. Reload before continuing so an older copy cannot overwrite it.":"The seven-day browser copy expired or was cleared elsewhere. This open page remains visible, but it will not recreate that saved copy.");
+        return;
+      }
+      const offered=recoveryRef.current;
+      if(offered&&!sameAnonymousDraftVersion(current,offered)){
+        setRecovery(current);
+        if(!current)setError("");
+      }
+    };
+    const onStorage=event=>{if(event.key===ANONYMOUS_DRAFT_STORAGE_KEY)reconcile()};
+    const onVisibility=()=>{if(document.visibilityState==="visible")reconcile()};
+    window.addEventListener("storage",onStorage);window.addEventListener("focus",reconcile);window.addEventListener("pageshow",reconcile);document.addEventListener("visibilitychange",onVisibility);
+    return()=>{window.removeEventListener("storage",onStorage);window.removeEventListener("focus",reconcile);window.removeEventListener("pageshow",reconcile);document.removeEventListener("visibilitychange",onVisibility)};
+  },[draftAccess.phase]);
+  function entryPointFor(key,expected){
+    if(expected?.entryPoint==="public_estimator")return "public_estimator";
+    return isPublicEstimatorAttribution(safeSessionStorage(),window.history.state,key)?"public_estimator":null;
+  }
+  function acceptSavedRecord(result){
+    if(!result.record)return null;
+    claimAnonymousDraftPayloadSource(result.record);
+    activeDraftRef.current=result.record;setActiveDraft(result.record);
+    if(result.reason==="unavailable")setSaveState("unavailable");
+    else if(result.ok)setSaveState("saved");
+    return result.record;
+  }
+  function persistDraft(nextData,nextStep,status="editing",{touch=true,force=false}={}){
+    if(persistenceBlockedRef.current)return null;
+    const expected=activeDraftRef.current;
+    if(!force&&user&& !expected)return null;
+    const result=saveAnonymousDraft(localStorageRef.current,{draft:nextData,step:nextStep,projectCreationKey,entryPoint:entryPointFor(projectCreationKey,expected),status},expected,Date.now(),{touch});
+    if(result.reason==="conflict"){
+      persistenceBlockedRef.current=true;setSaveState("conflict");setError("This browser draft changed in another tab. Reload before continuing so an older copy cannot overwrite it.");return null;
+    }
+    if(result.reason==="expired"){
+      persistenceBlockedRef.current=true;setSaveState("expired");setError("This browser copy reached its seven-day limit. Nothing was saved or submitted; reload to begin from a clean brief.");return null;
+    }
+    if(result.reason==="invalid"){
+      setSaveState("invalid");return null;
+    }
+    return acceptSavedRecord(result);
+  }
+  function markDraftStatus(record,status){
+    if(!record)return null;
+    const result=updateAnonymousDraftStatus(localStorageRef.current,record,status);
+    if(result.reason==="conflict"){
+      persistenceBlockedRef.current=true;setSaveState("conflict");setError("This browser draft changed in another tab. Reload before retrying.");return null;
+    }
+    if(result.reason==="expired"){
+      persistenceBlockedRef.current=true;setSaveState("expired");setError("This browser copy reached its seven-day limit. Nothing was submitted; reload to begin from a clean brief.");return null;
+    }
+    return acceptSavedRecord(result);
+  }
+  function update(key,value){
+    if(activeDraftRef.current&&activeDraftRef.current.status!=="editing")return;
+    dirtyRef.current=true;const next={...data,[key]:value};setData(next);setError("");persistDraft(next,step);
+  }
+  function resumeDraft(){
+    const current=readRecoverableAnonymousDraft(localStorageRef.current);
+    if(!sameAnonymousDraftVersion(current,recovery)){
+      setRecovery(current);setError(current?"The saved brief changed in another tab. Review the current recovery choice.":"That saved brief is no longer available on this browser.");return;
+    }
+    const persisted=readAnonymousDraft(localStorageRef.current,Date.now(),false);
+    resumeFocusPendingRef.current=true;setData(current.draft);setStep(current.step);setProjectCreationKey(current.projectCreationKey);activeDraftRef.current=current;setActiveDraft(current);persistenceBlockedRef.current=false;setSaveState(sameAnonymousDraftVersion(persisted,current)?"saved":"unavailable");setRecovery(null);setError("");
+  }
+  function discardRecovery(){
+    const result=clearAnonymousDraft(localStorageRef.current,recovery);
+    if(!result.ok){setRecovery(readRecoverableAnonymousDraft(localStorageRef.current));setError(result.reason==="conflict"?"The saved brief changed in another tab. Review the current copy before discarding it.":"This browser would not clear the saved brief. Check browser storage permissions and try again.");return}
+    resumeFocusPendingRef.current=true;abandonPendingProjectHandoff();clearDraftNavigationState();activeDraftRef.current=null;dirtyRef.current=false;setActiveDraft(null);setRecovery(null);setData(newProjectDraft());setStep(0);setProjectCreationKey(crypto.randomUUID());setSaveState("idle");setError("");
+  }
+  function discardCurrent(){
+    const record=activeDraftRef.current;
+    if(record){const result=clearAnonymousDraft(localStorageRef.current,record);if(!result.ok){setError(result.reason==="conflict"?"This draft changed in another tab and was not discarded. Reload to review the current copy.":"This browser would not clear the draft. Check browser storage permissions and try again.");return}}
+    abandonPendingProjectHandoff();clearDraftNavigationState();activeDraftRef.current=null;dirtyRef.current=false;setActiveDraft(null);route("/");
+  }
+  function saveAndExit(){
+    if(busy)return;
+    let record=activeDraftRef.current;
+    if(!user&&!record&&!dirtyRef.current){clearLegacyPendingProjectState();route("/");return}
+    if(!user&&!record)record=persistDraft(data,step,"editing",{force:true});
+    if(!user&&!record){setError("This brief cannot be saved on this browser yet. Correct the highlighted values or keep this tab open.");return}
+    clearLegacyPendingProjectState();route("/");
+  }
+  function advanceStep(){
+    const canonical=canonicalAnonymousProjectDraft(data);
+    if(!canonical){setSaveState("invalid");setError("Finish the current values before continuing. An older saved value will not be submitted.");return}
+    const nextStep=step+1;
+    if((!user||activeDraftRef.current)&&!persistDraft(canonical,nextStep))return;
+    dirtyRef.current=true;setData(canonical);setStep(nextStep);setError("");
+  }
   async function createProject(){
-    const request=projectRequestBody(data);
-    const attributionHeaders={...publicEstimatorAttributionHeaders(safeSessionStorage(),window.history.state,projectCreationKey),"idempotency-key":projectCreationKey};
+    if(persistenceBlockedRef.current)return;
+    const prepared=prepareAnonymousDraftSubmission(data,activeDraftRef.current);
+    if(!prepared){setSaveState("invalid");setError("The visible brief is not the exact valid browser copy. Review the current values before saving; no older value was submitted.");return}
+    let submission=prepared.record;
+    if(!user&&!submission)submission=persistDraft(data,3,"awaiting_auth",{force:true});
+    else if(submission&&submission.status==="editing")submission=markDraftStatus(submission,"awaiting_auth");
+    if(!user){
+      if(!submission){setError("This browser could not preserve an exact copy for account creation. Keep this tab open and try again.");return}
+      clearLegacyPendingProjectState();replaceRoute("/register",anonymousDraftContinuationState(submission));return;
+    }
+    if(submission&&submission.status!=="submitting")submission=markDraftStatus(submission,"submitting");
+    if(activeDraftRef.current&&!submission)return;
+    if(submission&&!sameAnonymousDraftVersion(readAnonymousDraftContinuation(localStorageRef.current,submission.projectCreationKey),submission)){
+      persistenceBlockedRef.current=true;setSaveState("expired");setError("This browser copy expired or changed before submission. Nothing was sent. Reload and review the current recovery state.");return;
+    }
+    const request=projectRequestBody(submission?.draft||prepared.draft);
+    const attributed=submission?.entryPoint==="public_estimator"?{"x-grihagrid-entry-point":"public_estimator"}:publicEstimatorAttributionHeaders(safeSessionStorage(),window.history.state,projectCreationKey);
+    const attributionHeaders={...attributed,"idempotency-key":submission?.projectCreationKey||projectCreationKey};
+    const accessEpoch=draftAccess.epochRef.current;
+    const accessStillCurrent=()=>draftAccess.usableRef.current&&draftAccess.epochRef.current===accessEpoch;
+    let projectRequestDispatched=false;
     setBusy(true);setError("");
     try {
+      if(submission&&!accessStillCurrent())throw new Error("draft_access_lost");
+      projectRequestDispatched=true;
       const result=await api("/api/projects",{method:"POST",headers:attributionHeaders,body:request});
       if(!active.current)return;
-      removeSessionValue("grihagrid.pendingProject");completePublicEstimatorHandoff();
+      if(submission){const cleanup=accessStillCurrent()?clearAnonymousDraftAfterCreation(localStorageRef.current,submission):{ok:false};if(!cleanup.ok)setSessionValue(`grihagrid.draftCleanupWarning.${result.project.id}`,"Project saved, but this browser would not clear the unfinished copy. Discard that browser draft before starting another brief.")}
+      clearLegacyPendingProjectState();completePublicEstimatorHandoff();
       const failed=[];const uploadQueue=privateUploads.enabled?files:[];
       for(const file of uploadQueue){const form=new FormData();form.append('file',file);form.append('kind','reference');try{await api(`/api/projects/${result.project.id}/files`,{method:'POST',body:form})}catch{failed.push(file.name)}}
       if(!active.current)return;
       if(failed.length)setSessionValue(`grihagrid.uploadWarning.${result.project.id}`,`${failed.length} file${failed.length===1?'':'s'} could not be saved. Add them again from the report.`);
       replaceRoute(`/projects/${result.project.id}`);
     }
-    catch(err){if(!active.current)return;if(err instanceof ApiError&&err.status===401){setSessionValue("grihagrid.projectCreationKey",projectCreationKey);setSessionValue("grihagrid.pendingProject",JSON.stringify(request));replaceRoute("/register",{projectContinuation:true,pendingProject:request,estimatorSource:isPublicEstimatorAttribution(safeSessionStorage(),window.history.state,projectCreationKey)?"public_estimator":undefined,projectCreationKey})}else setError(err.message)}
+    catch(err){if(!active.current)return;if(submission&&!accessStillCurrent())setError(projectRequestDispatched?"This tab lost exclusive access while the save was in flight. It may already have reached GrihaGrid; no additional project request was sent after access was lost. Wait for access to return, then review the current copy.":"This tab lost exclusive access before the project request was sent. Wait for access to return, then review the current copy before retrying.");else if(err instanceof ApiError&&err.status===401){let pending=submission||persistDraft(data,3,"awaiting_auth",{force:true});if(pending?.status!=="awaiting_auth")pending=markDraftStatus(pending,"awaiting_auth");if(pending){onSessionEnded();replaceRoute("/login",anonymousDraftContinuationState(pending))}else setError("Your session ended and this browser could not preserve the exact brief. Keep this tab open and try again.")}else{const retained=submission?markDraftStatus(activeDraftRef.current||submission,"retry_required"):null;if(submission&&!retained)return;setError(submission?"The save was not confirmed. Your exact brief and retry key are frozen so Retry recovers one project in this account.":err.message)}}
     finally{if(active.current)setBusy(false)}
   }
-  return <main className="wizard-page"><div className="wizard-header"><Brand disabled={busy} onHome={abandon}/><button className="quiet-action" disabled={busy} onClick={abandon}>Exit</button></div><div className="wizard-progress" aria-label="Project brief progress">{wizardSteps.map((label,i)=><div className={i<=step?"active":""} aria-current={i===step?'step':undefined} key={label}><span>{i<step?<Check/>:i+1}</span><small>{label}</small></div>)}</div><form className="wizard-sheet" onSubmit={event=>{event.preventDefault();if(step<3)setStep(step+1);else createProject()}}>
+  const recoveryPersisted=Boolean(recovery&&draftAccess.phase==="ready"&&sameAnonymousDraftVersion(readAnonymousDraft(localStorageRef.current,Date.now(),false),recovery));
+  const recoveryAvailabilityCopy=recoveryPersisted?<>An unfinished brief is available until <strong>{anonymousDraftExpiryLabel(recovery)}</strong>. Resume it explicitly, or discard it and begin with clean paper.</>:<>The current exact copy is available only while this tab stays open. Reloading may restore an older confirmed browser version or nothing. Resume it explicitly, or discard it.</>;
+  const recoveryBoundaryCopy=recoveryPersisted?"Stored as plaintext in this browser profile, the copy may be visible to people or software using it and may be cleared early by your device.":"Browser saving is unavailable, so the current exact copy is not persisted.";
+  if(draftAccess.phase!=="ready"&&draftAccess.phase!=="memory")return <AnonymousDraftAccessGate phase={draftAccess.phase} onRetry={draftAccess.retry}/>;
+  if(recovery===undefined)return <AnonymousDraftAccessGate phase="checking" onRetry={draftAccess.retry}/>;
+  if(recovery)return <main className="wizard-page wizard-page--recovery" aria-labelledby="draft-resume-title" aria-describedby="draft-resume-copy"><div className="wizard-header"><Brand onHome={()=>route("/")}/><button className="quiet-action" onClick={()=>route("/")}>Not now</button></div><section className="draft-resume-sheet"><span className="kicker">{recoveryPersisted?"Saved on this browser":"Kept in this open tab"}</span><FloppyDisk className="draft-resume-sheet__mark" aria-hidden="true"/><h1 id="draft-resume-title">Continue where you left off.</h1><p id="draft-resume-copy">{recoveryAvailabilityCopy}</p><div className="draft-resume-boundary"><ShieldCheck/><p>{recoveryBoundaryCopy} The copy contains the structured brief, save/write metadata and one opaque project retry key. Dedicated account, password, estimate and upload fields are excluded. Project-name text is included—use a neutral label.</p></div>{error&&<p className="form-error" role="alert">{error}</p>}<div className="draft-resume-actions"><button className="copper-button" onClick={resumeDraft}>Resume brief <ArrowRight/></button><button className="outline-button" onClick={discardRecovery}><Trash/> Discard and start over</button></div></section></main>;
+  const frozen=Boolean(activeDraft&&activeDraft.status!=="editing");
+  const draftStatusCopy={saved:`Saved on this browser until ${anonymousDraftExpiryLabel(activeDraft)}`,unavailable:"The current exact copy is kept only in this open tab; reload may restore an older confirmed version or nothing.",invalid:"Finish the current value before continuing; an older saved value will not be submitted.",conflict:"Saving paused because another tab changed this draft.",expired:"The browser copy expired or was cleared elsewhere; this page will not recreate it.",idle:user?"Signed-in project; browser draft saving is not needed.":"Before you begin: this brief will be plaintext in this browser profile for up to seven days, may be seen by people or software using it, and may be cleared sooner. Project-name text is included—use a neutral label."}[saveState];
+  return <main className="wizard-page"><div className="wizard-header"><Brand disabled={busy} onHome={saveAndExit}/><div className="wizard-header__actions">{activeDraft&&<button className="quiet-action quiet-action--danger" disabled={busy} onClick={discardCurrent}>Discard draft</button>}<button className="quiet-action" disabled={busy} onClick={saveAndExit}>{activeDraft||(!user&&dirtyRef.current)?"Save & exit":"Exit"}</button></div></div><div className="wizard-progress" aria-label="Project brief progress">{wizardSteps.map((label,i)=><div className={i<=step?"active":""} aria-current={i===step?'step':undefined} key={label}><span>{i<step?<Check/>:i+1}</span><small>{label}</small></div>)}</div><form className="wizard-sheet" onSubmit={event=>{event.preventDefault();if(step<3)advanceStep();else createProject()}}>
+    <div className={`anonymous-draft-status anonymous-draft-status--${saveState}`} role="status" aria-live="polite"><FloppyDisk aria-hidden="true"/><span>{draftStatusCopy}</span></div>
+    {frozen&&<div className="anonymous-draft-frozen" role="status"><LockKey/><p><strong>Exact retry protected.</strong> This brief cannot be edited because a save may already have reached GrihaGrid. Retry with the same details and key to recover one canonical project in this account.</p></div>}
     {step===0&&<><span className="kicker">Step one · The plot</span><h1>Begin with the measured ground.</h1><p>Use your sale deed or current survey where possible. Leave uncertain facts clearly marked—not guessed.</p><div className="form-grid"><label>Project name<input required value={data.name} onChange={e=>update('name',e.target.value)} maxLength="100"/></label><label>City<select value={data.city} onChange={e=>update('city',e.target.value)}>{ESTIMATOR_CITIES.map(c=><option key={c}>{c}</option>)}</select></label><label>Plot width <span>feet</span><input required type="number" min="10" max="500" step="any" inputMode="decimal" value={data.width} onChange={e=>update('width',+e.target.value)}/></label><label>Plot length <span>feet</span><input required type="number" min="10" max="500" step="any" inputMode="decimal" value={data.length} onChange={e=>update('length',+e.target.value)}/></label><label>Road-facing side<select value={data.facing} onChange={e=>update('facing',e.target.value)}>{['North','East','South','West'].map(x=><option key={x}>{x}</option>)}</select></label><label>Road width <span>feet · optional</span><input type="number" min="6" max="200" inputMode="decimal" value={data.roadWidthFt??''} placeholder="Not sure" onChange={e=>update('roadWidthFt',e.target.value===''?null:Number(e.target.value))}/><small>Leave blank until measured.</small></label><StructuredSelect label="Plot shape" value={data.plotShape||'unknown'} options={plotShapeOptions} onChange={value=>update('plotShape',value)}/></div></>}
     {step===1&&<><span className="kicker">Step two · The home</span><h1>Describe the life it needs to hold.</h1><p>Choose the practical starting point. “Not sure” is useful information when the family has not decided.</p><Choice label="Floors" value={data.floors} choices={ESTIMATOR_FLOORS} onChange={v=>update('floors',v)}/><Choice label="Bedrooms" value={data.bedrooms} choices={[2,3,4,'5+']} onChange={v=>update('bedrooms',v)}/><div className="form-grid form-grid--programme"><label>Bathrooms <span>optional</span><select value={data.bathrooms??''} onChange={e=>update('bathrooms',e.target.value===''?null:Number(e.target.value))}><option value="">Not sure</option>{Array.from({length:12},(_,index)=>index+1).map(value=><option value={value} key={value}>{value}</option>)}</select></label><StructuredSelect label="Accessibility" value={data.accessibility||'unknown'} options={accessibilityOptions} onChange={value=>update('accessibility',value)}/><StructuredSelect label="Future use" value={data.futureUse||'unknown'} options={futureUseOptions} onChange={value=>update('futureUse',value)}/><label>Working budget <span>₹ lakh · optional</span><input type="number" min="5" max="10000" inputMode="decimal" value={data.budgetLakh??''} placeholder="Not sure" onChange={e=>update('budgetLakh',e.target.value===''?null:Number(e.target.value))}/><small>A planning limit, not a quotation.</small></label></div><Choice label="Parking" value={data.parking} choices={['None','1 car','2 cars']} onChange={v=>update('parking',v)}/><Choice label="Finish" value={data.quality} choices={ESTIMATOR_QUALITIES} onChange={v=>update('quality',v)}/></>}
-    {step===2&&<><span className="kicker">Step three · Context</span><h1>Give the concept a sense of place.</h1><p>{privateUploads.enabled?'Site photographs are optional and are stored in private, account-scoped storage.':'Site photographs are not required for this Brief Check. Your structured facts are enough to identify what is known and what still needs verification.'}</p>{privateUploads.enabled?(user?<label className="upload-field"><UploadSimple/><strong>{files.length?`${files.length} photograph${files.length===1?'':'s'} selected`:'Choose plot photographs'}</strong><span>JPG, PNG or WebP · up to 10 MB each</span><input type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={e=>{if(privateUploads.enabled)setFiles([...e.target.files].filter(file=>file.size<=10*1024*1024))}}/></label>:<div className="account-note"><LockKey/><p>Create or log into your private account first, then add site photographs from the report.</p></div>):<div className="account-note upload-capability-note" role="status"><LockKey/><p>{privateUploads.phase==='loading'?'Checking private photo storage. Uploads stay closed until availability is verified; the Brief Check continues without them.':'Private photo storage is not enabled in this release. Keep site photos on your device and share them directly with your licensed professional when needed.'}</p></div>}<label className="select-block">Exterior direction<select value={data.style} onChange={e=>update('style',e.target.value)}>{['Warm modern','Contemporary','Traditional Indian','Tropical modern','Minimal'].map(x=><option key={x}>{x}</option>)}</select></label></>}
-    {step===3&&<><span className="kicker">Step four · Review</span><h1>Ready for a Brief Check.</h1><p>These stated facts—and the facts left unknown—become the assumption record behind the planning range.</p><div className="brief-lines">{[['Plot',`${data.width} × ${data.length} ft · ${data.facing}-facing · ${plotShapeOptions.find(([value])=>value===data.plotShape)?.[1]||'Not sure'}`],['Access',data.roadWidthFt?`${data.roadWidthFt} ft road`:'Road width not known'],['Home',`${data.floors} · ${data.bedrooms} bedrooms · ${data.bathrooms??'Bathrooms not sure'}${data.bathrooms?' bathrooms':''} · ${data.parking}`],['Household',`${accessibilityOptions.find(([value])=>value===data.accessibility)?.[1]||'Not sure'} · ${futureUseOptions.find(([value])=>value===data.futureUse)?.[1]||'Not sure'}`],['Context',`${data.city} · ${data.style}`],['Budget & finish',`${data.budgetLakh?`₹${data.budgetLakh} lakh working limit`:'Budget not stated'} · ${data.quality}`]].map(([k,v])=><div key={k}><span>{k}</span><strong>{v}</strong></div>)}</div><div className="warning-note"><WarningCircle/><p>A Brief Check identifies evidence gaps and programme pressure. It does not validate site suitability, bylaws, design, structure or construction readiness.</p></div>{!user&&<div className="account-note"><LockKey/><p>You will create an account next so this project remains private and can be revisited.</p></div>}</>}
+    {step===2&&<><span className="kicker">Step three · Context</span><h1>Give the concept a sense of place.</h1><p>{privateUploads.enabled?'Site photographs are optional and are stored in private, account-scoped storage.':'Site photographs are not required for this Brief Check. Your structured facts are enough to identify what is known and what still needs verification.'}</p>{privateUploads.enabled?(user?<label className="upload-field"><UploadSimple/><strong>{files.length?`${files.length} photograph${files.length===1?'':'s'} selected`:'Choose plot photographs'}</strong><span>JPG, PNG or WebP · up to 10 MB each</span><input type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={e=>{if(privateUploads.enabled)setFiles([...e.target.files].filter(file=>file.size<=10*1024*1024))}}/></label>:<div className="account-note"><LockKey/><p>Create or log into your private account first, then add site photographs from the report.</p></div>):<div className="account-note upload-capability-note" role="status"><LockKey/><p>{privateUploads.phase==='loading'?'Checking private photo storage. Uploads stay closed until availability is verified; the Brief Check continues without them.':'Private photo storage is not enabled in this release. Keep site photos on your device and share them directly with your licensed professional when needed.'}</p></div>}<label className="select-block">Exterior direction<select value={data.style} onChange={e=>update('style',e.target.value)}>{ANONYMOUS_DRAFT_STYLES.map(x=><option key={x}>{x}</option>)}</select></label></>}
+    {step===3&&<><span className="kicker">Step four · Review</span><h1>Ready for a Brief Check.</h1><p>These stated facts—and the facts left unknown—become the assumption record behind the planning range.</p><div className="brief-lines">{[['Plot',`${data.width} × ${data.length} ft · ${data.facing}-facing · ${plotShapeOptions.find(([value])=>value===data.plotShape)?.[1]||'Not sure'}`],['Access',data.roadWidthFt?`${data.roadWidthFt} ft road`:'Road width not known'],['Home',`${data.floors} · ${data.bedrooms} bedrooms · ${data.bathrooms??'Bathrooms not sure'}${data.bathrooms?' bathrooms':''} · ${data.parking}`],['Household',`${accessibilityOptions.find(([value])=>value===data.accessibility)?.[1]||'Not sure'} · ${futureUseOptions.find(([value])=>value===data.futureUse)?.[1]||'Not sure'}`],['Context',`${data.city} · ${data.style}`],['Budget & finish',`${data.budgetLakh?`₹${data.budgetLakh} lakh working limit`:'Budget not stated'} · ${data.quality}`]].map(([k,v])=><div key={k}><span>{k}</span><strong>{v}</strong></div>)}</div><div className="warning-note"><WarningCircle/><p>A Brief Check identifies evidence gaps and programme pressure. It does not validate site suitability, bylaws, design, structure or construction readiness.</p></div>{!user&&<div className="account-note"><LockKey/><p>You will create an account next so this project remains private and can be revisited.</p></div>}{user&&activeDraft&&<div className="account-note"><UserCircle/><p>This recovered browser brief will be saved to <strong>{user.email}</strong> only when you choose Create Brief Check.</p></div>}</>}
     {error&&<p className="form-error" role="alert">{error}</p>}
-    <div className="wizard-actions">{step>0&&<button type="button" disabled={busy} className="outline-button" onClick={()=>setStep(step-1)}><ArrowLeft/> Back</button>}<button type="submit" disabled={busy} className="copper-button">{step<3?'Continue':busy?'Creating…':user?'Create Brief Check':'Secure my project'} <ArrowRight/></button></div>
+    <div className="wizard-actions">{step>0&&<button type="button" disabled={busy||frozen} className="outline-button" onClick={()=>{const nextStep=step-1;setStep(nextStep);persistDraft(data,nextStep)}}><ArrowLeft/> Back</button>}<button type="submit" disabled={busy||persistenceBlockedRef.current} className="copper-button">{step<3?'Continue':busy?'Creating…':frozen?'Retry exact save':user?'Create Brief Check':'Secure my project'} <ArrowRight/></button></div>
   </form></main>;
 }
 
@@ -671,26 +924,83 @@ function authFailureMessage(error,isLogin){
   return isLogin?"We could not sign you in. Try again.":"We could not create the account. Try again.";
 }
 
-function AuthPage({ mode, onAuthenticated }) {
+function AuthPage({ mode, user, draftAccess, onAuthenticated }) {
   const isLogin=mode==="login";
   const [form,setForm]=useState({name:"",email:"",password:""});
   const [busy,setBusy]=useState(false);const [error,setError]=useState("");
-  const [authenticated,setAuthenticated]=useState(false);
   const projectCreationKey=useProjectCreationKey(true);
+  const localStorageRef=draftAccess.storageRef;
+  const continuationRequested=window.history.state?.projectContinuation===true;
+  const expectedWriteId=validProjectCreationKey(window.history.state?.anonymousDraftWriteId);
+  const expectedRevision=Number.isSafeInteger(window.history.state?.anonymousDraftRevision)&&window.history.state.anonymousDraftRevision>0?window.history.state.anonymousDraftRevision:null;
+  const [continuation,setContinuation]=useState(continuationRequested?undefined:null);
+  const [continuationFailure,setContinuationFailure]=useState("");
+  const [authenticated,setAuthenticated]=useState(()=>Boolean(user)&&continuationRequested);
+  const [directSessionPhase,setDirectSessionPhase]=useState(()=>user&&!continuationRequested?"checking":"idle");
+  const [directSessionAttempt,setDirectSessionAttempt]=useState(0);
   const active=useRef(true);const errorRef=useRef(null);
   useEffect(()=>{active.current=true;return()=>{active.current=false}},[]);
+  useEffect(()=>{if(user&&continuationRequested)setAuthenticated(true);else if(user===null||!continuationRequested)setAuthenticated(false)},[user,continuationRequested]);
+  useEffect(()=>{
+    if(!user||continuationRequested){setDirectSessionPhase("idle");return undefined}
+    let current=true;setDirectSessionPhase("checking");
+    api("/api/auth/me").then(result=>{if(!current||!active.current)return;if(result.user){onAuthenticated(result.user);replaceRoute("/dashboard")}else{onAuthenticated(null);setDirectSessionPhase("idle")}}).catch(err=>{if(!current||!active.current)return;if(isApplicationUnauthenticated(err)){onAuthenticated(null);setDirectSessionPhase("idle")}else setDirectSessionPhase("unavailable")});
+    return()=>{current=false};
+  },[Boolean(user),continuationRequested,directSessionAttempt]);
   useEffect(()=>{if(error)errorRef.current?.focus({preventScroll:true})},[error]);
-  const abandon=()=>{abandonPendingProjectHandoff();route('/')};
-  async function submit(e){
-    e.preventDefault();setBusy(true);setError("");let authenticating=!authenticated;
-    try{
-      if(authenticating){const authBody=isLogin?{email:form.email,password:form.password}:{name:form.name,email:form.email,password:form.password};const result=await api(`/api/auth/${isLogin?'login':'register'}`,{method:'POST',body:authBody});if(!active.current)return;onAuthenticated(result.user);setAuthenticated(true);setForm({name:"",email:"",password:""});authenticating=false}
-      const pending=pendingProjectValue();
-      if(pending){const project=await api('/api/projects',{method:'POST',headers:{...publicEstimatorAttributionHeaders(safeSessionStorage(),window.history.state,projectCreationKey),'idempotency-key':projectCreationKey},body:projectRequestBody(pending)});if(!active.current)return;removeSessionValue('grihagrid.pendingProject');completePublicEstimatorHandoff();replaceRoute(`/projects/${project.project.id}`)}
-      else {if(window.history.state?.projectContinuation===true)abandonPendingProjectHandoff();route('/dashboard')}
-    }catch(err){if(active.current)setError(authenticating?authFailureMessage(err,isLogin):"Your account is secure, but the project could not be saved. Retry saving it.")}finally{if(active.current)setBusy(false)}
+  useEffect(()=>{
+    if(!continuationRequested){setContinuation(null);setContinuationFailure("");return}
+    if(draftAccess.phase!=="ready"&&draftAccess.phase!=="memory"){setContinuation(undefined);return}
+    const current=readAnonymousDraftContinuation(localStorageRef.current,projectCreationKey);
+    if(!current){setContinuation(null);setContinuationFailure("missing");return}
+    setContinuation(current);
+    setContinuationFailure(current.writeId===expectedWriteId&&current.revision===expectedRevision?"":"conflict");
+  },[continuationRequested,draftAccess.phase,projectCreationKey,expectedWriteId,expectedRevision]);
+  const back=()=>{if(continuation)replaceRoute("/start",anonymousDraftContinuationState(continuation));else{abandonPendingProjectHandoff();route('/')}};
+  function markContinuation(record,status){
+    const result=updateAnonymousDraftStatus(localStorageRef.current,record,status);
+    if(!result.record||result.reason==="conflict"||result.reason==="expired"){setError(result.reason==="expired"?"This browser copy reached its seven-day limit. Nothing was submitted; return to the planner to begin a clean brief.":"This browser draft changed in another tab. Return to the brief and review the current copy.");return null}
+    window.history.replaceState(anonymousDraftContinuationState(result.record),"",window.location.href);setContinuation(result.record);setContinuationFailure("");return result.record;
   }
-  return <main className="auth-page"><div className="auth-architecture"><img width="1536" height="1024" src="/assets/v2/monograph-house-v2.jpg" onError={e=>{e.currentTarget.src='/assets/grihagrid-hero.jpg'}} alt="Contemporary Indian home"/><div><Brand inverted disabled={busy} onHome={abandon}/><blockquote>Start with clarity.<br/>Build with confidence.</blockquote></div></div><section className="auth-form"><button className="back-action" disabled={busy} onClick={abandon}><ArrowLeft/> Home</button><span className="kicker">Private project workspace</span><h1>{isLogin?'Welcome back.':'Create your account.'}</h1><p>{isLogin?'Return to your saved home plans.':'Save the brief you just created and keep every decision together.'}</p><form onSubmit={submit} aria-busy={busy}>{!isLogin&&<label>Full name<input required disabled={busy} maxLength="80" autoComplete="name" value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label>}<label>Email address<input required disabled={busy} type="email" maxLength="254" autoComplete="email" autoCapitalize="none" spellCheck="false" value={form.email} onChange={e=>setForm({...form,email:e.target.value})}/></label><label>Password<input required disabled={busy} type="password" minLength="10" maxLength="128" autoComplete={isLogin?'current-password':'new-password'} autoCapitalize="none" spellCheck="false" value={form.password} onChange={e=>setForm({...form,password:e.target.value})}/><small>10–128 characters</small></label>{error&&<p ref={errorRef} className="form-error" tabIndex="-1" role="alert">{error}</p>}<button disabled={busy} className="copper-button" type="submit">{busy?'Please wait…':authenticated?'Retry saving project':isLogin?'Log in':'Create account'} <ArrowRight/></button></form><p className="auth-switch">{isLogin?'New to GrihaGrid?':'Already have an account?'} <button disabled={busy} onClick={()=>replaceRoute(isLogin?'/register':'/login',pendingAuthContinuationState())}>{isLogin?'Create account':'Log in'}</button></p></section></main>;
+  async function submit(e){
+    e.preventDefault();setBusy(true);setError("");let authenticating=!authenticated;const accessEpoch=draftAccess.epochRef.current;const accessStillCurrent=()=>draftAccess.usableRef.current&&draftAccess.epochRef.current===accessEpoch;
+    let pending=null;let projectRequestDispatched=false;
+    try{
+      if(authenticating){
+        const authBody=isLogin?{email:form.email,password:form.password}:{name:form.name,email:form.email,password:form.password};
+        const result=await api(`/api/auth/${isLogin?'login':'register'}`,{method:'POST',body:authBody});
+        if(!active.current)return;
+        onAuthenticated(result.user);setAuthenticated(true);setForm({name:"",email:"",password:""});authenticating=false;
+        if(continuationRequested&&!accessStillCurrent())throw new Error("draft_access_lost");
+      }
+      pending=continuationRequested?readAnonymousDraftContinuation(localStorageRef.current,projectCreationKey):null;
+      if(continuationRequested&&!pending)throw new Error("draft_unavailable");
+      if(pending&&!sameAnonymousDraftVersion(pending,continuation))throw new Error("draft_conflict");
+      if(pending){if(!accessStillCurrent())throw new Error("draft_access_lost");if(pending.status!=="submitting")pending=markContinuation(pending,"submitting");if(!pending)return;const exactPending=readAnonymousDraftContinuation(localStorageRef.current,pending.projectCreationKey);if(!exactPending)throw new Error("draft_unavailable");if(!sameAnonymousDraftVersion(exactPending,pending))throw new Error("draft_conflict");if(!accessStillCurrent())throw new Error("draft_access_lost");const attributed=pending.entryPoint==="public_estimator"?{"x-grihagrid-entry-point":"public_estimator"}:{};projectRequestDispatched=true;const project=await api('/api/projects',{method:'POST',headers:{...attributed,'idempotency-key':pending.projectCreationKey},body:projectRequestBody(pending.draft)});if(!active.current)return;const cleanup=accessStillCurrent()?clearAnonymousDraftAfterCreation(localStorageRef.current,pending):{ok:false};if(!cleanup.ok)setSessionValue(`grihagrid.draftCleanupWarning.${project.project.id}`,"Project saved, but this browser would not clear the unfinished copy. Discard that browser draft before starting another brief.");clearLegacyPendingProjectState();completePublicEstimatorHandoff();replaceRoute(`/projects/${project.project.id}`)}
+      else route('/dashboard');
+    }catch(err){
+      if(!active.current)return;
+      if(authenticating)setError(authFailureMessage(err,isLogin));
+      else if(continuationRequested&&err instanceof ApiError&&err.status===401){
+        const retained=accessStillCurrent()&&pending?markContinuation(pending,"awaiting_auth"):pending;
+        onAuthenticated(null);setAuthenticated(false);
+        if(!accessStillCurrent())setError("Your session ended and this tab also lost exclusive brief access. The rejected save reached GrihaGrid, but no additional project request was sent after access was lost. Sign in again only after the planner regains access and you review the current copy.");
+        else if(retained)setError("Your session ended before the project could be saved. The exact browser brief is retained; sign in again to retry it in this account.");
+        else if(!pending)setError("Your session ended before the project could be saved, and the current browser brief could not be verified. Nothing else was submitted; return to the planner and review its recovery state.");
+      }
+      else if(err?.message==="draft_access_lost"||(continuationRequested&&!accessStillCurrent()))setError(projectRequestDispatched?"Your account is secure, but this tab lost exclusive access while the save was in flight. It may already have reached GrihaGrid; no additional project request was sent after access was lost. Return to the planner after access comes back and review the current copy.":"Your account is secure, but this tab lost exclusive access before the project request was sent. Return to the planner after access comes back and review the current copy.");
+      else if(err?.message==="draft_unavailable")setError("The unfinished brief is no longer available on this browser. Nothing was submitted; return to the planner and start a new brief.");
+      else if(err?.message==="draft_conflict")setError("This browser draft changed after this account page opened. Nothing was submitted. Return to the brief and review the current copy.");
+      else{const retained=pending?markContinuation(pending,"retry_required"):null;if(pending&&!retained)return;setError(err instanceof ApiError&&err.status===409?"This retry key is already tied to different project details in this account. The brief remains frozen and no new key was created.":"Your account is secure, but the project save was not confirmed. Retry uses the exact same brief and key to recover one project in this account.")}
+    }finally{if(active.current)setBusy(false)}
+  }
+  if(continuationRequested&&(draftAccess.phase!=="ready"&&draftAccess.phase!=="memory"))return <AnonymousDraftAccessGate phase={draftAccess.phase} onRetry={draftAccess.retry}/>;
+  if(continuationRequested&&continuation===undefined)return <AnonymousDraftAccessGate phase="checking" onRetry={draftAccess.retry}/>;
+  if(user&&!continuationRequested)return <main className="auth-page"><div className="auth-architecture"><img width="1536" height="1024" src="/assets/v2/monograph-house-v2.jpg" onError={e=>{e.currentTarget.src='/assets/grihagrid-hero.jpg'}} alt="Contemporary Indian home"/><div><Brand inverted onHome={()=>route("/")}/><blockquote>Start with clarity.<br/>Build with confidence.</blockquote></div></div><section className="auth-form" aria-live="polite"><button className="back-action" onClick={()=>route("/")}><ArrowLeft/> Home</button><span className="kicker">Private project workspace</span><h1>{directSessionPhase==="unavailable"?"We could not confirm this session.":"Checking your account."}</h1><p>{directSessionPhase==="unavailable"?"GrihaGrid will not assume this browser is signed in or send you back into a private-page loop. Retry the check, or return home.":"A current session goes to your projects. An expired session returns to the credential form here."}</p>{directSessionPhase==="unavailable"&&<div className="draft-resume-actions"><button className="copper-button" onClick={()=>setDirectSessionAttempt(value=>value+1)}>Retry session check <ArrowClockwise/></button><button className="outline-button" onClick={()=>route("/")}>Return home</button></div>}</section></main>;
+  const continuationMissing=continuationRequested&&(!continuation||Boolean(continuationFailure));
+  const heading=authenticated&&continuation?"Finish saving your brief.":isLogin?'Welcome back.':'Create your account.';
+  const copy=authenticated&&continuation?"Your account is ready. The exact browser copy and original retry key will be used once.":isLogin?'Return to your saved home plans.':'Save the brief you just created and keep every decision together.';
+  return <main className="auth-page"><div className="auth-architecture"><img width="1536" height="1024" src="/assets/v2/monograph-house-v2.jpg" onError={e=>{e.currentTarget.src='/assets/grihagrid-hero.jpg'}} alt="Contemporary Indian home"/><div><Brand inverted disabled={busy} onHome={back}/><blockquote>Start with clarity.<br/>Build with confidence.</blockquote></div></div><section className="auth-form"><button className="back-action" disabled={busy} onClick={back}><ArrowLeft/> {continuation?'Back to brief':'Home'}</button><span className="kicker">Private project workspace</span><h1>{heading}</h1><p>{copy}</p>{continuationMissing?<div className="auth-continuation-missing"><WarningCircle/><p><strong>{continuationFailure==="conflict"?"This browser draft changed after this account page opened.":"No recoverable browser copy was found."}</strong> {continuationFailure==="conflict"?"Nothing was submitted. Review the current browser copy before continuing.":"It may have expired, been discarded, or been cleared by this device. GrihaGrid will not reconstruct it from browser history or submit partial details."}</p>{error&&<p ref={errorRef} className="form-error" tabIndex="-1" role="alert">{error}</p>}<button className="copper-button" onClick={()=>replaceRoute('/start',continuation?anonymousDraftContinuationState(continuation):{})}>{continuationFailure==="conflict"?"Review current brief":"Start a new brief"} <ArrowRight/></button></div>:<form onSubmit={submit} aria-busy={busy}>{continuation&&<div className="auth-continuation-ready" role="status"><LockKey/><p>{authenticated?<><strong>Exact retry protected.</strong> No dedicated password, account-detail, file or estimate field is stored with this browser draft.</>:<><strong>Your brief stays separate.</strong> Account creation sends only your name, email and password. After it succeeds, GrihaGrid uses the exact browser copy and original retry key.</>}</p></div>}{!authenticated&&<>{!isLogin&&<label>Full name<input required disabled={busy} maxLength="80" autoComplete="name" value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label>}<label>Email address<input required disabled={busy} type="email" maxLength="254" autoComplete="email" autoCapitalize="none" spellCheck="false" value={form.email} onChange={e=>setForm({...form,email:e.target.value})}/></label><label>Password<input required disabled={busy} type="password" minLength="10" maxLength="128" autoComplete={isLogin?'current-password':'new-password'} autoCapitalize="none" spellCheck="false" value={form.password} onChange={e=>setForm({...form,password:e.target.value})}/><small>10–128 characters</small></label></>}{error&&<p ref={errorRef} className="form-error" tabIndex="-1" role="alert">{error}</p>}<button disabled={busy} className="copper-button" type="submit">{busy?'Please wait…':authenticated&&continuation?'Save exact brief':isLogin?'Log in':'Create account'} <ArrowRight/></button></form>}{!continuationMissing&&!authenticated&&<p className="auth-switch">{isLogin?'New to GrihaGrid?':'Already have an account?'} <button disabled={busy} onClick={()=>replaceRoute(isLogin?'/register':'/login',anonymousDraftContinuationState(continuation))}>{isLogin?'Create account':'Log in'}</button></p>}</section></main>;
 }
 
 function accountSecurityFailure(error) {
@@ -945,6 +1255,8 @@ function ProjectHomePage({ projectId }) {
   const [state,setState]=useState({phase:"loading",payload:null,error:""});
   const [deleting,setDeleting]=useState(false);
   const [deleteError,setDeleteError]=useState("");
+  const draftWarningKey=`grihagrid.draftCleanupWarning.${projectId}`;
+  const [draftCleanupWarning,setDraftCleanupWarning]=useState(()=>{try{return safeSessionStorage()?.getItem(draftWarningKey)||""}catch{return ""}});
   const trackedOpen=useRef(false);
 
   async function load(signal) {
@@ -1041,6 +1353,7 @@ function ProjectHomePage({ projectId }) {
 
   return <main className={`project-home project-home--${archived?"archived":stale?"stale":stage}`}>
     <header className="project-home__topbar"><button onClick={()=>route("/dashboard")}><ArrowLeft/> My projects</button><Brand inverted/><button onClick={()=>route("/orders")}><Receipt/> Orders</button></header>
+    {draftCleanupWarning&&<div className="report-upload-warning" role="alert"><WarningCircle/><span>{draftCleanupWarning}</span><button onClick={()=>{removeSessionValue(draftWarningKey);setDraftCleanupWarning("")}}>Dismiss</button></div>}
     <section className="project-home__masthead" aria-labelledby="project-home-title">
       <div><span className="kicker">Private project · decision home</span><h1 id="project-home-title">{project.name||"My family home"}</h1><p>{stageCopy[0]} <span>{stageCopy[1]}</span></p><div className="project-home__brief-action"><button className="outline-button" onClick={()=>route(`/projects/${encodeURIComponent(projectId)}/brief`)}>{archived?<><Stack/> Review brief history</>:<><PencilSimple/> Strengthen this brief</>}</button><small>{revisionCount} recorded revision{revisionCount===1?'':'s'} · current revision {project.inputRevision||1}</small></div></div>
       <div className="project-home__folio" aria-hidden="true"><span>Project record</span><strong>{String(project.inputRevision||1).padStart(2,"0")}</strong><small>Current input revision</small></div>
@@ -2757,10 +3070,13 @@ function AppShell({ user, children }) { return <><a className="skip-link" href="
 
 export function App() {
   const [path,setPath]=useState(window.location.pathname);const [user,setUser]=useState(()=>isPublicReportSharePath(window.location.pathname)?null:undefined);
+  const draftWorkflow=path==="/start"||((path==="/login"||path==="/register")&&window.history.state?.projectContinuation===true);
+  const draftAccess=useAnonymousDraftStorageAccess(draftWorkflow);
   const focusedPath=useRef(path);
   const authRevision=useRef(0);
   const authenticatedSession=useRef(false);
   const authBootstrapComplete=useRef(false);
+  useEffect(()=>{clearLegacyPendingProjectState()},[]);
   useEffect(()=>{const onPop=()=>setPath(window.location.pathname);window.addEventListener('popstate',onPop);return()=>window.removeEventListener('popstate',onPop)},[]);
   useEffect(()=>{
     const applyRemoteLogout=()=>{authRevision.current+=1;authenticatedSession.current=false;clearLocalLogoutState();setUser(null);if(isPrivateAccountPath(window.location.pathname))replaceRoute('/',{logoutConfirmed:true})};
@@ -2864,8 +3180,8 @@ export function App() {
   const shareMatch=path.match(/^\/share\/decision\/([^/]+)$/);
   const alignmentMatch=path.match(/^\/align\/([^/]+)$/);
   const checkoutOrder=path==='/checkout/return'?new URLSearchParams(window.location.search).get('order'):null;
-  if(path==='/start')return <StartPage user={user}/>;
-  if(path==='/login'||path==='/register')return <AuthPage key={path} mode={path.slice(1)} onAuthenticated={authenticated=>{authRevision.current+=1;authenticatedSession.current=true;setUser(authenticated)}}/>;
+  if(path==='/start')return <StartPage user={user} draftAccess={draftAccess} onSessionEnded={()=>{authRevision.current+=1;authenticatedSession.current=false;setUser(null)}}/>;
+  if(path==='/login'||path==='/register')return <AuthPage key={path} mode={path.slice(1)} user={user} draftAccess={draftAccess} onAuthenticated={authenticated=>{authRevision.current+=1;authenticatedSession.current=Boolean(authenticated);setUser(authenticated)}}/>;
   if(path==='/dashboard')return <Dashboard user={user} onLogout={()=>{authRevision.current+=1;authenticatedSession.current=false;setUser(null)}}/>;
   if(path==='/security')return <AccountSecurityPage user={user} onAuthenticated={authenticated=>{authRevision.current+=1;authenticatedSession.current=true;setUser(authenticated)}}/>;
   if(path==='/orders')return <OrderHistoryPage user={user} onLogout={()=>{authRevision.current+=1;authenticatedSession.current=false;setUser(null)}}/>;
