@@ -1,6 +1,6 @@
 # GrihaGrid
 
-India-first concept-stage home-planning SaaS. GrihaGrid turns a plot brief into a city-adjusted construction range, a private saved project, a deterministic planning report with version-bound structured feedback and selective professional handoff, an optional Gemini-assisted planning brief, and Decision Compare: a versioned side-by-side choice between exactly two home briefs.
+India-first concept-stage home-planning SaaS. GrihaGrid turns a plot brief into a shareable, freshly recalculated city-adjusted construction range, a private saved project, a deterministic planning report with version-bound structured feedback and selective professional handoff, an optional Gemini-assisted planning brief, and Decision Compare: a versioned side-by-side choice between exactly two home briefs.
 
 Production: <https://grihagrid.prakhargupta267.workers.dev>
 
@@ -81,6 +81,10 @@ or project workspace, never represents professional approval, and fails closed
 behind a dynamic D1 operations switch plus a keyed abuse-control secret; see
 `docs/report-handoff.md`.
 
+Estimator share links contain only version plus the five public inputs and
+always request a fresh server calculation. They store no anonymous scenario,
+displayed price, account identity, or bearer token.
+
 The estimator-to-account journey also uses a stable, user-scoped project-create
 idempotency key: a lost successful response replays the same canonical project
 without a duplicate row or attribution increment, while conflicting key reuse is
@@ -95,7 +99,10 @@ history, session storage, analytics event, or anonymous API. Authentication
 navigation carries only a continuation marker, opaque project/write identities,
 revision, and bounded source marker; it carries no brief value. Dedicated file,
 credential, estimate, report, and server-response fields are excluded; the
-user-entered project name remains part of the browser copy. Project creation
+user-entered project name remains part of the browser copy. Shared-link
+attribution is kept separately as one expiry- and retry-key-bound source-only
+record so the existing v1 draft remains safe to read after an asset rollback;
+that record contains no scenario or additional browser identity. Project creation
 remains the authenticated, CSRF-protected Worker boundary and reuses the
 original account-scoped key; see `docs/anonymous-brief-resume.md`.
 

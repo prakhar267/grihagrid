@@ -192,7 +192,10 @@ export async function runAuthenticatedSmoke(rawOrigin, credentials, options = {}
     });
     const created = await call("/api/projects", {
       method: "POST",
-      headers: legacyWorker ? {} : { "idempotency-key": projectCreationKey },
+      headers: legacyWorker ? {} : {
+        "idempotency-key": projectCreationKey,
+        "x-grihagrid-entry-point": "shared_estimate",
+      },
       body: createBody,
     }, [201]);
     projectId = String(created?.project?.id || "");
@@ -209,7 +212,10 @@ export async function runAuthenticatedSmoke(rawOrigin, credentials, options = {}
       publicEstimateVerified = true;
       const replayed = await call("/api/projects", {
         method: "POST",
-        headers: { "idempotency-key": projectCreationKey },
+        headers: {
+          "idempotency-key": projectCreationKey,
+          "x-grihagrid-entry-point": "shared_estimate",
+        },
         body: createBody,
       }, [200]);
       assert.equal(replayed?.project?.id, projectId, "project create replay returned a different project");

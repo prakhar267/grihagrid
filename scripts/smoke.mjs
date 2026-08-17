@@ -82,6 +82,25 @@ async function reportShareDocumentCheck(origin, method) {
   return {path,method,status:response.status,latencyMs,attempts};
 }
 
+async function sharedEstimateDocumentCheck(origin, method) {
+  const path="/estimate?v=1&width=30&length=50&city=Pune&floors=G%2B1&quality=Signature";
+  const {response,latencyMs,attempts}=await timedFetch(new URL(path,origin),{
+    method,
+    headers:{accept:"text/html"},
+  });
+  assert.equal(response.status,200,`${method} /estimate returned ${response.status}`);
+  assertSecurityHeaders(response,"/estimate");
+  assert.match(response.headers.get("content-type")||"",/^text\/html\b/u,`${method} /estimate must return HTML`);
+  assert.equal(response.headers.get("cache-control"),"no-store",`${method} /estimate must not be cached`);
+  assert.equal(response.headers.get("x-robots-tag"),"noindex,nofollow,noarchive",`${method} /estimate must not be indexed`);
+  assert.equal(response.headers.get("referrer-policy"),"no-referrer",`${method} /estimate must not forward its tuple`);
+  if(method==="GET"){
+    const document=await response.text();
+    assert.match(document,/<link rel="canonical" href="https:\/\/grihagrid\.prakhargupta267\.workers\.dev\/" \/>/u,"shared estimate must retain the production canonical root");
+  }else await response.body?.cancel();
+  return {path:"/estimate",method,status:response.status,latencyMs,attempts};
+}
+
 export async function runSmoke(rawOrigin, options = {}) {
   const origin = canonicalOrigin(rawOrigin);
   const expectCheckout = options.expectCheckout === true;
@@ -107,6 +126,8 @@ export async function runSmoke(rawOrigin, options = {}) {
   if (!legacyWorker) {
     checks.push(await reportShareDocumentCheck(origin,"GET"));
     checks.push(await reportShareDocumentCheck(origin,"HEAD"));
+    checks.push(await sharedEstimateDocumentCheck(origin,"GET"));
+    checks.push(await sharedEstimateDocumentCheck(origin,"HEAD"));
   }
 
   checks.push(await jsonCheck(origin, "/api/health", {}, (body) => {

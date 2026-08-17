@@ -32,9 +32,9 @@ and broader breach scope without evidence that cross-device recovery is needed.
    and project-creation idempotency key. Discard creates a fresh key and clean
    default brief.
 5. Account navigation carries only a continuation marker, the opaque key, the
-   expected write UUID and revision, and the bounded `public_estimator` source
-   marker. The full draft never enters a URL, query, cookie, `history.state`, or
-   `sessionStorage`.
+   expected write UUID and revision, and one bounded `public_estimator` or
+   `shared_estimate` source marker. The full draft never enters a URL, query,
+   cookie, `history.state`, or `sessionStorage`.
 6. Immediately before an authenticated create can reach the Worker, the exact
    draft is marked `submitting` and becomes non-editable. A lost response or
    server failure becomes `retry_required`; the next attempt reuses identical
@@ -59,7 +59,7 @@ envelope contains:
   "updatedAtMs": 1786935600000,
   "expiresAtMs": 1787540400000,
   "projectCreationKey": "123e4567-e89b-42d3-a456-426614174000",
-  "entryPoint": "public_estimator",
+  "entryPoint": null,
   "status": "editing",
   "draft": {}
 }
@@ -71,6 +71,34 @@ accessibility, future use, optional working budget, exterior direction, and
 finish. Every scalar, enum, finite-number boundary, nullable value, timestamp,
 UUID, serialized length, schema version, and envelope key is validated before
 read, write, or submit. Unknown or nested fields reject the record.
+
+`entryPoint` remains exactly `null` or `public_estimator`, preserving the
+published v1 format accepted by the previous application version. A shared-link
+continuation instead uses `grihagrid.anonymousDraftAttribution.v1`, whose exact
+source-only shape is:
+
+```json
+{
+  "schemaVersion": 1,
+  "projectCreationKey": "123e4567-e89b-42d3-a456-426614174000",
+  "entryPoint": "shared_estimate",
+  "expiresAtMs": 1787540400000
+}
+```
+
+The sidecar is accepted only when its UUID and expiry exactly match a valid,
+unattributed v1 envelope. It contains no tuple, brief value, account field,
+stable browser identifier, price, token, or server record. A stale, orphaned,
+malformed, mismatched, or expired sidecar is always ignored and is removed when
+the non-blocking boot Web Lock is acquired; contention or unsupported locks may
+leave the inert record until a later eligible boot. Create, discard, and
+abandonment compare-delete the matching record.
+If storage fails, the fixed source remains only in same-tab memory/navigation.
+The sidecar is measurement metadata only: it cannot alter the draft, estimate,
+owner, or authorization decision. On an asset rollback, the prior client ignores
+the unknown sidecar and continues to read the unchanged v1 draft; it may omit
+the new attribution, but it cannot delete the brief or misclassify it as the
+landing-page estimator.
 
 The browser envelope has no dedicated fields for:
 
@@ -116,7 +144,10 @@ forks are conflicts rather than aliases. The expected write UUID and revision in
 bounded auth navigation state prevent substitution during handoff. Storage,
 focus, `pageshow`, and visible-page events recheck the active version. A missing,
 expired, different, or newer record freezes the stale page and prevents any
-subsequent autosave, discard, cleanup, or submit.
+subsequent autosave, discard, cleanup, or submit. If a new estimator handoff is
+present while an older browser draft is offered, choosing Resume consumes and
+scrubs the different handoff before restoring the saved key; its tuple/source
+cannot be rebound to or attribute the older brief.
 
 ## Existing backend and migration boundary
 
@@ -148,6 +179,7 @@ Release guardrails are:
 - zero full-brief payloads in URLs, history/session storage, auth requests, logs,
   or analytics; the separate bounded estimator tuple is consumed from navigation
   and session storage as soon as the first anonymous envelope owns those values;
+  the shared source-only sidecar is exact-key/expiry-bound and rollback-ignorable;
 - zero duplicate projects in one account across exact retry and lost-response tests;
 - zero stale-tab resurrection after discard, expiry, or successful consumption;
 - no anonymous API or database write;
@@ -163,7 +195,9 @@ Automated contract tests cover exact round trips, strict keys and values,
 oversize/corrupt inputs, timestamp and expiry boundaries, passive non-extension,
 blocked storage, exclusive-lock acquisition/contention/fallback, exact-baseline
 fallback, compare-and-set conflicts, discard, conditional consumption,
-auth/body separation, source/key/write-version continuity, and legacy removal.
+auth/body separation, source/key/write-version continuity, stale-handoff
+rejection, sidecar expiry/orphan/compare-delete behavior, rollback parsing, and
+legacy removal.
 
 Browser acceptance covers a partial edit, blocked invalid Save & exit,
 save-and-exit, prompt-before-values, explicit Resume, exact restored step and

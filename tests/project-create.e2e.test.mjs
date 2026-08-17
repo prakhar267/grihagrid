@@ -14,6 +14,10 @@ const wranglerCli = path.join(root, "node_modules", "wrangler", "bin", "wrangler
 const scopedKey = "10000000-0000-4000-8000-000000000001";
 const concurrentKey = "20000000-0000-4000-8000-000000000002";
 const accountCapKey = "30000000-0000-4000-8000-000000000003";
+const canaryKey = "40000000-0000-4000-8000-000000000004";
+const forgedMarkerKey = "50000000-0000-4000-8000-000000000005";
+const failedAtCapKey = "60000000-0000-4000-8000-000000000006";
+const releaseCanaryName = "Release canary 123e4567-e89b-42d3-a456-426614174000";
 
 const completeInput = Object.freeze({
   width: 30,
@@ -224,13 +228,13 @@ function projectBody(name) {
   return { name, input: { ...completeInput } };
 }
 
-function createProject(origin, auth, key, name, attributed = false) {
+function createProject(origin, auth, key, name, entryPoint = null) {
   return call(origin, "/api/projects", {
     method: "POST",
     auth,
     headers: {
       "idempotency-key": key,
-      ...(attributed ? { "x-grihagrid-entry-point": "public_estimator" } : {}),
+      ...(entryPoint ? { "x-grihagrid-entry-point": entryPoint } : {}),
     },
     body: projectBody(name),
   });
@@ -250,13 +254,13 @@ test("project creation idempotency is tenant-scoped and race-safe on real D1", {
     const other = authenticated(accounts.other);
     const capped = authenticated(accounts.capped);
 
-    const created = await createProject(server.origin, owner, scopedKey, "Scoped UUID project");
+    const created = await createProject(server.origin, owner, scopedKey, "Scoped UUID project", "shared_estimate");
     assert.equal(created.response.status, 201, JSON.stringify(created.payload));
-    const replayed = await createProject(server.origin, owner, scopedKey, "Scoped UUID project");
+    const replayed = await createProject(server.origin, owner, scopedKey, "Scoped UUID project", "shared_estimate");
     assert.equal(replayed.response.status, 200, JSON.stringify(replayed.payload));
     assert.deepEqual(replayed.payload.project, created.payload.project, "an exact retry must replay the persisted project");
 
-    const conflicting = await createProject(server.origin, owner, scopedKey, "Changed request body");
+    const conflicting = await createProject(server.origin, owner, scopedKey, "Changed request body", "shared_estimate");
     assert.equal(conflicting.response.status, 409, JSON.stringify(conflicting.payload));
     assert.equal(conflicting.payload.code, "idempotency_conflict");
     assert.equal(Object.hasOwn(conflicting.payload, "project"), false);
@@ -266,18 +270,40 @@ test("project creation idempotency is tenant-scoped and race-safe on real D1", {
     assert.notEqual(independentlyScoped.payload.project.id, created.payload.project.id);
 
     const concurrent = await Promise.all([
-      createProject(server.origin, owner, concurrentKey, "Concurrent unique reconciliation"),
-      createProject(server.origin, owner, concurrentKey, "Concurrent unique reconciliation"),
+      createProject(server.origin, owner, concurrentKey, "Concurrent unique reconciliation", "shared_estimate"),
+      createProject(server.origin, owner, concurrentKey, "Concurrent unique reconciliation", "shared_estimate"),
     ]);
     assert.deepEqual(concurrent.map(({ response }) => response.status).sort(), [200, 201]);
     assert.deepEqual(concurrent[0].payload.project, concurrent[1].payload.project);
 
+    const canary = await createProject(server.origin, owner, canaryKey, releaseCanaryName, "shared_estimate");
+    assert.equal(canary.response.status, 201, JSON.stringify(canary.payload));
+
+    const forgedMarker = await createProject(
+      server.origin,
+      other,
+      forgedMarkerKey,
+      "Forged shared marker project",
+      "public_estimator,shared_estimate",
+    );
+    assert.equal(forgedMarker.response.status, 201, JSON.stringify(forgedMarker.payload));
+
     const accountCapRace = await Promise.all([
-      createProject(server.origin, capped, accountCapKey, "Account cap canonical", true),
-      createProject(server.origin, capped, accountCapKey, "Account cap canonical", true),
+      createProject(server.origin, capped, accountCapKey, "Account cap canonical", "shared_estimate"),
+      createProject(server.origin, capped, accountCapKey, "Account cap canonical", "shared_estimate"),
     ]);
     assert.deepEqual(accountCapRace.map(({ response }) => response.status).sort(), [200, 201]);
     assert.deepEqual(accountCapRace[0].payload.project, accountCapRace[1].payload.project);
+
+    const failedAtCap = await createProject(
+      server.origin,
+      capped,
+      failedAtCapKey,
+      "Shared estimate rejected at cap",
+      "shared_estimate",
+    );
+    assert.equal(failedAtCap.response.status, 429, JSON.stringify(failedAtCap.payload));
+    assert.equal(failedAtCap.payload.code, "project_limit_reached");
 
     await stopWorker(server);
     server = null;
@@ -285,7 +311,8 @@ test("project creation idempotency is tenant-scoped and race-safe on real D1", {
     const [projectRows, ownerCounts, capEvidence, attribution, indexEvidence] = queryStatements(stateDirectory, [
       `SELECT id,user_id,name,creation_key_hash,creation_request_hash
          FROM projects
-        WHERE name IN ('Scoped UUID project','Concurrent unique reconciliation','Account cap canonical')
+        WHERE name IN ('Scoped UUID project','Concurrent unique reconciliation','Account cap canonical',
+                       ${sqlLiteral(releaseCanaryName)},'Forged shared marker project')
         ORDER BY name,user_id,id`,
       `SELECT user_id,COUNT(*) AS project_count
          FROM projects
@@ -297,20 +324,19 @@ test("project creation idempotency is tenant-scoped and race-safe on real D1", {
               SUM(CASE WHEN name='Account cap canonical' THEN 1 ELSE 0 END) AS canonical_count,
               SUM(CASE WHEN name='Account cap canonical' AND user_id=${sqlLiteral(accounts.capped.userId)} THEN 1 ELSE 0 END) AS canonical_owned_count
          FROM projects WHERE user_id=${sqlLiteral(accounts.capped.userId)}`,
-      `SELECT COUNT(*) AS row_count,COALESCE(SUM(event_count),0) AS event_count
+      `SELECT event_name,surface,outcome,event_count
          FROM product_event_aggregates
-        WHERE event_name='public_estimator_brief_started'
-          AND surface='public_estimator' AND outcome='success'`,
+        ORDER BY event_name,surface,outcome`,
       "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_projects_user_creation_key'",
     ]);
 
     assert.deepEqual(ownerCounts.map((row) => ({ ...row, project_count: Number(row.project_count) })), [
-      { user_id: accounts.owner.userId, project_count: 2 },
-      { user_id: accounts.other.userId, project_count: 1 },
+      { user_id: accounts.owner.userId, project_count: 3 },
+      { user_id: accounts.other.userId, project_count: 2 },
       { user_id: accounts.capped.userId, project_count: 50 },
     ]);
 
-    assert.equal(projectRows.length, 4, "only four canonical idempotent projects may exist");
+    assert.equal(projectRows.length, 6, "only the six canonical idempotent projects may exist");
     const scopedRows = projectRows.filter((row) => row.name === "Scoped UUID project");
     assert.equal(scopedRows.length, 2);
     assert.deepEqual(scopedRows.map((row) => row.user_id).sort(), [accounts.owner.userId, accounts.other.userId]);
@@ -350,10 +376,19 @@ test("project creation idempotency is tenant-scoped and race-safe on real D1", {
       sha256Base64Url(`project-create:${accounts.capped.userId}:${accountCapKey}`),
     );
 
-    assert.deepEqual(attribution.map((row) => ({
-      row_count: Number(row.row_count),
-      event_count: Number(row.event_count),
-    })), [{ row_count: 1, event_count: 1 }], "the account-cap replay must not duplicate attribution");
+    const canaryRows = projectRows.filter((row) => row.name === releaseCanaryName);
+    assert.equal(canaryRows.length, 1, "the canary insert itself must succeed exactly once");
+    assert.equal(canaryRows[0].user_id, accounts.owner.userId);
+    const forgedRows = projectRows.filter((row) => row.name === "Forged shared marker project");
+    assert.equal(forgedRows.length, 1, "the forged-marker project insert itself must succeed");
+    assert.equal(forgedRows[0].user_id, accounts.other.userId);
+
+    assert.deepEqual(attribution.map((row) => ({ ...row, event_count: Number(row.event_count) })), [{
+      event_name: "shared_estimate_brief_started",
+      surface: "shared_estimate",
+      outcome: "success",
+      event_count: 3,
+    }], "only the three first successful non-canary shared-estimate inserts may be attributed");
     assert.equal(indexEvidence.length, 1);
     assert.match(indexEvidence[0].sql, /CREATE UNIQUE INDEX idx_projects_user_creation_key[\s\S]*\(user_id, creation_key_hash\)[\s\S]*WHERE creation_key_hash IS NOT NULL/iu);
   } finally {

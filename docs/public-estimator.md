@@ -18,6 +18,11 @@ The estimator remains an indicative concept-stage planning aid. It is not a
 quotation, feasibility approval, cost guarantee, tax calculation, or substitute
 for measured site information and licensed local professionals.
 
+DISC-07 adds a share action for the same five-field scenario. The resulting
+link is deliberately a recipe for a new calculation, not a saved estimate or
+quote. It creates no anonymous server record, capability token, browser
+identity, or new pricing authority.
+
 ## Customer journey
 
 1. The visitor starts with a 30 × 50 ft, Bengaluru, G+1, Signature scenario.
@@ -35,21 +40,68 @@ for measured site information and licensed local professionals.
    an invalid tuple blocks handoff. The estimator-to-start transition carries
    only the five safe scenario fields, a fixed source marker, and an opaque
    project-creation retry key.
-7. Once the visitor first saves or edits the full private brief, its strict
+7. Any valid tuple can also become a canonical `/estimate?...` link. A recipient
+   sees the five inputs and a fresh credential-free Worker calculation. The URL
+   carries no displayed range, basis, name, address, account, project, token, or
+   arbitrary metadata. Editing and re-sharing creates a new canonical tuple.
+8. Once the visitor first saves or edits the full private brief, its strict
    allowlist moves into one versioned local browser envelope and the estimator
-   tuple is consumed from navigation/session state. Authentication navigation
-   then carries only a continuation marker, project retry key, expected write
-   UUID/revision, and bounded source marker—never the brief payload or a URL
-   value. A true memory-only fallback is same-tab only; any branch descended from
-   shared storage must be revalidated before it can continue. Explicit Home/Exit
-   abandons the handoff, and a later unrelated login cannot create the draft.
-8. The first-party client adds `x-grihagrid-entry-point: public_estimator` only
-   to the attributed project-creation request and sends the retry key as
+   tuple is consumed from navigation/session state. The existing v1 envelope
+   remains byte-shape compatible with the rollback target: shared attribution is
+   held in a separate exact-key/expiry-bound source-only record that contains no
+   tuple or browser identity. Authentication navigation then carries only a
+   continuation marker, project retry key, expected write UUID/revision, and
+   bounded source marker—never the brief payload or a URL value. A true
+   memory-only fallback is same-tab only; any branch descended from shared
+   storage must be revalidated before it can continue. Stored tuples are accepted
+   only for their matching retry key. Choosing an older saved brief first
+   consumes any different pending estimator handoff and never rebinds its tuple
+   or source to the recovered key. Explicit Home/Exit abandons the handoff, and
+   a later unrelated start or login cannot resurrect the scenario or draft.
+9. The first-party client adds either the fixed `public_estimator` or
+   `shared_estimate` entry point only to the matching attributed project-create
+   request and sends the retry key as
    `Idempotency-Key`. Project creation validates the full brief, recalculates the
    estimate, and inserts the project before the Worker attempts the aggregate
    measurement. Within the same account, a lost success can replay the same
    project without a duplicate row or aggregate. The browser result is never
    accepted as a stored estimate.
+
+## Shareable scenario contract
+
+The canonical version-one link is:
+
+```text
+/estimate?v=1&width=30&length=50&city=Pune&floors=G%2B1&quality=Signature
+```
+
+The parser requires one and only one instance of each of `v`, `width`,
+`length`, `city`, `floors`, and `quality`, and rejects every missing, duplicate,
+unknown, malformed, unsupported, or out-of-range value. Version must be `1`.
+Dimensions use canonical finite decimal strings and the same inclusive 10–500
+ft bounds as the estimator. There is no partial merge and no defaulting on this
+route: one invalid field makes the complete shared scenario unavailable and no
+estimate request is sent. A valid alternate parameter order is replaced in
+browser history with the canonical ordering and empty navigation state. An
+invalid query or fragment is replaced with value-free `/estimate` after the
+fail-closed state is selected, so rejected private or malformed values do not
+remain on that history entry.
+
+The document performs no account bootstrap request. Its calculation uses the
+existing credential-free `POST /api/estimate`, whose response is still treated
+as untrusted and arithmetically reconciled by the browser. Copy explains that
+the result is recalculated against the current published rule and can therefore
+change; it never calls the link a frozen price or quote. Native Web Share is
+used when available, with copy-to-clipboard fallback, explicit success, a
+bounded accessible failure, and no scenario mutation on cancellation/failure.
+
+`GET` and `HEAD` return the normal SPA document with `Cache-Control: no-store`,
+`X-Robots-Tag: noindex,nofollow,noarchive`, `Referrer-Policy: no-referrer`, and
+the static production-root canonical link. `robots.txt` also disallows
+`/estimate`. These controls reduce search/referrer exposure but cannot guarantee
+de-indexing when a crawler honors `robots.txt` without fetching the response's
+`noindex` directive. They are not an access-control claim because the tuple is
+intentionally public.
 
 ## Public API contract
 
@@ -174,7 +226,8 @@ the Worker-owned rules. Invalid tuples remain blocked.
 - Stored estimator recovery parses an allowlist and returns only the five public
   fields. Corrupt, incomplete, or type-confused data is discarded rather than
   merged into a request.
-- Handoff stores a separate fixed `public_estimator` source marker and an opaque,
+- Handoff stores one allowlisted `public_estimator` or `shared_estimate` source
+  marker and an opaque,
   bounded project-creation idempotency key. Neither is an authentication token,
   project identifier, or user identity. The first local draft envelope consumes
   the estimator tuple/source/key from transient handoff state while retaining
@@ -254,17 +307,29 @@ the Worker-owned rules. Invalid tuples remain blocked.
    a successfully inserted project's response.
 9. Keyboard, screen-reader announcements, 390 px, 200% zoom/text spacing,
    reduced motion, no-horizontal-overflow, console, and network checks pass.
+10. A valid shared link performs a fresh credential-free server calculation;
+    missing, duplicate, unknown, malformed, unsupported, hashed, or out-of-range
+    inputs show one value-free invalid state and perform no estimate request.
+    The document is no-store/noindex/no-referrer and does not bootstrap auth.
+11. Native share, copy fallback, cancellation, and copy failure preserve the
+    tuple and expose clear accessible state. Continue carries only the tuple,
+    `shared_estimate` marker, and retry key into the existing exact-draft flow.
 
 ## Measurement and guardrails
 
-The shipped leading KPI is **daily attributed brief starts**: the daily count of
-`public_estimator_brief_started` events with surface `public_estimator` and
-outcome `success`. This is not a generic client event. When same-tab handoff
-navigation state or its refresh-safe storage mirror says `public_estimator`, the
-first-party client adds
-the exact `x-grihagrid-entry-point: public_estimator` header to that authenticated
-project-creation request. The Worker attempts the aggregate increment only after
-the validated project row has been inserted successfully.
+The shipped leading KPI is **daily attributed brief starts**. Landing-page
+handoffs increment `public_estimator_brief_started / public_estimator / success`;
+shared-link handoffs increment
+`shared_estimate_brief_started / shared_estimate / success`. Neither is a
+generic client event. The first-party client adds only the matching fixed entry
+point to the authenticated create request, and the Worker attempts one aggregate
+increment only after the validated project row has been inserted successfully.
+
+The primary DISC-07 readout is first-created projects attributed to
+`shared_estimate` over 7 and 30 days, plus their share of all estimator-attributed
+first creates. It is not labelled an anonymous conversion rate: no stable
+visitor/share identifier or denominator exists, and adding one requires a
+separate privacy review.
 
 Invalid or unauthorized creation attempts never reach measurement. Direct-start
 creation sends no attribution header and records no estimator start. The event
@@ -305,9 +370,11 @@ retry key for the immediate start journey. Once the visitor begins editing the
 full brief, one strict local envelope becomes the only persisted payload source.
 Navigation into authentication retains only the explicit continuation marker,
 matching retry key, expected write UUID/revision, and bounded source marker; it
-never mirrors the full brief into history or session storage. Project creation's aggregate table receives only a
-best-effort daily counter update after the first attributed insert; idempotent
-replay never increments it again.
+never mirrors the full brief into history or session storage. Project creation's
+existing aggregate table receives only a best-effort daily counter update after
+the first attributed insert; idempotent replay never increments it again.
+DISC-07 therefore warrants no `0018` migration: no shared scenario, token,
+anonymous visit, or browser identity is stored in D1 or KV.
 
 Project creation already validates the full request and calls the Worker-owned
 estimate calculation again before storing `input_json`, `estimate_json`, the

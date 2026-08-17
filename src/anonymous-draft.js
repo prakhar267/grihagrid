@@ -1,11 +1,13 @@
 import { validProjectCreationKey } from "./public-estimator.js";
 
 export const ANONYMOUS_DRAFT_STORAGE_KEY = "grihagrid.anonymousDraft.v1";
+export const ANONYMOUS_DRAFT_ATTRIBUTION_STORAGE_KEY = "grihagrid.anonymousDraftAttribution.v1";
 export const ANONYMOUS_DRAFT_LOCK_NAME = "grihagrid.anonymousDraft.v1.lock";
 export const ANONYMOUS_DRAFT_SCHEMA_VERSION = 1;
 export const ANONYMOUS_DRAFT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 const MAX_STORED_DRAFT_CHARACTERS = 12_000;
+const MAX_STORED_ATTRIBUTION_CHARACTERS = 256;
 const MAX_CLOCK_SKEW_MS = 5 * 60 * 1000;
 const PROJECT_CREATION_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 const ENVELOPE_FIELDS = Object.freeze([
@@ -20,6 +22,7 @@ const ENVELOPE_FIELDS = Object.freeze([
   "status",
   "draft",
 ]);
+const ATTRIBUTION_FIELDS = Object.freeze(["schemaVersion", "projectCreationKey", "entryPoint", "expiresAtMs"]);
 const DRAFT_FIELDS = Object.freeze([
   "name",
   "width",
@@ -55,6 +58,7 @@ const UNSAFE_TEXT_PATTERN = /[\p{Cc}\p{Cf}]/u;
 let ephemeralDraft = null;
 let ephemeralOnly = false;
 let ephemeralBaseline;
+let ephemeralAttribution = null;
 
 function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -134,6 +138,30 @@ function parseEnvelopeValue(value, nowMs) {
       || !STATUSES.includes(value.status)) return null;
   const draft = canonicalAnonymousProjectDraft(value.draft);
   return draft ? { ...value, draft } : null;
+}
+
+function parseAttributionValue(value, nowMs, allowExpired = false) {
+  if (!hasExactOwnKeys(value, ATTRIBUTION_FIELDS)
+      || value.schemaVersion !== 1
+      || !validCreationUuid(value.projectCreationKey)
+      || value.entryPoint !== "shared_estimate"
+      || !Number.isSafeInteger(value.expiresAtMs)
+      || (!allowExpired && (value.expiresAtMs <= nowMs
+        || value.expiresAtMs > nowMs + ANONYMOUS_DRAFT_RETENTION_MS + MAX_CLOCK_SKEW_MS))) return null;
+  return { ...value };
+}
+
+export function parseAnonymousDraftAttribution(value, nowMs = Date.now()) {
+  let parsed = value;
+  if (typeof value === "string") {
+    if (!value || value.length > MAX_STORED_ATTRIBUTION_CHARACTERS) return null;
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+  return parseAttributionValue(parsed, nowMs);
 }
 
 export function parseAnonymousDraftEnvelope(value, nowMs = Date.now()) {
@@ -226,6 +254,77 @@ function rawStoredDraft(storage) {
   } catch {
     return { available: false, raw: null };
   }
+}
+
+function rawStoredAttribution(storage) {
+  try {
+    return { available: Boolean(storage), raw: storage?.getItem(ANONYMOUS_DRAFT_ATTRIBUTION_STORAGE_KEY) ?? null };
+  } catch {
+    return { available: false, raw: null };
+  }
+}
+
+function matchingAttribution(record, envelope) {
+  return Boolean(record && envelope
+    && envelope.entryPoint === null
+    && record.projectCreationKey === envelope.projectCreationKey
+    && record.expiresAtMs === envelope.expiresAtMs);
+}
+
+export function readAnonymousDraftAttribution(storage, envelope, nowMs = Date.now(), purgeInvalid = true) {
+  const validEnvelope = parseAnonymousDraftEnvelope(envelope, nowMs);
+  if (!validEnvelope) return null;
+  const stored = rawStoredAttribution(storage);
+  if (stored.available) {
+    const record = stored.raw === null ? null : parseAnonymousDraftAttribution(stored.raw, nowMs);
+    if (stored.raw !== null && !record && purgeInvalid) {
+      try { storage.removeItem(ANONYMOUS_DRAFT_ATTRIBUTION_STORAGE_KEY); } catch { /* Attribution is optional. */ }
+    }
+    if (matchingAttribution(record, validEnvelope)) return record.entryPoint;
+  }
+  const ephemeral = parseAnonymousDraftAttribution(ephemeralAttribution, nowMs);
+  return matchingAttribution(ephemeral, validEnvelope) ? ephemeral.entryPoint : null;
+}
+
+export function retainAnonymousDraftAttribution(storage, envelope, entryPoint, nowMs = Date.now()) {
+  const validEnvelope = parseAnonymousDraftEnvelope(envelope, nowMs);
+  if (!validEnvelope || validEnvelope.entryPoint !== null) return null;
+  const existing = readAnonymousDraftAttribution(storage, validEnvelope, nowMs, false);
+  if (entryPoint !== "shared_estimate" && existing !== "shared_estimate") return null;
+  const record = {
+    schemaVersion: 1,
+    projectCreationKey: validEnvelope.projectCreationKey,
+    entryPoint: "shared_estimate",
+    expiresAtMs: validEnvelope.expiresAtMs,
+  };
+  ephemeralAttribution = record;
+  try {
+    storage?.setItem(ANONYMOUS_DRAFT_ATTRIBUTION_STORAGE_KEY, JSON.stringify(record));
+    const confirmed = parseAnonymousDraftAttribution(
+      storage?.getItem(ANONYMOUS_DRAFT_ATTRIBUTION_STORAGE_KEY),
+      nowMs,
+    );
+    return matchingAttribution(confirmed, validEnvelope) ? { ...record, persisted: true } : { ...record, persisted: false };
+  } catch {
+    return { ...record, persisted: false };
+  }
+}
+
+export function clearAnonymousDraftAttribution(storage, projectCreationKey, nowMs = Date.now()) {
+  const key = validCreationUuid(projectCreationKey);
+  if (!key) return false;
+  const stored = rawStoredAttribution(storage);
+  if (stored.available && stored.raw !== null) {
+    let parsed = null;
+    if (typeof stored.raw === "string" && stored.raw.length <= MAX_STORED_ATTRIBUTION_CHARACTERS) {
+      try { parsed = parseAttributionValue(JSON.parse(stored.raw), nowMs, true); } catch { /* Invalid owned state is removed below. */ }
+    }
+    if (!parsed || parsed.projectCreationKey === key) {
+      try { storage.removeItem(ANONYMOUS_DRAFT_ATTRIBUTION_STORAGE_KEY); } catch { return false; }
+    }
+  }
+  if (ephemeralAttribution?.projectCreationKey === key) ephemeralAttribution = null;
+  return true;
 }
 
 export function readAnonymousDraft(storage, nowMs = Date.now(), purgeInvalid = true) {
@@ -438,6 +537,9 @@ export function clearAnonymousDraft(storage, expected = null, nowMs = Date.now()
     ephemeralOnly = false;
     ephemeralBaseline = undefined;
   }
+  if (!conflict && !removeFailed && expected) {
+    if (!clearAnonymousDraftAttribution(storage, expected.projectCreationKey, nowMs)) removeFailed = true;
+  }
   return {
     ok: !conflict && !removeFailed,
     removed,
@@ -455,6 +557,7 @@ export function clearEphemeralAnonymousDraft(projectCreationKey = null) {
     ephemeralOnly = false;
     ephemeralBaseline = undefined;
   }
+  if (!projectCreationKey || ephemeralAttribution?.projectCreationKey === projectCreationKey) ephemeralAttribution = null;
 }
 
 export function anonymousDraftExpiryLabel(envelope, locale = "en-IN") {
@@ -480,9 +583,25 @@ export async function purgeInvalidAnonymousDraftOnBoot(windowObject = globalThis
         if (!storage) return "unavailable";
         const before = rawStoredDraft(storage);
         if (!before.available) return "unavailable";
-        if (before.raw === null) return "absent";
+        if (before.raw === null) {
+          const orphan = rawStoredAttribution(storage);
+          if (orphan.raw !== null) {
+            try { storage.removeItem(ANONYMOUS_DRAFT_ATTRIBUTION_STORAGE_KEY); } catch { return "unavailable"; }
+          }
+          return "absent";
+        }
         const valid = readAnonymousDraft(storage, nowMs, true);
-        if (valid) return "retained";
+        if (valid) {
+          const attribution = rawStoredAttribution(storage);
+          if (attribution.raw !== null) {
+            const parsed = parseAnonymousDraftAttribution(attribution.raw, nowMs);
+            if (!matchingAttribution(parsed, valid)) {
+              try { storage.removeItem(ANONYMOUS_DRAFT_ATTRIBUTION_STORAGE_KEY); } catch { return "unavailable"; }
+            }
+          }
+          return "retained";
+        }
+        try { storage.removeItem(ANONYMOUS_DRAFT_ATTRIBUTION_STORAGE_KEY); } catch { return "unavailable"; }
         const after = rawStoredDraft(storage);
         return after.available && after.raw === null ? "purged" : "unavailable";
       },

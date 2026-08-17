@@ -11,8 +11,12 @@ export const ESTIMATOR_CITIES = Object.freeze([
 
 export const ESTIMATOR_FLOORS = Object.freeze(["G", "G+1", "G+2"]);
 export const ESTIMATOR_QUALITIES = Object.freeze(["Essential", "Signature", "Premium", "Luxury"]);
+export const ESTIMATOR_ENTRY_POINTS = Object.freeze(["public_estimator", "shared_estimate"]);
 
 const ESTIMATOR_FIELDS = Object.freeze(["width", "length", "city", "floors", "quality"]);
+const SHARED_ESTIMATOR_VERSION = "1";
+const SHARED_ESTIMATOR_FIELDS = Object.freeze(["v", ...ESTIMATOR_FIELDS]);
+const MAX_SHARED_ESTIMATOR_SEARCH_LENGTH = 512;
 const ENVELOPE_FIELDS = Object.freeze(["input", "estimate", "basis"]);
 const BASIS_FIELDS = Object.freeze([
   "ruleVersion",
@@ -107,6 +111,53 @@ export function validateEstimatorScenario(value) {
   };
 }
 
+export function validEstimatorEntryPoint(value) {
+  return typeof value === "string" && ESTIMATOR_ENTRY_POINTS.includes(value) ? value : null;
+}
+
+function canonicalSharedDimension(value) {
+  if (typeof value !== "string" || value.length > 32
+      || !/^(?:0|[1-9]\d*)(?:\.\d+)?$/u.test(value)) return null;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && String(numeric) === value ? numeric : null;
+}
+
+export function buildSharedEstimatorPath(value) {
+  const result = validateEstimatorScenario(value);
+  if (!result.valid) throw new TypeError("Cannot share an invalid estimator scenario.");
+  const parameters = new URLSearchParams();
+  parameters.set("v", SHARED_ESTIMATOR_VERSION);
+  for (const field of ESTIMATOR_FIELDS) parameters.set(field, String(result.request[field]));
+  return `/estimate?${parameters.toString()}`;
+}
+
+export function parseSharedEstimatorSearch(value) {
+  if (typeof value !== "string" || !value.startsWith("?")
+      || value.length < 2 || value.length > MAX_SHARED_ESTIMATOR_SEARCH_LENGTH) return null;
+  const parameters = new URLSearchParams(value.slice(1));
+  const entries = [...parameters.entries()];
+  if (entries.length !== SHARED_ESTIMATOR_FIELDS.length
+      || SHARED_ESTIMATOR_FIELDS.some((field) => parameters.getAll(field).length !== 1)
+      || entries.some(([field]) => !SHARED_ESTIMATOR_FIELDS.includes(field))
+      || parameters.get("v") !== SHARED_ESTIMATOR_VERSION) return null;
+  const width = canonicalSharedDimension(parameters.get("width"));
+  const length = canonicalSharedDimension(parameters.get("length"));
+  if (width == null || length == null) return null;
+  const result = validateEstimatorScenario({
+    width,
+    length,
+    city: parameters.get("city"),
+    floors: parameters.get("floors"),
+    quality: parameters.get("quality"),
+  });
+  return result.valid ? result.request : null;
+}
+
+export function parseSharedEstimatorLocation(location) {
+  if (!location || location.pathname !== "/estimate" || location.hash) return null;
+  return parseSharedEstimatorSearch(location.search);
+}
+
 export function estimatorRequestKey(value) {
   const result = validateEstimatorScenario(value);
   if (!result.valid) {
@@ -143,9 +194,19 @@ export function readStoredEstimatorScenario(storage) {
   }
 }
 
-export function selectEstimatorScenario(storage, navigationState) {
-  return parseStoredEstimatorScenario(navigationState?.estimatorScenario)
-    || readStoredEstimatorScenario(storage);
+export function selectEstimatorScenario(storage, navigationState, projectCreationKey) {
+  const creationKey = validProjectCreationKey(projectCreationKey);
+  if (!creationKey) return null;
+  const navigationScenario = navigationState?.projectCreationKey === creationKey
+    ? parseStoredEstimatorScenario(navigationState?.estimatorScenario)
+    : null;
+  if (navigationScenario) return navigationScenario;
+  try {
+    if (storage?.getItem("grihagrid.estimatorCreationKey") !== creationKey) return null;
+  } catch {
+    return null;
+  }
+  return readStoredEstimatorScenario(storage);
 }
 
 export function validProjectCreationKey(value) {
@@ -163,13 +224,14 @@ export function selectAuthProjectCreationKey(storage, navigationState) {
   }
 }
 
-export function storeEstimatorHandoff(storage, scenario, projectCreationKey) {
+export function storeEstimatorHandoff(storage, scenario, projectCreationKey, entryPoint = "public_estimator") {
   const result = validateEstimatorScenario(scenario);
   const creationKey = validProjectCreationKey(projectCreationKey);
-  if (!result.valid || !creationKey) return false;
+  const source = validEstimatorEntryPoint(entryPoint);
+  if (!result.valid || !creationKey || !source) return false;
   try {
     storage?.setItem("grihagrid.estimator", JSON.stringify(result.request));
-    storage?.setItem("grihagrid.estimatorSource", "public_estimator");
+    storage?.setItem("grihagrid.estimatorSource", source);
     storage?.setItem("grihagrid.estimatorCreationKey", creationKey);
     return true;
   } catch {
@@ -177,17 +239,21 @@ export function storeEstimatorHandoff(storage, scenario, projectCreationKey) {
   }
 }
 
-export function isPublicEstimatorAttribution(storage, navigationState, projectCreationKey) {
+export function estimatorAttributionEntryPoint(storage, navigationState, projectCreationKey) {
   const creationKey = validProjectCreationKey(projectCreationKey);
-  if (!creationKey) return false;
+  if (!creationKey) return null;
   try {
-    if (storage?.getItem("grihagrid.estimatorSource") === "public_estimator"
-        && storage?.getItem("grihagrid.estimatorCreationKey") === creationKey) return true;
+    const storedSource = validEstimatorEntryPoint(storage?.getItem("grihagrid.estimatorSource"));
+    if (storedSource && storage?.getItem("grihagrid.estimatorCreationKey") === creationKey) return storedSource;
   } catch {
     // Blocked browser storage falls back to same-tab navigation state.
   }
-  return navigationState?.estimatorSource === "public_estimator"
-    && navigationState?.projectCreationKey === creationKey;
+  const navigationSource = validEstimatorEntryPoint(navigationState?.estimatorSource);
+  return navigationSource && navigationState?.projectCreationKey === creationKey ? navigationSource : null;
+}
+
+export function isPublicEstimatorAttribution(storage, navigationState, projectCreationKey) {
+  return estimatorAttributionEntryPoint(storage, navigationState, projectCreationKey) === "public_estimator";
 }
 
 export function safeSessionStorage(windowObject = globalThis.window) {
@@ -198,29 +264,38 @@ export function safeSessionStorage(windowObject = globalThis.window) {
   }
 }
 
+export function estimatorAttributionHeaders(storage, navigationState, projectCreationKey) {
+  const entryPoint = estimatorAttributionEntryPoint(storage, navigationState, projectCreationKey);
+  return entryPoint ? { "x-grihagrid-entry-point": entryPoint } : {};
+}
+
 export function publicEstimatorAttributionHeaders(storage, navigationState, projectCreationKey) {
   return isPublicEstimatorAttribution(storage, navigationState, projectCreationKey)
     ? { "x-grihagrid-entry-point": "public_estimator" }
     : {};
 }
 
-export function consumePublicEstimatorAttribution(storage) {
+export function consumeEstimatorAttribution(storage) {
   try {
-    const attributed = storage?.getItem("grihagrid.estimatorSource") === "public_estimator";
+    const entryPoint = validEstimatorEntryPoint(storage?.getItem("grihagrid.estimatorSource"));
     storage?.removeItem("grihagrid.estimator");
     storage?.removeItem("grihagrid.estimatorSource");
     storage?.removeItem("grihagrid.estimatorCreationKey");
-    return attributed;
+    return entryPoint;
   } catch {
-    return false;
+    return null;
   }
 }
 
+export function consumePublicEstimatorAttribution(storage) {
+  return consumeEstimatorAttribution(storage) === "public_estimator";
+}
+
 export function consumeEstimatorHandoffPayload(storage, navigationState) {
-  const attributed = consumePublicEstimatorAttribution(storage);
+  const entryPoint = consumeEstimatorAttribution(storage);
   const next = isRecord(navigationState) ? { ...navigationState } : {};
   delete next.estimatorScenario;
-  return { attributed, navigationState: next };
+  return { attributed: Boolean(entryPoint), entryPoint, navigationState: next };
 }
 
 function contractError(message) {

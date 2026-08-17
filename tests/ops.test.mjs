@@ -55,6 +55,17 @@ test("read-only smoke verifies health, readiness, estimate and fail-closed catal
         },
       });
     }
+    if (url.pathname === "/estimate") {
+      return new Response(init.method==="HEAD"?null:'<!doctype html><link rel="canonical" href="https://grihagrid.prakhargupta267.workers.dev/" />', {
+        headers: {
+          ...securityHeaders,
+          "content-type": "text/html; charset=utf-8",
+          "cache-control": "no-store",
+          "x-robots-tag": "noindex,nofollow,noarchive",
+          "referrer-policy": "no-referrer",
+        },
+      });
+    }
     if (url.pathname === "/api/health") {
       return Response.json({ status: "ok", service: "grihagrid", time: new Date().toISOString() }, { headers: { ...securityHeaders, "cache-control": "no-store" } });
     }
@@ -133,12 +144,14 @@ test("read-only smoke verifies health, readiness, estimate and fail-closed catal
 
   try {
     const result = await runSmoke("https://worker.example.test", { expectedReleaseId: "11111111-1111-4111-8111-111111111111" });
-    assert.equal(result.checks.length, 7);
+    assert.equal(result.checks.length, 9);
     assert.equal(result.checks.find((check) => check.path === "/api/readiness")?.attempts, 2);
     assert.deepEqual(requested, [
       { path: "/", method: "GET" },
       { path: "/share/report", method: "GET" },
       { path: "/share/report", method: "HEAD" },
+      { path: "/estimate", method: "GET" },
+      { path: "/estimate", method: "HEAD" },
       { path: "/api/health", method: "GET" },
       { path: "/api/estimate", method: "POST" },
       { path: "/api/commerce/catalog", method: "GET" },
@@ -166,7 +179,7 @@ test("read-only smoke verifies health, readiness, estimate and fail-closed catal
       expectReportHandoff: false,
     });
     assert.equal(closed.expectReportHandoff, false);
-    assert.equal(closed.checks.length, 7);
+    assert.equal(closed.checks.length, 9);
 
     requested.length = 0;
     readinessAttempts = 0;

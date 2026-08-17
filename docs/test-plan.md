@@ -453,6 +453,18 @@ interleaved within their own real-D1 fixtures.
 | Privacy | Inject extra keys, controls, bidi text, files, filenames, credentials, IDs, estimates and server output | The strict envelope rejects unknown/private fields; project-name text remains disclosed; the prompt reveals no project values and recovery copy accurately names plaintext browser-profile exposure |
 | Accessibility | Use keyboard, screen reader, 390 px, 200% zoom/text spacing, reduced motion and high contrast; follow step four directly into registration | Resume/Discard are initially visible at 390 px; status/error states have clear names, visible focus and announcements with no overlap or horizontal overflow; auth starts at scroll top with its focused H1 visible |
 
+## Shareable estimator manual acceptance matrix
+
+| Area | Test | Required result |
+|---|---|---|
+| Canonical tuple | Share, open, reorder parameters, edit, and share again | The address contains only version plus the five public inputs; valid links normalize to canonical order and each open performs a fresh `/api/estimate` calculation |
+| Strict parser | Omit, duplicate, add, case-change, type-confuse, overlength, hash, malformed-encode, or move every parameter outside 10–500 | One value-free invalid state appears, no partial default is rendered, no estimate/auth request is sent, and the rejected query/fragment is replaced with value-free `/estimate` in browser history |
+| Price authority | Tamper with DOM/history, replay a prior envelope, change the Worker rule fixture, and continue during loading/failure | No range exists in the URL/handoff; stale/malformed responses never render; project create recalculates the exact tuple and remains authoritative |
+| Share/copy | Exercise native success, user cancellation, native failure with clipboard fallback, legacy copy fallback, and copy denial | Status is announced without changing inputs; cancellation is quiet; total failure focuses a bounded accessible error and exposes no private data |
+| Continuation | Continue signed out and signed in, reload/resume, Save & exit, browser Back, fresh unrelated Start, and resume old draft K while shared handoff N is pending; then lose a successful response, replay, conflict, and double-submit | Only tuple, `shared_estimate`, and one UUID retry key cross the first boundary; stored tuple/source are exact-key-bound; resuming K consumes N without rebinding or attribution; the rollback-compatible v1 draft plus source-only sidecar preserve the brief without stale hydration; one project and one aggregate exist after first insert; replay/canary/failure add none |
+| Document privacy | Inspect GET/HEAD, page source, browser history/referrer, robots, logs, analytics, cookies, storage, D1, and KV | No-store/noindex/no-referrer and production-root canonical hold; no account bootstrap, scenario record, token, anonymous identifier, tuple log, or generic client event exists |
+| Accessibility and layout | Keyboard through inputs/basis/share/continue at 390 px and 200% zoom with text spacing, reduced motion, high contrast and print | Labels, status/error announcements, focus, 48 px mobile targets and reflow pass with no overlap/overflow; print omits share actions and navigation |
+
 ## Family Alignment manual acceptance matrix
 
 | Area | Test | Required result |

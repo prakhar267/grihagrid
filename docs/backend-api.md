@@ -459,17 +459,23 @@ draft frozen for retry. Full draft data never enters navigation history,
 `sessionStorage`, a cookie, a query, analytics, or operational logs. See
 `docs/anonymous-brief-resume.md`.
 
-The first-party estimator journey adds the exact header
-`x-grihagrid-entry-point: public_estimator` to this request only when its
-bounded same-tab navigation-state handoff or refresh-safe session-storage mirror
-carries that fixed source and a matching project-creation key.
+The first-party estimator journey adds exactly one allowlisted header,
+`x-grihagrid-entry-point: public_estimator` for a landing-page continuation or
+`x-grihagrid-entry-point: shared_estimate` for a shared-link continuation, only
+when bounded same-tab navigation state, its key-bound session handoff, or the
+strict local source-only sidecar carries that fixed source for the exact
+project-creation key. The sidecar has the draft's expiry but no scenario,
+account, browser identity, token, or server representation; the unchanged v1
+draft remains readable by the previous frontend during rollback.
 The header is bounded measurement metadata, not trusted project input and not
 an authorization signal. Only after authentication, CSRF, abuse controls,
 request validation, and the project insert succeed does the Worker best-effort
-increment the daily `public_estimator_brief_started` / `public_estimator` /
-`success` aggregate. Invalid, unauthorized, rejected, and direct-start requests
-record no estimator aggregate. Aggregate failure is logged without changing the
-inserted project or its `201` response.
+increment the matching daily `public_estimator_brief_started / public_estimator`
+or `shared_estimate_brief_started / shared_estimate` success aggregate. Release
+canary project names are deliberately excluded. Invalid, unauthorized, rejected,
+replayed, conflicting, and direct-start requests record no estimator aggregate.
+Aggregate failure is logged without changing the inserted project or its `201`
+response.
 
 ### `GET /api/projects?limit=50&offset=0`
 
@@ -886,10 +892,11 @@ without sending its project, revision, stage, or action.
 D1 stores daily name/surface/outcome counts—never an event stream, identity,
 resource ID, version, IP, free text, or client timestamp.
 
-`public_estimator_brief_started` and surface `public_estimator` are deliberately
-absent from these generic client allowlists. Direct submission of that event to
-`POST /api/events` returns `400 invalid_event`; its aggregate row can be created
-only by the successful project-insert path described above.
+`public_estimator_brief_started` / `public_estimator` and
+`shared_estimate_brief_started` / `shared_estimate` are deliberately absent from
+these generic client allowlists. Direct submission of either event to
+`POST /api/events` returns `400 invalid_event`; their aggregate rows can be
+created only by the successful first-project-insert path described above.
 
 `GET /api/events/aggregate?days=30` is an operator endpoint. It returns `404`
 unless a constant-time checked `METRICS_READ_TOKEN` bearer value is present and

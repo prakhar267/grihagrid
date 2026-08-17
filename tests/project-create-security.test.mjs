@@ -84,7 +84,9 @@ class MemoryD1 {
     this.sessions = [];
     this.projects = [];
     this.aggregates = [];
+    this.aggregateStatements = [];
     this.failAggregates = false;
+    this.failProjectInserts = false;
     this.projectReplayBarrier = null;
     this.projectLimitErrors = 0;
   }
@@ -137,6 +139,7 @@ class MemoryStatement {
 
   async run() {
     if (this.sql.startsWith("INSERT INTO projects")) {
+      if (this.db.failProjectInserts) throw new Error("synthetic project insert failure");
       const [
         id,
         user_id,
@@ -182,11 +185,15 @@ class MemoryStatement {
     }
     if (this.sql.startsWith("INSERT INTO product_event_aggregates")) {
       if (this.db.failAggregates) throw new Error("synthetic aggregate failure");
-      const existing = this.db.aggregates.find((row) => row.event_name === "public_estimator_brief_started");
+      const [eventName, surface] = this.values;
+      this.db.aggregateStatements.push({ sql: this.sql, values: [...this.values] });
+      const existing = this.db.aggregates.find((row) => (
+        row.event_name === eventName && row.surface === surface && row.outcome === "success"
+      ));
       if (existing) existing.event_count += 1;
       else this.db.aggregates.push({
-        event_name: "public_estimator_brief_started",
-        surface: "public_estimator",
+        event_name: eventName,
+        surface,
         outcome: "success",
         event_count: 1,
       });
@@ -507,23 +514,136 @@ test("public estimator attribution is server-tied to successful project creation
   assert.equal(db.aggregates[0].event_count, 1);
 });
 
+test("shared-estimate attribution accepts only the fixed server marker after a successful non-canary insert", async () => {
+  const db = new MemoryD1();
+  const auth = await seedAuth(db, 355);
+  const env = { ASSETS: assets, DB: db, GRIHAGRID_CACHE: new MemoryKv(), APP_ORIGIN: ORIGIN };
+
+  const rejected = await postProject(
+    env,
+    auth,
+    projectBody({ ...validInput, width: 2 }),
+    "203.0.113.55",
+    "shared_estimate",
+  );
+  assert.equal(rejected.response.status, 400, JSON.stringify(rejected.payload));
+  assert.equal(db.projects.length, 0);
+  assert.equal(db.aggregates.length, 0, "validation failures must not create attribution");
+
+  db.failProjectInserts = true;
+  const failedInsert = await postProject(
+    env,
+    auth,
+    projectBody(validInput, { name: "Failed shared insert" }),
+    "203.0.113.55",
+    "shared_estimate",
+  );
+  db.failProjectInserts = false;
+  assert.equal(failedInsert.response.status, 500, JSON.stringify(failedInsert.payload));
+  assert.equal(db.projects.length, 0);
+  assert.equal(db.aggregates.length, 0, "a failed database insert must not create attribution");
+
+  const forgedMarkers = [
+    "shared-estimate",
+    "shared__estimate",
+    "SHARED_ESTIMATE",
+    "shared_estimate?width=30",
+    "public_estimator,shared_estimate",
+  ];
+  for (const [index, marker] of forgedMarkers.entries()) {
+    const forged = await postProject(
+      env,
+      auth,
+      projectBody(validInput, { name: `Forged shared marker ${index + 1}` }),
+      `203.0.113.${60 + index}`,
+      marker,
+    );
+    assert.equal(forged.response.status, 201, `${marker}: ${JSON.stringify(forged.payload)}`);
+  }
+  assert.equal(db.projects.length, forgedMarkers.length);
+  assert.equal(db.aggregates.length, 0, "near-match or compound client markers must be ignored");
+
+  const canaryName = "Release canary 123e4567-e89b-42d3-a456-426614174000";
+  const canary = await postProject(
+    env,
+    auth,
+    projectBody(validInput, { name: canaryName }),
+    "203.0.113.70",
+    "shared_estimate",
+  );
+  assert.equal(canary.response.status, 201, JSON.stringify(canary.payload));
+  assert.equal(db.aggregates.length, 0, "the exact release-canary lifecycle must not inflate customer attribution");
+
+  const attributed = await postProject(
+    env,
+    auth,
+    projectBody(validInput, { name: "Shared-estimate customer project" }),
+    "203.0.113.71",
+    "shared_estimate",
+  );
+  assert.equal(attributed.response.status, 201, JSON.stringify(attributed.payload));
+  assert.deepEqual(db.aggregates, [{
+    event_name: "shared_estimate_brief_started",
+    surface: "shared_estimate",
+    outcome: "success",
+    event_count: 1,
+  }]);
+  assert.equal(db.aggregateStatements.length, 1);
+  assert.deepEqual(db.aggregateStatements[0].values.slice(0, 2), [
+    "shared_estimate_brief_started",
+    "shared_estimate",
+  ]);
+  assert.equal(db.aggregateStatements[0].values.length, 3, "only fixed dimensions plus updated_at may be bound");
+  assert.match(db.aggregateStatements[0].values[2], /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/u);
+  assert.match(
+    db.aggregateStatements[0].sql,
+    /VALUES \(date\('now'\),\?,\?,'success',1,\?\)/u,
+    "outcome and increment must be fixed in server SQL",
+  );
+  const aggregateEvidence = JSON.stringify({
+    rows: db.aggregates,
+    values: db.aggregateStatements[0].values,
+  });
+  for (const forbidden of [canaryName, "Shared-estimate customer project", "width", "Pune", auth.userId]) {
+    assert.equal(aggregateEvidence.includes(forbidden), false, `aggregate evidence retained forbidden value: ${forbidden}`);
+  }
+
+  const directEvent = await worker.fetch(new Request(`${ORIGIN}/api/events`, {
+    method: "POST",
+    headers: {
+      origin: ORIGIN,
+      "content-type": "application/json",
+      cookie: auth.cookie,
+      "x-csrf-token": auth.csrf,
+      "cf-connecting-ip": "203.0.113.72",
+    },
+    body: JSON.stringify({
+      event: "shared_estimate_brief_started",
+      properties: { surface: "shared_estimate", outcome: "success" },
+    }),
+  }), env);
+  assert.equal(directEvent.status, 400);
+  assert.equal((await directEvent.json()).code, "invalid_event");
+  assert.equal(db.aggregates[0].event_count, 1, "the generic event API must not forge server attribution");
+});
+
 test("project creation safely replays an ambiguous successful response", async () => {
   const db = new MemoryD1();
   const auth = await seedAuth(db, 360);
   const env = { ASSETS: assets, DB: db, GRIHAGRID_CACHE: new MemoryKv(), APP_ORIGIN: ORIGIN };
-  const key = "public-estimator-draft-0001";
+  const key = "shared-estimate-draft-0001";
 
   const invalidKey = await postProject(env, auth, projectBody(), "203.0.113.10", null, "bad key!");
   assert.equal(invalidKey.response.status, 400);
   assert.equal(invalidKey.payload.code, "invalid_idempotency_key");
   assert.equal(db.projects.length, 0);
 
-  const created = await postProject(env, auth, projectBody(), "203.0.113.10", "public_estimator", key);
+  const created = await postProject(env, auth, projectBody(), "203.0.113.10", "shared_estimate", key);
   assert.equal(created.response.status, 201, JSON.stringify(created.payload));
   assert.equal(db.projects.length, 1);
   assert.equal(db.aggregates[0].event_count, 1);
 
-  const replayed = await postProject(env, auth, projectBody(), "203.0.113.10", "public_estimator", key);
+  const replayed = await postProject(env, auth, projectBody(), "203.0.113.10", "shared_estimate", key);
   assert.equal(replayed.response.status, 200, JSON.stringify(replayed.payload));
   assert.equal(replayed.payload.project.id, created.payload.project.id);
   assert.deepEqual(replayed.payload.project.input, created.payload.project.input);
@@ -536,7 +656,7 @@ test("project creation safely replays an ambiguous successful response", async (
     auth,
     projectBody(validInput, { name: "Different project" }),
     "203.0.113.10",
-    "public_estimator",
+    "shared_estimate",
     key,
   );
   assert.equal(conflict.response.status, 409);
@@ -566,8 +686,8 @@ test("concurrent project creation reconciles the canonical idempotency row", asy
     const { auth, db, env } = await fixture();
     const key = "concurrent-project-create-0001";
     const results = await Promise.all([
-      postProject(env, auth, projectBody(), "203.0.113.10", "public_estimator", key),
-      postProject(env, auth, projectBody(), "203.0.113.10", "public_estimator", key),
+      postProject(env, auth, projectBody(), "203.0.113.10", "shared_estimate", key),
+      postProject(env, auth, projectBody(), "203.0.113.10", "shared_estimate", key),
     ]);
 
     assert.deepEqual(results.map(({ response }) => response.status).sort(), [200, 201]);
@@ -575,8 +695,8 @@ test("concurrent project creation reconciles the canonical idempotency row", asy
     assert.equal(db.projects.length, 1, "the concurrent retry must not create a duplicate project");
     assert.equal(db.projectLimitErrors, 0, "the under-cap test must exercise the unique-index path");
     assert.deepEqual(db.aggregates, [{
-      event_name: "public_estimator_brief_started",
-      surface: "public_estimator",
+      event_name: "shared_estimate_brief_started",
+      surface: "shared_estimate",
       outcome: "success",
       event_count: 1,
     }], "only the winning insert may increment attribution");
@@ -602,8 +722,8 @@ test("concurrent project creation reconciles the canonical idempotency row", asy
     const { auth, db, env } = await fixture(49);
     const key = "concurrent-project-create-0003";
     const results = await Promise.all([
-      postProject(env, auth, projectBody(), "203.0.113.10", "public_estimator", key),
-      postProject(env, auth, projectBody(), "203.0.113.10", "public_estimator", key),
+      postProject(env, auth, projectBody(), "203.0.113.10", "shared_estimate", key),
+      postProject(env, auth, projectBody(), "203.0.113.10", "shared_estimate", key),
     ]);
 
     assert.deepEqual(results.map(({ response }) => response.status).sort(), [200, 201]);
@@ -611,8 +731,8 @@ test("concurrent project creation reconciles the canonical idempotency row", asy
     assert.equal(db.projects.length, 50, "the concurrent retry must not create project 51");
     assert.equal(db.projectLimitErrors, 1, "the test must exercise the database account-limit race");
     assert.deepEqual(db.aggregates, [{
-      event_name: "public_estimator_brief_started",
-      surface: "public_estimator",
+      event_name: "shared_estimate_brief_started",
+      surface: "shared_estimate",
       outcome: "success",
       event_count: 1,
     }], "only the winning boundary insert may increment attribution");

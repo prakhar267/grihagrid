@@ -2,13 +2,20 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   ESTIMATOR_CITIES,
+  ESTIMATOR_ENTRY_POINTS,
   ESTIMATOR_FLOORS,
   ESTIMATOR_QUALITIES,
+  buildSharedEstimatorPath,
+  consumeEstimatorAttribution,
   consumeEstimatorHandoffPayload,
   consumePublicEstimatorAttribution,
+  estimatorAttributionEntryPoint,
+  estimatorAttributionHeaders,
   estimatorRequestKey,
   isPublicEstimatorAttribution,
   normalizePublicEstimateEnvelope,
+  parseSharedEstimatorLocation,
+  parseSharedEstimatorSearch,
   parseStoredEstimatorScenario,
   publicEstimatorAttributionHeaders,
   readStoredEstimatorScenario,
@@ -16,6 +23,7 @@ import {
   selectAuthProjectCreationKey,
   selectEstimatorScenario,
   storeEstimatorHandoff,
+  validEstimatorEntryPoint,
   validateEstimatorScenario,
 } from "../src/public-estimator.js";
 
@@ -66,11 +74,141 @@ function validEnvelope(input = puneRequest) {
 
 test("estimator options expose the complete supported public tuple", () => {
   assert.deepEqual(ESTIMATOR_CITIES, ["Pune", "Bengaluru", "Mumbai", "Delhi", "Hyderabad", "Chennai", "Jaipur", "Other"]);
+  assert.deepEqual(ESTIMATOR_ENTRY_POINTS, ["public_estimator", "shared_estimate"]);
   assert.deepEqual(ESTIMATOR_FLOORS, ["G", "G+1", "G+2"]);
   assert.deepEqual(ESTIMATOR_QUALITIES, ["Essential", "Signature", "Premium", "Luxury"]);
   assert.equal(Object.isFrozen(ESTIMATOR_CITIES), true);
+  assert.equal(Object.isFrozen(ESTIMATOR_ENTRY_POINTS), true);
   assert.equal(Object.isFrozen(ESTIMATOR_FLOORS), true);
   assert.equal(Object.isFrozen(ESTIMATOR_QUALITIES), true);
+  assert.equal(validEstimatorEntryPoint("public_estimator"), "public_estimator");
+  assert.equal(validEstimatorEntryPoint("shared_estimate"), "shared_estimate");
+  for (const invalid of [null, undefined, "", "shared-estimate", "SHARED_ESTIMATE", new String("shared_estimate"), ["shared_estimate"]]) {
+    assert.equal(validEstimatorEntryPoint(invalid), null);
+  }
+});
+
+test("shared estimator paths are deterministic, versioned, and contain only the five public inputs", () => {
+  const path = buildSharedEstimatorPath({
+    ...puneRequest,
+    address: "must-not-survive",
+    projectId: "must-not-survive",
+    accountId: "must-not-survive",
+    estimate: { lowInr: 1, highInr: 2 },
+    token: "must-not-survive",
+  });
+  assert.equal(
+    path,
+    "/estimate?v=1&width=30&length=50&city=Pune&floors=G%2B1&quality=Signature",
+  );
+  const url = new URL(path, "https://grihagrid.example");
+  assert.deepEqual(
+    [...url.searchParams.keys()],
+    ["v", "width", "length", "city", "floors", "quality"],
+  );
+  assert.equal(url.origin, "https://grihagrid.example");
+  assert.equal(url.pathname, "/estimate");
+  assert.equal(url.hash, "");
+  assert.equal(path.includes("must-not-survive"), false);
+  assert.deepEqual(parseSharedEstimatorSearch(url.search), puneRequest);
+
+  const decimal = { ...puneRequest, width: 30.5, length: 50.25, city: "Other", floors: "G+2", quality: "Luxury" };
+  assert.deepEqual(
+    parseSharedEstimatorSearch(new URL(buildSharedEstimatorPath(decimal), "https://grihagrid.example").search),
+    decimal,
+  );
+  for (const invalid of [
+    null,
+    [],
+    { ...puneRequest, width: "30" },
+    { ...puneRequest, width: 9.99 },
+    { ...puneRequest, city: "Kolkata" },
+  ]) assert.throws(() => buildSharedEstimatorPath(invalid), /invalid estimator scenario/iu);
+});
+
+test("shared estimator parsing fails closed on missing, duplicate, unknown, malformed, and oversized parameters", () => {
+  const valid = new URL(buildSharedEstimatorPath(puneRequest), "https://grihagrid.example").search;
+  const fields = ["v", "width", "length", "city", "floors", "quality"];
+
+  for (const field of fields) {
+    const missing = new URLSearchParams(valid.slice(1));
+    missing.delete(field);
+    assert.equal(parseSharedEstimatorSearch(`?${missing}`), null, `missing ${field}`);
+
+    const duplicate = new URLSearchParams(valid.slice(1));
+    duplicate.append(field, duplicate.get(field));
+    assert.equal(parseSharedEstimatorSearch(`?${duplicate}`), null, `duplicate ${field}`);
+  }
+
+  for (const suffix of [
+    "&address=12+Private+Road",
+    "&projectId=123e4567-e89b-42d3-a456-426614174000",
+    "&account=owner%40example.test",
+    "&token=secret",
+    "&estimate%5BlowInr%5D=1",
+    "&%77idth=31",
+  ]) assert.equal(parseSharedEstimatorSearch(`${valid}${suffix}`), null, suffix);
+
+  for (const malformed of [
+    null,
+    undefined,
+    "",
+    "?",
+    valid.slice(1),
+    "?v=2&width=30&length=50&city=Pune&floors=G%2B1&quality=Signature",
+    "?v=%&width=30&length=50&city=Pune&floors=G%2B1&quality=Signature",
+    "?v=1&width=30&length=50&city=%&floors=G%2B1&quality=Signature",
+    "?v=1&width=30&length=50&city=Pune&floors=G+1&quality=Signature",
+    `?${"x".repeat(512)}`,
+  ]) assert.equal(parseSharedEstimatorSearch(malformed), null, String(malformed));
+});
+
+test("shared estimator dimensions require canonical decimal text and remain inside public bounds", () => {
+  const withDimension = (field, value) => {
+    const parameters = new URLSearchParams(new URL(buildSharedEstimatorPath(puneRequest), "https://grihagrid.example").search);
+    parameters.set(field, value);
+    return `?${parameters}`;
+  };
+  for (const field of ["width", "length"]) {
+    for (const value of [
+      "030",
+      "30.0",
+      "30.",
+      ".30",
+      "+30",
+      "-30",
+      "3e1",
+      "0x1e",
+      "NaN",
+      "Infinity",
+      " 30",
+      "30 ",
+      "9.999",
+      "500.001",
+      "1".repeat(33),
+    ]) assert.equal(parseSharedEstimatorSearch(withDimension(field, value)), null, `${field}=${value}`);
+    assert.equal(parseSharedEstimatorSearch(withDimension(field, "10"))?.[field], 10);
+    assert.equal(parseSharedEstimatorSearch(withDimension(field, "500"))?.[field], 500);
+    assert.equal(parseSharedEstimatorSearch(withDimension(field, "30.125"))?.[field], 30.125);
+  }
+});
+
+test("valid noncanonical parameter ordering parses once and rebuilds to the canonical address", () => {
+  const reordered = "?quality=Signature&floors=G%2B1&city=Pune&length=50&width=30&v=1";
+  const parsed = parseSharedEstimatorSearch(reordered);
+  assert.deepEqual(parsed, puneRequest);
+  assert.equal(
+    buildSharedEstimatorPath(parsed),
+    "/estimate?v=1&width=30&length=50&city=Pune&floors=G%2B1&quality=Signature",
+  );
+  assert.deepEqual(parseSharedEstimatorLocation({ pathname: "/estimate", search: reordered, hash: "" }), puneRequest);
+  for (const location of [
+    null,
+    { pathname: "/", search: reordered, hash: "" },
+    { pathname: "/estimate/", search: reordered, hash: "" },
+    { pathname: "/estimate", search: reordered, hash: "#private" },
+    { pathname: "/estimate", search: "", hash: "" },
+  ]) assert.equal(parseSharedEstimatorLocation(location), null);
 });
 
 test("scenario validation accepts inclusive dimension bounds and returns an allowlisted request", () => {
@@ -144,17 +282,29 @@ test("stored estimator parsing returns only allowlisted valid fields", () => {
   }
 });
 
-test("current navigation state wins over stale readable storage", () => {
+test("scenario selection is bound to the current retry key and ignores stale handoffs", () => {
   const stale = { ...puneRequest, city: "Jaipur", quality: "Essential" };
   const current = { ...puneRequest, city: "Bengaluru", quality: "Premium" };
+  const currentKey = "project-create-key-0001";
+  const staleKey = "project-create-key-0002";
   const storage = {
     getItem(key) {
       if (key === "grihagrid.estimator") return JSON.stringify(stale);
+      if (key === "grihagrid.estimatorCreationKey") return staleKey;
       return null;
     },
   };
-  assert.deepEqual(selectEstimatorScenario(storage, { estimatorScenario: current }), current);
-  assert.deepEqual(selectEstimatorScenario(storage, {}), stale);
+  assert.deepEqual(selectEstimatorScenario(storage, {
+    estimatorScenario: current,
+    projectCreationKey: currentKey,
+  }, currentKey), current);
+  assert.deepEqual(selectEstimatorScenario(storage, {}, staleKey), stale);
+  assert.equal(selectEstimatorScenario(storage, {}, currentKey), null);
+  assert.equal(selectEstimatorScenario(storage, {}, null), null);
+  assert.deepEqual(selectEstimatorScenario(storage, {
+    estimatorScenario: current,
+    projectCreationKey: currentKey,
+  }, staleKey), stale);
 });
 
 test("auth retry-key recovery requires an explicit continuation", () => {
@@ -170,6 +320,7 @@ test("auth retry-key recovery requires an explicit continuation", () => {
   assert.equal(selectAuthProjectCreationKey(storage, {
     projectContinuation: true,
     projectCreationKey: "navigation-project-key-0002",
+    estimatorSource: "shared_estimate",
   }), "navigation-project-key-0002");
 });
 
@@ -218,8 +369,126 @@ test("the first anonymous envelope consumes every estimator payload source", () 
     projectCreationKey: "project-create-key-0001",
     estimatorSource: "public_estimator",
   });
-  assert.equal(selectEstimatorScenario(storage, consumed.navigationState), null);
+  assert.equal(selectEstimatorScenario(
+    storage,
+    consumed.navigationState,
+    consumed.navigationState.projectCreationKey,
+  ), null);
   assert.equal(values.size, 0);
+});
+
+test("shared-estimate handoff stores only the tuple, source, and exact retry key", () => {
+  const projectCreationKey = "project-create-key-0001";
+  const values = new Map([["unrelated", "preserve"]]);
+  const storage = {
+    getItem(key) { return values.get(key) ?? null; },
+    setItem(key, value) { values.set(key, String(value)); },
+    removeItem(key) { values.delete(key); },
+  };
+  assert.equal(storeEstimatorHandoff(storage, {
+    ...puneRequest,
+    address: "must-not-survive",
+    accountId: "must-not-survive",
+    estimate: { lowInr: 1, highInr: 2 },
+    token: "must-not-survive",
+  }, projectCreationKey, "shared_estimate"), true);
+  assert.deepEqual([...values.keys()].sort(), [
+    "grihagrid.estimator",
+    "grihagrid.estimatorCreationKey",
+    "grihagrid.estimatorSource",
+    "unrelated",
+  ]);
+  assert.deepEqual(JSON.parse(values.get("grihagrid.estimator")), puneRequest);
+  assert.equal(values.get("grihagrid.estimatorSource"), "shared_estimate");
+  assert.equal(values.get("grihagrid.estimatorCreationKey"), projectCreationKey);
+  assert.equal(JSON.stringify([...values]).includes("must-not-survive"), false);
+  assert.equal(estimatorAttributionEntryPoint(storage, {}, projectCreationKey), "shared_estimate");
+  assert.deepEqual(estimatorAttributionHeaders(storage, {}, projectCreationKey), {
+    "x-grihagrid-entry-point": "shared_estimate",
+  });
+  assert.equal(isPublicEstimatorAttribution(storage, {}, projectCreationKey), false);
+
+  const consumed = consumeEstimatorHandoffPayload(storage, {
+    projectContinuation: true,
+    projectCreationKey,
+    estimatorSource: "shared_estimate",
+    estimatorScenario: puneRequest,
+    anonymousDraftWriteId: "123e4567-e89b-42d3-a456-426614174001",
+    anonymousDraftRevision: 2,
+  });
+  assert.deepEqual(consumed, {
+    attributed: true,
+    entryPoint: "shared_estimate",
+    navigationState: {
+      projectContinuation: true,
+      projectCreationKey,
+      estimatorSource: "shared_estimate",
+      anonymousDraftWriteId: "123e4567-e89b-42d3-a456-426614174001",
+      anonymousDraftRevision: 2,
+    },
+  });
+  assert.equal(values.get("grihagrid.estimator"), undefined);
+  assert.equal(values.get("grihagrid.estimatorSource"), undefined);
+  assert.equal(values.get("grihagrid.estimatorCreationKey"), undefined);
+  assert.equal(values.get("unrelated"), "preserve");
+  assert.equal(estimatorAttributionEntryPoint(storage, {}, projectCreationKey), null);
+  assert.deepEqual(estimatorAttributionHeaders(storage, {}, projectCreationKey), {});
+});
+
+test("shared-estimate attribution uses exact key-bound storage and a bounded navigation fallback", () => {
+  const key = "project-create-key-0001";
+  const otherKey = "project-create-key-0002";
+  const values = new Map([
+    ["grihagrid.estimator", JSON.stringify(puneRequest)],
+    ["grihagrid.estimatorSource", "shared_estimate"],
+    ["grihagrid.estimatorCreationKey", key],
+  ]);
+  const storage = {
+    getItem(storageKey) { return values.get(storageKey) ?? null; },
+    removeItem(storageKey) { values.delete(storageKey); },
+  };
+  assert.equal(estimatorAttributionEntryPoint(storage, {
+    estimatorSource: "public_estimator",
+    projectCreationKey: key,
+  }, key), "shared_estimate", "the exact stored handoff wins over conflicting navigation state");
+  assert.equal(estimatorAttributionEntryPoint(storage, {}, otherKey), null);
+  assert.deepEqual(estimatorAttributionHeaders(storage, {}, otherKey), {});
+
+  const blocked = {
+    getItem() { throw new DOMException("blocked", "SecurityError"); },
+    setItem() { throw new DOMException("blocked", "SecurityError"); },
+    removeItem() { throw new DOMException("blocked", "SecurityError"); },
+  };
+  const navigation = { estimatorSource: "shared_estimate", projectCreationKey: key };
+  assert.equal(estimatorAttributionEntryPoint(blocked, navigation, key), "shared_estimate");
+  assert.deepEqual(estimatorAttributionHeaders(blocked, navigation, key), {
+    "x-grihagrid-entry-point": "shared_estimate",
+  });
+  assert.equal(estimatorAttributionEntryPoint(blocked, navigation, otherKey), null);
+  assert.equal(estimatorAttributionEntryPoint(blocked, { ...navigation, estimatorSource: "forged" }, key), null);
+  assert.equal(storeEstimatorHandoff(blocked, puneRequest, key, "shared_estimate"), false);
+});
+
+test("unknown estimator sources never persist, attribute, or survive one-time consumption", () => {
+  const key = "project-create-key-0001";
+  const storage = {
+    values: new Map([["unrelated", "preserve"]]),
+    getItem(storageKey) { return this.values.get(storageKey) ?? null; },
+    setItem(storageKey, value) { this.values.set(storageKey, String(value)); },
+    removeItem(storageKey) { this.values.delete(storageKey); },
+  };
+  for (const source of [null, "", "shared-estimate", "forged", { value: "shared_estimate" }]) {
+    assert.equal(storeEstimatorHandoff(storage, puneRequest, key, source), false);
+    assert.deepEqual([...storage.values], [["unrelated", "preserve"]]);
+    assert.equal(estimatorAttributionEntryPoint(storage, { estimatorSource: source, projectCreationKey: key }, key), null);
+  }
+
+  storage.values.set("grihagrid.estimator", JSON.stringify(puneRequest));
+  storage.values.set("grihagrid.estimatorSource", "shared_estimate");
+  storage.values.set("grihagrid.estimatorCreationKey", key);
+  assert.equal(consumeEstimatorAttribution(storage), "shared_estimate");
+  assert.equal(consumeEstimatorAttribution(storage), null);
+  assert.deepEqual([...storage.values], [["unrelated", "preserve"]]);
 });
 
 test("estimator handoff survives blocked storage through bounded navigation state", () => {

@@ -76,6 +76,7 @@ test("public handoff route is anonymous, exact, identity-free, and handles stabl
   const {app,publicPage}=await sources();
   const appComponent=app.slice(app.indexOf("export function App()"));
   assert.match(app,/function isPublicReportSharePath\(pathname\) \{[\s\S]*?return pathname==="\/share\/report"/u);
+  assert.match(app,/function isAuthenticationFreePath\(pathname\) \{[\s\S]*?isPublicReportSharePath\(pathname\)/u);
   assert.match(app,/if\(path==='\/share\/report'\)return <SharedReportPage\/>/u);
   assert.match(app,/path==='\/share\/report'\?'Professional handoff — GrihaGrid'/u);
   assert.match(publicPage,/publicApi\("\/api\/shared\/report",\{method:"POST",body:\{token\},signal\}\)/u);
@@ -89,9 +90,9 @@ test("public handoff route is anonymous, exact, identity-free, and handles stabl
   assert.match(publicPage,/Planning evidence for a professional conversation\./u);
   assert.doesNotMatch(publicPage,/for professional review|Report generated|generatedAt|schemaVersion/iu);
   assert.match(publicPage,/This page contains only the report sections the owner selected\./u);
-  assert.match(appComponent,/useState\(\(\)=>isPublicReportSharePath\(window\.location\.pathname\)\?null:undefined\)/u);
-  assert.match(appComponent,/if\(isPublicReportSharePath\(path\)\)\{[\s\S]*?authenticatedSession\.current=false;setUser\(null\);return\}[\s\S]*?api\('\/api\/auth\/me'\)/u,"initial public report loads must not bootstrap a credentialed session");
-  assert.match(appComponent,/if\(isPublicReportSharePath\(pathname\)\)\{authenticatedSession\.current=false;setUser\(null\);return\}[\s\S]*?if\(checking\|\|!shouldRevalidateSession/u,"focus and resume must not revalidate a session on a public report");
+  assert.match(appComponent,/useState\(\(\)=>isAuthenticationFreePath\(window\.location\.pathname\)\?null:undefined\)/u);
+  assert.match(appComponent,/if\(isAuthenticationFreePath\(path\)\)\{[\s\S]*?authenticatedSession\.current=false;setUser\(null\);return\}[\s\S]*?api\('\/api\/auth\/me'\)/u,"initial public report loads must not bootstrap a credentialed session");
+  assert.match(appComponent,/if\(isAuthenticationFreePath\(pathname\)\)\{authenticatedSession\.current=false;setUser\(null\);return\}[\s\S]*?if\(checking\|\|!shouldRevalidateSession/u,"focus and resume must not revalidate a session on a public report");
   assert.match(publicPage,/window\.addEventListener\("hashchange",refreshCapability\)/u);
   assert.match(publicPage,/token!==capabilityRef\.current/u,"a stale capability response must not replace a newer fragment");
   for(const forbidden of ["projectId","userId","email","projectName","contentHash","sourceInputHash","JSON.stringify"]){

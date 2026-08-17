@@ -152,6 +152,10 @@ const REPORT_SHARE_EVENT_NAMES = new Set([
   "report_handoff_opened",
   "report_handoff_link_revoked",
 ]);
+const ESTIMATOR_ENTRY_POINT_AGGREGATES = Object.freeze({
+  public_estimator: Object.freeze({ eventName: "public_estimator_brief_started", surface: "public_estimator" }),
+  shared_estimate: Object.freeze({ eventName: "shared_estimate_brief_started", surface: "shared_estimate" }),
+});
 const PRODUCT_EVENT_SURFACES = new Set(["project_home", "owner_compare", "family_review", "checkout", "orders", "artifact", "public_share", "unknown"]);
 const PRODUCT_EVENT_OUTCOMES = new Set(["success", "failure", "saved", "preview", "cancelled", "unknown"]);
 const FAMILY_ALIGNMENT_ROLES = new Set(["spouse", "parent", "sibling", "advisor", "other"]);
@@ -669,20 +673,24 @@ async function reportShareEvent(db, eventName, surface, projectName) {
   }
 }
 
-async function publicEstimatorBriefStarted(db, request) {
-  if (request.headers.get("x-grihagrid-entry-point") !== "public_estimator") return;
+async function estimatorBriefStarted(db, request, projectName) {
+  const entryPoint = request.headers.get("x-grihagrid-entry-point") || "";
+  const aggregate = Object.hasOwn(ESTIMATOR_ENTRY_POINT_AGGREGATES, entryPoint)
+    ? ESTIMATOR_ENTRY_POINT_AGGREGATES[entryPoint]
+    : null;
+  if (!aggregate || isReleaseCanaryProjectName(projectName)) return;
   try {
     const now = sqliteTimestamp();
     await db.prepare(
       `INSERT INTO product_event_aggregates
          (event_day,event_name,surface,outcome,event_count,updated_at)
-       VALUES (date('now'),'public_estimator_brief_started','public_estimator','success',1,?)
+       VALUES (date('now'),?,?,'success',1,?)
        ON CONFLICT(event_day,event_name,surface,outcome)
        DO UPDATE SET event_count=event_count+1,updated_at=excluded.updated_at`,
-    ).bind(now).run();
+    ).bind(aggregate.eventName, aggregate.surface, now).run();
   } catch {
     // Attribution is aggregate-only and ancillary; it must never falsify a successful project creation.
-    console.error("Public estimator aggregate recording failed");
+    console.error("Estimator attribution aggregate recording failed");
   }
 }
 
@@ -3434,7 +3442,7 @@ async function createProject(request, env) {
     }
     throw error;
   }
-  await publicEstimatorBriefStarted(db, request);
+  await estimatorBriefStarted(db, request, name);
   return json({ project: {
     id,
     name,
@@ -8016,6 +8024,17 @@ function protectPublicReportDocument(response) {
   });
 }
 
+function protectSharedEstimatorDocument(response) {
+  const headers = new Headers(response.headers);
+  headers.set("cache-control", "no-store");
+  headers.set("x-robots-tag", "noindex,nofollow,noarchive");
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 function logOperationalRequest(request, env, response, startedAt, requestId) {
   if (!env.APP_ENV) return;
   const url = new URL(request.url);
@@ -8058,6 +8077,9 @@ export default {
     }
     if (url.pathname === "/share/report" && ["GET", "HEAD"].includes(request.method)) {
       finalResponse = protectPublicReportDocument(finalResponse);
+    }
+    if (url.pathname === "/estimate" && ["GET", "HEAD"].includes(request.method)) {
+      finalResponse = protectSharedEstimatorDocument(finalResponse);
     }
     logOperationalRequest(request, env, finalResponse, startedAt, requestId);
     return withRequestId(finalResponse, requestId);
