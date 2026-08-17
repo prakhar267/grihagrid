@@ -137,7 +137,7 @@ test("cleanup SQL deletes only the observed new-session delta within the exact a
   assert.match(sql, new RegExp(OTHER_NEW_SESSION, "u"));
   assert.doesNotMatch(sql, new RegExp(BASELINE_SESSION, "u"));
   assert.match(sql, new RegExp(`user_id = '${USER_A}'`, "u"));
-  assert.match(sql, new RegExp(`users\.id = '${USER_A}'`, "u"));
+  assert.match(sql, new RegExp(`users\\.id = '${USER_A}'`, "u"));
   assert.match(sql, /users\.email = 'canary@example\.com'/u);
   assert.match(sql, /users\.deleted_at IS NULL/u);
   assert.match(sql, /RETURNING id;/u);
