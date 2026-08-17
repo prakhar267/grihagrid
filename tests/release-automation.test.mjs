@@ -14,7 +14,13 @@ import {
   verifyPostMigrationEvidence,
 } from "../scripts/release-db-evidence.mjs";
 import { monitorRelease, ReleaseTailCoverageError, summarizeSamples } from "../scripts/monitor-release.mjs";
-import { changedFiles, classifyReleaseFiles, isDocumentationOnly } from "../scripts/release-scope.mjs";
+import {
+  assertReleaseStillCurrent,
+  changedFiles,
+  changedFilesInCommits,
+  classifyReleaseFiles,
+  isDocumentationOnly,
+} from "../scripts/release-scope.mjs";
 import { waitForRelease } from "../scripts/wait-for-release.mjs";
 
 function workflowStep(source, name) {
@@ -43,6 +49,61 @@ test("deployment authorization requires bounded exact-main CodeQL evidence", asy
   assert.doesNotMatch(workflow, /path:\s*\$RUNNER_TEMP\/codeql-(?:analyses|open-alerts)\.json/u);
 });
 
+test("the current workflow blocks newer runtime work before remote inspection, mutation, or activation", async () => {
+  const workflow = await readFile(new URL("../.github/workflows/deploy.yml", import.meta.url), "utf8");
+  const runbook = await readFile(new URL("../docs/operations-runbook.md", import.meta.url), "utf8");
+  const authorization = workflowStep(workflow, "Require a squash-merged PR and exact trusted workflow results");
+  assert.match(authorization, /current_main_sha="\$\(git rev-parse origin\/main\)"/u);
+  assert.match(authorization, /release-scope\.mjs assert-current "\$RELEASE_SHA" "\$current_main_sha"/u);
+  const ancestry = authorization.indexOf('git merge-base --is-ancestor "$RELEASE_SHA" origin/main');
+  const exactCodeql = authorization.indexOf("CODEQL_RELEASE_SHA=\"$RELEASE_SHA\"");
+  const candidateNode = authorization.indexOf('node scripts/release-scope.mjs assert-current "$RELEASE_SHA" "$current_main_sha"');
+  assert.ok(
+    ancestry >= 0 && exactCodeql > ancestry && candidateNode > exactCodeql,
+    "candidate code must run only after ancestry and exact trusted evidence",
+  );
+  assert.match(runbook, /Never rerun a historical `Deploy merged main` run/u);
+  assert.match(runbook, /current `main` SHA/u);
+
+  for (const environment of ["staging", "production"]) {
+    const inspectionName = environment === "staging"
+      ? "Reconfirm current main before staging inspection"
+      : "Reconfirm current main after the production hold";
+    const databaseFenceName = `Reconfirm current main before ${environment} database mutation`;
+    const activationFenceName = `Reconfirm current main before ${environment} Worker activation`;
+    const orderedNames = [
+      inspectionName,
+      `Record current ${environment} Worker`,
+      databaseFenceName,
+      `Apply and verify ${environment} migrations`,
+      activationFenceName,
+      `Deploy authorized SHA to ${environment}`,
+    ];
+    const positions = orderedNames.map((name) => workflow.indexOf(`      - name: ${name}`));
+    assert.ok(
+      positions.every((position, index) => position >= 0 && (index === 0 || position > positions[index - 1])),
+      `${environment} current-main fences must precede every remote mutation`,
+    );
+    if (environment === "production") {
+      assert.ok(
+        workflow.indexOf("      - name: Reconfirm the exact staging version after the production hold")
+          < workflow.indexOf(`      - name: ${inspectionName}`),
+        "production currentness must be refreshed after the sustained staging reconfirmation",
+      );
+    }
+
+    for (const stepName of [inspectionName, databaseFenceName, activationFenceName]) {
+      const step = workflowStep(workflow, stepName);
+      assert.match(step, /git fetch --no-tags origin \+refs\/heads\/main:refs\/remotes\/origin\/main/u);
+      assert.match(step, /current_main_sha="\$\(git rev-parse origin\/main\)"/u);
+      assert.match(step, /release-scope\.mjs assert-current "\$RELEASE_SHA" "\$current_main_sha"/u);
+    }
+    assert.match(workflowStep(workflow, databaseFenceName), /id: current_main_db/u);
+    const failClosed = workflowStep(workflow, `Fail closed ${environment} report handoff before regression handling`);
+    assert.match(failClosed, /steps\.current_main_db\.outcome == 'success'/u);
+  }
+});
+
 test("no-migration releases stop on unexpected remote migration drift before mutation", async () => {
   const workflow = await readFile(new URL("../.github/workflows/deploy.yml", import.meta.url), "utf8");
   for (const environment of ["staging", "production"]) {
@@ -68,12 +129,20 @@ test("no-migration releases stop on unexpected remote migration drift before mut
     const failClosed = workflowStep(workflow, `Fail closed ${environment} report handoff before regression handling`);
     assert.match(failClosed, /steps\.migration_drift_guard\.outcome == 'success'/u);
 
-    const mayMutateHandoff = ({ migrations, driftGuard, version }) =>
-      migrations === "success" && driftGuard === "success" && version !== "success";
+    const mayMutateHandoff = ({ migrations, driftGuard, currentMainDb, version }) =>
+      migrations === "success"
+      && driftGuard === "success"
+      && currentMainDb === "success"
+      && version !== "success";
     assert.equal(
-      mayMutateHandoff({ migrations: "success", driftGuard: "failure", version: "skipped" }),
+      mayMutateHandoff({ migrations: "success", driftGuard: "failure", currentMainDb: "skipped", version: "skipped" }),
       false,
       `${environment} drift rejection must not reach the later always() control mutation`,
+    );
+    assert.equal(
+      mayMutateHandoff({ migrations: "success", driftGuard: "success", currentMainDb: "failure", version: "skipped" }),
+      false,
+      `${environment} stale pre-database guard must not reach the later always() control mutation`,
     );
   }
 });
@@ -434,6 +503,112 @@ test("release scope cannot hide a runtime deletion inside a documentation rename
   }
 });
 
+test("a documentation-only tip cannot strand its queued runtime ancestor", async () => {
+  const repository = await mkdtemp(join(tmpdir(), "grihagrid-release-current-"));
+  const git = (...args) => {
+    const result = spawnSync("git", args, { cwd: repository, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+
+  try {
+    git("init", "--quiet");
+    git("config", "user.name", "Release Currentness Test");
+    git("config", "user.email", "release-current@example.test");
+    await mkdir(join(repository, "worker"));
+    await writeFile(join(repository, "worker", "index.js"), "export default { version: 1 };\n", "utf8");
+    git("add", "worker/index.js");
+    git("commit", "--quiet", "-m", "Runtime release A");
+    const runtimeRelease = git("rev-parse", "HEAD");
+
+    await mkdir(join(repository, "docs"));
+    await writeFile(join(repository, "docs", "release.md"), "Release notes only.\n", "utf8");
+    git("add", "docs/release.md");
+    git("commit", "--quiet", "-m", "Documentation B");
+    const documentationTip = git("rev-parse", "HEAD");
+
+    assert.equal(classifyReleaseFiles(changedFiles(runtimeRelease, documentationTip, repository)).deploy, false);
+    assert.deepEqual(assertReleaseStillCurrent(runtimeRelease, documentationTip, repository).trailingFiles, ["docs/release.md"]);
+
+    await rm(join(repository, "docs", "release.md"));
+    git("add", "--all");
+    git("commit", "--quiet", "-m", "Revert documentation B");
+    const documentationRevertedTip = git("rev-parse", "HEAD");
+    assert.deepEqual(changedFiles(runtimeRelease, documentationRevertedTip, repository), []);
+    assert.deepEqual(changedFilesInCommits(runtimeRelease, documentationRevertedTip, repository), ["docs/release.md"]);
+    assert.deepEqual(
+      assertReleaseStillCurrent(runtimeRelease, documentationRevertedTip, repository).trailingFiles,
+      ["docs/release.md"],
+    );
+
+    await writeFile(join(repository, "worker", "index.js"), "export default { version: 2 };\n", "utf8");
+    git("add", "worker/index.js");
+    git("commit", "--quiet", "-m", "Runtime release C");
+    const newerRuntimeTip = git("rev-parse", "HEAD");
+    assert.throws(
+      () => assertReleaseStillCurrent(runtimeRelease, newerRuntimeTip, repository),
+      /newer deployable changes/u,
+    );
+
+    await writeFile(join(repository, "worker", "index.js"), "export default { version: 1 };\n", "utf8");
+    git("add", "worker/index.js");
+    git("commit", "--quiet", "-m", "Revert runtime release C");
+    const newerRuntimeRevertedTip = git("rev-parse", "HEAD");
+    assert.deepEqual(changedFiles(runtimeRelease, newerRuntimeRevertedTip, repository), []);
+    assert.throws(
+      () => assertReleaseStillCurrent(runtimeRelease, newerRuntimeRevertedTip, repository),
+      /newer deployable changes/u,
+    );
+  } finally {
+    await rm(repository, { recursive: true, force: true });
+  }
+});
+
+test("merge-resolution-only runtime changes block an older release", async () => {
+  const repository = await mkdtemp(join(tmpdir(), "grihagrid-release-merge-"));
+  const git = (...args) => {
+    const result = spawnSync("git", args, { cwd: repository, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+
+  try {
+    git("init", "--quiet");
+    git("config", "user.name", "Release Merge Test");
+    git("config", "user.email", "release-merge@example.test");
+    await mkdir(join(repository, "worker"));
+    await writeFile(join(repository, "worker", "index.js"), "export default { version: 1 };\n", "utf8");
+    git("add", "worker/index.js");
+    git("commit", "--quiet", "-m", "Runtime release A");
+    const runtimeRelease = git("rev-parse", "HEAD");
+    const trunk = git("branch", "--show-current");
+
+    git("checkout", "--quiet", "-b", "documentation-topic");
+    await mkdir(join(repository, "docs"));
+    await writeFile(join(repository, "docs", "topic.md"), "Topic documentation.\n", "utf8");
+    git("add", "docs/topic.md");
+    git("commit", "--quiet", "-m", "Topic documentation");
+
+    git("checkout", "--quiet", trunk);
+    await writeFile(join(repository, "README.md"), "Trunk documentation.\n", "utf8");
+    git("add", "README.md");
+    git("commit", "--quiet", "-m", "Trunk documentation");
+    git("merge", "--quiet", "--no-ff", "--no-commit", "documentation-topic");
+    await writeFile(join(repository, "worker", "index.js"), "export default { version: 2 };\n", "utf8");
+    git("add", "worker/index.js");
+    git("commit", "--quiet", "-m", "Merge documentation with runtime resolution");
+    const mergeTip = git("rev-parse", "HEAD");
+
+    assert.ok(changedFilesInCommits(runtimeRelease, mergeTip, repository).includes("worker/index.js"));
+    assert.throws(
+      () => assertReleaseStillCurrent(runtimeRelease, mergeTip, repository),
+      /newer deployable changes/u,
+    );
+  } finally {
+    await rm(repository, { recursive: true, force: true });
+  }
+});
+
 test("report handoff release evidence is bounded and requires one enabled control", () => {
   const d1 = (results) => [{ success: true, results }];
   const disabled = verifyReportHandoffControlEvidence({
@@ -538,8 +713,9 @@ test("release rollback polling propagates legacy Worker compatibility to every s
     {
       timeoutMs: 1_000,
       intervalMs: 1,
+      stabilityMs: 2,
       legacyWorker: true,
-      now: () => clock,
+      monotonicNow: () => clock,
       sleep: async (delayMs) => { clock += delayMs; },
       smoke: async (origin, options) => {
         seen.push({ origin, ...options });
@@ -553,6 +729,7 @@ test("release rollback polling propagates legacy Worker compatibility to every s
   assert.ok(seen.every((sample) => sample.legacyWorker === true));
   assert.ok(seen.every((sample) => sample.expectReportHandoff === true));
   assert.ok(seen.every((sample) => sample.expectedReleaseId === result.releaseId));
+  assert.equal(new Set(seen.map((sample) => sample.releaseProbe)).size, seen.length);
 });
 
 test("release propagation can require the exact Worker while report handoff remains closed", async () => {
@@ -564,8 +741,9 @@ test("release propagation can require the exact Worker while report handoff rema
     {
       timeoutMs: 1_000,
       intervalMs: 1,
+      stabilityMs: 2,
       expectReportHandoff: false,
-      now: () => clock,
+      monotonicNow: () => clock,
       sleep: async (delayMs) => { clock += delayMs; },
       smoke: async (_origin, options) => {
         seen.push(options);

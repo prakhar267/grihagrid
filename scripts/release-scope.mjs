@@ -38,8 +38,65 @@ export function changedFiles(baseSha, releaseSha, cwd) {
   return result.stdout.split("\0").filter(Boolean);
 }
 
+export function changedFilesInCommits(baseSha, releaseSha, cwd) {
+  assert.match(baseSha, SHA_PATTERN, "base SHA must be a full lowercase commit SHA");
+  assert.match(releaseSha, SHA_PATTERN, "release SHA must be a full lowercase commit SHA");
+  const result = spawnSync(
+    "git",
+    [
+      "log",
+      "--first-parent",
+      "--diff-merges=first-parent",
+      "--format=",
+      "--name-only",
+      "--no-renames",
+      "-z",
+      `${baseSha}..${releaseSha}`,
+    ],
+    { cwd, encoding: "utf8" },
+  );
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(result.stderr.trim() || "git log failed");
+  return [...new Set(result.stdout.split("\0").filter(Boolean))].sort();
+}
+
+export function assertReleaseStillCurrent(releaseSha, currentMainSha, cwd) {
+  assert.match(releaseSha, SHA_PATTERN, "release SHA must be a full lowercase commit SHA");
+  assert.match(currentMainSha, SHA_PATTERN, "current main SHA must be a full lowercase commit SHA");
+  if (releaseSha === currentMainSha) {
+    return { releaseSha, currentMainSha, trailingFiles: [] };
+  }
+
+  const ancestry = spawnSync(
+    "git",
+    ["merge-base", "--is-ancestor", releaseSha, currentMainSha],
+    { cwd, encoding: "utf8" },
+  );
+  if (ancestry.error) throw ancestry.error;
+  assert.equal(ancestry.status, 0, "release SHA must remain an ancestor of current main");
+
+  const trailingFiles = changedFilesInCommits(releaseSha, currentMainSha, cwd);
+  if (trailingFiles.length === 0) {
+    return { releaseSha, currentMainSha, trailingFiles: [] };
+  }
+  const trailingScope = classifyReleaseFiles(trailingFiles);
+  assert.equal(
+    trailingScope.deploy,
+    false,
+    "release SHA is stale because current main contains newer deployable changes",
+  );
+  return { releaseSha, currentMainSha, trailingFiles: trailingScope.files };
+}
+
 async function main() {
-  const [baseSha, releaseSha] = process.argv.slice(2);
+  const [commandOrBase, firstSha, secondSha] = process.argv.slice(2);
+  if (commandOrBase === "assert-current") {
+    const result = assertReleaseStillCurrent(firstSha, secondSha, process.cwd());
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+  const baseSha = commandOrBase;
+  const releaseSha = firstSha;
   const result = classifyReleaseFiles(changedFiles(baseSha, releaseSha));
   const summary = {
     baseSha,

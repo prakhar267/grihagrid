@@ -5,7 +5,8 @@ import { runSmoke } from "./smoke.mjs";
 
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 const DEFAULT_INTERVAL_MS = 5 * 1000;
-const REQUIRED_CONSECUTIVE_SAMPLES = 3;
+const DEFAULT_STABILITY_MS = 60 * 1000;
+const MINIMUM_CONSECUTIVE_SAMPLES = 3;
 
 function positiveInteger(value, fallback, label) {
   const number = value == null || value === "" ? fallback : Number(value);
@@ -35,7 +36,8 @@ export class ReleaseReadinessTimeoutError extends Error {
   constructor(details) {
     const suffix = details.lastFailure ? `; last failure: ${details.lastFailure.message}` : "";
     super(
-      `release ${details.releaseId} did not pass ${REQUIRED_CONSECUTIVE_SAMPLES} consecutive smoke samples `
+      `release ${details.releaseId} did not stay exact for ${details.stabilityMs}ms across at least `
+      + `${MINIMUM_CONSECUTIVE_SAMPLES} consecutive smoke samples `
       + `within ${details.timeoutMs}ms after ${details.attempts} attempt${details.attempts === 1 ? "" : "s"}${suffix}`,
     );
     this.name = "ReleaseReadinessTimeoutError";
@@ -44,8 +46,9 @@ export class ReleaseReadinessTimeoutError extends Error {
 }
 
 /**
- * Poll the public smoke suite until one Worker version passes three complete,
- * consecutive samples. A failed or wrong-version sample resets the streak.
+ * Poll the public smoke suite until one Worker version passes at least three
+ * complete, consecutive samples across a sustained stability window. A failed
+ * or wrong-version sample resets both the streak and the stability clock.
  */
 export async function waitForRelease(rawOrigin, releaseId, options = {}) {
   const origin = canonicalOrigin(rawOrigin);
@@ -54,21 +57,36 @@ export async function waitForRelease(rawOrigin, releaseId, options = {}) {
 
   const timeoutMs = positiveInteger(options.timeoutMs, DEFAULT_TIMEOUT_MS, "release probe timeout");
   const intervalMs = positiveInteger(options.intervalMs, DEFAULT_INTERVAL_MS, "release probe interval");
+  const stabilityMs = positiveInteger(options.stabilityMs, DEFAULT_STABILITY_MS, "release stability window");
   const legacyWorker = options.legacyWorker === true;
   const expectReportHandoff = options.expectReportHandoff !== false;
   const smoke = options.smoke || runSmoke;
-  const now = options.now || Date.now;
+  const monotonicNow = options.monotonicNow || (() => performance.now());
+  const wallNow = options.wallNow || Date.now;
   const sleep = options.sleep || ((delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)));
   assert.equal(typeof smoke, "function", "release probe smoke must be a function");
-  assert.equal(typeof now, "function", "release probe clock must be a function");
+  assert.equal(typeof monotonicNow, "function", "release probe monotonic clock must be a function");
+  assert.equal(typeof wallNow, "function", "release probe wall clock must be a function");
   assert.equal(typeof sleep, "function", "release probe sleep must be a function");
 
-  const startedAtMs = now();
-  const deadlineMs = startedAtMs + timeoutMs;
+  const tick = () => {
+    const value = monotonicNow();
+    assert.ok(Number.isFinite(value), "release probe monotonic clock must return a finite number");
+    return value;
+  };
+  const wallTime = () => {
+    const value = wallNow();
+    assert.ok(Number.isFinite(value), "release probe wall clock must return a finite number");
+    return value;
+  };
+  const startedTick = tick();
+  const startedAtMs = wallTime();
+  const deadlineTick = startedTick + timeoutMs;
   let attempts = 0;
   let failedSamples = 0;
   let lastFailure = null;
   let streak = [];
+  let stableSinceTick = null;
 
   const timeout = () => new ReleaseReadinessTimeoutError({
     origin,
@@ -77,27 +95,40 @@ export async function waitForRelease(rawOrigin, releaseId, options = {}) {
     attempts,
     failedSamples,
     consecutiveSamples: streak.length,
+    stabilityMs,
+    stableForMs: stableSinceTick == null ? 0 : Math.max(0, tick() - stableSinceTick),
     lastFailure,
   });
 
   const polling = (async () => {
-    while (now() < deadlineMs) {
+    while (tick() < deadlineTick) {
       attempts += 1;
       try {
-        const sample = await smoke(origin, { expectedReleaseId, legacyWorker, expectReportHandoff });
-        if (now() > deadlineMs) throw timeout();
+        const releaseProbe = `${attempts}-${Math.trunc(wallTime())}`;
+        const sample = await smoke(origin, {
+          expectedReleaseId,
+          legacyWorker,
+          expectReportHandoff,
+          releaseProbe,
+        });
+        const completedTick = tick();
+        if (completedTick > deadlineTick) throw timeout();
+        if (stableSinceTick == null) stableSinceTick = completedTick;
         streak.push(sample);
-        if (streak.length === REQUIRED_CONSECUTIVE_SAMPLES) {
+        const stableForMs = Math.max(0, completedTick - stableSinceTick);
+        if (streak.length >= MINIMUM_CONSECUTIVE_SAMPLES && stableForMs >= stabilityMs) {
           return {
             origin,
             releaseId: expectedReleaseId,
             legacyWorker,
             expectReportHandoff,
             startedAt: new Date(startedAtMs).toISOString(),
-            readyAt: new Date(now()).toISOString(),
+            readyAt: new Date(wallTime()).toISOString(),
             attempts,
             failedSamples,
-            consecutiveSamples: REQUIRED_CONSECUTIVE_SAMPLES,
+            consecutiveSamples: streak.length,
+            stabilityMs,
+            stableForMs,
             samples: streak,
           };
         }
@@ -106,9 +137,10 @@ export async function waitForRelease(rawOrigin, releaseId, options = {}) {
         failedSamples += 1;
         lastFailure = describeError(error);
         streak = [];
+        stableSinceTick = null;
       }
 
-      const remainingMs = deadlineMs - now();
+      const remainingMs = deadlineTick - tick();
       if (remainingMs <= 0) throw timeout();
       await sleep(Math.min(intervalMs, remainingMs));
     }

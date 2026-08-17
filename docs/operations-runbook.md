@@ -195,9 +195,22 @@ remain the inspected break-glass procedure, not the routine path.
 The validation build runs on an unprivileged runner. Staging and production
 each start on a fresh runner, restore only that exact build artifact, and
 install the workflow-pinned Wrangler release with package lifecycle scripts
-disabled. Manual dispatch accepts only the current `main` tip; each environment
-also proves that its currently deployed source SHA is an ancestor of the new
-candidate, preventing out-of-order CI completion from causing a downgrade.
+disabled. Every trigger must still be the current `main` tip or its ancestor
+with only documentation-only changes after it. Authorization and both
+environments recheck that rule before remote inspection, database mutation and
+Worker activation: newer deployable work blocks the older run, while a trailing
+documentation-only commit cannot strand an already queued runtime release. Each
+environment also proves that its currently deployed source SHA is an ancestor
+of the new candidate, preventing out-of-order CI completion from causing a
+downgrade.
+
+Never rerun a historical `Deploy merged main` run: GitHub reruns execute the
+workflow definition attached to that original run, so a run created before
+these currentness fences cannot inherit them. For a deliberate redeploy, start
+the current workflow with **Run workflow** and the current `main` SHA, or the
+latest runtime SHA only when every trailing main change is documentation-only.
+The pre-database fence is a distinct hard gate; if it rejects a stale candidate,
+later `always()` recovery steps are not allowed to write the handoff control.
 
 Cloudflare Worker, D1, KV, and Tail token permissions are account-scoped. The
 separate staging and production tokens reduce credential reuse, and the
@@ -405,8 +418,9 @@ closed. Each environment's 64-hex
 through the secret prompt. Raw schema/count query files are mode 0600 and must
 be deleted unconditionally from the runner after bounded evidence is produced.
 
-Keep the D1 switch closed through three exact candidate-version public smoke
-samples. The authenticated canary step may then enable `report_handoff` only
+Keep the D1 switch closed through at least three exact candidate-version public
+smoke samples sustained for a full minute; reset the window on any old-version
+or failed sample. The authenticated canary step may then enable `report_handoff` only
 inside one bounded shell scope with an EXIT trap that always writes and verifies
 disabled state, regardless of canary success or failure. After the canary,
 verify exact-ID cleanup, read the already-closed row without masking a failed
@@ -530,7 +544,11 @@ npx wrangler tail grihagrid --format json --status error
 ```
 
 The automated path also checks `readiness.releaseId` against the exact active
-Worker version across three consecutive full smoke samples, runs the
+Worker version across at least three consecutive full smoke samples sustained
+for a monotonic full minute. Each sample ends with a unique cache-busting
+readiness probe, so earlier endpoint latency cannot age an old version
+observation into acceptance; any old-version or failed sample resets the
+window. It then runs the
 20-request serial readiness latency gate while Professional Handoff is still
 closed, preserves every raw sample plus nearest-rank p95, and requires p95
 strictly below 500 ms before any authenticated canary mutation. It then runs the
@@ -584,8 +602,11 @@ Then use the dedicated production canary account to verify:
    `404`, archived read/blocked-write, aggregate-only metrics, and exact cascade
    cleanup. Confirm a saved schema-v1 artifact renders only its persisted legacy
    bytes and exposes no feedback UI or API write path.
-5. When `0016` is in the release, first require three exact-version readiness
-   samples with `reportShareSchema=current`, `reportHandoffControl=disabled`,
+5. When `0016` is in the release, first require at least three exact-version
+   readiness samples sustained for a monotonic full minute, with a unique
+   cache-busting readiness probe ending each sample and any old-version or
+   failed sample resetting that window, and require
+   `reportShareSchema=current`, `reportHandoffControl=disabled`,
    `reportShareAbuseHashing=configured`, and `reportHandoff=false`. Inside the
    bounded, trap-protected canary activation, require the control enabled and
    `reportHandoff=true`; create a 1-day share for the exact canary revision with

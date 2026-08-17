@@ -136,9 +136,11 @@ Final `GET /api/readiness` must report `checks.reportShareSchema=current` and
    are unchanged, the foreign-key check is empty, and no migration remains
    pending; later releases explicitly close the existing row before candidate
    activation;
-3. three consecutive public smoke samples correlate the exact candidate Worker
-   version while readiness still reports the control disabled and capability
-   false;
+3. at least three consecutive public smoke samples each end in a unique
+   cache-busting readiness probe and correlate the exact candidate Worker
+   version across a monotonic full minute while readiness still reports the
+   control disabled and capability false; any old-version or failed sample
+   resets the stability window;
 4. one bounded step enables the control, proves that state, and runs the reviewed
    current authenticated harness, whose EXIT trap re-closes and re-verifies the
    control on both success and failure. The harness creates a share for its exact

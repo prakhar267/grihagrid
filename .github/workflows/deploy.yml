@@ -71,13 +71,11 @@ jobs:
           fi
           test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
           git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
-          git merge-base --is-ancestor "$RELEASE_SHA" origin/main
-          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-            test "$(git rev-parse origin/main)" = "$RELEASE_SHA" || {
-              echo "manual releases must target the current main tip; use the explicit rollback path for recovery" >&2
-              exit 1
-            }
-          fi
+          current_main_sha="$(git rev-parse origin/main)"
+          git merge-base --is-ancestor "$RELEASE_SHA" origin/main || {
+            echo "release SHA must be an ancestor of protected main" >&2
+            exit 1
+          }
 
           parent_count="$(git rev-list --parents -n 1 "$RELEASE_SHA" | awk '{ print NF - 1 }')"
           test "$parent_count" -eq 1 || {
@@ -272,6 +270,10 @@ jobs:
           NODE
           rm -f -- "$RUNNER_TEMP/codeql-analyses.json" "$RUNNER_TEMP/codeql-open-alerts.json"
 
+          # Candidate code runs without the API token and only after ancestry,
+          # merged-PR, exact-CI, and exact-CodeQL evidence established trust.
+          env -u GH_TOKEN node scripts/release-scope.mjs assert-current "$RELEASE_SHA" "$current_main_sha" >/dev/null
+
           {
             echo "release_sha=$RELEASE_SHA"
             echo "base_sha=$base_sha"
@@ -413,6 +415,13 @@ jobs:
           if (( ${#policy_migrations[@]} > 0 )); then
             node scripts/check-migration-policy.mjs "${policy_migrations[@]}"
           fi
+
+      - name: Reconfirm current main before staging inspection
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          current_main_sha="$(git rev-parse origin/main)"
+          node scripts/release-scope.mjs assert-current "$RELEASE_SHA" "$current_main_sha" >/dev/null
 
       - name: Record current staging Worker
         id: previous
@@ -596,6 +605,14 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      - name: Reconfirm current main before staging database mutation
+        id: current_main_db
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          current_main_sha="$(git rev-parse origin/main)"
+          node scripts/release-scope.mjs assert-current "$RELEASE_SHA" "$current_main_sha" >/dev/null
+
       - name: Apply and verify staging migrations
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -710,6 +727,14 @@ jobs:
             "$RUNNER_TEMP/staging-rollback-residue.json" \
             release-evidence/staging/rollback-residue-proof.json
 
+      - name: Reconfirm current main before staging Worker activation
+        id: current_main_activation
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          current_main_sha="$(git rev-parse origin/main)"
+          node scripts/release-scope.mjs assert-current "$RELEASE_SHA" "$current_main_sha" >/dev/null
+
       - name: Deploy authorized SHA to staging
         id: deploy
         env:
@@ -821,7 +846,7 @@ jobs:
               "$RUNNER_TEMP/staging-unverified-rollback-report-handoff-control.json" \
               release-evidence/staging/unverified-rollback-report-handoff-control.json
 
-      - name: Wait for three exact staging smoke samples
+      - name: Wait for sustained exact staging smoke samples
         id: propagation
         continue-on-error: true
         env:
@@ -1076,6 +1101,7 @@ jobs:
           always() &&
           steps.migrations.outcome == 'success' &&
           steps.migration_drift_guard.outcome == 'success' &&
+          steps.current_main_db.outcome == 'success' &&
           (steps.version.outcome != 'success' ||
            steps.propagation.outcome != 'success' ||
            steps.readiness_latency.outcome != 'success' ||
@@ -1292,6 +1318,13 @@ jobs:
           GRIHAGRID_RELEASE_ID: ${{ needs.staging.outputs.version_id }}
         run: node scripts/wait-for-release.mjs "$STAGING_ORIGIN" "$GRIHAGRID_RELEASE_ID" > release-evidence/production/staging-reconfirmation.json
 
+      - name: Reconfirm current main after the production hold
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          current_main_sha="$(git rev-parse origin/main)"
+          node scripts/release-scope.mjs assert-current "$RELEASE_SHA" "$current_main_sha" >/dev/null
+
       - name: Record current production Worker
         id: previous
         env:
@@ -1474,6 +1507,14 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      - name: Reconfirm current main before production database mutation
+        id: current_main_db
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          current_main_sha="$(git rev-parse origin/main)"
+          node scripts/release-scope.mjs assert-current "$RELEASE_SHA" "$current_main_sha" >/dev/null
+
       - name: Apply and verify production migrations
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -1588,6 +1629,14 @@ jobs:
             "$RUNNER_TEMP/production-rollback-residue.json" \
             release-evidence/production/rollback-residue-proof.json
 
+      - name: Reconfirm current main before production Worker activation
+        id: current_main_activation
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          current_main_sha="$(git rev-parse origin/main)"
+          node scripts/release-scope.mjs assert-current "$RELEASE_SHA" "$current_main_sha" >/dev/null
+
       - name: Deploy authorized SHA to production
         id: deploy
         env:
@@ -1699,7 +1748,7 @@ jobs:
               "$RUNNER_TEMP/production-unverified-rollback-report-handoff-control.json" \
               release-evidence/production/unverified-rollback-report-handoff-control.json
 
-      - name: Wait for three exact production smoke samples
+      - name: Wait for sustained exact production smoke samples
         id: propagation
         continue-on-error: true
         env:
@@ -2098,6 +2147,7 @@ jobs:
           always() &&
           steps.migrations.outcome == 'success' &&
           steps.migration_drift_guard.outcome == 'success' &&
+          steps.current_main_db.outcome == 'success' &&
           (steps.version.outcome != 'success' ||
            steps.propagation.outcome != 'success' ||
            steps.readiness_latency.outcome != 'success' ||
