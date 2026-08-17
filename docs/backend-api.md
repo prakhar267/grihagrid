@@ -127,14 +127,16 @@ paid-checkout capabilities, including `authSchema`, `decisionSchema`,
 `authSchema=current` requires migration 0015's account/session
 generation-and-revision columns, password-change timestamp, atomic password-
 attempt table/index and both D1 authentication-state guards, plus migration
-0017's `login_attempt_fences` columns and expiry index. Readiness inventories
+0017's `login_attempt_fences` columns and expiry index. Readiness snapshots
 the complete contract with one read-only `sqlite_master`/`pragma_table_info`
-query. A healthy request then performs at most one additional read for the live
-Professional Handoff control; it does not scan application records, cache a
-schema result, or write to D1. Missing tables, columns, indexes, or triggers are
+query whose bounded final arm normalizes the singleton Professional Handoff
+control to `enabled`, `disabled`, or `invalid`. It does not scan other application
+records, cache a schema result, or write to D1. Missing tables, columns, indexes, or triggers are
 reported as the relevant capability-owned `outdated` state; a missing core-only
 table still makes the overall `schema` outdated. An invalid or failed inventory
-is a database error and fails the whole probe closed.
+is a database error and fails the whole probe closed. If an old or partial schema
+cannot execute the control arm, one metadata-only fallback preserves granular
+schema diagnostics while forcing Professional Handoff unavailable.
 `capabilities.accountSecurity` is true only when that schema and KV abuse
 control are ready.
 `projectCreationSchema=current` requires migration 0014's two nullable project
@@ -149,9 +151,10 @@ separate feedback table, its owner/archive guards, the project-input
 allowlist/account ceiling, and KV abuse control are ready;
 `capabilities.reportHandoff` is true only when `reportShareSchema=current`, the
 five report-handoff guards and all five indexes exist, the D1 operations control
-is enabled, and KV abuse control is ready. The control row is read only after
-its table, columns, indexes, and triggers pass inventory, and it is deliberately
-uncached so an emergency switch change is visible on the next request;
+is enabled, and KV abuse control is ready. The bounded control row is read in the
+same atomic snapshot as its table, columns, indexes, and triggers, then ignored
+unless that complete manifest passes. It is deliberately uncached so an
+emergency switch change is visible on the next request;
 an exact disabled control keeps the schema ready while making only the handoff
 capability false. A missing, malformed, or unreadable control is a schema-
 integrity failure and makes the whole probe not ready. Other unavailable

@@ -27,8 +27,8 @@ Uploads and any product that promises them stay closed while R2 is absent.
 `/api/health` is a dependency-independent liveness probe. `/api/readiness`
 checks D1 reachability, the required schema, the KV binding, and reports
 AI/upload/payment capabilities. Its current-schema path uses one metadata
-inventory read and at most one uncached Professional Handoff control read; a
-future capability must extend that folded inventory rather than add serial D1
+and Professional Handoff control snapshot; a future capability must extend that
+folded read rather than add serial D1
 probes. Neither endpoint proves Gemini generation quality, Razorpay webhook delivery,
 cron execution, or a complete customer journey; synthetics remain mandatory.
 
@@ -724,7 +724,7 @@ weeks of real traffic.
 | Public calculator availability | 99.9% | Successful external homepage, health, and estimate checks |
 | Authenticated API availability | 99.9% | Non-4xx project/report requests excluding deliberate client errors |
 | Worker server-error ratio | At least 99.9% non-5xx | Cloudflare invocations by route and version |
-| Health/readiness/estimate latency | p95 under 500 ms | External and Worker route-template latency; readiness also retains its two-read healthy-path budget |
+| Health/readiness/estimate latency | p95 under 500 ms | External and Worker route-template latency; readiness also retains its single-read healthy-path snapshot budget |
 | Authenticated CRUD latency | p95 under 750 ms | Worker route-template latency |
 | Brief revision correctness | 100%; zero tolerance | One CAS winner/idempotent result per accepted edit; no fabricated history, stale-current report, reopened Family room or mutation of sold evidence |
 | Decision Compare fulfillment | At least 90% inside published pilot promise | `payment_webhook_events.processed_at`/`orders.paid_at` to an available matching purchased snapshot; v1 has no correction/reissue workflow |

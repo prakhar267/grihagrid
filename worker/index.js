@@ -685,13 +685,17 @@ async function reportShareAbuseHmacKey(env) {
   throw new HttpError(503, "abuse controls are temporarily unavailable", "abuse_control_unavailable");
 }
 
+const REPORT_HANDOFF_CONTROL_SQL =
+  "SELECT enabled FROM report_handoff_controls WHERE control_key='report_handoff'";
+
+function reportHandoffControlFromRow(row) {
+  if (!row || typeof row !== "object" || Array.isArray(row)) return "unavailable";
+  return row.enabled === 1 ? "enabled" : row.enabled === 0 ? "disabled" : "unavailable";
+}
+
 async function reportHandoffControl(db) {
   try {
-    const row = await db.prepare(
-      "SELECT enabled FROM report_handoff_controls WHERE control_key='report_handoff'",
-    ).first();
-    if (!row || typeof row !== "object" || Array.isArray(row)) return "unavailable";
-    return row.enabled === 1 ? "enabled" : row.enabled === 0 ? "disabled" : "unavailable";
+    return reportHandoffControlFromRow(await db.prepare(REPORT_HANDOFF_CONTROL_SQL).first());
   } catch {
     return "unavailable";
   }
@@ -915,6 +919,21 @@ SELECT 'column' AS kind,target_tables.table_name AS scope,columns.name
   FROM target_tables
   JOIN pragma_table_info(target_tables.table_name) AS columns`;
 
+const READINESS_DATABASE_SNAPSHOT_SQL = `${READINESS_DATABASE_INVENTORY_SQL}
+UNION ALL
+SELECT 'control' AS kind,'report_handoff' AS scope,
+       CASE
+         WHEN typeof(enabled)='integer' AND enabled=1 THEN 'enabled'
+         WHEN typeof(enabled)='integer' AND enabled=0 THEN 'disabled'
+         ELSE 'invalid'
+       END AS name
+  FROM (
+    SELECT enabled
+      FROM report_handoff_controls
+     WHERE control_key='report_handoff'
+     LIMIT 2
+  ) AS handoff_control`;
+
 function readinessInventoryRowsForTest() {
   const objects = new Set(READINESS_REQUIRED_TABLES.map((name) => `table:${name}`));
   const columns = new Set();
@@ -938,11 +957,23 @@ function readinessInventoryHas(inventory, manifest) {
 }
 
 async function readinessDatabaseState(db) {
-  const result = await db.prepare(READINESS_DATABASE_INVENTORY_SQL).all();
+  let result;
+  let snapshotIncludesControl = true;
+  try {
+    result = await db.prepare(READINESS_DATABASE_SNAPSHOT_SQL).all();
+  } catch {
+    // Old or genuinely partial schemas may not have the singleton control table
+    // or column yet. A metadata-only retry preserves granular drift diagnostics
+    // without turning a healthy-path optimization into an optimistic claim.
+    snapshotIncludesControl = false;
+    result = await db.prepare(READINESS_DATABASE_INVENTORY_SQL).all();
+  }
   if (!result || result.success !== true || !Array.isArray(result.results)) {
     throw new Error("readiness inventory returned an invalid result");
   }
   const inventory = { objects: new Set(), columns: new Set() };
+  let reportHandoffControlState = "unavailable";
+  let reportHandoffControlRows = 0;
   for (const row of result.results) {
     if (!row || typeof row !== "object" || Array.isArray(row)
         || typeof row.kind !== "string" || typeof row.scope !== "string" || typeof row.name !== "string"
@@ -963,6 +994,15 @@ async function readinessDatabaseState(db) {
       const key = `${row.scope}:${row.name}`;
       if (inventory.columns.has(key)) throw new Error("readiness inventory contains a duplicate column");
       inventory.columns.add(key);
+    } else if (row.kind === "control") {
+      if (row.scope !== "report_handoff" || !["enabled", "disabled", "invalid"].includes(row.name)) {
+        throw new Error("readiness inventory contains an invalid control row");
+      }
+      reportHandoffControlRows += 1;
+      if (reportHandoffControlRows !== 1) {
+        throw new Error("readiness inventory contains a duplicate control row");
+      }
+      reportHandoffControlState = row.name === "invalid" ? "unavailable" : row.name;
     } else {
       throw new Error("readiness inventory contains an invalid kind");
     }
@@ -984,7 +1024,9 @@ async function readinessDatabaseState(db) {
     : "unavailable";
 
   const reportShareStructureCurrent = readinessInventoryHas(inventory, READINESS_MANIFESTS.reportShare);
-  const reportHandoffControlState = reportShareStructureCurrent ? await reportHandoffControl(db) : "unavailable";
+  if (!snapshotIncludesControl || !reportShareStructureCurrent || reportHandoffControlRows !== 1) {
+    reportHandoffControlState = "unavailable";
+  }
   const reportShareSchema = reportShareStructureCurrent && reportHandoffControlState !== "unavailable"
     ? "current"
     : "outdated";

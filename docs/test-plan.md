@@ -64,8 +64,10 @@ interleaved within their own real-D1 fixtures.
   `projectCreationSchema=current`, and KV; otherwise 503,
   while separately reporting AI schema/admission/config validity and optional
   upload and checkout capability. On the fully current path, assert exactly one
-  read-only metadata inventory plus at most one uncached Professional Handoff
-  control read—no application-row scan, D1 write, or per-object round trip.
+  read-only metadata-and-Professional-Handoff snapshot—no unrelated application-
+  row scan, D1 write, cache, or per-object round trip. If an old schema cannot
+  execute the bounded control arm, allow exactly one metadata-only diagnostic
+  fallback and force the control unavailable.
   Remove one required table, column, index, and trigger in turn; return the
   corresponding granular `outdated` state. Malformed/duplicate/missing
   inventory rows, query failure, and an absent or malformed control row must
