@@ -103,6 +103,12 @@ de-indexing when a crawler honors `robots.txt` without fetching the response's
 `noindex` directive. They are not an access-control claim because the tuple is
 intentionally public.
 
+The Worker resolves this known document directly through a fresh `/index.html`
+asset-binding request. It does not clone or forward the scenario query, Cookie,
+Authorization, CSRF, or other navigation headers into the asset binding. The
+browser still retains the public canonical URL needed to parse and display the
+scenario; only the internal app-shell fetch is value- and credential-free.
+
 ## Public API contract
 
 `POST /api/estimate` is public and stateless. It requires

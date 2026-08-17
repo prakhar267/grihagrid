@@ -83,14 +83,25 @@ test("shared-estimate documents are no-store, noindex, and never log query value
     try {
       response = await worker.fetch(new Request(`https://example.test/estimate?${query}`, {
         method,
-        headers: { accept: "text/html" },
+        headers: {
+          accept: "text/html",
+          authorization: "Bearer private-account-token",
+          cookie: "__Host-grihagrid_session=private-session; grihagrid_csrf=private-csrf",
+          "x-csrf-token": "private-csrf",
+        },
       }), {
         APP_ENV: "test",
         CF_VERSION_METADATA: { id: "shared-estimate-test-version" },
         ASSETS: {
           fetch: async (request) => {
             const url = new URL(request.url);
-            calls.push(`${url.pathname}${url.search}`);
+            calls.push({
+              url: `${url.pathname}${url.search}`,
+              method: request.method,
+              authorization: request.headers.get("authorization"),
+              cookie: request.headers.get("cookie"),
+              csrf: request.headers.get("x-csrf-token"),
+            });
             if (url.pathname !== "/index.html") return new Response(null, { status: 404 });
             return new Response(method === "HEAD" ? null : "app", {
               status: 200,
@@ -111,9 +122,13 @@ test("shared-estimate documents are no-store, noindex, and never log query value
     assert.equal(response.headers.get("cache-control"), "no-store");
     assert.equal(response.headers.get("x-robots-tag"), "noindex,nofollow,noarchive");
     assert.equal(await response.text(), method === "HEAD" ? "" : "app");
-    assert.equal(calls.length, 2);
-    assert.ok(calls[0].startsWith("/estimate?"));
-    assert.equal(calls[1], "/index.html", "the app-shell fallback must strip the shared query");
+    assert.deepEqual(calls, [{
+      url: "/index.html",
+      method,
+      authorization: null,
+      cookie: null,
+      csrf: null,
+    }], "the asset binding must receive only a credential- and scenario-free app-shell request");
 
     const completionLogs = logs.filter((line) => line.includes('"type":"request_complete"'));
     assert.equal(completionLogs.length, 1, JSON.stringify(logs));
