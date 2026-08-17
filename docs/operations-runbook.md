@@ -582,10 +582,12 @@ logged as `outcome=control_closed`, while missing-provider, database, abuse,
 AI, and unexpected failures remain `server_error` and trip the monitor.
 Raw tail events are reduced in memory to counts and byte totals, stop the
 observation on the first matching event, and never enter release artifacts.
-The pinned Wrangler tail processes run at `WRANGLER_LOG=error`, so routine
-startup and available-update notices do not masquerade as infrastructure
-failures. Actual Wrangler errors still reach stderr, and any non-empty stderr,
-dead tail process, missing or malformed aggregate, public regression, or
+The pinned Wrangler tail processes run at `WRANGLER_LOG=warn` with
+`WRANGLER_HIDE_BANNER=true`, so the routine startup and available-update banner
+does not masquerade as an infrastructure failure. Wrangler warnings—including
+tail keep-alive loss and reconnect attempts—and errors still reach stderr. Any
+non-empty stderr, dead tail process, missing or malformed aggregate, public
+regression, or
 matching error event fails the release closed. Wrangler disk logs are disabled
 on those runners so no provider-side diagnostic copy survives the job.
 Automation may roll the Worker back after a confirmed application regression
