@@ -108,6 +108,37 @@ Common statuses are `400` validation, `401` unauthenticated/invalid login,
 missing/unhealthy binding. Ownership failures intentionally return `404`, so
 one account cannot use the response to discover another account's IDs.
 
+## Request body admission
+
+All endpoints that use the ordinary JSON contract require
+`application/json` (parameters and case are tolerated) and accept at most
+65,536 raw request bytes. The Worker counts `Uint8Array.byteLength` while
+reading, cancels when a delivered chunk takes cumulative bytes over the limit,
+decodes UTF-8 with fatal error handling, parses JSON, and requires a non-null,
+non-array object. An absent `Content-Length` is supported. When present, it
+must contain decimal
+digits only; leading zeroes are accepted, but negative, fractional,
+exponential, hexadecimal, comma-combined, empty, or otherwise malformed values
+return `400 invalid_content_length`. A valid declared or actual length above
+the limit returns `413 payload_too_large`. A declared value never overrides the
+actual streamed byte count, and the application does not require it to equal
+the received length.
+
+Reader failures, prior body consumption, invalid UTF-8, malformed JSON, and
+non-object JSON return the bounded `400 invalid_json` contract. Rejected bodies
+with an unread remainder are cancelled best-effort without logging bytes,
+headers, or parsing failures. Existing origin, session, CSRF, and perimeter
+checks retain their documented
+order; no post-admission credential derivation, domain mutation, payment
+verification, or provider call may occur after body rejection.
+
+The fixed public Professional Handoff and Family Alignment endpoints retain
+their indistinguishable `404` envelopes and route-specific 512/1,536-byte
+limits. The Razorpay webhook accepts at most 262,144 raw bytes, verifies its
+HMAC over those exact bytes, then uses the same fatal UTF-8 JSON boundary.
+Private raw/multipart uploads are governed separately and remain unavailable
+while R2 is closed.
+
 ## Public endpoints
 
 ### `GET /api/health`

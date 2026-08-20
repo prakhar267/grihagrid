@@ -877,8 +877,14 @@ test("Brief Check revisions are truthful, immutable, owner-scoped, and race safe
     });
     assert.equal(oversized.response.status, 413);
     assert.equal(oversized.payload.code, "payload_too_large");
+    // Miniflare may retire an internal HTTP/1 socket after deliberate request
+    // cancellation. Restart on the same D1 state before later product checks.
+    capturedLogs.push(server.logs());
+    await stopWorker(server);
+    server = null;
+    server = await startWorker(stateDirectory, assetsDirectory, port);
     const invalidPagination = await call(server.origin, `${revisionPath(project.id)}?limit=0`, { auth: owner });
-    assert.equal(invalidPagination.response.status, 400);
+    assert.equal(invalidPagination.response.status, 400, JSON.stringify(invalidPagination.payload));
     assert.equal(invalidPagination.payload.code, "invalid_pagination");
     const invalidKey = await call(server.origin, revisionPath(project.id), {
       method: "POST",

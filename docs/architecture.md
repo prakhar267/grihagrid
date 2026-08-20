@@ -90,6 +90,15 @@ External boundaries: Google Gemini, email provider, Razorpay, and architect oper
   Password change and session revocation share one five-check-per-account fixed
   15-minute admission boundary. Checkout abuse KV remains a brake rather than a
   money or entitlement ledger.
+- Ordinary JSON request bodies are limited while their raw bytes stream: the
+  Worker accepts at most 65,536 bytes, decodes UTF-8 fatally, and only then
+  parses an object. A present `Content-Length` must be decimal and can reject
+  early, but absent, zero, leading-zero, or understated values never replace
+  actual byte counting. Oversize, framing, reader, and media failures cancel
+  unread input best-effort before any post-admission domain work.
+- Anonymous report and Family capabilities retain their smaller 512/1,536-byte
+  envelopes and generic misses. Razorpay webhooks retain the exact bounded raw
+  bytes for HMAC verification at 256 KiB before fatal UTF-8 JSON parsing.
 - File type is verified by signature, not extension; size/count limits are applied before R2 persistence.
 - Strict CSP, HSTS, `X-Content-Type-Options`, `Referrer-Policy` and frame protections at the edge.
 - Webhook signatures use constant-time comparison and a bounded replay window.
@@ -138,6 +147,12 @@ the existing D1 digest, admission, receipt-cap, closure and retention model.
 Legacy token paths remain templated and compatible only for their seven-day
 drain window. Rolling back to the prior client is data-safe but temporarily
 cannot render newly issued fragment links; roll forward restores them.
+
+The bounded request-admission cut adds no migration or stored state. Rolling
+back is data-compatible but restores pre-buffer request handling, so an
+availability or compatibility incident should prefer a corrected roll-forward.
+Upload multipart/raw-body admission remains a separate closed-capability
+follow-up.
 
 ## Reliability targets
 

@@ -444,7 +444,10 @@ legal, monitoring and operational gates below have dated evidence.
   checkout stop, fulfillment stop and secret rotation drills have dated proof.
 - [ ] Security review covers dependencies, secrets/history, CSP/HSTS/TLS,
   cookie attributes, origin/CSRF, IDOR, stored/reflected XSS, brute force/rate
-  limits, oversized/malformed bodies, webhook signatures and admin metrics auth.
+  limits, streamed 65,536/65,537-byte JSON boundaries, absent/malformed/lying
+  lengths, fatal UTF-8, cancellation/reader errors, zero post-rejection domain
+  work, smaller generic bearer envelopes, exact-raw-byte webhook signatures,
+  webhook 256 KiB admission and admin metrics auth.
 - [ ] Load test at 2× invited-pilot peak meets p95 targets without duplicate
   orders, artifacts or decisions; Cloudflare, Gemini and Razorpay cost/quota
   alerts fire at 50/75/90%.

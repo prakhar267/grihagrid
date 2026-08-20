@@ -75,6 +75,18 @@ interleaved within their own real-D1 fixtures.
 
 ## API cases
 
+- Request-body admission: exercise absent, zero, leading-zero, exact, smaller,
+  malformed, duplicate/comma-combined, negative, fractional, exponential,
+  hexadecimal, limit-plus-one, and arbitrarily large `Content-Length` values.
+  Stream a valid object at exactly 65,536 bytes and reject byte 65,537 with
+  cancellation whether the declaration is absent, understated, or accurate.
+  Split Hindi and emoji UTF-8 sequences across chunks; reject malformed UTF-8,
+  empty/null/array/scalar JSON, non-byte chunks, reader/cancel errors, and an
+  already-used body without `500` or source-error leakage. Prove that ordinary
+  rejections perform no post-admission PBKDF2/domain D1/provider work, public
+  bearer adapters retain generic 404/zero-admission behavior, and the 256 KiB
+  webhook both signs byte-identical raw input and rejects before HMAC/D1 when
+  oversized. File uploads remain a separate closed-capability test surface.
 - `GET /api/health`: dependency-independent liveness returns 200.
 - `GET /api/readiness`: 200 only with current D1 schema, including
   `projectCreationSchema=current`, and KV; otherwise 503,
