@@ -626,12 +626,17 @@ test("report feedback is exact, private, immutable-report-safe, and observable o
       method: "PUT",
       auth: owner,
       rawBody: JSON.stringify({ outcome: "helpful", sections: ["overall"] }),
-      // Wrong-media rejection deliberately cancels the unread body. Keep that
-      // transport probe off Miniflare's pooled HTTP/1 socket for later checks.
-      headers: { "content-type": "text/plain", connection: "close" },
+      headers: { "content-type": "text/plain" },
     });
     assert.equal(wrongContentType.response.status, 415);
     assert.equal(wrongContentType.payload.code, "unsupported_media_type");
+
+    // Wrong-media rejection deliberately cancels the unread body. Miniflare
+    // may retire its internal HTTP/1 socket, so resume on the same D1 state.
+    capturedLogs.push(server.logs());
+    await stopWorker(server);
+    server = null;
+    server = await startWorker(stateDirectory, assetsDirectory, port);
 
     const invalidRevision = await call(server.origin, feedbackPath(project.id, 0, schemaVersion), { auth: owner });
     assert.equal(invalidRevision.response.status, 400);
