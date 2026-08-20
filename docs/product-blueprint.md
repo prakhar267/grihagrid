@@ -183,6 +183,28 @@ Priority definitions: **P0** is required to sell responsibly; **P1** improves co
 | ID-07 | P1 | Customer records communication consent | Transactional and marketing purposes are separate, timestamped, revocable, and not preselected. |
 | ID-08 | P2 | Customer adds another family collaborator | Invite is scoped to one project, role-limited, expiring, revocable, and fully audited. |
 
+#### ID-04 bounded request-admission cut
+
+The bounded platform problem is a malformed, understated, or chunked request
+that can otherwise make the Worker retain more bytes than the API contract
+allows before rejection. Every ordinary JSON body is counted as received while
+streaming and accumulates at most 65,536 accepted body bytes before UTF-8
+decoding and object parsing. A present `Content-Length` is accepted only as
+decimal digits and is used solely for early upper-bound rejection; a missing,
+zero, or understated value never bypasses streamed byte counting. The exact
+limit is accepted; a delivered chunk that would cross it is rejected and the
+unread remainder is cancelled best-effort.
+
+Professional Handoff and Family Alignment preserve their smaller anonymous
+envelopes and generic capability-miss responses. Razorpay webhook admission
+uses the same primitive at 262,144 raw bytes so its signature still covers the
+exact received bytes before strict UTF-8 JSON decoding. Rejected requests do
+not start post-admission PBKDF2, domain D1 writes, payment verification, or AI
+provider work; origin, session, CSRF, and deliberate perimeter admission may
+still precede body parsing where their existing security order requires it.
+This cut adds no UI, analytics, or migration and does not make closed uploads
+available.
+
 #### ID-06 implemented cut
 
 The bounded customer problem is a signed-in owner who wants to inspect and

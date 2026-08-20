@@ -626,7 +626,9 @@ test("report feedback is exact, private, immutable-report-safe, and observable o
       method: "PUT",
       auth: owner,
       rawBody: JSON.stringify({ outcome: "helpful", sections: ["overall"] }),
-      headers: { "content-type": "text/plain" },
+      // Wrong-media rejection deliberately cancels the unread body. Keep that
+      // transport probe off Miniflare's pooled HTTP/1 socket for later checks.
+      headers: { "content-type": "text/plain", connection: "close" },
     });
     assert.equal(wrongContentType.response.status, 415);
     assert.equal(wrongContentType.payload.code, "unsupported_media_type");

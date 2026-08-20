@@ -771,6 +771,17 @@ The monitor account password belongs in the monitoring provider's encrypted
 secret store. Never log cookies, CSRF values, project inputs, email addresses,
 file bytes, Razorpay payloads, or provider authorization headers.
 
+Ordinary JSON ingress is bounded to 65,536 streamed raw bytes; the public
+report/Family routes retain smaller private envelopes and Razorpay webhooks use
+262,144 exact raw bytes. Treat `400 invalid_content_length`, `400 invalid_json`,
+and `413 payload_too_large` as bounded client outcomes unless their aggregate
+rate changes materially. A release synthetic must prove exact-limit success,
+limit-plus-one rejection, cancellation, fatal UTF-8, and no post-rejection
+PBKDF2/domain-D1/provider work. Never record the declared length, received byte
+count, request body, parser error, or capability in logs. Slow-drip deadlines
+and closed upload-body streaming remain explicit follow-ups rather than claims
+of this boundary.
+
 The Worker currently emits one bounded JSON completion log after each handled
 request and returns the same opaque request ID in `x-request-id`. Its
 implemented schema is:

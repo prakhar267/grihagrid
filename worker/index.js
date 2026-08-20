@@ -311,19 +311,102 @@ function requireTrustedOrigin(request, env) {
   throw new HttpError(403, "request origin is not allowed", "origin_rejected");
 }
 
+function declaredBodyLength(request, limit) {
+  const declared = request.headers.get("content-length");
+  if (declared == null) return null;
+  const normalized = declared.replace(/^[\t ]+|[\t ]+$/gu, "");
+  if (!/^\d+$/u.test(normalized)) {
+    throw new HttpError(400, "content-length must be a non-negative decimal integer", "invalid_content_length");
+  }
+  const canonical = normalized.replace(/^0+(?=\d)/u, "");
+  const limitText = String(limit);
+  if (canonical.length > limitText.length
+      || (canonical.length === limitText.length && canonical > limitText)) {
+    throw new HttpError(413, "request body is too large", "payload_too_large");
+  }
+  return Number(canonical);
+}
+
+async function cancelRequestBody(request) {
+  try {
+    if (request.body && !request.bodyUsed) await request.body.cancel();
+  } catch {
+    // Rejection is already determined; cancellation is best-effort cleanup.
+  }
+}
+
+async function readBoundedBody(request, limit) {
+  try {
+    declaredBodyLength(request, limit);
+  } catch (error) {
+    await cancelRequestBody(request);
+    throw error;
+  }
+  if (!request.body) return new Uint8Array();
+
+  let reader;
+  try {
+    reader = request.body.getReader();
+  } catch {
+    await cancelRequestBody(request);
+    throw new HttpError(400, "request body could not be read", "invalid_request_body");
+  }
+
+  const chunks = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!(value instanceof Uint8Array)) {
+        throw new HttpError(400, "request body could not be read", "invalid_request_body");
+      }
+      total += value.byteLength;
+      if (total > limit) {
+        throw new HttpError(413, "request body is too large", "payload_too_large");
+      }
+      chunks.push(value);
+    }
+  } catch (error) {
+    await reader.cancel().catch(() => {});
+    if (error instanceof HttpError) throw error;
+    throw new HttpError(400, "request body could not be read", "invalid_request_body");
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      // The request has already been consumed or rejected; never mask that result.
+    }
+  }
+
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
 async function readJson(request) {
   const mediaType = String(request.headers.get("content-type") || "")
     .split(";", 1)[0]
     .trim()
     .toLowerCase();
   if (mediaType !== "application/json") {
+    await cancelRequestBody(request);
     throw new HttpError(415, "content-type must be application/json", "unsupported_media_type");
   }
-  const declaredLength = Number(request.headers.get("content-length") || 0);
-  if (declaredLength > MAX_JSON_BYTES) throw new HttpError(413, "request body is too large", "payload_too_large");
-  const text = await request.text();
-  if (new TextEncoder().encode(text).byteLength > MAX_JSON_BYTES) {
-    throw new HttpError(413, "request body is too large", "payload_too_large");
+  let text;
+  try {
+    const bytes = await readBoundedBody(request, MAX_JSON_BYTES);
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch (error) {
+    if (error instanceof HttpError
+        && ["invalid_content_length", "payload_too_large"].includes(error.code)) {
+      throw error;
+    }
+    throw new HttpError(400, "invalid JSON body", "invalid_json");
   }
   let data;
   try {
@@ -1917,11 +2000,14 @@ async function getOrderFulfillment(request, env, orderId) {
 }
 
 async function readBoundedWebhookBody(request) {
-  const declaredLength = Number(request.headers.get("content-length") || 0);
-  if (declaredLength > MAX_WEBHOOK_BYTES) throw new HttpError(413, "webhook body is too large", "payload_too_large");
-  const buffer = await request.arrayBuffer();
-  if (buffer.byteLength > MAX_WEBHOOK_BYTES) throw new HttpError(413, "webhook body is too large", "payload_too_large");
-  return new Uint8Array(buffer);
+  try {
+    return await readBoundedBody(request, MAX_WEBHOOK_BYTES);
+  } catch (error) {
+    if (error instanceof HttpError && error.code === "payload_too_large") {
+      throw new HttpError(413, "webhook body is too large", "payload_too_large");
+    }
+    throw new HttpError(400, "webhook body could not be read", "invalid_webhook");
+  }
 }
 
 function fromHex(value) {
@@ -2233,7 +2319,7 @@ async function razorpayWebhook(request, env) {
 
   let payload;
   try {
-    payload = JSON.parse(new TextDecoder().decode(bytes));
+    payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
   } catch {
     throw new HttpError(400, "invalid webhook JSON", "invalid_json");
   }
@@ -5438,34 +5524,11 @@ async function readPublicFamilyAlignmentRequest(request, includeResponse = false
     .trim()
     .toLowerCase();
   if (mediaType !== "application/json") {
+    await cancelRequestBody(request);
     throw new HttpError(404, "review room not found", "family_alignment_not_found");
   }
-  const declared = request.headers.get("content-length");
-  if (declared != null && (!/^\d+$/u.test(declared.trim()) || Number(declared) > limit)) {
-    throw new HttpError(404, "review room not found", "family_alignment_not_found");
-  }
-  if (!request.body) throw new HttpError(404, "review room not found", "family_alignment_not_found");
-  const reader = request.body.getReader();
-  const chunks = [];
-  let total = 0;
   try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (!(value instanceof Uint8Array)) throw new Error("invalid request chunk");
-      total += value.byteLength;
-      if (total > limit) {
-        await reader.cancel().catch(() => {});
-        throw new Error("request body is too large");
-      }
-      chunks.push(value);
-    }
-    const bytes = new Uint8Array(total);
-    let offset = 0;
-    for (const chunk of chunks) {
-      bytes.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
+    const bytes = await readBoundedBody(request, limit);
     const body = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
     return normalizePublicFamilyAlignmentRequest(body, includeResponse);
   } catch (error) {
@@ -5474,8 +5537,6 @@ async function readPublicFamilyAlignmentRequest(request, includeResponse = false
       throw error;
     }
     throw new HttpError(404, "review room not found", "family_alignment_not_found");
-  } finally {
-    reader.releaseLock();
   }
 }
 
@@ -5969,41 +6030,16 @@ async function readPublicReportShareToken(request) {
     .trim()
     .toLowerCase();
   if (mediaType !== "application/json") {
+    await cancelRequestBody(request);
     throw new HttpError(404, "shared report not found", "report_share_not_found");
   }
-  const declared = request.headers.get("content-length");
-  if (declared != null && (!/^\d+$/u.test(declared.trim()) || Number(declared) > REPORT_SHARE_PUBLIC_BODY_BYTES)) {
-    throw new HttpError(404, "shared report not found", "report_share_not_found");
-  }
-  if (!request.body) throw new HttpError(404, "shared report not found", "report_share_not_found");
-  const reader = request.body.getReader();
-  const chunks = [];
-  let total = 0;
   try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (!(value instanceof Uint8Array)) throw new Error("invalid request chunk");
-      total += value.byteLength;
-      if (total > REPORT_SHARE_PUBLIC_BODY_BYTES) {
-        await reader.cancel().catch(() => {});
-        throw new Error("request body is too large");
-      }
-      chunks.push(value);
-    }
-    const bytes = new Uint8Array(total);
-    let offset = 0;
-    for (const chunk of chunks) {
-      bytes.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
+    const bytes = await readBoundedBody(request, REPORT_SHARE_PUBLIC_BODY_BYTES);
     const body = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
     return normalizePublicReportShareRequest(body);
   } catch (error) {
     if (error instanceof HttpError && error.code === "report_share_not_found") throw error;
     throw new HttpError(404, "shared report not found", "report_share_not_found");
-  } finally {
-    reader.releaseLock();
   }
 }
 
@@ -8442,6 +8478,7 @@ export const __test = {
   computeEstimate,
   publicEstimateEnvelope,
   constantTimeEqual,
+  declaredBodyLength,
   derivePassword,
   directInput,
   digestBase64,
@@ -8453,6 +8490,9 @@ export const __test = {
   normalizeProjectInput,
   normalizeReportShareRequest,
   normalizePublicReportShareRequest,
+  readBoundedBody,
+  readBoundedWebhookBody,
+  readJson,
   readPublicReportShareToken,
   normalizeRevisionPatch,
   operationalRoute,
