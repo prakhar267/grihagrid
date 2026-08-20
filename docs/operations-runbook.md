@@ -233,9 +233,19 @@ downgrade.
 
 Never rerun a historical `Deploy merged main` run: GitHub reruns execute the
 workflow definition attached to that original run, so a run created before
-these currentness fences cannot inherit them. For a deliberate redeploy, start
-the current workflow with **Run workflow** and the current `main` SHA, or the
-latest runtime SHA only when every trailing main change is documentation-only.
+these currentness fences cannot inherit them. To retry the current deployable
+`main` commit, start the current workflow from protected `main`; manual
+execution derives the candidate from that current protected `main` workflow
+SHA and does not accept a caller-selected executable commit. A manual run on a
+documentation-only current commit intentionally performs no deployment; it is
+not a mechanism for selecting historical code. Automatic CI-triggered runs may
+still finish an earlier runtime SHA when every trailing main change is
+documentation-only.
+The authorization and unprivileged validation jobs first check out trusted
+`main`, prove the requested SHA is still an authorized current ancestor, and
+only then detach to the candidate. Validation deliberately does not populate an
+npm cache, so an unauthorized tree cannot poison a default-branch cache before
+release trust is established.
 The pre-database fence is a distinct hard gate; if it rejects a stale candidate,
 later `always()` recovery steps are not allowed to write the handoff control.
 

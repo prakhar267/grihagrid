@@ -170,7 +170,20 @@ export async function checkOpsConfig() {
   assert.match(deployWorkflow, /checks:\s*read/u, "deployment gate must read exact-SHA check results");
   assert.match(deployWorkflow, /security-events:\s*read/u, "deployment gate must read bounded code-scanning evidence");
   assert.match(deployWorkflow, /workflow_dispatch'\s*&&\s*github\.ref\s*==\s*'refs\/heads\/main'/u, "manual releases must use the main workflow ref");
-  assert.equal((deployWorkflow.match(/release-scope\.mjs assert-current "\$RELEASE_SHA" "\$current_main_sha"/gu) || []).length, 7, "authorization and every privileged boundary must reject a candidate behind newer runtime work");
+  assert.match(deployWorkflow, /github\.event_name\s*==\s*'workflow_dispatch'\s*&&\s*github\.sha/u, "manual releases must derive executable code from the trusted workflow SHA");
+  assert.doesNotMatch(deployWorkflow, /inputs\.release_sha/u, "manual releases must not select executable code through an input");
+  assert.equal((deployWorkflow.match(/manual release SHA must equal the trusted workflow revision/gu) || []).length, 2, "authorization and validation must bind manual releases to their trusted control-plane revision");
+  assert.equal((deployWorkflow.match(/release-scope\.mjs assert-current "\$RELEASE_SHA" "\$current_main_sha"/gu) || []).length, 8, "authorization, unprivileged materialization, and every privileged boundary must reject a candidate behind newer runtime work");
+  const authorizationCheckout = workflowStep(deployWorkflow, "Check out trusted main control plane with full history");
+  assert.doesNotMatch(authorizationCheckout, /^\s*ref:/mu, "authorization must let GitHub select the trusted event control-plane checkout");
+  const validationCheckout = workflowStep(deployWorkflow, "Check out trusted main before authorized materialization");
+  assert.doesNotMatch(validationCheckout, /^\s*ref:/mu, "unprivileged validation must let GitHub select the trusted event control-plane checkout");
+  const validationSetupNode = workflowStep(deployWorkflow, "Set up Node.js without candidate caching");
+  assert.doesNotMatch(validationSetupNode, /cache:\s*npm/u, "unprivileged candidate validation must not populate the default-branch npm cache");
+  const materializationStep = workflowStep(deployWorkflow, "Materialize the authorized SHA from trusted main");
+  const materializationCurrentness = materializationStep.indexOf('release-scope.mjs assert-current "$RELEASE_SHA" "$current_main_sha"');
+  const materializationCheckout = materializationStep.indexOf('git checkout --detach "$RELEASE_SHA"');
+  assert.ok(materializationCurrentness >= 0 && materializationCheckout > materializationCurrentness, "validation must prove currentness from trusted main before materializing candidate code");
   const authorizationStep = workflowStep(deployWorkflow, "Require a squash-merged PR and exact trusted workflow results");
   assert.match(authorizationStep, /"repos\/\$GITHUB_REPOSITORY\/commits\/\$RELEASE_SHA\/pulls"/u, "release provenance must first inspect exact commit associations");
   assert.match(authorizationStep, /if \[ "\$associated_pull_count" -eq 0 \]/u, "release provenance may fall back only for an empty association response");
@@ -182,12 +195,12 @@ export async function checkOpsConfig() {
   assert.doesNotMatch(authorizationStep, /gh api[^\n]*\|\|/u, "release provenance must not mask a primary API failure");
   const ancestryPosition = authorizationStep.indexOf('git merge-base --is-ancestor "$RELEASE_SHA" origin/main');
   const codeqlPosition = authorizationStep.indexOf("CODEQL_RELEASE_SHA=\"$RELEASE_SHA\"");
-  const candidateNodePosition = authorizationStep.indexOf('node scripts/release-scope.mjs assert-current "$RELEASE_SHA" "$current_main_sha"');
+  const scopeInspectionPosition = authorizationStep.indexOf('node scripts/release-scope.mjs assert-current "$RELEASE_SHA" "$current_main_sha"');
   assert.ok(
-    ancestryPosition >= 0 && codeqlPosition > ancestryPosition && candidateNodePosition > codeqlPosition,
-    "authorization must prove ancestry and trusted exact-SHA evidence before candidate code runs",
+    ancestryPosition >= 0 && codeqlPosition > ancestryPosition && scopeInspectionPosition > codeqlPosition,
+    "authorization must prove ancestry and trusted exact-SHA evidence before scope inspection",
   );
-  assert.match(authorizationStep, /env -u GH_TOKEN node scripts\/release-scope\.mjs assert-current/u, "authorization must remove the API token before candidate code runs");
+  assert.match(authorizationStep, /env -u GH_TOKEN node scripts\/release-scope\.mjs assert-current/u, "authorization must remove the API token before scope inspection");
   assert.match(releaseScope, /merge-base", "--is-ancestor"/u, "release currentness must require main ancestry");
   assert.match(releaseScope, /git",[\s\S]*?"log"[\s\S]*?--first-parent[\s\S]*?--diff-merges=first-parent[\s\S]*?--name-only[\s\S]*?--no-renames/u, "release currentness must inspect every first-parent commit including merge-resolution changes");
   assert.match(releaseScope, /trailingScope\.deploy,[\s\S]*?false,[\s\S]*?newer deployable changes/u, "release currentness must allow trailing documentation but reject trailing runtime changes");
