@@ -451,18 +451,36 @@ test("CodeQL settled proof fingerprints rerun attempts and state across snapshot
 test("the current workflow blocks newer runtime work before remote inspection, mutation, or activation", async () => {
   const workflow = await readFile(new URL("../.github/workflows/deploy.yml", import.meta.url), "utf8");
   const runbook = await readFile(new URL("../docs/operations-runbook.md", import.meta.url), "utf8");
+  assert.match(workflow, /github\.event_name\s*==\s*'workflow_dispatch'\s*&&\s*github\.sha/u);
+  assert.doesNotMatch(workflow, /inputs\.release_sha/u);
+  const authorizationCheckout = workflowStep(workflow, "Check out trusted main control plane with full history");
+  assert.doesNotMatch(authorizationCheckout, /^\s*ref:/mu);
   const authorization = workflowStep(workflow, "Require a squash-merged PR and exact trusted workflow results");
   assert.match(authorization, /current_main_sha="\$\(git rev-parse origin\/main\)"/u);
+  assert.match(authorization, /control_plane_sha="\$\(git rev-parse HEAD\)"/u);
+  assert.match(authorization, /manual release SHA must equal the trusted workflow revision/u);
+  assert.match(authorization, /authorization control plane must come from protected main/u);
   assert.match(authorization, /release-scope\.mjs assert-current "\$RELEASE_SHA" "\$current_main_sha"/u);
   const ancestry = authorization.indexOf('git merge-base --is-ancestor "$RELEASE_SHA" origin/main');
   const exactCodeql = authorization.indexOf("CODEQL_RELEASE_SHA=\"$RELEASE_SHA\"");
-  const candidateNode = authorization.indexOf('node scripts/release-scope.mjs assert-current "$RELEASE_SHA" "$current_main_sha"');
+  const scopeInspection = authorization.indexOf('node scripts/release-scope.mjs assert-current "$RELEASE_SHA" "$current_main_sha"');
   assert.ok(
-    ancestry >= 0 && exactCodeql > ancestry && candidateNode > exactCodeql,
-    "candidate code must run only after ancestry and exact trusted evidence",
+    ancestry >= 0 && exactCodeql > ancestry && scopeInspection > exactCodeql,
+    "trusted scope inspection must run only after ancestry and exact evidence",
   );
+  const validationCheckout = workflowStep(workflow, "Check out trusted main before authorized materialization");
+  assert.doesNotMatch(validationCheckout, /^\s*ref:/mu);
+  const materialization = workflowStep(workflow, "Materialize the authorized SHA from trusted main");
+  assert.match(materialization, /validation control plane must come from protected main/u);
+  assert.match(materialization, /manual release SHA must equal the trusted workflow revision/u);
+  const currentness = materialization.indexOf('release-scope.mjs assert-current "$RELEASE_SHA" "$current_main_sha"');
+  const checkout = materialization.indexOf('git checkout --detach "$RELEASE_SHA"');
+  assert.ok(currentness >= 0 && checkout > currentness, "candidate materialization must follow trusted currentness validation");
+  const validationNode = workflowStep(workflow, "Set up Node.js without candidate caching");
+  assert.doesNotMatch(validationNode, /cache:\s*npm/u);
   assert.match(runbook, /Never rerun a historical `Deploy merged main` run/u);
-  assert.match(runbook, /current `main` SHA/u);
+  assert.match(runbook, /current protected `main` workflow\s+SHA/u);
+  assert.match(runbook, /documentation-only current commit intentionally performs no\s+deployment/u);
 
   for (const environment of ["staging", "production"]) {
     const inspectionName = environment === "staging"

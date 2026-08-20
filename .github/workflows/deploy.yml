@@ -5,11 +5,6 @@ on:
     workflows: ["CI"]
     types: [completed]
   workflow_dispatch:
-    inputs:
-      release_sha:
-        description: Full merged main SHA to redeploy
-        required: true
-        type: string
 
 permissions:
   contents: read
@@ -23,7 +18,7 @@ concurrency:
   queue: max
 
 env:
-  RELEASE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.release_sha || github.event.workflow_run.head_sha }}
+  RELEASE_SHA: ${{ github.event_name == 'workflow_dispatch' && github.sha || github.event.workflow_run.head_sha }}
   WRANGLER_VERSION: "4.122.0"
   BACKUP_KEY_VERSION: "2026-08-15-1"
 
@@ -46,10 +41,9 @@ jobs:
       migrations: ${{ steps.scope.outputs.migrations }}
 
     steps:
-      - name: Check out the exact candidate with full history
+      - name: Check out trusted main control plane with full history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ env.RELEASE_SHA }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -88,9 +82,17 @@ jobs:
             echo "release_sha must be a full lowercase commit SHA" >&2
             exit 1
           fi
-          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
           git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
           current_main_sha="$(git rev-parse origin/main)"
+          control_plane_sha="$(git rev-parse HEAD)"
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] && [ "$control_plane_sha" != "$RELEASE_SHA" ]; then
+            echo "manual release SHA must equal the trusted workflow revision" >&2
+            exit 1
+          fi
+          git merge-base --is-ancestor "$control_plane_sha" origin/main || {
+            echo "authorization control plane must come from protected main" >&2
+            exit 1
+          }
           git merge-base --is-ancestor "$RELEASE_SHA" origin/main || {
             echo "release SHA must be an ancestor of protected main" >&2
             exit 1
@@ -532,8 +534,8 @@ jobs:
             "$RUNNER_TEMP/codeql-runs-final.json" \
             "$RUNNER_TEMP/codeql-runs-settled.json"
 
-          # Candidate code runs without the API token and only after ancestry,
-          # merged-PR, exact-CI, and exact-CodeQL evidence established trust.
+          # Trusted main control-plane code runs without the API token and only
+          # after ancestry, merged-PR, exact-CI, and exact-CodeQL evidence.
           env -u GH_TOKEN node scripts/release-scope.mjs assert-current "$RELEASE_SHA" "$current_main_sha" >/dev/null
 
           {
@@ -564,18 +566,42 @@ jobs:
       RELEASE_SHA: ${{ needs.authorize.outputs.release_sha }}
 
     steps:
-      - name: Check out the authorized SHA
+      - name: Check out trusted main before authorized materialization
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ env.RELEASE_SHA }}
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Set up Node.js
+      - name: Set up Node.js without candidate caching
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
-          cache: npm
+
+      - name: Materialize the authorized SHA from trusted main
+        run: |
+          set -euo pipefail
+          if [[ ! "$RELEASE_SHA" =~ ^[a-f0-9]{40}$ ]]; then
+            echo "release_sha must be a full lowercase commit SHA" >&2
+            exit 1
+          fi
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          current_main_sha="$(git rev-parse origin/main)"
+          control_plane_sha="$(git rev-parse HEAD)"
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] && [ "$control_plane_sha" != "$RELEASE_SHA" ]; then
+            echo "manual release SHA must equal the trusted workflow revision" >&2
+            exit 1
+          fi
+          git merge-base --is-ancestor "$control_plane_sha" origin/main || {
+            echo "validation control plane must come from protected main" >&2
+            exit 1
+          }
+          git merge-base --is-ancestor "$RELEASE_SHA" origin/main || {
+            echo "authorized SHA must remain on protected main" >&2
+            exit 1
+          }
+          env -u GH_TOKEN node scripts/release-scope.mjs assert-current "$RELEASE_SHA" "$current_main_sha" >/dev/null
+          git checkout --detach "$RELEASE_SHA"
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
 
       - name: Revalidate release inputs without environment secrets
         run: |
