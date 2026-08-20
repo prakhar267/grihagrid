@@ -545,7 +545,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Store bounded CodeQL release evidence
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: codeql-release-evidence-${{ steps.gate.outputs.release_sha }}
           path: release-evidence/authorization/codeql-gate.json
@@ -614,7 +614,7 @@ jobs:
           git diff --check
 
       - name: Store the exact validated build
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-build-${{ env.RELEASE_SHA }}
           path: dist
@@ -886,7 +886,7 @@ jobs:
 
       - name: Store encrypted staging export
         if: steps.migrations.outputs.pending == 'true'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: staging-d1-pre-migration-${{ env.RELEASE_SHA }}
           path: ${{ steps.backup.outputs.backup_directory }}
@@ -1553,7 +1553,7 @@ jobs:
 
       - name: Upload staging release evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: staging-release-evidence-${{ env.RELEASE_SHA }}
           path: release-evidence/staging
@@ -1831,7 +1831,7 @@ jobs:
 
       - name: Store encrypted production export
         if: steps.migrations.outputs.pending == 'true'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: production-d1-pre-migration-${{ env.RELEASE_SHA }}
           path: ${{ steps.backup.outputs.backup_directory }}
@@ -2652,7 +2652,7 @@ jobs:
 
       - name: Upload production release evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: production-release-evidence-${{ env.RELEASE_SHA }}
           path: release-evidence/production
