@@ -437,6 +437,7 @@ test("Professional Handoff links preserve one redacted immutable report across o
   mkdirSync(assetsDirectory, { recursive: true });
   const port = await reservePort();
   let server = null;
+  const capturedLogs = [];
   try {
     requireD1(d1(stateDirectory, "migrate"), "fresh migrations failed");
     assert.deepEqual(
@@ -515,9 +516,7 @@ test("Professional Handoff links preserve one redacted immutable report across o
     await crossSiteText.arrayBuffer();
     const sameSiteText = await fetch(`${server.origin}/api/shared/report`, {
       method: "POST",
-      // Wrong-media rejection deliberately cancels the unread body. Keep that
-      // transport probe off Miniflare's pooled HTTP/1 socket for later checks.
-      headers: { origin: server.origin, "content-type": "text/plain; charset=utf-8", connection: "close" },
+      headers: { origin: server.origin, "content-type": "text/plain; charset=utf-8" },
       body: JSON.stringify({ token: malformedBearer }),
     });
     assert.equal(sameSiteText.status, 404);
@@ -525,6 +524,14 @@ test("Professional Handoff links preserve one redacted immutable report across o
       error: "shared report not found",
       code: "report_share_not_found",
     });
+
+    // Wrong-media rejection deliberately cancels the unread body. Miniflare
+    // may retire its internal HTTP/1 socket, so resume on the same D1 state.
+    capturedLogs.push(server.logs());
+    await stopWorker(server);
+    server = null;
+    server = await startWorker(stateDirectory, assetsDirectory, port);
+
     const parameterizedJson = await fetch(`${server.origin}/api/shared/report`, {
       method: "POST",
       headers: {
@@ -1151,7 +1158,7 @@ test("Professional Handoff links preserve one redacted immutable report across o
       code: "report_share_not_found",
     });
 
-    const applicationLogs = server.logs()
+    const applicationLogs = [...capturedLogs, server.logs()].join("\n")
       .split(/\r?\n/u)
       .filter((line) => line.includes('"type":"request_complete"'))
       .join("\n");

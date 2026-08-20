@@ -577,15 +577,21 @@ test("Family Alignment is redacted, bounded, owner-scoped, revocable, and retain
 
     const sameOriginTextResponse = await fetch(`${server.origin}/api/shared/family-alignment`, {
       method: "POST",
-      // Wrong-media rejection deliberately cancels the unread body. Keep that
-      // transport probe off Miniflare's pooled HTTP/1 socket for later checks.
-      headers: { origin: server.origin, "content-type": "text/plain; charset=utf-8", connection: "close" },
+      headers: { origin: server.origin, "content-type": "text/plain; charset=utf-8" },
       body: JSON.stringify({ token: mainToken }),
     });
     assertGenericFamilyNotFound({
       response: sameOriginTextResponse,
       payload: await sameOriginTextResponse.json(),
     }, "unsupported read media type");
+
+    // Wrong-media rejection deliberately cancels the unread body. Miniflare
+    // may retire its internal HTTP/1 socket, so resume on the same D1 state.
+    capturedLogs.push(server.logs());
+    await stopWorker(server);
+    server = null;
+    server = await startWorker(stateDirectory, assetsDirectory, port);
+
     const canonicalJsonResponse = await fetch(`${server.origin}/api/shared/family-alignment`, {
       method: "POST",
       headers: {
