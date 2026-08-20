@@ -515,7 +515,9 @@ test("Professional Handoff links preserve one redacted immutable report across o
     await crossSiteText.arrayBuffer();
     const sameSiteText = await fetch(`${server.origin}/api/shared/report`, {
       method: "POST",
-      headers: { origin: server.origin, "content-type": "text/plain; charset=utf-8" },
+      // Wrong-media rejection deliberately cancels the unread body. Keep that
+      // transport probe off Miniflare's pooled HTTP/1 socket for later checks.
+      headers: { origin: server.origin, "content-type": "text/plain; charset=utf-8", connection: "close" },
       body: JSON.stringify({ token: malformedBearer }),
     });
     assert.equal(sameSiteText.status, 404);
