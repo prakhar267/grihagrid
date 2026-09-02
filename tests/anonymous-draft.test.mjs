@@ -309,7 +309,7 @@ test("only strict 200/201 project responses may consume an anonymous draft", () 
       id: PROJECT_ID,
       name,
       status: "feasibility_ready",
-      input,
+      input: { ...input, bedrooms: "3" },
       estimate: {},
       estimateRuleVersion: 1,
       briefCheck: {},

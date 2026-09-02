@@ -1134,6 +1134,11 @@ assessment state. Report contents include an area program, itemized cost range,
 delivery phases, project-sensitive risks, next actions, an input hash, and the
 concept-stage disclaimer. It is intentionally deterministic product logic, not
 a statutory drawing, engineering design, contractor quote, or permit approval.
+New reports also persist `architecturalHandoff.version=1`, the additive room,
+floor, adjacency, site/climate, services, verification, professional-issue and
+reference registers documented in `docs/architect-review-pack.md`. Existing v2
+bytes remain immutable; the private website derives the same presentation from
+the exact revision input/estimate already in the atomic envelope.
 
 ### Professional Handoff report sharing
 
@@ -1164,6 +1169,10 @@ a statutory drawing, engineering design, contractor quote, or permit approval.
   `200` with the same metadata and `idempotentReplay: true`, but no token or URL.
   Reusing the key for another request is `409`. At most five active links may
   exist for one project.
+  Selecting `programme` also returns the allowlisted Architect review pack. It
+  includes entered city, facing, plot/road dimensions and bounded room/budget
+  context needed by the intended professional, while excluding project/account
+  identity, precise address, free-text style and every unselected report section.
 - `DELETE /api/projects/:projectId/report-shares/:shareId` is owner-scoped,
   trusted-origin and CSRF-protected. It revokes monotonically and returns empty
   `204`; an exact repeat remains `204`.

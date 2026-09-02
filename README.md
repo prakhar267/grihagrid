@@ -2,6 +2,13 @@
 
 India-first concept-stage home-planning SaaS. GrihaGrid turns a plot brief into a shareable, freshly recalculated city-adjusted construction range, a private saved project, a deterministic planning report with version-bound structured feedback and selective professional handoff, an optional Gemini-assisted planning brief, and Decision Compare: a versioned side-by-side choice between exactly two home briefs.
 
+The generated website report includes an Architect review pack: traceable area
+arithmetic, room targets, floor zoning, adjacency, climate, structure and
+services intent, a verification register, professional deliverables and
+print/PDF formatting. It reduces re-briefing but never replaces measured,
+licensed, statutory, engineering or construction work. See
+`docs/architect-review-pack.md`.
+
 Production: <https://grihagrid.prakhargupta267.workers.dev>
 
 The public site and free planning journey are live. The ₹999 Decision Compare checkout remains intentionally fail-closed; this readiness work does not open payments or make a legal approval decision. Account verification/recovery/export/deletion, static private-image handling, and an owner-to-verified-reviewer workflow are implemented behind explicit dependency and operational gates.

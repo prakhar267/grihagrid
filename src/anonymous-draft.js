@@ -95,13 +95,16 @@ function canonicalText(value, maximum) {
 export function canonicalAnonymousProjectDraft(value) {
   if (!hasExactOwnKeys(value, DRAFT_FIELDS)) return null;
   const name = canonicalText(value.name, 100);
+  const bedrooms = typeof value.bedrooms === "string" && /^[2-4]$/u.test(value.bedrooms)
+    ? Number(value.bedrooms)
+    : value.bedrooms;
   if (!name
       || !boundedNumber(value.width, 10, 500)
       || !boundedNumber(value.length, 10, 500)
       || !enumValue(value.city, CITIES)
       || !enumValue(value.facing, FACINGS)
       || !enumValue(value.floors, FLOORS)
-      || !enumValue(value.bedrooms, BEDROOMS)
+      || !enumValue(bedrooms, BEDROOMS)
       || !nullableBoundedNumber(value.bathrooms, 1, 12, true)
       || !enumValue(value.parking, PARKING)
       || !nullableBoundedNumber(value.roadWidthFt, 6, 200)
@@ -111,7 +114,10 @@ export function canonicalAnonymousProjectDraft(value) {
       || !nullableBoundedNumber(value.budgetLakh, 5, 10_000)
       || !enumValue(value.style, ANONYMOUS_DRAFT_STYLES)
       || !enumValue(value.quality, QUALITIES)) return null;
-  return Object.fromEntries(DRAFT_FIELDS.map(field => [field, field === "name" ? name : value[field]]));
+  return Object.fromEntries(DRAFT_FIELDS.map(field => [
+    field,
+    field === "name" ? name : field === "bedrooms" ? bedrooms : value[field],
+  ]));
 }
 
 export function validAnonymousProjectName(value) {

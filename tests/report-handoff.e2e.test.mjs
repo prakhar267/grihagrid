@@ -433,7 +433,7 @@ function openShare(origin, token, { headers = {} } = {}) {
 function assertPublicRedaction(payload) {
   const forbiddenKeys = new Set([
     "id", "projectid", "userid", "email", "input", "inputhash", "token",
-    "tokenhash", "contenthash", "city", "facing", "width", "length", "aibrief",
+    "tokenhash", "contenthash", "width", "length", "aibrief",
     "files", "feedback", "orders", "source_report_id", "report_content_hash",
   ]);
   const visit = (value) => {
@@ -445,7 +445,7 @@ function assertPublicRedaction(payload) {
   };
   visit(payload);
   const serialized = JSON.stringify(payload);
-  for (const value of ["PRIVATE_PROJECT", "owner@example.test", "PRIVATE_STYLE", "Pune", "East"]) {
+  for (const value of ["PRIVATE_PROJECT", "owner@example.test", "PRIVATE_STYLE"]) {
     assert.equal(serialized.includes(value), false, value);
   }
 }
@@ -671,6 +671,9 @@ test("Professional Handoff links preserve one redacted immutable report across o
       "overview", "programme", "cost", "timeline", "risks", "nextActions",
     ]);
     assertPublicRedaction(opened.payload);
+    assert.equal(opened.payload.share.sections.programme.architecture.siteBrief.city, "Pune");
+    assert.equal(opened.payload.share.sections.programme.architecture.siteBrief.facing, "East");
+    assert.equal(Object.hasOwn(opened.payload.share.sections.programme.architecture.siteBrief, "styleDirection"), false);
     const afterOpen = await call(server.origin, `/api/projects/${source.project.id}/report-shares`, { auth: owner });
     assert.equal(afterOpen.payload.shares[0].accessCount, 1);
     assert.ok(afterOpen.payload.shares[0].lastAccessedAt);

@@ -286,6 +286,13 @@ test("report generation preserves 5+ bedrooms and treats None as no parking", ()
   assert.equal(report.areaProgram.suggestedSpaces.some((space) => space.startsWith("Arrival court")), true);
   assert.equal(report.areaProgram.suggestedSpaces.some((space) => space.includes("parking bay")), false);
   assert.equal(report.version, 2);
+  assert.equal(report.architecturalHandoff.version, 1);
+  assert.equal(report.architecturalHandoff.siteBrief.bedrooms, 5);
+  assert.equal(
+    report.architecturalHandoff.areaReconciliation.programmeNetSqft
+      + report.architecturalHandoff.areaReconciliation.planningAllowanceSqft,
+    report.architecturalHandoff.areaReconciliation.targetBuiltUpSqft,
+  );
   assert.equal(report.summary.verdict.includes("feasible"), false);
   assert.equal(report.areaProgram.suggestedSpaces.some((space) => /code-compliant|at least one on-plot/iu.test(space)), false);
 });

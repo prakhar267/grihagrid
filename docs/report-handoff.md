@@ -24,6 +24,16 @@ revoked links are `410` and cannot be reactivated. The report stays pinned to th
 original `(project_id, project_revision, report_schema_version=2)` record even if
 the project later changes.
 
+The `programme` selection includes the Architect review pack described in
+`docs/architect-review-pack.md`: entered plot dimensions, city, facing, road
+width when known, room/budget context, area and room schedules, floor zoning,
+services, verification and professional deliverable registers. The owner UI
+names that disclosure before link creation. It still excludes a precise
+address, project/account identity, project name, free-text style, files,
+feedback, AI briefs, comparisons, orders and other revisions. Older schema-v2
+reports derive this programme only from the share's exact immutable revision
+input/estimate row; report bytes and the stored content hash remain unchanged.
+
 Anyone holding the URL can read the selected material until expiry or revocation.
 Owners must therefore send it only to the intended professional. The link does
 not identify or authenticate that recipient and must not be used for confidential
