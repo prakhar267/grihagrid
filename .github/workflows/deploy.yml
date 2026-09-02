@@ -2434,9 +2434,10 @@ jobs:
           invocation_status=$?
           wait "$server_pid"
           server_status=$?
-          invocation_stderr_bytes="$(wc -c < "$invocation_stderr")"
-          server_stderr_bytes="$(wc -c < "$server_stderr")"
           set -e
+
+          invocation_stderr_summary="$(node scripts/classify-tail-stderr.mjs "$invocation_stderr")"
+          server_stderr_summary="$(node scripts/classify-tail-stderr.mjs "$server_stderr")"
 
           for attempt in $(seq 1 50); do
             if [ -s "$invocation_summary" ] && [ -s "$server_summary" ]; then
@@ -2466,7 +2467,7 @@ jobs:
           MONITOR_STATUS="$monitor_status" PUBLIC_REGRESSION="$public_regression" \
             TAIL_REGRESSION="$tail_regression" MONITOR_INFRASTRUCTURE_FAILURE="$monitor_infrastructure_failure" TAILS_ALIVE="$tails_alive" \
             INVOCATION_STATUS="$invocation_status" SERVER_STATUS="$server_status" \
-            INVOCATION_STDERR_BYTES="$invocation_stderr_bytes" SERVER_STDERR_BYTES="$server_stderr_bytes" \
+            INVOCATION_STDERR_SUMMARY="$invocation_stderr_summary" SERVER_STDERR_SUMMARY="$server_stderr_summary" \
             node --input-type=module - "$invocation_summary" "$server_summary" "$GITHUB_OUTPUT" <<'NODE'
           import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
           const [invocationFile, serverFile, output] = process.argv.slice(2);
@@ -2477,13 +2478,24 @@ jobs:
           const serverStatus = Number(process.env.SERVER_STATUS);
           const publicRegression = process.env.PUBLIC_REGRESSION === "true";
           const tailRegression = process.env.TAIL_REGRESSION === "true";
+          const parseStderrSummary = (name) => {
+            const summary = JSON.parse(process.env[name]);
+            if (!Number.isSafeInteger(summary.byteCount) || summary.byteCount < 0
+              || typeof summary.ignoredProxyWarning !== "boolean"
+              || typeof summary.unexpected !== "boolean") {
+              throw new Error(`invalid ${name}`);
+            }
+            return summary;
+          };
+          const invocationStderr = parseStderrSummary("INVOCATION_STDERR_SUMMARY");
+          const serverStderr = parseStderrSummary("SERVER_STDERR_SUMMARY");
           const stoppedEarly = monitorStatus !== 0;
           const tailsStoppedByOperator = invocationStatus === 143 && serverStatus === 143;
           const regression = publicRegression || tailRegression || invocation.eventCount > 0 || server.eventCount > 0;
           const infrastructureFailure = process.env.MONITOR_INFRASTRUCTURE_FAILURE === "true"
             || process.env.TAILS_ALIVE !== "true"
-            || Number(process.env.INVOCATION_STDERR_BYTES) !== 0
-            || Number(process.env.SERVER_STDERR_BYTES) !== 0
+            || invocationStderr.unexpected
+            || serverStderr.unexpected
             || !tailsStoppedByOperator;
           writeFileSync("release-evidence/production/tail-health.json", `${JSON.stringify({
             exactVersion: process.env.GRIHAGRID_RELEASE_ID,
@@ -2499,8 +2511,12 @@ jobs:
             invocationProcessExit: invocationStatus,
             serverProcessExit: serverStatus,
             tailsStoppedByOperator,
-            invocationStderrBytes: Number(process.env.INVOCATION_STDERR_BYTES),
-            serverStderrBytes: Number(process.env.SERVER_STDERR_BYTES),
+            invocationStderrBytes: invocationStderr.byteCount,
+            serverStderrBytes: serverStderr.byteCount,
+            invocationProxyWarningIgnored: invocationStderr.ignoredProxyWarning,
+            serverProxyWarningIgnored: serverStderr.ignoredProxyWarning,
+            invocationUnexpectedStderr: invocationStderr.unexpected,
+            serverUnexpectedStderr: serverStderr.unexpected,
             regression,
             infrastructureFailure,
           }, null, 2)}\n`);
