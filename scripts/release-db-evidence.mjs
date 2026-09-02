@@ -61,6 +61,55 @@ const REQUIRED_0017_OBJECTS = Object.freeze([
   "index:idx_login_attempt_fences_expires",
 ]);
 
+const REQUIRED_0018_OBJECTS = Object.freeze([
+  "table:email_verification_tokens",
+  "table:password_reset_tokens",
+  "table:transactional_email_events",
+  "table:account_deletion_requests",
+  "table:account_deletion_receipts",
+  "index:idx_email_verification_user_created",
+  "index:idx_email_verification_expiry",
+  "index:idx_password_reset_user_created",
+  "index:idx_password_reset_expiry",
+  "index:idx_transactional_email_idempotency",
+  "index:idx_transactional_email_user_created",
+  "index:idx_account_deletion_status_updated",
+  "trigger:email_verification_token_identity_guard",
+  "trigger:password_reset_token_identity_guard",
+  "trigger:transactional_email_events_immutable",
+]);
+
+const REQUIRED_0019_OBJECTS = Object.freeze([
+  "index:idx_project_files_ready_created",
+  "trigger:project_file_owner_insert_guard",
+  "trigger:project_file_ready_insert_guard",
+  "trigger:project_file_account_limit_insert_guard",
+  "trigger:project_file_identity_immutable",
+]);
+
+const REQUIRED_0020_OBJECTS = Object.freeze([
+  "table:professional_profiles",
+  "table:professional_review_requests",
+  "table:professional_review_messages",
+  "table:professional_review_events",
+  "index:idx_professional_reviews_active_source",
+  "index:idx_professional_reviews_owner_updated",
+  "index:idx_professional_reviews_reviewer_updated",
+  "index:idx_professional_reviews_queue",
+  "index:idx_professional_review_messages_review_created",
+  "index:idx_professional_review_events_review_created",
+  "trigger:professional_profile_role_guard",
+  "trigger:professional_review_owner_guard",
+  "trigger:professional_review_assignment_guard",
+  "trigger:professional_review_source_immutable",
+  "trigger:professional_review_messages_immutable_update",
+  "trigger:professional_review_events_immutable_update",
+]);
+
+const REQUIRED_0021_OBJECTS = Object.freeze([
+  "index:idx_professional_reviews_owner_requested",
+]);
+
 const REQUIRED_BASELINE_OBJECTS = Object.freeze([
   "table:users",
   "table:projects",
@@ -75,6 +124,7 @@ const REQUIRED_BASELINE_OBJECTS = Object.freeze([
 const REQUIRED_COLUMNS = Object.freeze([
   "users:id", "users:email", "users:password_hash", "users:password_salt", "users:password_iterations", "users:password_algorithm",
   "users:auth_generation", "users:auth_revision_id", "users:password_changed_at",
+  "users:email_verified_at", "users:deletion_requested_at", "users:account_role",
   "sessions:id", "sessions:user_id", "sessions:token_hash", "sessions:csrf_hash", "sessions:auth_generation", "sessions:auth_revision_id",
   "password_change_attempt_counters:user_id", "password_change_attempt_counters:window_start",
   "password_change_attempt_counters:request_count", "password_change_attempt_counters:limit_count",
@@ -100,6 +150,31 @@ const REQUIRED_COLUMNS = Object.freeze([
   "report_share_create_counters:updated_at",
   "report_handoff_controls:control_key", "report_handoff_controls:enabled",
   "report_handoff_controls:updated_at",
+  "project_files:storage_state", "project_files:sanitization_profile", "project_files:original_size_bytes",
+  "email_verification_tokens:id", "email_verification_tokens:user_id", "email_verification_tokens:token_hash",
+  "email_verification_tokens:expires_at", "email_verification_tokens:consumed_at", "email_verification_tokens:created_at",
+  "password_reset_tokens:id", "password_reset_tokens:user_id", "password_reset_tokens:token_hash",
+  "password_reset_tokens:expires_at", "password_reset_tokens:consumed_at", "password_reset_tokens:created_at",
+  "transactional_email_events:id", "transactional_email_events:user_id", "transactional_email_events:purpose",
+  "transactional_email_events:outcome", "transactional_email_events:idempotency_key_hash", "transactional_email_events:created_at",
+  "account_deletion_requests:id", "account_deletion_requests:user_id", "account_deletion_requests:status",
+  "account_deletion_requests:requested_at", "account_deletion_requests:completed_at", "account_deletion_requests:updated_at",
+  "account_deletion_receipts:request_id", "account_deletion_receipts:completed_at",
+  "professional_profiles:user_id", "professional_profiles:display_name", "professional_profiles:discipline",
+  "professional_profiles:license_jurisdiction", "professional_profiles:license_reference",
+  "professional_profiles:verification_status", "professional_profiles:verified_at", "professional_profiles:created_at",
+  "professional_profiles:updated_at",
+  "professional_review_requests:id", "professional_review_requests:project_id", "professional_review_requests:owner_id",
+  "professional_review_requests:reviewer_id", "professional_review_requests:project_revision",
+  "professional_review_requests:report_schema_version", "professional_review_requests:report_content_hash",
+  "professional_review_requests:owner_note", "professional_review_requests:reviewer_summary",
+  "professional_review_requests:status", "professional_review_requests:idempotency_key_hash",
+  "professional_review_requests:requested_at", "professional_review_requests:assigned_at",
+  "professional_review_requests:completed_at", "professional_review_requests:updated_at",
+  "professional_review_messages:id", "professional_review_messages:review_id", "professional_review_messages:author_id",
+  "professional_review_messages:author_role", "professional_review_messages:body", "professional_review_messages:created_at",
+  "professional_review_events:id", "professional_review_events:review_id", "professional_review_events:actor_id",
+  "professional_review_events:action", "professional_review_events:detail_hash", "professional_review_events:created_at",
 ]);
 
 const REQUIRED_SCHEMA_OBJECTS = Object.freeze([
@@ -109,6 +184,10 @@ const REQUIRED_SCHEMA_OBJECTS = Object.freeze([
   ...REQUIRED_0015_OBJECTS,
   ...REQUIRED_0016_OBJECTS,
   ...REQUIRED_0017_OBJECTS,
+  ...REQUIRED_0018_OBJECTS,
+  ...REQUIRED_0019_OBJECTS,
+  ...REQUIRED_0020_OBJECTS,
+  ...REQUIRED_0021_OBJECTS,
 ]);
 
 function stableStringify(value) {
@@ -206,7 +285,15 @@ function canonicalUsers(payload, expectedCount, priorProof = null) {
   const rows = d1Rows(payload, "users canonical rows");
   assert.equal(rows.length, expectedCount, "users canonical query was truncated or inconsistent");
   const canonicalRows = rows.map((row) => ({
-    ...row,
+    id: row.id,
+    email: row.email,
+    name: row.name,
+    created_at: row.created_at,
+    deleted_at: row.deleted_at,
+    password_hash: row.password_hash,
+    password_salt: row.password_salt,
+    password_iterations: row.password_iterations,
+    password_algorithm: row.password_algorithm,
     auth_generation: row.auth_generation ?? 1,
     auth_revision_id: row.auth_revision_id ?? null,
     password_changed_at: row.password_changed_at ?? null,
