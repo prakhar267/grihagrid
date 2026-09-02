@@ -689,12 +689,13 @@ test("Brief Check revisions are truthful, immutable, owner-scoped, and race safe
       method: "POST",
       auth: owner,
       headers: { "idempotency-key": commitKey },
-      body: { expectedInputRevision: 1, input: { quality: "Premium" }, acceptedImpact: true },
+      body: { expectedInputRevision: 1, input: { quality: "Premium", bedrooms: 4 }, acceptedImpact: true },
     });
     assert.equal(committed.response.status, 201, JSON.stringify(committed.payload));
     assertExactKeys(committed.payload, ["project", "revision", "briefCheck", "changeStudy", "idempotentReplay"], "revision commit");
     assert.equal(committed.payload.idempotentReplay, false);
     assert.equal(committed.payload.project.inputRevision, 2);
+    assert.equal(committed.payload.project.input.bedrooms, "4");
     assertRevisionDetail(committed.payload.revision);
     assert.equal(committed.payload.revision.revision, 2);
     assertBriefCheck(committed.payload.briefCheck);
@@ -705,7 +706,7 @@ test("Brief Check revisions are truthful, immutable, owner-scoped, and race safe
       method: "POST",
       auth: owner,
       headers: { "idempotency-key": commitKey },
-      body: { expectedInputRevision: 1, input: { quality: "Premium" }, acceptedImpact: true },
+      body: { expectedInputRevision: 1, input: { quality: "Premium", bedrooms: 4 }, acceptedImpact: true },
     });
     assert.equal(replayed.response.status, 200, JSON.stringify(replayed.payload));
     assert.equal(replayed.payload.idempotentReplay, true);

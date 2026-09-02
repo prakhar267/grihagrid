@@ -4215,6 +4215,10 @@ function changeStudy(beforeInput, beforeEstimate, afterInput, afterEstimate, bef
 
 function prepareRevisionCandidate(project, proposedInput) {
   const patch = normalizeRevisionPatch(proposedInput);
+  return prepareRevisionCandidateFromPatch(project, patch);
+}
+
+function prepareRevisionCandidateFromPatch(project, patch) {
   const previousInput = parseStoredJson(project.input_json, {});
   const previousEstimate = parseStoredJson(project.estimate_json, computeEstimate(previousInput));
   const normalized = normalizeProjectInput({ ...previousInput, ...patch });
@@ -4937,7 +4941,9 @@ async function commitProjectRevision(request, env, projectId) {
 
   requireActiveProject(project);
   assertRevisionCurrent(project, expectedInputRevision);
-  const candidate = prepareRevisionCandidate(project, patch);
+  // `patch` is already canonical. Passing it through the public normalizer again
+  // would reject canonical bedroom strings such as "4" after accepting number 4.
+  const candidate = prepareRevisionCandidateFromPatch(project, patch);
   if (!candidate.changeStudy.hasChanges) {
     throw new HttpError(409, "the proposed input does not change the project brief", "no_revision_changes");
   }
