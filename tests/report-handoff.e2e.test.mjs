@@ -31,6 +31,25 @@ function wait(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+async function mapWithConcurrency(count, concurrency, operation) {
+  assert.ok(Number.isSafeInteger(count) && count > 0, "concurrent operation count must be positive");
+  assert.ok(
+    Number.isSafeInteger(concurrency) && concurrency > 0 && concurrency <= count,
+    "concurrent operation limit must be within the operation count",
+  );
+  assert.equal(typeof operation, "function", "concurrent operation must be a function");
+  const results = new Array(count);
+  let nextIndex = 0;
+  await Promise.all(Array.from({ length: concurrency }, async () => {
+    while (nextIndex < count) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await operation(index);
+    }
+  }));
+  return results;
+}
+
 async function stopWorker(server) {
   if (!server?.child) return;
   if (server.child.exitCode === null) {
@@ -881,12 +900,18 @@ test("Professional Handoff links preserve one redacted immutable report across o
 
     const admissionIp="198.51.100.77";
     const accessCountBeforeAdmissionRace=Number((await liveQuery(server, `SELECT access_count FROM report_shares WHERE id='${mainShare.id}';`))[0].access_count);
-    const admissionRace=await Promise.all(Array.from({length:121},()=>openShare(server.origin,mainToken,{
+    // Keep enough overlap to exercise D1's atomic admission path without
+    // saturating Wrangler's local explorer endpoint on smaller CI runners.
+    const admissionRace=await mapWithConcurrency(121,16,()=>openShare(server.origin,mainToken,{
       headers:{"cf-connecting-ip":admissionIp},
-    })));
+    }));
     const admissionStatuses=admissionRace.map(result=>result.response.status);
-    assert.equal(admissionStatuses.filter(status=>status===200).length,120);
-    assert.equal(admissionStatuses.filter(status=>status===429).length,1);
+    const admissionStatusCounts=Object.fromEntries(
+      [...new Set(admissionStatuses)].sort((left,right)=>left-right)
+        .map(status=>[status,admissionStatuses.filter(candidate=>candidate===status).length]),
+    );
+    assert.equal(admissionStatuses.filter(status=>status===200).length,120,JSON.stringify(admissionStatusCounts));
+    assert.equal(admissionStatuses.filter(status=>status===429).length,1,JSON.stringify(admissionStatusCounts));
     const counterRows=await liveQuery(server,"SELECT subject_hash,window_start,request_count,limit_count FROM report_share_read_counters;");
     const admissionCounter=counterRows.find((row) => row.subject_hash === createHmac(
       "sha256",
