@@ -49,21 +49,27 @@ interleaved within their own real-D1 fixtures.
     public route without account cookies → verify exact section redaction →
     revoke → public `410` → delete the project. Repeat with expiry, replay,
     cross-owner, active-link-cap, archive, source-revision and cleanup races.
-13. Register with the exact optional-name schema → log in successfully → log out
+13. Generate a Delhi 30 × 50 ft, G+1, 3-bedroom report → reconcile plot,
+    footprint, open-ground, gross, scheduled-net, allowance, room and level
+    totals → inspect room/floor/services/verification/drawing registers → print
+    at A4 → share the Architectural programme → prove city/facing/entered
+    dimensions are disclosed while project/account/precise-address/free-text
+    style and unselected sections remain absent.
+14. Register with the exact optional-name schema → log in successfully → log out
     → distribute 13 wrong-password attempts across independent IP fixtures →
     require only 12 real-account reservations in one non-sliding window and the
     same generic 401 thereafter → advance beyond expiry → log in and prove the
     exact session transaction clears the fence. Repeat with unknown/deleted
     accounts, malformed credential records, failed KV/D1, password rotation,
     concurrent requests, failed batches, cleanup and old-Worker compatibility.
-14. Enter a partial anonymous brief → Save & exit → reopen `/start` → require a
+15. Enter a partial anonymous brief → Save & exit → reopen `/start` → require a
     value-free Resume/Discard choice → Resume the exact step and values → finish
     authentication → create exactly one project in that account with the original
     retry key.
     Repeat with expiry, corrupt/blocked/quota storage, back/forward navigation,
     two-tab edit/discard races, lost project response, successful cleanup, 390 px,
     keyboard-only operation, and 200% zoom.
-15. Register → create 22 additional current-authentication sessions plus expired
+16. Register → create 22 additional current-authentication sessions plus expired
     and stale-generation fixtures → open Account security → require current plus
     20 newest matching others and `hasMore` without identifiers/fingerprints →
     confirm **Sign out other sessions** with the current password → retain every

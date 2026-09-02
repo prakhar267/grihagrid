@@ -26,7 +26,7 @@ test("owner handoff sends one exact immutable report identity and bounded sectio
     [...vocabulary.matchAll(/\["([a-z_]+)",/gu)].map(match=>match[1]),
     ["overview","programme","cost","timeline","risks","next_actions"],
   );
-  assert.match(defaults,/defaultReportHandoffSections = \["overview", "risks", "next_actions"\]/u);
+  assert.match(defaults,/defaultReportHandoffSections = \["overview", "programme", "risks", "next_actions"\]/u);
   assert.match(owner,/\/api\/projects\/\$\{encodeURIComponent\(projectId\)\}\/report-shares/u);
   assert.match(owner,/body:\{projectRevision,reportSchemaVersion,expiresInDays:Number\(days\),sections\}/u);
   assert.match(owner,/headers:\{"idempotency-key":idempotencyKey\(storageKey\)\}/u);

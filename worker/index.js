@@ -1,3 +1,5 @@
+import { buildArchitecturalHandoff, publicArchitecturalProgramme } from "../src/architect-report.js";
+
 const JSON_HEADERS = {
   "content-type": "application/json; charset=utf-8",
   "cache-control": "no-store",
@@ -6761,7 +6763,7 @@ function validatedReportShareSource(row) {
   return report;
 }
 
-function publicReportShareProjection(report, sections) {
+function publicReportShareProjection(report, sections, source = {}) {
   const projected = {};
   for (const section of sections) {
     if (section === "overview") {
@@ -6796,6 +6798,11 @@ function publicReportShareProjection(report, sections) {
         estimatedFloorPlateSqft: reportShareNumber(programme.estimatedFloorPlateSqft, "floor-plate area", 100_000_000),
         estimatedOpenAreaSqft: reportShareNumber(programme.estimatedOpenAreaSqft, "open area", 100_000_000),
         suggestedSpaces: reportShareTextList(programme.suggestedSpaces, "suggested spaces", 16, 300),
+        architecture: publicArchitecturalProgramme(
+          report.architecturalHandoff || (source.input && source.estimate
+            ? buildArchitecturalHandoff(source.input, source.estimate)
+            : null),
+        ),
       };
     } else if (section === "cost") {
       const cost = report.costPlan;
@@ -7018,12 +7025,16 @@ async function getSharedReport(request, env) {
   await acquireReportShareReadAdmission(db, request, hmacKey);
   const row = await db.prepare(
     `SELECT sh.*,rr.source_report_id,rr.input_hash,rr.content_json,rr.generated_at,
+            pr.input_json AS revision_input_json,pr.estimate_json AS revision_estimate_json,
             p.name AS project_name
        FROM report_shares sh
        JOIN project_revision_reports rr
         ON rr.project_id=sh.project_id
         AND rr.project_revision=sh.project_revision
         AND rr.report_schema_version=sh.report_schema_version
+       JOIN project_revisions pr
+        ON pr.project_id=sh.project_id
+        AND pr.revision=sh.project_revision
        JOIN projects p
          ON p.id=sh.project_id
         AND p.user_id=sh.user_id
@@ -7039,7 +7050,10 @@ async function getSharedReport(request, env) {
   }
   const report = validatedReportShareSource(row);
   const sections = reportShareSectionsFromRow(row);
-  const projection = publicReportShareProjection(report, sections);
+  const projection = publicReportShareProjection(report, sections, {
+    input: parseStoredJson(row.revision_input_json, {}),
+    estimate: parseStoredJson(row.revision_estimate_json, {}),
+  });
   let admissionResults;
   try {
     // D1 batch statements share one transaction. The update and the following
@@ -8190,6 +8204,7 @@ function buildReport(project, inputHash, reportId, generatedAt) {
         floorCount > 1 ? "Stair and vertical-circulation provision for professional sizing" : "Potential expansion zone for structural and approval review",
       ],
     },
+    architecturalHandoff: buildArchitecturalHandoff(input, estimate),
     costPlan: {
       currency: "INR",
       lowInr: estimate.lowInr,

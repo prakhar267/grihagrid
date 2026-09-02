@@ -205,6 +205,12 @@ mutable `reports` cache and captured into immutable
 reads and returns the winning immutable bytes.
 
 Report schema v2 includes `briefCheck` and a verdict derived from its status.
+It may also include the additive `architecturalHandoff.version=1` subdocument
+described in `docs/architect-review-pack.md`. Older immutable schema-v2 bytes do
+not contain that subdocument; the website may derive the same presentation only
+from the exact frozen revision input and estimate returned in the report
+envelope. This does not update the stored report or relax the schema-v1 legacy
+boundary.
 Migrated report v1 bytes remain available only through historical-report APIs.
 The historical UI labels them as legacy and renders only fields persisted in
 those v1 bytes; it does not recompute Brief Check, planning facts, risks, next

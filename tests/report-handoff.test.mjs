@@ -172,14 +172,21 @@ test("public report projection is selected, bounded, and recursively redacted", 
   assert.deepEqual(Object.keys(sections.programme), [
     "plotSqft", "targetBuiltUpSqft", "floorCount", "bedrooms", "bathrooms",
     "estimatedFloorPlateSqft", "estimatedOpenAreaSqft", "suggestedSpaces",
+    "architecture",
   ]);
+  assert.equal(sections.programme.architecture.version, 1);
+  assert.equal(sections.programme.architecture.siteBrief.city, "Pune");
+  assert.equal(sections.programme.architecture.siteBrief.facing, "East");
+  assert.ok(sections.programme.architecture.rooms.length >= 1);
+  assert.ok(sections.programme.architecture.verificationRegister.length >= 10);
+  assert.equal(Object.hasOwn(sections.programme.architecture.siteBrief, "styleDirection"), false);
   assert.deepEqual(Object.keys(sections.cost.categories[0]), ["name", "percent", "amountInr"]);
   assert.deepEqual(Object.keys(sections.timeline.phases[0]), ["name", "weeks"]);
   const serialized = JSON.stringify(sections);
   for (const secret of [
     "Owner Name", "owner@example.test", "leak-owner@example.test", "project-private-canary",
     "internal-report-id", "secret-facing", "secret-check", "secret-city", "secret-project",
-    "secret-provider", "secret-phase", "Quiet courtyard home", "Pune", "East", "a".repeat(64),
+    "secret-provider", "secret-phase", "Quiet courtyard home", "a".repeat(64),
   ]) {
     assert.equal(serialized.includes(secret), false, secret);
   }
