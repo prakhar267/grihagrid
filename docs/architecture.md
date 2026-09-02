@@ -36,7 +36,9 @@ External boundaries: Google Gemini, email provider, Razorpay, and architect oper
   It provides strongly consistent per-account login admission; KV provides the
   fail-closed per-IP login perimeter but is never the source of truth for money
   or entitlements.
-- R2 holds private site photos and report artifacts. Object keys use opaque project IDs; the public bucket URL stays disabled.
+- Optional R2 holds only normalized private static images in this release.
+  Object keys use opaque project/user/file IDs, public bucket access stays
+  disabled, and readiness keeps uploads false when the binding is absent.
 - The frontend can calculate estimates optimistically, but the server recomputes and persists every paid/reportable result.
 - Before authentication, one versioned and strictly allowlisted brief may live
   in browser storage for seven days after the last actual edit. It is the only
@@ -99,7 +101,9 @@ External boundaries: Google Gemini, email provider, Razorpay, and architect oper
 - Anonymous report and Family capabilities retain their smaller 512/1,536-byte
   envelopes and generic misses. Razorpay webhooks retain the exact bounded raw
   bytes for HMAC verification at 256 KiB before fatal UTF-8 JSON parsing.
-- File type is verified by signature, not extension; size/count limits are applied before R2 persistence.
+- Static image type is verified by signature and structure, not extension;
+  dimensions, exact termination, metadata stripping, and size/count limits are
+  enforced before a ready D1 record is exposed.
 - Strict CSP, HSTS, `X-Content-Type-Options`, `Referrer-Policy` and frame protections at the edge.
 - Webhook signatures use constant-time comparison and a bounded replay window.
 - Logs exclude request bodies, tokens, addresses, photos and provider payload secrets.
@@ -114,15 +118,17 @@ External boundaries: Google Gemini, email provider, Razorpay, and architect oper
   templated route, bounded outcome/status, release and latency.
 - Session-review and revocation monitoring likewise remains aggregate. It does
   not add device telemetry, persist a viewed session list, or emit a product
-  event with session times. Important-security-event notifications are not yet
-  implemented, so ID-06 remains partial.
+  event with session times. Verification and recovery mail stores only bounded
+  delivery evidence and is unavailable without provider configuration.
 - Gemini requests use a Worker secret, `store: false`, provider core-harm protection,
   adult consent, and sanitized inputs that exclude identity, project names,
   precise addresses, coordinates, payments, and uploads.
 - Generated text is rejected unless it stays inside the advisory boundary; D1
   enforces per-user and platform spend ceilings, while KV remains a best-effort
   brake for authentication and checkout abuse.
-- User deletion is a workflow: revoke sessions, tombstone identity, delete R2 objects, retain only legally required financial records.
+- User deletion is password-confirmed and transactional for ordinary customer
+  accounts. It refuses governed financial-retention and professional-offboarding
+  cases rather than silently deleting required evidence.
 - Registration's `email_in_use` response remains an enumeration surface. A
   known email can be deliberately fenced for the remainder of one fixed window,
   and an attacker can repeat that denial in later windows. The login fence does

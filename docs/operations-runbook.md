@@ -1,13 +1,14 @@
 # GrihaGrid production operations runbook
 
 This is the operating procedure for GrihaGrid on Cloudflare Workers, D1, KV,
-optional R2, Google Gemini, and Razorpay. It covers release, monitoring, recovery, payment operations,
+optional R2, Resend, Google Gemini, and Razorpay. It covers release, monitoring, recovery, payment operations,
 and the decision to open or close paid traffic. Commands assume they are run
 from the repository root by an authenticated operator.
 
 The first paid wedge is the structured-input, no-upload ₹999 Decision Compare
 defined in `docs/decision-compare.md`. R2 is not a dependency for that wedge.
-Uploads and any product that promises them stay closed while R2 is absent.
+The private-image code path is complete, but upload capability stays closed
+while the isolated R2 buckets or binding are absent.
 
 ## 1. Service record and current state
 
@@ -18,7 +19,8 @@ Uploads and any product that promises them stay closed while R2 is absent.
 | Canonical launch origin | `https://grihagrid.prakhargupta267.workers.dev` until a custom domain is attached | Same-origin UI, API, cookies, and Razorpay callback | Must also be set as `APP_ORIGIN` before checkout works |
 | D1 binding | `DB` → `grihagrid-db` (`42a75a83-ab24-4e3f-93f1-b80c51284f1e`) | Users, sessions, projects, reports, file metadata, orders, webhook ledger | Bound; remote application of all migrations must be verified |
 | KV binding | `GRIHAGRID_CACHE` → `c5044339222a4172ad7c91724b98d4fb` | Fail-closed authentication IP perimeter; other abuse/rate limiting | Bound; D1 is the strict account/money/entitlement authority |
-| R2 binding | `FILES` → intended bucket `grihagrid-files` | Future private user uploads | **Deferred:** not required for no-upload Decision Compare; all upload promises remain disabled |
+| R2 binding | `FILES` → intended `grihagrid-private-files`; staging → `grihagrid-staging-private-files` | Sanitized private static images | **Fail-closed:** buckets have not been created or verified because the current operator OAuth grant lacks R2 scope; binding blocks remain commented |
+| Resend | `RESEND_API_KEY` plus `TRANSACTIONAL_EMAIL_FROM` | Verification and password-recovery delivery | **Fail-closed:** configure only after sender-domain verification; readiness reports delivery unavailable otherwise |
 | Razorpay | Payment Links API and signed webhook | Checkout and paid-state confirmation | **Not active:** live account configuration, secrets, webhook registration, and reconciliation evidence are absent |
 | Google Gemini | Structured Interactions API | Optional sanitized planning brief | Active for sanitized beta; shared free-tier project must be isolated before material customer volume |
 | Cron | `17 2 * * *` | Session/order/AI admission cleanup | Configured daily at 02:17 UTC / 07:47 IST |
@@ -36,9 +38,10 @@ The Worker currently reads these runtime values:
 
 - Bindings: `ASSETS`, `DB`, `GRIHAGRID_CACHE`, and optional `FILES`.
 - Non-secret configuration: `APP_ENV`, `APP_ORIGIN`, `GEMINI_MODEL`,
+  optional `TRANSACTIONAL_EMAIL_FROM`,
   `PAID_CHECKOUT_ENABLED`, `DECISION_COMPARE_FULFILLMENT_ENABLED`,
   `ENABLED_PAYMENT_PLANS`, and optional comma-separated `ALLOWED_ORIGINS`.
-- Secrets: `GEMINI_API_KEY`, `REPORT_SHARE_ABUSE_HMAC_KEY`,
+- Secrets: `GEMINI_API_KEY`, `RESEND_API_KEY`, `REPORT_SHARE_ABUSE_HMAC_KEY`,
   `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, and `RAZORPAY_WEBHOOK_SECRET`;
   `METRICS_READ_TOKEN` protects private aggregate product metrics.
 
@@ -116,6 +119,7 @@ npx wrangler secret put RAZORPAY_WEBHOOK_SECRET --env=""
 npx wrangler secret put GEMINI_API_KEY --env=""
 npx wrangler secret put METRICS_READ_TOKEN --env=""
 npx wrangler secret put REPORT_SHARE_ABUSE_HMAC_KEY --env=""
+npx wrangler secret put RESEND_API_KEY --env=""
 npx wrangler secret list --env=""
 
 # Use distinct test-mode values in staging; never copy production secrets.
@@ -276,9 +280,14 @@ Match the Cloudflare account, Worker name, D1 UUID, KV namespace,
 hostname, and secret names to the release ticket. `secret list` shows names,
 not values. Stop if the account or any resource differs.
 
-If a future release enables uploads, separately validate its private R2 bucket,
-binding, malware/quarantine and retention controls. R2 absence is expected for
-Decision Compare and must not be worked around with public object storage.
+Before enabling uploads, reauthenticate Wrangler with R2 permission, create the
+two named buckets, prove that public access is disabled, uncomment only the
+matching binding in each environment, and repeat readiness plus the authenticated
+upload journey. The Worker accepts only bounded static JPEG/PNG/WebP, rejects
+multipart and PDF input, strips metadata/unsupported chunks, validates dimensions
+and trailing bytes, and enforces per-project/account limits. Do not widen this
+normalization boundary without a new quarantine/scanning design. R2 absence must
+not be worked around with public object storage.
 
 ### 4.4 Back up D1
 
@@ -1074,14 +1083,15 @@ guardrail.
 Before enabling `FILES`:
 
 1. Complete Cloudflare R2 subscription/billing activation.
-2. Create `grihagrid-files` in the correct account and a separate staging bucket.
+2. Create `grihagrid-private-files` in the correct account and
+   `grihagrid-staging-private-files` in the isolated staging environment.
 3. Confirm all public access is disabled.
 4. Uncomment the `FILES` binding, deploy staging, and run ownership/round-trip
    tests.
-5. Add malware scanning/quarantine before broadening production uploads. The
-   current PDF/JPEG/PNG/WebP signature checks are not a malware scanner;
-   ZIP/DOCX/XLSX/DWG/DXF are not accepted and need an explicit security design
-   before any future enablement.
+5. Prove JPEG/PNG/WebP metadata stripping, structure/dimension/termination
+   rejection, ownership, quotas, and orphan recovery. PDF, SVG, animation,
+   ZIP/DOCX/XLSX/DWG/DXF, video, and arbitrary documents are not accepted and
+   need an explicit quarantine/scanning design before future enablement.
 6. Define approved retention/deletion rules. Do not apply a blanket lifecycle
    rule that could delete active customer evidence.
 
@@ -1237,12 +1247,13 @@ until headroom is restored.
 - Treat cross-account access, private-file exposure, credential leakage, and
   unverified paid state as SEV-1 even if only one record is known affected.
 
-The current application supports current-password rotation with generation-
-based revocation of older sessions. It still has no email verification,
-lost-password reset/recovery, account-deletion workflow, immutable audit-event
-table, or malware scanning.
-Documented manual support is not an enterprise substitute; implement and test
-these controls before broad public sales.
+The application supports current-password rotation, email verification,
+non-enumerating lost-password recovery, authenticated export, and
+password-confirmed deletion. Provider delivery remains fail-closed until a
+verified sender and Resend secret are proven. Deletion deliberately blocks
+financial retention and professional offboarding cases for governed operator
+handling. The accepted upload contract is normalized static images only; it is
+not a general-purpose malware scanner.
 
 Registration still returns `email_in_use`, so it remains an account-enumeration
 surface. Login's D1 fence also permits targeted denial: someone who knows an
@@ -1437,8 +1448,9 @@ are visibly unavailable and no claim suggests they work.
 - [ ] Implemented structured logs and request/version correlation pass a
   deployed-log secret/PII canary; paging alerts and external synthetics pass
   deliberate failure injection.
-- [ ] Email verification/recovery/receipts, account deletion, support/refund
-  procedures and security incident contacts work end to end.
+- [ ] Verification/recovery provider delivery, receipts, governed deletion
+  exceptions, support/refund procedures and security incident contacts work end
+  to end. The application-side lifecycle APIs and deletion path are implemented.
 - [ ] Pricing, taxes, terms, privacy, refund and explicit no-correction/reissue
   policy, professional disclaimers and trademark/domain are approved.
 - [ ] Representative comparison fixtures and first-ten-artifact practitioner
@@ -1447,9 +1459,10 @@ are visibly unavailable and no claim suggests they work.
   incident, engineering, finance and quality coverage is staffed.
 
 R2 is not required for this structured-input pilot. No upload or hosted-file
-promise may be sold. Site Plus, Expert, or any future upload product additionally
-requires private R2, upload ownership/round-trip/orphan tests, malware or
-quarantine controls, and an approved retention/deletion policy.
+promise may be sold while the binding is absent. Future formats beyond the
+implemented static-image boundary additionally require private R2, ownership/
+round-trip/orphan tests, quarantine/scanning controls, and an approved retention
+policy.
 
 ### Current decision
 

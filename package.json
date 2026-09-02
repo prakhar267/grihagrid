@@ -17,6 +17,7 @@
     "smoke:auth": "node scripts/authenticated-smoke.mjs",
     "canary:account-security": "node scripts/account-security-canary.mjs",
     "monitor:release": "node scripts/monitor-release.mjs",
+    "load:smoke": "node scripts/load-smoke.mjs",
     "deploy": "wrangler deploy"
   },
   "dependencies": {

@@ -624,6 +624,19 @@ interleaved within their own real-D1 fixtures.
 | Accessibility | Keyboard, screen reader, 390 px, 200% zoom/text spacing, high contrast, reduced motion and print | Section/expiry controls, one-time secret warning, status/errors and revoke action are named, announced, focused and overflow-free |
 | Operations | Inspect `0016`, readiness, HMAC key state, default-disabled propagation, bounded trap-protected activation, current/legacy canaries, final restoration, counts, raw logs and D1 residue | Four tables, five indexes, five triggers and one disabled control exist; the exact Worker propagates with `reportHandoff=false`; the canary EXIT trap re-closes on success/failure; residue and public `503` pass while closed; only final restoration produces `reportHandoff=true`; token-free templated logs and compatibility-gated rollback remain intact |
 
+## Account lifecycle, uploads, and professional review acceptance
+
+| Area | Automated acceptance | External acceptance |
+|---|---|---|
+| Account lifecycle | Real-D1 verification/recovery one-time tokens, non-enumerating request, password/session rotation, export, deletion, replay, and immutable bounded mail evidence | Verified sender/domain, provider canary, bounce/support ownership, and governed exception handling |
+| Private images | JPEG/PNG/WebP normalization, metadata removal, pixel/trailing/polyglot rejection, raw-body boundary, quotas, owner isolation, legacy blocking, and orphan-safe persistence | Separate non-public R2 buckets, scoped operator access, staging round trip, retention and orphan drill |
+| Professional review | Exact report hash, de-identified queue, verified-only claim, clarification/completion gate, immutable events/messages, cancellation and cross-owner isolation | Authoritative license verification, representative practitioner review, and named professional owner |
+| Resilience | Bounded local load smoke with nearest-rank p95 and no payload output | Multi-region observation, alert injection, and timed remote restore |
+| Accessibility/security | Source and adversarial automation plus dependency/CodeQL gates | Keyboard/screen-reader/reflow record and independent penetration review |
+
+The human evidence template and current non-claims are in
+`docs/quality-evidence.md`.
+
 ## Required release evidence
 
 Attach to the release record, without secrets or customer data:

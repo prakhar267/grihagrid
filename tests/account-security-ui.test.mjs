@@ -121,7 +121,7 @@ test("password fields, errors, pending state, and success state preserve accessi
   const { component } = await accountSecuritySources();
   assert.match(component, /Current password<input ref=\{currentRef\} required type="password" maxLength="128" autoComplete="current-password"/u);
   assert.equal((component.match(/autoComplete="new-password"/gu) || []).length, 2);
-  assert.equal((component.match(/maxLength="128"/gu) || []).length, 4);
+  assert.equal((component.match(/maxLength="128"/gu) || []).length, 5, "the lifecycle deletion step adds one current-password confirmation");
   assert.match(component, /form\.newPassword!==form\.confirmPassword/u);
   assert.match(component, /target\.current\?\.focus\(\{preventScroll:true\}\)/u);
   assert.match(component, /successRef\.current\?\.focus\(\{preventScroll:true\}\)/u);

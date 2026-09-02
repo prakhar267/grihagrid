@@ -25,8 +25,10 @@ email-and-password login endpoint:
 - the fence stores no email, IP address, IP-derived value, password-derived
   value, bearer, or free text in D1 or operational logs.
 
-This does not add email verification, MFA, password recovery, account deletion,
-or a support override. It also does not conceal registration's existing
+The 0017 login-fence control itself does not add email verification, MFA,
+password recovery, account deletion, or a support override. The separate 0018
+account-lifecycle migration now supplies verification, recovery, export, and
+ordinary deletion without changing this fence. Registration's existing
 `409 email_in_use` response; that residual enumeration surface is explicit
 below.
 
@@ -153,13 +155,15 @@ make attribution easier.
 
 - Registration still returns `409 email_in_use` for an existing normalized
   email, so account enumeration remains possible there. This release does not
-  claim otherwise; verified-email enrollment is future work.
+  claim otherwise. Verified-email enrollment is implemented, but does not
+  conceal registration and remains unavailable for delivery until its provider
+  sender and secret are configured.
 - An attacker who knows or guesses a registered email can intentionally consume
   its 12 reservations and deny login until the fixed window expires. The window
   does not slide, a valid login clears it once admitted, and password rotation
   clears it for an already-authenticated owner, but targeted lockout remains.
-  Risk-based challenges, verified recovery, and customer-safe unlock operations
-  require a later product/security design.
+  Verified password recovery is now available when email delivery is configured;
+  risk-based challenges and a customer-safe unlock design remain future work.
 - The controls bound online password checks; they do not provide MFA, breached-
   password screening, offline hash resistance beyond the versioned PBKDF2
   record, or proof against all network-level timing analysis.
@@ -470,8 +474,8 @@ Manual QA must use only synthetic accounts and retained synthetic cookies:
 ## Password rotation product decision
 
 GrihaGrid lets an authenticated customer replace a known password and revoke
-every session created before that change. This closes a self-service account
-security gap without claiming that email-based account recovery exists.
+every session created before that change. This known-password path remains
+separate from the one-time-token recovery flow added by migration 0018.
 
 The feature is deliberately narrow:
 
@@ -483,8 +487,9 @@ The feature is deliberately narrow:
 - it does not change the account email, recover a lost password, send email,
   delete data or alter any project, report, order or entitlement.
 
-Transactional email is not configured. “Forgot password” remains unavailable
-and must not be implied by this release.
+“Forgot password” is implemented as a non-enumerating, one-time fragment-token
+flow. It remains fail-closed until a verified sender, Resend secret, and provider
+delivery evidence are configured.
 
 ## Password rotation customer problem and journey
 

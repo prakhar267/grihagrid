@@ -35,7 +35,7 @@ async function apiRequest(path, options = {}) {
   }, timeoutMs);
   const signal = controller.signal;
   let body = requestOptions.body;
-  if (body && !(body instanceof FormData) && typeof body !== "string") {
+  if (body && !(body instanceof FormData) && !(body instanceof Blob) && !(body instanceof ArrayBuffer) && !ArrayBuffer.isView(body) && typeof body !== "string") {
     headers.set("content-type", "application/json");
     body = JSON.stringify(body);
   }
