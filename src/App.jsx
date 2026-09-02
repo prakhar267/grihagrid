@@ -106,19 +106,23 @@ function useCommerceCatalog() {
   return availability;
 }
 
-function usePrivateUploadCapability() {
+function useReadinessCapability(capability) {
   const [state,setState]=useState({phase:"loading",enabled:false});
   useEffect(()=>{
     const controller=new AbortController();
     api('/api/readiness',{signal:controller.signal}).then(result=>{
-      if(!controller.signal.aborted)setState({phase:"ready",enabled:result?.capabilities?.privateUploads===true});
+      if(!controller.signal.aborted)setState({phase:"ready",enabled:result?.capabilities?.[capability]===true});
     }).catch(()=>{
       if(controller.signal.aborted)return;
       setState({phase:"unavailable",enabled:false});
     });
     return()=>controller.abort();
-  },[]);
+  },[capability]);
   return state;
+}
+
+function usePrivateUploadCapability() {
+  return useReadinessCapability("privateUploads");
 }
 
 function route(path, state = {}) {
@@ -462,10 +466,14 @@ function Brand({ inverted = false, disabled = false, onHome = null }) {
 
 function Header({ user }) {
   const [open, setOpen] = useState(false);
+  const menuButtonRef = useRef(null);
   useEffect(() => {
     if (!open) return undefined;
     const closeOnEscape = (event) => {
-      if (event.key === "Escape") setOpen(false);
+      if (event.key === "Escape") {
+        setOpen(false);
+        window.requestAnimationFrame(() => menuButtonRef.current?.focus({ preventScroll: true }));
+      }
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
@@ -477,11 +485,15 @@ function Header({ user }) {
       <button onClick={() => { route("/plans"); setOpen(false); }}>Sample plan</button>
       <button onClick={() => { route("/pricing"); setOpen(false); }}>Pricing</button>
       <button onClick={() => { route("/about"); setOpen(false); }}>About</button>
+      <div className="main-nav-mobile-actions">
+        <button className="outline-button" onClick={() => { route(user ? "/dashboard" : "/login"); setOpen(false); }}>{user ? "My projects" : "Log in"}</button>
+        <button className="copper-button" onClick={() => { route("/start"); setOpen(false); }}>Plan my home <ArrowRight/></button>
+      </div>
     </nav>
     <div className="header-actions">
       <button className="quiet-action header-login" onClick={() => route(user ? "/dashboard" : "/login")}>{user ? "My projects" : "Log in"}</button>
       <button className="copper-button header-cta" onClick={() => route("/start")}>Plan my home</button>
-      <button className="menu-trigger" aria-label={open ? "Close menu" : "Open menu"} aria-expanded={open} aria-controls="primary-navigation" onClick={() => setOpen(!open)}>{open ? <X/> : <List/>}</button>
+      <button ref={menuButtonRef} className="menu-trigger" aria-label={open ? "Close menu" : "Open menu"} aria-expanded={open} aria-controls="primary-navigation" onClick={() => setOpen(!open)}>{open ? <X/> : <List/>}</button>
     </div>
   </div></header>;
 }
@@ -1092,6 +1104,7 @@ function authFailureMessage(error,isLogin){
 
 function AuthPage({ mode, user, draftAccess, onAuthenticated }) {
   const isLogin=mode==="login";
+  const passwordRecovery=useReadinessCapability("passwordRecovery");
   const [form,setForm]=useState({name:"",email:"",password:""});
   const [busy,setBusy]=useState(false);const [error,setError]=useState("");
   const projectCreationKey=useProjectCreationKey(true);
@@ -1168,7 +1181,7 @@ function AuthPage({ mode, user, draftAccess, onAuthenticated }) {
   const continuationMissing=continuationRequested&&(!continuation||Boolean(continuationFailure));
   const heading=authenticated&&continuation?"Finish saving your brief.":isLogin?'Welcome back.':'Create your account.';
   const copy=authenticated&&continuation?"Your account is ready. The exact browser copy and original retry key will be used once.":isLogin?'Return to your saved home plans.':'Save the brief you just created and keep every decision together.';
-  return <main className="auth-page"><div className="auth-architecture"><img width="1536" height="1024" src="/assets/v2/monograph-house-v2.jpg" onError={e=>{e.currentTarget.src='/assets/grihagrid-hero.jpg'}} alt="Contemporary Indian home"/><div><Brand inverted disabled={busy} onHome={back}/><blockquote>Start with clarity.<br/>Build with confidence.</blockquote></div></div><section className="auth-form"><button className="back-action" disabled={busy} onClick={back}><ArrowLeft/> {continuation?'Back to brief':'Home'}</button><span className="kicker">Private project workspace</span><h1>{heading}</h1><p>{copy}</p>{continuationMissing?<div className="auth-continuation-missing"><WarningCircle/><p><strong>{continuationFailure==="conflict"?"This browser draft changed after this account page opened.":"No recoverable browser copy was found."}</strong> {continuationFailure==="conflict"?"Nothing was submitted. Review the current browser copy before continuing.":"It may have expired, been discarded, or been cleared by this device. GrihaGrid will not reconstruct it from browser history or submit partial details."}</p>{error&&<p ref={errorRef} className="form-error" tabIndex="-1" role="alert">{error}</p>}<button className="copper-button" onClick={()=>replaceRoute('/start',continuation?anonymousDraftContinuationState(continuation,localStorageRef.current):{})}>{continuationFailure==="conflict"?"Review current brief":"Start a new brief"} <ArrowRight/></button></div>:<form onSubmit={submit} aria-busy={busy}>{continuation&&<div className="auth-continuation-ready" role="status"><LockKey/><p>{authenticated?<><strong>Exact retry protected.</strong> No dedicated password, account-detail, file or estimate field is stored with this browser draft.</>:<><strong>Your brief stays separate.</strong> Account creation sends only your name, email and password. After it succeeds, GrihaGrid uses the exact browser copy and original retry key.</>}</p></div>}{!authenticated&&<>{!isLogin&&<label>Full name<input required disabled={busy} maxLength="80" autoComplete="name" value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label>}<label>Email address<input required disabled={busy} type="email" maxLength="254" autoComplete="email" autoCapitalize="none" spellCheck="false" value={form.email} onChange={e=>setForm({...form,email:e.target.value})}/></label><label>Password<input required disabled={busy} type="password" minLength="10" maxLength="128" autoComplete={isLogin?'current-password':'new-password'} autoCapitalize="none" spellCheck="false" value={form.password} onChange={e=>setForm({...form,password:e.target.value})}/><small>10–128 characters</small></label></>}{error&&<p ref={errorRef} className="form-error" tabIndex="-1" role="alert">{error}</p>}<button disabled={busy} className="copper-button" type="submit">{busy?'Please wait…':authenticated&&continuation?'Save exact brief':isLogin?'Log in':'Create account'} <ArrowRight/></button></form>}{!continuationMissing&&!authenticated&&<>{isLogin&&<p className="auth-switch"><button disabled={busy} onClick={()=>route('/forgot-password')}>Forgot password?</button></p>}<p className="auth-switch">{isLogin?'New to GrihaGrid?':'Already have an account?'} <button disabled={busy} onClick={()=>replaceRoute(isLogin?'/register':'/login',anonymousDraftContinuationState(continuation,localStorageRef.current))}>{isLogin?'Create account':'Log in'}</button></p></>}</section></main>;
+  return <main className="auth-page"><div className="auth-architecture"><img width="1536" height="1024" src="/assets/v2/monograph-house-v2.jpg" onError={e=>{e.currentTarget.src='/assets/grihagrid-hero.jpg'}} alt="Contemporary Indian home"/><div><Brand inverted disabled={busy} onHome={back}/><blockquote>Start with clarity.<br/>Build with confidence.</blockquote></div></div><section className="auth-form"><button className="back-action" disabled={busy} onClick={back}><ArrowLeft/> {continuation?'Back to brief':'Home'}</button><span className="kicker">Private project workspace</span><h1>{heading}</h1><p>{copy}</p>{continuationMissing?<div className="auth-continuation-missing"><WarningCircle/><p><strong>{continuationFailure==="conflict"?"This browser draft changed after this account page opened.":"No recoverable browser copy was found."}</strong> {continuationFailure==="conflict"?"Nothing was submitted. Review the current browser copy before continuing.":"It may have expired, been discarded, or been cleared by this device. GrihaGrid will not reconstruct it from browser history or submit partial details."}</p>{error&&<p ref={errorRef} className="form-error" tabIndex="-1" role="alert">{error}</p>}<button className="copper-button" onClick={()=>replaceRoute('/start',continuation?anonymousDraftContinuationState(continuation,localStorageRef.current):{})}>{continuationFailure==="conflict"?"Review current brief":"Start a new brief"} <ArrowRight/></button></div>:<form onSubmit={submit} aria-busy={busy}>{continuation&&<div className="auth-continuation-ready" role="status"><LockKey/><p>{authenticated?<><strong>Exact retry protected.</strong> No dedicated password, account-detail, file or estimate field is stored with this browser draft.</>:isLogin?<><strong>Your brief stays separate.</strong> Sign-in sends only your email and password. After it succeeds, GrihaGrid uses the exact browser copy and original retry key.</>:<><strong>Your brief stays separate.</strong> Account creation sends only your name, email and password. After it succeeds, GrihaGrid uses the exact browser copy and original retry key.</>}</p></div>}{!authenticated&&<>{!isLogin&&<label>Full name<input required disabled={busy} maxLength="80" autoComplete="name" value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label>}<label>Email address<input required disabled={busy} type="email" maxLength="254" autoComplete="email" autoCapitalize="none" spellCheck="false" value={form.email} onChange={e=>setForm({...form,email:e.target.value})}/></label><label>Password<input required disabled={busy} type="password" minLength="10" maxLength="128" autoComplete={isLogin?'current-password':'new-password'} autoCapitalize="none" spellCheck="false" value={form.password} onChange={e=>setForm({...form,password:e.target.value})}/><small>10–128 characters</small></label></>}{error&&<p ref={errorRef} className="form-error" tabIndex="-1" role="alert">{error}</p>}<button disabled={busy} className="copper-button" type="submit">{busy?'Please wait…':authenticated&&continuation?'Save exact brief':isLogin?'Log in':'Create account'} <ArrowRight/></button></form>}{!continuationMissing&&!authenticated&&<>{isLogin&&(passwordRecovery.phase==="ready"&&passwordRecovery.enabled?<p className="auth-switch"><button disabled={busy} onClick={()=>route('/forgot-password')}>Forgot password?</button></p>:passwordRecovery.phase!=="loading"?<p className="auth-capability-note" role="status">Email recovery is not available in this release. Contact support if you are locked out.</p>:null)}<p className="auth-switch">{isLogin?'New to GrihaGrid?':'Already have an account?'} <button disabled={busy} onClick={()=>replaceRoute(isLogin?'/register':'/login',anonymousDraftContinuationState(continuation,localStorageRef.current))}>{isLogin?'Create account':'Log in'}</button></p></>}</section></main>;
 }
 
 function lifecycleTokenFromFragment(){
@@ -1180,6 +1193,7 @@ function lifecycleTokenFromFragment(){
 
 function PasswordRecoveryPage({mode}){
   const confirming=mode==="confirm";
+  const passwordRecovery=useReadinessCapability("passwordRecovery");
   const [token]=useState(()=>confirming?lifecycleTokenFromFragment():"");
   const [form,setForm]=useState({email:"",password:"",confirm:""});
   const [phase,setPhase]=useState("idle");const [message,setMessage]=useState("");const messageRef=useRef(null);
@@ -1194,7 +1208,8 @@ function PasswordRecoveryPage({mode}){
       setForm({email:"",password:"",confirm:""});setPhase("success");
     }catch(error){setPhase("error");setMessage(error?.payload?.code==="password_reset_invalid"?'This recovery link is incomplete, expired, or already used.':'Recovery is temporarily unavailable. No password was changed.')}
   }
-  return <main className="auth-page"><div className="auth-architecture"><img width="1536" height="1024" src="/assets/v2/monograph-house-v2.jpg" alt="Contemporary Indian home"/><div><Brand inverted disabled={phase==="pending"}/><blockquote>Recover access.<br/>Close old doors.</blockquote></div></div><section className="auth-form"><button className="back-action" disabled={phase==="pending"} onClick={()=>route('/login')}><ArrowLeft/> Log in</button><span className="kicker">Account recovery</span><h1>{confirming?'Choose a new password.':'Find your account.'}</h1><p>{confirming?'A valid one-time link changes the password and closes every earlier session.':'Enter the account email. The response is the same whether or not an account exists.'}</p>{phase==="success"?<div ref={messageRef} tabIndex="-1" className="security-success" role="status"><CheckCircle/><h2>{confirming?'Password changed':'Check your email'}</h2><p>{confirming?'Every earlier session is closed. Sign in with the new password.':'If an active account matches, the newest recovery link will arrive shortly and remain valid for 30 minutes.'}</p><button className="copper-button" onClick={()=>route('/login')}>Return to log in <ArrowRight/></button></div>:<form onSubmit={submit} aria-busy={phase==="pending"}>{confirming?<><label>New password<input required type="password" minLength="10" maxLength="128" autoComplete="new-password" disabled={phase==="pending"} value={form.password} onChange={event=>setForm({...form,password:event.target.value})}/><small>10–128 characters</small></label><label>Confirm new password<input required type="password" minLength="10" maxLength="128" autoComplete="new-password" disabled={phase==="pending"} value={form.confirm} onChange={event=>setForm({...form,confirm:event.target.value})}/></label></>:<label>Email address<input required type="email" maxLength="254" autoComplete="email" disabled={phase==="pending"} value={form.email} onChange={event=>setForm({...form,email:event.target.value})}/></label>}{phase==="error"&&<p ref={messageRef} tabIndex="-1" className="form-error" role="alert">{message}</p>}<button className="copper-button" disabled={phase==="pending"}>{phase==="pending"?'Please wait…':confirming?'Reset password':'Send recovery link'} <ArrowRight/></button></form>}</section></main>;
+  const requestUnavailable=!confirming&&passwordRecovery.phase!=="loading"&&!passwordRecovery.enabled;
+  return <main className="auth-page"><div className="auth-architecture"><img width="1536" height="1024" src="/assets/v2/monograph-house-v2.jpg" alt="Contemporary Indian home"/><div><Brand inverted disabled={phase==="pending"}/><blockquote>Recover access.<br/>Close old doors.</blockquote></div></div><section className="auth-form"><button className="back-action" disabled={phase==="pending"} onClick={()=>route('/login')}><ArrowLeft/> Log in</button><span className="kicker">Account recovery</span><h1>{confirming?'Choose a new password.':requestUnavailable?'Email recovery is not available.':passwordRecovery.phase==="loading"?'Checking recovery availability.':'Find your account.'}</h1><p>{confirming?'A valid one-time link changes the password and closes every earlier session.':requestUnavailable?'This release cannot deliver recovery links. No request was sent. Contact support if you are locked out.':passwordRecovery.phase==="loading"?'GrihaGrid is confirming that recovery links can be delivered before asking for your email.':'Enter the account email. The response is the same whether or not an account exists.'}</p>{requestUnavailable?<button className="copper-button" onClick={()=>route('/login')}>Return to log in <ArrowRight/></button>:passwordRecovery.phase==="loading"&&!confirming?<div className="auth-capability-loading" role="status">Checking email delivery…</div>:phase==="success"?<div ref={messageRef} tabIndex="-1" className="security-success" role="status"><CheckCircle/><h2>{confirming?'Password changed':'Check your email'}</h2><p>{confirming?'Every earlier session is closed. Sign in with the new password.':'If an active account matches, the newest recovery link will arrive shortly and remain valid for 30 minutes.'}</p><button className="copper-button" onClick={()=>route('/login')}>Return to log in <ArrowRight/></button></div>:<form onSubmit={submit} aria-busy={phase==="pending"}>{confirming?<><label>New password<input required type="password" minLength="10" maxLength="128" autoComplete="new-password" disabled={phase==="pending"} value={form.password} onChange={event=>setForm({...form,password:event.target.value})}/><small>10–128 characters</small></label><label>Confirm new password<input required type="password" minLength="10" maxLength="128" autoComplete="new-password" disabled={phase==="pending"} value={form.confirm} onChange={event=>setForm({...form,confirm:event.target.value})}/></label></>:<label>Email address<input required type="email" maxLength="254" autoComplete="email" disabled={phase==="pending"} value={form.email} onChange={event=>setForm({...form,email:event.target.value})}/></label>}{phase==="error"&&<p ref={messageRef} tabIndex="-1" className="form-error" role="alert">{message}</p>}<button className="copper-button" disabled={phase==="pending"}>{phase==="pending"?'Please wait…':confirming?'Reset password':'Send recovery link'} <ArrowRight/></button></form>}</section></main>;
 }
 
 function EmailVerificationPage({onVerified}){
@@ -2306,7 +2321,7 @@ function recommendationFor(comparison, scenarios) {
   return { headline: `${first.label} is the lower-commitment starting point.`, body: "This preview favours the option closest to your original brief. Save both options for a traceable recommendation.", scenarioId: first.id };
 }
 
-function DecisionDocument({ comparison, project, onChoose, choosing = false, readonly = false, artifact = false }) {
+function DecisionDocument({ comparison, project, onChoose, choosing = false, readonly = false, artifact = false, choiceAvailable = true }) {
   const scenarios = comparison.scenarios || [];
   if (scenarios.length !== 2) return <div className="decision-empty"><WarningCircle/><h2>Two complete options are required.</h2><p>Return to the editor and save exactly two scenarios before making a decision.</p></div>;
   const calculations = scenarios.map(scenario=>scenarioMath(project,scenario));
@@ -2342,7 +2357,7 @@ function DecisionDocument({ comparison, project, onChoose, choosing = false, rea
       <div className="comparison-row comparison-row--list"><h3>Constraints</h3>{scenarios.map(scenario=><div key={scenario.id}><ComparisonList items={scenario.constraints} fallback="Setbacks, circulation and site conditions need local verification."/></div>)}</div>
       <div className="comparison-row comparison-row--list"><h3>Assumptions</h3>{scenarios.map(scenario=><div key={scenario.id}><ComparisonList items={scenario.assumptions.length?scenario.assumptions:comparison.assumptions} fallback="Plot dimensions, city factor and chosen finish remain indicative inputs."/></div>)}</div>
       <div className="comparison-row comparison-row--list"><h3>Trade-offs</h3>{scenarios.map((scenario,index)=><div key={scenario.id}><ComparisonList items={scenario.tradeoffs} fallback={index?"More programme may increase cost, circulation and approval complexity.":"Tighter programme protects budget but leaves less room for future expansion."}/></div>)}</div>
-      {!readonly&&<div className="comparison-row comparison-row--actions"><h3>Your decision</h3>{scenarios.map(scenario=><div key={scenario.id}><button className={selectedId===scenario.id?'selected':''} disabled={choosing||selectionLocked||selectedId===scenario.id} onClick={()=>onChoose?.(scenario)}>{selectedId===scenario.id?<><Check/> Chosen</>:selectedId?<>Choose instead <ArrowRight/></>:<>Choose {scenario.label} <ArrowRight/></>}</button></div>)}</div>}
+      {!readonly&&<div className="comparison-row comparison-row--actions"><h3>Your decision</h3>{scenarios.map(scenario=><div key={scenario.id}><button className={selectedId===scenario.id?'selected':''} disabled={!choiceAvailable||choosing||selectionLocked||selectedId===scenario.id} aria-describedby={!choiceAvailable?'decision-preview-note':undefined} title={!choiceAvailable?'Save the comparison before choosing a direction.':undefined} onClick={()=>onChoose?.(scenario)}>{selectedId===scenario.id?<><Check/> Chosen</>:selectedId?<>Choose instead <ArrowRight/></>:<>Choose {scenario.label} <ArrowRight/></>}</button></div>)}</div>}
     </section>
     <section className="decision-questions"><div><span className="kicker">Take into the room</span><h2>Five questions for your architect.</h2></div><ol>{questions.slice(0,5).map((question,index)=><li key={`${question}-${index}`}><span>{String(index+1).padStart(2,'0')}</span><p>{question}</p></li>)}</ol></section>
     <footer className="decision-boundary"><ShieldCheck/><p><strong>A decision aid—not a construction document.</strong> Areas, costs, constraints and recommendations are indicative. A licensed local architect and structural engineer must validate site measurements, bylaws, design and safety.</p></footer>
@@ -2667,7 +2682,7 @@ function DecisionComparePage({ projectId }) {
       {error&&<p className="form-error" role="alert">{error}</p>}
       <div className="decision-editor__actions"><p><ShieldCheck/> Concept-stage calculations only. Local rules and site conditions remain unresolved.</p><button className="copper-button" type="submit" disabled={saving||drafts.length!==2}>{saving?'Recalculating both options…':phase==='empty'?'Create comparison':'Save & recalculate'} <ArrowsLeftRight/></button></div>
     </form>}
-    {archived&&!hasSavedComparison?<section className="decision-archived-empty"><ArrowsLeftRight/><h2>No saved comparison record.</h2><p>This project was archived without a versioned Decision Compare. Browser drafts are not presented as project evidence.</p><button className="outline-button" onClick={()=>route(`/projects/${projectId}`)}><ArrowLeft/> Project home</button></section>:<section id="decision-results" className="decision-results" tabIndex="-1">{phase==='empty'&&<div className="decision-preview-note" role="status"><PencilSimple/><p><strong>Unsaved preview.</strong> These two starting options are visible only in this browser. Save them to create a versioned comparison and choose a direction.</p></div>}<DecisionDocument comparison={comparison} project={project} onChoose={choose} choosing={choosing} readonly={archived}/></section>}
+    {archived&&!hasSavedComparison?<section className="decision-archived-empty"><ArrowsLeftRight/><h2>No saved comparison record.</h2><p>This project was archived without a versioned Decision Compare. Browser drafts are not presented as project evidence.</p><button className="outline-button" onClick={()=>route(`/projects/${projectId}`)}><ArrowLeft/> Project home</button></section>:<section id="decision-results" className="decision-results" tabIndex="-1">{phase==='empty'&&<div id="decision-preview-note" className="decision-preview-note" role="status"><PencilSimple/><p><strong>Unsaved preview.</strong> These two starting options are visible only in this browser. Save them to create a versioned comparison and choose a direction.</p></div>}<DecisionDocument comparison={comparison} project={project} onChoose={choose} choosing={choosing} readonly={archived} choiceAvailable={hasSavedComparison}/></section>}
     {hasSavedComparison&&<FamilyAlignmentPanel projectId={projectId} comparison={comparison} readonly={archived}/>}
     {(!archived||hasSavedComparison)&&<DecisionPurchasePanel projectId={projectId} comparison={comparison} orders={orders} onOrdersChange={setOrders} readonly={archived}/>}
     {(!archived||hasSavedComparison)&&<DecisionSharePanel projectId={projectId} comparison={comparison} orderId={comparison.entitlement?.orderId||null} canShare={Boolean(comparison.entitlement?.active)} readonly={archived}/>}
