@@ -478,6 +478,7 @@ export async function checkOpsConfig() {
   assert.match(deployWorkflow, /public_regression=/u, "public regression state must survive tail finalization errors");
   assert.match(deployWorkflow, /--version-id/u, "production error tail must be scoped to the deployed Worker version");
   assert.match(deployWorkflow, /tail-aggregate\.mjs/u, "tail payloads must be reduced to bounded aggregates");
+  assert.match(deployWorkflow, /classify-tail-stderr\.mjs/u, "tail stderr must be classified without entering release artifacts");
   assert.doesNotMatch(deployWorkflow, /(?:invocation|server)-errors\.ndjson/u, "raw Worker tail payloads must never enter artifacts");
   assert.equal(
     (deployWorkflow.match(/\(needs\.authorize\.outputs\.migrations == 'false' \|\|\s*\(steps\.rollback_compat\.outcome == 'success' && steps\.rollback_residue\.outcome == 'success'\)\)/gu) || []).length,

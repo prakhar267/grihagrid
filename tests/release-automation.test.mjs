@@ -1304,20 +1304,21 @@ test("release tails suppress the Wrangler banner while preserving warnings and e
   assert.equal((observe.match(/wrangler tail/gu) || []).length, 2);
   assert.doesNotMatch(observe, /WRANGLER_LOG=error/u);
   assert.doesNotMatch(observe, /WRANGLER_LOG=none/u);
-  assert.match(observe, /Number\(process\.env\.INVOCATION_STDERR_BYTES\) !== 0/u);
-  assert.match(observe, /Number\(process\.env\.SERVER_STDERR_BYTES\) !== 0/u);
+  assert.equal((observe.match(/classify-tail-stderr\.mjs/gu) || []).length, 2);
+  assert.match(observe, /\|\| invocationStderr\.unexpected/u);
+  assert.match(observe, /\|\| serverStderr\.unexpected/u);
   assert.match(observe, /process\.env\.TAILS_ALIVE !== "true"/u);
   assert.match(observe, /invocation\.eventCount > 0 \|\| server\.eventCount > 0/u);
   const waitsFinished = observe.indexOf('wait "$server_pid"');
-  const invocationStderrMeasured = observe.indexOf('invocation_stderr_bytes="$(wc -c < "$invocation_stderr")"');
-  const serverStderrMeasured = observe.indexOf('server_stderr_bytes="$(wc -c < "$server_stderr")"');
+  const invocationStderrMeasured = observe.indexOf('invocation_stderr_summary="$(node scripts/classify-tail-stderr.mjs "$invocation_stderr")"');
+  const serverStderrMeasured = observe.indexOf('server_stderr_summary="$(node scripts/classify-tail-stderr.mjs "$server_stderr")"');
   const stderrRemoved = observe.indexOf('rm -f -- "$invocation_stderr" "$server_stderr"');
   assert.ok(
     waitsFinished >= 0
       && invocationStderrMeasured > waitsFinished
       && serverStderrMeasured > invocationStderrMeasured
       && stderrRemoved > serverStderrMeasured,
-    "tail stderr must be measured only after both supervised processes finish and before the private files are removed",
+    "tail stderr must be classified only after both supervised processes finish and before the private files are removed",
   );
 
   const wrangler = fileURLToPath(new URL("../node_modules/wrangler/bin/wrangler.js", import.meta.url));
@@ -1387,13 +1388,13 @@ test("release tail processes fail closed unless both finish by operator SIGTERM"
     serverStatus: 143,
     monitorInfrastructureFailure: false,
     tailsAlive: true,
-    invocationStderrBytes: 0,
-    serverStderrBytes: 0,
+    invocationStderrUnexpected: false,
+    serverStderrUnexpected: false,
   };
   const isInfrastructureFailure = (state) => state.monitorInfrastructureFailure
     || !state.tailsAlive
-    || state.invocationStderrBytes !== 0
-    || state.serverStderrBytes !== 0
+    || state.invocationStderrUnexpected
+    || state.serverStderrUnexpected
     || state.invocationStatus !== 143
     || state.serverStatus !== 143;
   assert.equal(isInfrastructureFailure(healthyTailState), false);
@@ -1412,11 +1413,22 @@ test("release tail processes fail closed unless both finish by operator SIGTERM"
   for (const infrastructureSignal of [
     { monitorInfrastructureFailure: true },
     { tailsAlive: false },
-    { invocationStderrBytes: 1 },
-    { serverStderrBytes: 1 },
+    { invocationStderrUnexpected: true },
+    { serverStderrUnexpected: true },
   ]) {
     assert.equal(isInfrastructureFailure({ ...healthyTailState, ...infrastructureSignal }), true);
   }
+  assert.equal(
+    isInfrastructureFailure({
+      ...healthyTailState,
+      invocationStderrBytes: 118,
+      serverStderrBytes: 118,
+      invocationProxyWarningIgnored: true,
+      serverProxyWarningIgnored: true,
+    }),
+    false,
+    "the exact known proxy notice must not hide a healthy monitored release",
+  );
 });
 
 test("release rollback polling propagates legacy Worker compatibility to every smoke sample", async () => {
