@@ -33,8 +33,14 @@ const LOGIN_ACCOUNT_WINDOW_SECONDS = 15 * 60;
 const PASSWORD_CHANGE_ACCOUNT_LIMIT = 5;
 const PASSWORD_CHANGE_WINDOW_SECONDS = 15 * 60;
 const SESSION_REVIEW_MAX_OTHERS = 20;
+const EMAIL_TOKEN_TTL_SECONDS = 60 * 60;
+const PASSWORD_RESET_TTL_SECONDS = 30 * 60;
+const RESEND_EMAILS_URL = "https://api.resend.com/emails";
+const EMAIL_PROVIDER_TIMEOUT_MS = 10_000;
 const MAX_JSON_BYTES = 64 * 1024;
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
+const MAX_IMAGE_PIXELS = 40_000_000;
+const FILE_SANITIZATION_PROFILE = "static-image-v1";
 const MAX_WEBHOOK_BYTES = 256 * 1024;
 // v1 reports predate Brief Check and used an unconditional feasibility verdict.
 // Keep those immutable historical rows, but never serve them as the current
@@ -199,7 +205,6 @@ const REPORT_FEEDBACK_METRICS_MINIMUM_COHORT = 5;
 const RAZORPAY_PAYMENT_LINKS_URL = "https://api.razorpay.com/v1/payment_links/";
 
 const FILE_TYPES = new Set([
-  "application/pdf",
   "image/jpeg",
   "image/png",
   "image/webp",
@@ -639,6 +644,8 @@ function publicUser(row) {
     email: row.email,
     name: row.name || null,
     createdAt: row.user_created_at || row.created_at,
+    emailVerified: Boolean(row.email_verified_at),
+    accountRole: ["reviewer", "admin"].includes(row.account_role) ? row.account_role : "customer",
   };
 }
 
@@ -655,6 +662,74 @@ function normalizePassword(value) {
     throw new HttpError(400, "password must be between 10 and 128 characters", "invalid_password");
   }
   return value;
+}
+
+function transactionalEmailConfig(env) {
+  const apiKey = String(env.RESEND_API_KEY || "");
+  const from = String(env.TRANSACTIONAL_EMAIL_FROM || "").trim();
+  const address = /<([^<>]+)>$/u.exec(from)?.[1] || from;
+  if (!apiKey || apiKey.length > 256 || from.length < 3 || from.length > 254 || /[\r\n]/u.test(from)
+      || address.length > 254 || !/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/u.test(address)) {
+    throw new HttpError(503, "transactional email is not configured", "email_unavailable");
+  }
+  return { apiKey, from };
+}
+
+function escapeEmailHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+async function recordTransactionalEmail(db, userId, purpose, outcome, idempotencyKey) {
+  const idempotencyKeyHash = await digestBase64(`transactional-email:${idempotencyKey}`);
+  await db.prepare(
+    `INSERT OR IGNORE INTO transactional_email_events
+       (id,user_id,purpose,outcome,idempotency_key_hash,created_at)
+     VALUES (?,?,?,?,?,?)`,
+  ).bind(crypto.randomUUID(), userId, purpose, outcome, idempotencyKeyHash, sqliteTimestamp()).run();
+}
+
+async function sendTransactionalEmail(db, env, { userId, to, purpose, subject, text, actionUrl = null, idempotencyKey }) {
+  const config = transactionalEmailConfig(env);
+  const providerFetch = typeof env.RESEND_FETCH === "function" ? env.RESEND_FETCH : fetch;
+  const html = `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#181511"><h1 style="font-size:24px">${escapeEmailHtml(subject)}</h1><p>${escapeEmailHtml(text)}</p>${actionUrl ? `<p><a href="${escapeEmailHtml(actionUrl)}" style="color:#a7532f">Continue securely</a></p>` : ""}<p style="font-size:13px;color:#5e574e">GrihaGrid is a concept-stage planning service. If you did not request this action, you can ignore this message.</p></div>`;
+  let response;
+  try {
+    response = await providerFetch(RESEND_EMAILS_URL, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${config.apiKey}`,
+        "content-type": "application/json",
+        accept: "application/json",
+        "user-agent": "grihagrid-worker/1.0",
+        "idempotency-key": idempotencyKey,
+      },
+      body: JSON.stringify({ from: config.from, to: [to], subject, text: `${text}${actionUrl ? `\n\n${actionUrl}` : ""}`, html }),
+      signal: AbortSignal.timeout(EMAIL_PROVIDER_TIMEOUT_MS),
+    });
+  } catch {
+    await recordTransactionalEmail(db, userId, purpose, "failed", idempotencyKey);
+    throw new HttpError(503, "transactional email is temporarily unavailable", "email_unavailable");
+  }
+  if (!response.ok) {
+    await recordTransactionalEmail(db, userId, purpose, "failed", idempotencyKey);
+    throw new HttpError(503, "transactional email is temporarily unavailable", "email_unavailable");
+  }
+  await recordTransactionalEmail(db, userId, purpose, "sent", idempotencyKey);
+}
+
+async function bestEffortSecurityEmail(db, env, message) {
+  try {
+    await sendTransactionalEmail(db, env, message);
+  } catch {
+    // The security boundary has already committed. Email delivery is supporting
+    // evidence and must never roll back or misreport the completed action.
+    console.error("Transactional security notification failed");
+  }
 }
 
 function requestIp(request) {
@@ -829,7 +904,9 @@ const READINESS_REQUIRED_TABLES = Object.freeze([
   "decision_progress", "payment_terminal_records", "payment_reconciliation_cases", "family_alignment_rooms",
   "family_alignment_responses", "project_revisions", "project_revision_requests", "project_revision_reports",
   "report_feedback", "report_shares", "report_share_read_counters", "report_share_create_counters",
-  "report_handoff_controls",
+  "report_handoff_controls", "email_verification_tokens", "password_reset_tokens",
+  "transactional_email_events", "account_deletion_requests", "account_deletion_receipts",
+  "professional_profiles", "professional_review_requests", "professional_review_messages", "professional_review_events",
 ]);
 
 const READINESS_MANIFESTS = Object.freeze({
@@ -917,6 +994,78 @@ const READINESS_MANIFESTS = Object.freeze({
       login_attempt_fences: [
         "user_id", "window_started_at", "expires_at", "request_count", "limit_count", "updated_at",
       ],
+    },
+  }),
+  accountLifecycle: readinessManifest({
+    tables: [
+      "email_verification_tokens", "password_reset_tokens", "transactional_email_events",
+      "account_deletion_requests", "account_deletion_receipts",
+    ],
+    indexes: [
+      "idx_email_verification_user_created", "idx_email_verification_expiry",
+      "idx_password_reset_user_created", "idx_password_reset_expiry",
+      "idx_transactional_email_idempotency", "idx_transactional_email_user_created",
+      "idx_account_deletion_status_updated",
+    ],
+    triggers: [
+      "email_verification_token_identity_guard", "password_reset_token_identity_guard",
+      "transactional_email_events_immutable",
+    ],
+    columns: {
+      users: ["email_verified_at", "deletion_requested_at"],
+      email_verification_tokens: ["id", "user_id", "token_hash", "expires_at", "consumed_at", "created_at"],
+      password_reset_tokens: ["id", "user_id", "token_hash", "expires_at", "consumed_at", "created_at"],
+      transactional_email_events: [
+        "id", "user_id", "purpose", "outcome", "idempotency_key_hash", "created_at",
+      ],
+      account_deletion_requests: [
+        "id", "user_id", "status", "requested_at", "completed_at", "updated_at",
+      ],
+      account_deletion_receipts: ["request_id", "completed_at"],
+    },
+  }),
+  privateUploads: readinessManifest({
+    tables: ["project_files"],
+    indexes: ["idx_project_files_ready_created"],
+    triggers: [
+      "project_file_owner_insert_guard", "project_file_ready_insert_guard",
+      "project_file_account_limit_insert_guard", "project_file_identity_immutable",
+    ],
+    columns: {
+      project_files: [
+        "id", "project_id", "user_id", "object_key", "file_name", "content_type", "size_bytes", "kind",
+        "checksum_sha256", "created_at", "storage_state", "sanitization_profile", "original_size_bytes",
+      ],
+    },
+  }),
+  professionalReview: readinessManifest({
+    tables: [
+      "professional_profiles", "professional_review_requests", "professional_review_messages",
+      "professional_review_events",
+    ],
+    indexes: [
+      "idx_professional_reviews_active_source", "idx_professional_reviews_owner_updated",
+      "idx_professional_reviews_reviewer_updated", "idx_professional_reviews_queue",
+      "idx_professional_review_messages_review_created", "idx_professional_review_events_review_created",
+    ],
+    triggers: [
+      "professional_profile_role_guard", "professional_review_owner_guard",
+      "professional_review_assignment_guard", "professional_review_source_immutable",
+      "professional_review_messages_immutable_update", "professional_review_events_immutable_update",
+    ],
+    columns: {
+      users: ["account_role"],
+      professional_profiles: [
+        "user_id", "display_name", "discipline", "license_jurisdiction", "license_reference",
+        "verification_status", "verified_at", "created_at", "updated_at",
+      ],
+      professional_review_requests: [
+        "id", "project_id", "owner_id", "reviewer_id", "project_revision", "report_schema_version",
+        "report_content_hash", "owner_note", "reviewer_summary", "status", "idempotency_key_hash",
+        "requested_at", "assigned_at", "completed_at", "updated_at",
+      ],
+      professional_review_messages: ["id", "review_id", "author_id", "author_role", "body", "created_at"],
+      professional_review_events: ["id", "review_id", "actor_id", "action", "detail_hash", "created_at"],
     },
   }),
   familyAlignment: readinessManifest({
@@ -1121,6 +1270,9 @@ async function readinessDatabaseState(db) {
   const reportFeedbackSchema = current(READINESS_MANIFESTS.reportFeedback);
   const projectCreationSchema = current(READINESS_MANIFESTS.projectCreation);
   const authSchema = current(READINESS_MANIFESTS.auth);
+  const accountLifecycleSchema = current(READINESS_MANIFESTS.accountLifecycle);
+  const privateUploadSchema = current(READINESS_MANIFESTS.privateUploads);
+  const professionalReviewSchema = current(READINESS_MANIFESTS.professionalReview);
   const familyAlignmentSchema = current(READINESS_MANIFESTS.familyAlignment);
   const archiveSafetySchema = current(READINESS_MANIFESTS.archiveSafety);
   const decisionSchema = current(READINESS_MANIFESTS.decision);
@@ -1144,6 +1296,8 @@ async function readinessDatabaseState(db) {
     && archiveSafetySchema === "current" && revisionSchema === "current"
     && reportFeedbackSchema === "current" && reportShareSchema === "current"
     && projectCreationSchema === "current" && authSchema === "current"
+    && accountLifecycleSchema === "current" && privateUploadSchema === "current"
+    && professionalReviewSchema === "current"
     ? "current"
     : "outdated";
 
@@ -1162,6 +1316,9 @@ async function readinessDatabaseState(db) {
     reportHandoffControlState,
     projectCreationSchema,
     authSchema,
+    accountLifecycleSchema,
+    privateUploadSchema,
+    professionalReviewSchema,
   };
 }
 
@@ -2788,7 +2945,7 @@ async function register(request, env) {
     throw error;
   }
   const session = await createSession(db, id);
-  const response = json({ user: { id, email, name, createdAt }, csrfToken: session.csrfToken }, 201);
+  const response = json({ user: { id, email, name, createdAt, emailVerified: false, accountRole: "customer" }, csrfToken: session.csrfToken }, 201);
   return withCookies(response, sessionCookies(session.sessionToken, session.csrfToken));
 }
 
@@ -2878,7 +3035,245 @@ async function logout(request, env) {
 async function me(request, env) {
   const session = await getSession(request, env);
   const csrfToken = parseCookies(request)[CSRF_COOKIE] || null;
-  return json({ user: publicUser(session), csrfToken });
+  let emailVerified = false;
+  let accountRole = "customer";
+  try {
+    const account = await requireDatabase(env).prepare(
+      "SELECT email_verified_at,account_role FROM users WHERE id=? AND deleted_at IS NULL",
+    ).bind(session.user_id).first();
+    emailVerified = Boolean(account?.email_verified_at);
+    accountRole = ["reviewer", "admin"].includes(account?.account_role) ? account.account_role : "customer";
+  } catch {
+    // A Worker may briefly run against the additive pre-0018 schema during a
+    // controlled rollback. Core authentication remains usable while the new
+    // lifecycle projection stays conservatively unverified.
+  }
+  return json({ user: { ...publicUser(session), emailVerified, accountRole }, csrfToken });
+}
+
+function normalizeLifecycleToken(value, code) {
+  if (typeof value !== "string" || !/^[A-Za-z0-9_-]{43}$/u.test(value)) {
+    throw new HttpError(400, "the account action link is invalid or expired", code);
+  }
+  return value;
+}
+
+async function createEmailVerification(request, env) {
+  requireTrustedOrigin(request, env);
+  requireAbuseControl(env);
+  await rateLimit(request, env, "email-verification", 8, 60 * 60);
+  const db = requireDatabase(env);
+  const session = await getSession(request, env);
+  await requireCsrf(request, session);
+  const body = await readJson(request);
+  if (Object.keys(body).length !== 0) {
+    throw new HttpError(400, "the verification request does not accept fields", "invalid_verification_request");
+  }
+  const account = await db.prepare(
+    "SELECT email_verified_at FROM users WHERE id=? AND deleted_at IS NULL",
+  ).bind(session.user_id).first();
+  if (!account) throw new HttpError(401, "authentication required", "unauthenticated");
+  if (account.email_verified_at) return empty(204);
+  const token = randomToken();
+  const tokenHash = await digestBase64(token);
+  const id = crypto.randomUUID();
+  const createdAt = sqliteTimestamp();
+  const expiresAt = sqliteTimestamp(new Date(Date.now() + EMAIL_TOKEN_TTL_SECONDS * 1000));
+  await db.batch([
+    db.prepare(
+      "DELETE FROM email_verification_tokens WHERE user_id=? AND consumed_at IS NULL",
+    ).bind(session.user_id),
+    db.prepare(
+      `INSERT INTO email_verification_tokens
+         (id,user_id,token_hash,expires_at,consumed_at,created_at)
+       VALUES (?,?,?,?,NULL,?)`,
+    ).bind(id, session.user_id, tokenHash, expiresAt, createdAt),
+  ]);
+  const actionUrl = `${canonicalAppOrigin(env)}/verify-email#token=${token}`;
+  try {
+    await sendTransactionalEmail(db, env, {
+      userId: session.user_id,
+      to: session.email,
+      purpose: "verify_email",
+      subject: "Verify your GrihaGrid email",
+      text: "Confirm this email address for account recovery and important security messages. This link expires in one hour.",
+      actionUrl,
+      idempotencyKey: `verify-${id}`,
+    });
+  } catch (error) {
+    await db.prepare("DELETE FROM email_verification_tokens WHERE id=? AND consumed_at IS NULL").bind(id).run();
+    throw error;
+  }
+  return json({ accepted: true }, 202);
+}
+
+async function confirmEmailVerification(request, env) {
+  requireTrustedOrigin(request, env);
+  requireAbuseControl(env);
+  await rateLimit(request, env, "email-verification-confirm", 20, 60 * 60);
+  const db = requireDatabase(env);
+  const body = await readJson(request);
+  requireStrictStringObject(
+    body,
+    ["token"],
+    [],
+    "token is the only supported field",
+    "invalid_verification_request",
+  );
+  const tokenHash = await digestBase64(normalizeLifecycleToken(body.token, "verification_invalid"));
+  const verifiedAt = sqliteTimestamp();
+  const results = await db.batch([
+    db.prepare(
+      `UPDATE users
+          SET email_verified_at=COALESCE(email_verified_at,?)
+        WHERE id=(
+          SELECT user_id FROM email_verification_tokens
+           WHERE token_hash=? AND consumed_at IS NULL AND expires_at>datetime('now')
+           LIMIT 1
+        ) AND deleted_at IS NULL
+      RETURNING id,email_verified_at`,
+    ).bind(verifiedAt, tokenHash),
+    db.prepare(
+      `UPDATE email_verification_tokens
+          SET consumed_at=?
+        WHERE token_hash=? AND consumed_at IS NULL AND expires_at>datetime('now')
+          AND EXISTS (SELECT 1 FROM users WHERE id=email_verification_tokens.user_id AND email_verified_at IS NOT NULL)
+      RETURNING id`,
+    ).bind(verifiedAt, tokenHash),
+  ]);
+  if (!results?.[0]?.results?.[0] || !results?.[1]?.results?.[0]) {
+    throw new HttpError(400, "the account action link is invalid or expired", "verification_invalid");
+  }
+  return json({ verified: true, verifiedAt: results[0].results[0].email_verified_at });
+}
+
+async function requestPasswordReset(request, env) {
+  requireTrustedOrigin(request, env);
+  requireAbuseControl(env);
+  await rateLimit(request, env, "password-reset", 8, 60 * 60);
+  const db = requireDatabase(env);
+  const body = await readJson(request);
+  requireStrictStringObject(
+    body,
+    ["email"],
+    [],
+    "email is the only supported field",
+    "invalid_password_reset",
+  );
+  const email = normalizeEmail(body.email);
+  const user = await db.prepare(
+    "SELECT id,email FROM users WHERE email=? AND deleted_at IS NULL",
+  ).bind(email).first();
+  if (user) {
+    const token = randomToken();
+    const tokenHash = await digestBase64(token);
+    const id = crypto.randomUUID();
+    const createdAt = sqliteTimestamp();
+    const expiresAt = sqliteTimestamp(new Date(Date.now() + PASSWORD_RESET_TTL_SECONDS * 1000));
+    await db.batch([
+      db.prepare("DELETE FROM password_reset_tokens WHERE user_id=? AND consumed_at IS NULL").bind(user.id),
+      db.prepare(
+        `INSERT INTO password_reset_tokens
+           (id,user_id,token_hash,expires_at,consumed_at,created_at)
+         VALUES (?,?,?,?,NULL,?)`,
+      ).bind(id, user.id, tokenHash, expiresAt, createdAt),
+    ]);
+    const actionUrl = `${canonicalAppOrigin(env)}/reset-password#token=${token}`;
+    try {
+      await sendTransactionalEmail(db, env, {
+        userId: user.id,
+        to: user.email,
+        purpose: "password_reset",
+        subject: "Reset your GrihaGrid password",
+        text: "Use this one-time link to choose a new password. It expires in 30 minutes and closes all existing sessions when used.",
+        actionUrl,
+        idempotencyKey: `reset-${id}`,
+      });
+    } catch {
+      await db.prepare("DELETE FROM password_reset_tokens WHERE id=? AND consumed_at IS NULL").bind(id).run();
+      // The public response is intentionally indistinguishable from an unknown
+      // account. Delivery failure is retained as bounded operational evidence.
+    }
+  }
+  return json({ accepted: true }, 202);
+}
+
+async function confirmPasswordReset(request, env) {
+  requireTrustedOrigin(request, env);
+  requireAbuseControl(env);
+  await rateLimit(request, env, "password-reset-confirm", 12, 60 * 60);
+  const db = requireDatabase(env);
+  const body = await readJson(request);
+  requireStrictStringObject(
+    body,
+    ["token", "newPassword"],
+    [],
+    "token and newPassword are the only supported fields",
+    "invalid_password_reset",
+  );
+  const tokenHash = await digestBase64(normalizeLifecycleToken(body.token, "password_reset_invalid"));
+  const newPassword = normalizePassword(body.newPassword);
+  const record = await db.prepare(
+    `SELECT t.user_id,u.email,u.password_hash,u.password_salt,u.password_iterations,
+            u.password_algorithm,u.auth_generation,u.auth_revision_id
+       FROM password_reset_tokens t
+       JOIN users u ON u.id=t.user_id AND u.deleted_at IS NULL
+      WHERE t.token_hash=? AND t.consumed_at IS NULL AND t.expires_at>datetime('now')`,
+  ).bind(tokenHash).first();
+  if (!record) {
+    throw new HttpError(400, "the account action link is invalid or expired", "password_reset_invalid");
+  }
+  const currentGeneration = Number(record.auth_generation);
+  if (!Number.isSafeInteger(currentGeneration) || currentGeneration < 1 || currentGeneration >= 2_147_483_647) {
+    throw new HttpError(400, "the account action link is invalid or expired", "password_reset_invalid");
+  }
+  const credentials = await makePasswordRecord(newPassword);
+  const nextGeneration = currentGeneration + 1;
+  const nextRevisionId = crypto.randomUUID();
+  const changedAt = sqliteTimestamp();
+  const results = await db.batch([
+    db.prepare(
+      `UPDATE users
+          SET password_hash=?,password_salt=?,password_iterations=?,password_algorithm=?,
+              auth_generation=?,auth_revision_id=?,password_changed_at=?
+        WHERE id=? AND deleted_at IS NULL
+          AND auth_generation=? AND auth_revision_id IS ?
+          AND EXISTS (
+            SELECT 1 FROM password_reset_tokens
+             WHERE user_id=users.id AND token_hash=? AND consumed_at IS NULL AND expires_at>datetime('now')
+          )
+      RETURNING id`,
+    ).bind(
+      credentials.hash, credentials.salt, credentials.iterations, credentials.algorithm,
+      nextGeneration, nextRevisionId, changedAt, record.user_id,
+      currentGeneration, record.auth_revision_id || null, tokenHash,
+    ),
+    db.prepare(
+      `DELETE FROM sessions
+        WHERE user_id=? AND EXISTS (
+          SELECT 1 FROM users WHERE id=? AND auth_generation=? AND auth_revision_id IS ?
+        )`,
+    ).bind(record.user_id, record.user_id, nextGeneration, nextRevisionId),
+    db.prepare(
+      `UPDATE password_reset_tokens SET consumed_at=?
+        WHERE user_id=? AND token_hash=? AND consumed_at IS NULL AND expires_at>datetime('now')
+          AND EXISTS (SELECT 1 FROM users WHERE id=? AND auth_generation=? AND auth_revision_id IS ?)
+      RETURNING id`,
+    ).bind(changedAt, record.user_id, tokenHash, record.user_id, nextGeneration, nextRevisionId),
+    db.prepare("DELETE FROM login_attempt_fences WHERE user_id=?").bind(record.user_id),
+  ]);
+  if (!results?.[0]?.results?.[0] || !results?.[2]?.results?.[0]) {
+    throw new HttpError(400, "the account action link is invalid or expired", "password_reset_invalid");
+  }
+  await bestEffortSecurityEmail(db, env, {
+    userId: record.user_id,
+    to: record.email,
+    purpose: "password_changed",
+    subject: "Your GrihaGrid password was reset",
+    text: "Your password was changed through the recovery flow and every earlier session was closed.",
+    idempotencyKey: `password-reset-complete-${results[2].results[0].id}`,
+  });
+  return withCookies(empty(204), clearSessionCookies());
 }
 
 function sessionReviewUnavailable() {
@@ -3028,6 +3423,15 @@ async function revokeOtherAuthSessions(request, env) {
     throw new HttpError(409, "authentication state changed; sign in and retry", "auth_state_changed");
   }
 
+  await bestEffortSecurityEmail(db, env, {
+    userId: currentSession.user_id,
+    to: currentSession.email,
+    purpose: "sessions_revoked",
+    subject: "Other GrihaGrid sessions were closed",
+    text: "Your account kept one replacement session and every earlier session was closed. Your password was not changed.",
+    idempotencyKey: `sessions-revoked-${replacement.id}`,
+  });
+
   const response = json({
     user: publicUser(currentSession),
     csrfToken: replacement.csrfToken,
@@ -3153,8 +3557,257 @@ async function changePassword(request, env) {
     throw new HttpError(409, "authentication state changed; sign in and retry", "auth_state_changed");
   }
 
+  await bestEffortSecurityEmail(db, env, {
+    userId: currentSession.user_id,
+    to: currentSession.email,
+    purpose: "password_changed",
+    subject: "Your GrihaGrid password changed",
+    text: "Your password was changed and every earlier session was closed.",
+    idempotencyKey: `password-changed-${replacement.id}`,
+  });
+
   const response = json({ user: publicUser(currentSession), csrfToken: replacement.csrfToken });
   return withCookies(response, sessionCookies(replacement.sessionToken, replacement.csrfToken));
+}
+
+async function exportAccount(request, env) {
+  const db = requireDatabase(env);
+  const session = await getSession(request, env);
+  const results = await db.batch([
+    db.prepare(
+      `SELECT id,email,name,created_at,email_verified_at,password_changed_at
+         FROM users WHERE id=? AND deleted_at IS NULL`,
+    ).bind(session.user_id),
+    db.prepare(
+      `SELECT id,name,status,input_json,estimate_json,input_revision,created_at,updated_at
+         FROM projects WHERE user_id=? ORDER BY created_at,id`,
+    ).bind(session.user_id),
+    db.prepare(
+      `SELECT r.project_id,r.revision,r.provenance,r.input_schema_version,r.estimate_rule_version,
+              r.brief_check_version,r.input_json,r.estimate_json,r.brief_check_json,r.created_at
+         FROM project_revisions r
+         JOIN projects p ON p.id=r.project_id
+        WHERE p.user_id=? ORDER BY r.project_id,r.revision`,
+    ).bind(session.user_id),
+    db.prepare(
+      `SELECT r.project_id,r.project_revision,r.report_schema_version,r.content_json,r.generated_at
+         FROM project_revision_reports r
+         JOIN projects p ON p.id=r.project_id
+        WHERE p.user_id=? ORDER BY r.project_id,r.project_revision,r.report_schema_version`,
+    ).bind(session.user_id),
+    db.prepare(
+      `SELECT project_id,project_revision,report_schema_version,outcome,sections_json,created_at,updated_at
+         FROM report_feedback WHERE user_id=? ORDER BY project_id,project_revision`,
+    ).bind(session.user_id),
+    db.prepare(
+      `SELECT id,project_id,product_code,plan,amount_paise,currency,status,provider_status,
+              paid_at,entitlement_revoked_at,entitlement_revocation_reason,created_at,updated_at
+         FROM orders WHERE user_id=? ORDER BY created_at,id`,
+    ).bind(session.user_id),
+    db.prepare(
+      `SELECT project_id,source_report_version,schema_version,prompt_version,model,content_json,generated_at,updated_at
+         FROM ai_planning_briefs WHERE user_id=? ORDER BY project_id,generated_at`,
+    ).bind(session.user_id),
+    db.prepare(
+      `SELECT id,project_id,file_name,content_type,size_bytes,kind,checksum_sha256,created_at
+         FROM project_files WHERE user_id=? ORDER BY project_id,created_at,id`,
+    ).bind(session.user_id),
+    db.prepare(
+      `SELECT project_id,comparison_version,response_count,access_count,expires_at,revoked_at,created_at
+         FROM family_alignment_rooms WHERE user_id=? ORDER BY project_id,created_at`,
+    ).bind(session.user_id),
+    db.prepare(
+      `SELECT project_id,project_revision,report_schema_version,sections_json,expires_at,revoked_at,
+              access_count,last_accessed_at,created_at
+         FROM report_shares WHERE user_id=? ORDER BY project_id,created_at`,
+    ).bind(session.user_id),
+    db.prepare(
+      `SELECT id,project_id,project_revision,report_schema_version,owner_note,reviewer_summary,status,
+              requested_at,assigned_at,completed_at,updated_at
+         FROM professional_review_requests WHERE owner_id=? ORDER BY requested_at,id`,
+    ).bind(session.user_id),
+    db.prepare(
+      `SELECT m.review_id,m.author_role,m.body,m.created_at
+         FROM professional_review_messages m
+         JOIN professional_review_requests r ON r.id=m.review_id
+        WHERE r.owner_id=? ORDER BY m.review_id,m.created_at,m.rowid`,
+    ).bind(session.user_id),
+  ]);
+  const rows = (index) => Array.isArray(results?.[index]?.results) ? results[index].results : [];
+  const user = rows(0)[0];
+  if (!user) throw new HttpError(401, "authentication required", "unauthenticated");
+  const parse = (value) => parseStoredJson(value, null);
+  const artifact = {
+    exportVersion: 1,
+    exportedAt: sqliteTimestamp(),
+    profile: {
+      id: user.id,
+      email: user.email,
+      name: user.name || null,
+      createdAt: user.created_at,
+      emailVerifiedAt: user.email_verified_at || null,
+      passwordChangedAt: user.password_changed_at || null,
+    },
+    projects: rows(1).map((row) => ({
+      id: row.id,
+      name: row.name,
+      status: row.status,
+      inputRevision: Number(row.input_revision || 1),
+      input: parse(row.input_json),
+      estimate: parse(row.estimate_json),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    })),
+    revisions: rows(2).map((row) => ({
+      projectId: row.project_id,
+      revision: Number(row.revision),
+      provenance: row.provenance,
+      inputSchemaVersion: Number(row.input_schema_version),
+      estimateRuleVersion: Number(row.estimate_rule_version),
+      briefCheckVersion: Number(row.brief_check_version),
+      input: parse(row.input_json),
+      estimate: parse(row.estimate_json),
+      briefCheck: parse(row.brief_check_json),
+      createdAt: row.created_at,
+    })),
+    reports: rows(3).map((row) => ({
+      projectId: row.project_id,
+      projectRevision: Number(row.project_revision),
+      schemaVersion: Number(row.report_schema_version),
+      content: parse(row.content_json),
+      generatedAt: row.generated_at,
+    })),
+    feedback: rows(4).map((row) => ({
+      projectId: row.project_id,
+      projectRevision: Number(row.project_revision),
+      reportSchemaVersion: Number(row.report_schema_version),
+      outcome: row.outcome,
+      sections: parse(row.sections_json),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    })),
+    orders: rows(5).map((row) => ({
+      id: row.id,
+      projectId: row.project_id,
+      productCode: row.product_code,
+      plan: row.plan,
+      amountPaise: Number(row.amount_paise),
+      currency: row.currency,
+      status: row.status,
+      providerStatus: row.provider_status || null,
+      paidAt: row.paid_at || null,
+      entitlementRevokedAt: row.entitlement_revoked_at || null,
+      entitlementRevocationReason: row.entitlement_revocation_reason || null,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    })),
+    aiBriefs: rows(6).map((row) => ({ ...row, content: parse(row.content_json), content_json: undefined })),
+    files: rows(7).map((row) => ({
+      id: row.id,
+      projectId: row.project_id,
+      name: row.file_name,
+      contentType: row.content_type,
+      sizeBytes: Number(row.size_bytes),
+      kind: row.kind,
+      checksumSha256: row.checksum_sha256,
+      createdAt: row.created_at,
+    })),
+    familyAlignment: rows(8),
+    professionalHandoffs: rows(9).map((row) => ({ ...row, sections: parse(row.sections_json), sections_json: undefined })),
+    professionalReviews: rows(10),
+    professionalReviewMessages: rows(11),
+  };
+  return json(artifact, 200, {
+    "content-disposition": "attachment; filename=\"grihagrid-account-export.json\"",
+  });
+}
+
+async function deleteAccount(request, env) {
+  requireTrustedOrigin(request, env);
+  requireAbuseControl(env);
+  await rateLimit(request, env, "account-deletion", 5, 60 * 60);
+  const db = requireDatabase(env);
+  const session = await getSession(request, env);
+  await requireCsrf(request, session);
+  const body = await readJson(request);
+  if (Object.keys(body).length !== 2
+      || typeof body.currentPassword !== "string"
+      || body.confirmation !== "DELETE") {
+    throw new HttpError(400, "currentPassword and confirmation DELETE are required", "invalid_account_deletion");
+  }
+  await acquirePasswordChangeAdmission(db, session.user_id);
+  const passwordRecord = await currentPasswordRecord(db, session);
+  const suppliedPassword = body.currentPassword.slice(0, 128) || "\0";
+  const passwordShapeValid = body.currentPassword.length >= 10 && body.currentPassword.length <= 128;
+  const passwordValid = passwordShapeValid
+    ? await verifyPassword(suppliedPassword, passwordRecord)
+    : (await derivePassword(suppliedPassword, new TextEncoder().encode("grihagrid-account-delete-dummy-salt")), false);
+  if (!passwordValid) {
+    throw new HttpError(401, "current password is incorrect", "current_password_incorrect");
+  }
+
+  const requestId = crypto.randomUUID();
+  const requestedAt = sqliteTimestamp();
+  const professionalRole = await db.prepare(
+    `SELECT 1 AS present
+       FROM professional_profiles p
+       LEFT JOIN professional_review_requests r ON r.reviewer_id=p.user_id
+      WHERE p.user_id=? LIMIT 1`,
+  ).bind(session.user_id).first();
+  if (professionalRole) {
+    throw new HttpError(
+      409,
+      "professional reviewer accounts require operational offboarding before deletion",
+      "account_professional_offboarding_required",
+    );
+  }
+  const order = await db.prepare("SELECT id FROM orders WHERE user_id=? LIMIT 1").bind(session.user_id).first();
+  if (order) {
+    await db.prepare(
+      `INSERT INTO account_deletion_requests (id,user_id,status,requested_at,completed_at,updated_at)
+       VALUES (?,?,'blocked_financial_retention',?,NULL,?)
+       ON CONFLICT(user_id) DO UPDATE SET
+         status='blocked_financial_retention',updated_at=excluded.updated_at`,
+    ).bind(requestId, session.user_id, requestedAt, requestedAt).run();
+    throw new HttpError(
+      409,
+      "this account has financial records that require a governed retention review; contact support",
+      "account_financial_retention_required",
+    );
+  }
+
+  await db.prepare(
+    `INSERT INTO account_deletion_requests (id,user_id,status,requested_at,completed_at,updated_at)
+     VALUES (?,?,'requested',?,NULL,?)
+     ON CONFLICT(user_id) DO UPDATE SET status='requested',updated_at=excluded.updated_at`,
+  ).bind(requestId, session.user_id, requestedAt, requestedAt).run();
+  const files = (await db.prepare(
+    "SELECT object_key FROM project_files WHERE user_id=? ORDER BY id",
+  ).bind(session.user_id).all()).results || [];
+  if (files.length) {
+    const store = requireFileStore(env);
+    for (const file of files) await store.delete(file.object_key);
+  }
+  const completedAt = sqliteTimestamp();
+  const results = await db.batch([
+    db.prepare("DELETE FROM projects WHERE user_id=?").bind(session.user_id),
+    db.prepare(
+      "INSERT INTO account_deletion_receipts (request_id,completed_at) VALUES (?,?)",
+    ).bind(requestId, completedAt),
+    db.prepare("DELETE FROM users WHERE id=? AND deleted_at IS NULL RETURNING id").bind(session.user_id),
+  ]);
+  if (!results?.[2]?.results?.[0]) {
+    throw new HttpError(409, "the account changed; sign in and retry", "account_deletion_conflict");
+  }
+  await bestEffortSecurityEmail(db, env, {
+    userId: null,
+    to: session.email,
+    purpose: "account_deletion",
+    subject: "Your GrihaGrid account was deleted",
+    text: "Your account sessions and private planning records were permanently removed.",
+    idempotencyKey: `account-delete-${requestId}`,
+  });
+  return withCookies(empty(204), clearSessionCookies());
 }
 
 function validateJsonValue(value, depth = 0) {
@@ -7666,6 +8319,320 @@ async function getReport(request, env, projectId) {
   return json(reportEnvelopeFromRow(row, true));
 }
 
+function professionalReviewFromRow(row) {
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    projectRevision: Number(row.project_revision),
+    reportSchemaVersion: Number(row.report_schema_version),
+    status: row.status,
+    ownerNote: row.owner_note || "",
+    reviewerSummary: row.reviewer_summary || null,
+    reviewer: row.reviewer_id ? {
+      displayName: row.reviewer_display_name || "Assigned professional",
+      discipline: row.reviewer_discipline || null,
+      licenseJurisdiction: row.reviewer_license_jurisdiction || null,
+      licenseReference: row.reviewer_license_reference || null,
+    } : null,
+    requestedAt: row.requested_at,
+    assignedAt: row.assigned_at || null,
+    completedAt: row.completed_at || null,
+    updatedAt: row.updated_at,
+  };
+}
+
+const PROFESSIONAL_REVIEW_SELECT = `SELECT r.*,
+       p.display_name AS reviewer_display_name,p.discipline AS reviewer_discipline,
+       p.license_jurisdiction AS reviewer_license_jurisdiction,
+       p.license_reference AS reviewer_license_reference
+  FROM professional_review_requests r
+  LEFT JOIN professional_profiles p ON p.user_id=r.reviewer_id`;
+
+async function professionalReviewEvent(db, reviewId, actorId, action, detail) {
+  const detailHash = await digestHex(stableStringify(detail));
+  await db.prepare(
+    `INSERT INTO professional_review_events (id,review_id,actor_id,action,detail_hash,created_at)
+     VALUES (?,?,?,?,?,?)`,
+  ).bind(crypto.randomUUID(), reviewId, actorId, action, detailHash, sqliteTimestamp()).run();
+}
+
+async function verifiedReviewer(db, userId) {
+  const profile = await db.prepare(
+    `SELECT u.account_role,p.display_name,p.discipline,p.license_jurisdiction,p.license_reference
+       FROM users u JOIN professional_profiles p ON p.user_id=u.id
+      WHERE u.id=? AND u.deleted_at IS NULL AND u.account_role IN ('reviewer','admin')
+        AND p.verification_status='verified'`,
+  ).bind(userId).first();
+  if (!profile) throw new HttpError(403, "verified professional access is required", "professional_access_required");
+  return profile;
+}
+
+function normalizeProfessionalReviewText(value, field, maximum, minimum = 0) {
+  const text = normalizedDecisionText(value, field, maximum, minimum);
+  return text;
+}
+
+async function listProjectProfessionalReviews(request, env, projectId) {
+  const db = requireDatabase(env);
+  const session = await getSession(request, env);
+  await ownedProject(db, projectId, session.user_id);
+  const result = await db.prepare(
+    `${PROFESSIONAL_REVIEW_SELECT}
+      WHERE r.project_id=? AND r.owner_id=?
+      ORDER BY r.updated_at DESC,r.id DESC LIMIT 20`,
+  ).bind(projectId, session.user_id).all();
+  return json({ reviews: (result.results || []).map(professionalReviewFromRow) });
+}
+
+async function createProfessionalReview(request, env, projectId) {
+  requireTrustedOrigin(request, env);
+  const db = requireDatabase(env);
+  const session = await getSession(request, env);
+  await requireCsrf(request, session);
+  const project = await ownedProject(db, projectId, session.user_id);
+  requireActiveProject(project, "restore the project before requesting professional review");
+  const body = await readJson(request);
+  requireStrictStringObject(body, ["note"], [], "note is the only supported field", "invalid_professional_review");
+  const ownerNote = normalizeProfessionalReviewText(body.note, "note", 1000);
+  const idempotencyKeyHash = await digestHex(`professional-review:${session.user_id}:${normalizeIdempotencyKey(request)}`);
+  const source = await currentReportEnvelopeRow(db, projectId, session.user_id);
+  if (!source) throw new HttpError(409, "generate the current report before requesting professional review", "professional_review_report_required");
+  const reportContentHash = await digestHex(source.content_json);
+  const exactReplay = (row) => row
+    && row.project_id === projectId
+    && Number(row.project_revision) === Number(source.revision)
+    && Number(row.report_schema_version) === Number(source.report_schema_version)
+    && row.report_content_hash === reportContentHash
+    && row.owner_note === ownerNote;
+  const existing = await db.prepare(
+    `${PROFESSIONAL_REVIEW_SELECT} WHERE r.owner_id=? AND r.idempotency_key_hash=? LIMIT 1`,
+  ).bind(session.user_id, idempotencyKeyHash).first();
+  if (exactReplay(existing)) return json({ review: professionalReviewFromRow(existing), replayed: true });
+  if (existing) throw new HttpError(409, "idempotency key was already used for a different review request", "idempotency_conflict");
+  const id = crypto.randomUUID();
+  const now = sqliteTimestamp();
+  try {
+    await db.batch([
+      db.prepare(
+        `INSERT INTO professional_review_requests
+           (id,project_id,owner_id,reviewer_id,project_revision,report_schema_version,report_content_hash,
+            owner_note,reviewer_summary,status,idempotency_key_hash,requested_at,assigned_at,completed_at,updated_at)
+         VALUES (?,?,?,NULL,?,?,?,?,NULL,'requested',?,?,NULL,NULL,?)`,
+      ).bind(
+        id, projectId, session.user_id, Number(source.revision), Number(source.report_schema_version),
+        reportContentHash, ownerNote, idempotencyKeyHash, now, now,
+      ),
+      db.prepare(
+        `INSERT INTO professional_review_events (id,review_id,actor_id,action,detail_hash,created_at)
+         VALUES (?,?,?,?,?,?)`,
+      ).bind(crypto.randomUUID(), id, session.user_id, "requested", await digestHex(stableStringify({ projectId, revision: Number(source.revision) })), now),
+    ]);
+  } catch (error) {
+    const raced = await db.prepare(
+      `${PROFESSIONAL_REVIEW_SELECT} WHERE r.owner_id=? AND r.idempotency_key_hash=? LIMIT 1`,
+    ).bind(session.user_id, idempotencyKeyHash).first();
+    if (exactReplay(raced)) return json({ review: professionalReviewFromRow(raced), replayed: true });
+    if (raced) throw new HttpError(409, "idempotency key was already used for a different review request", "idempotency_conflict");
+    if (/idx_professional_reviews_active_source|UNIQUE constraint failed:\s*professional_review_requests\.project_id/iu.test(String(error?.message || error))) {
+      throw new HttpError(409, "this report already has an active professional review", "professional_review_active");
+    }
+    throw error;
+  }
+  const created = await db.prepare(`${PROFESSIONAL_REVIEW_SELECT} WHERE r.id=?`).bind(id).first();
+  return json({ review: professionalReviewFromRow(created), replayed: false }, 201);
+}
+
+async function professionalReviewDetailRow(db, reviewId) {
+  return db.prepare(
+    `SELECT r.*,
+            p.display_name AS reviewer_display_name,p.discipline AS reviewer_discipline,
+            p.license_jurisdiction AS reviewer_license_jurisdiction,
+            p.license_reference AS reviewer_license_reference,
+            project.name AS project_name,report.content_json
+       FROM professional_review_requests r
+       LEFT JOIN professional_profiles p ON p.user_id=r.reviewer_id
+       JOIN projects project ON project.id=r.project_id
+       JOIN project_revision_reports report
+       ON report.project_id=r.project_id AND report.project_revision=r.project_revision
+      AND report.report_schema_version=r.report_schema_version
+     WHERE r.id=?`,
+  ).bind(reviewId).first();
+}
+
+async function professionalReviewMessages(db, reviewId) {
+  const result = await db.prepare(
+    `SELECT id,author_role,body,created_at FROM professional_review_messages
+      WHERE review_id=? ORDER BY created_at ASC,rowid ASC LIMIT 100`,
+  ).bind(reviewId).all();
+  return (result.results || []).map((row) => ({
+    id: row.id, authorRole: row.author_role, body: row.body, createdAt: row.created_at,
+  }));
+}
+
+async function ownerProfessionalReview(request, env, projectId, reviewId) {
+  const db = requireDatabase(env);
+  const session = await getSession(request, env);
+  await ownedProject(db, projectId, session.user_id);
+  const row = await professionalReviewDetailRow(db, reviewId);
+  if (!row || row.project_id !== projectId || row.owner_id !== session.user_id) {
+    throw new HttpError(404, "professional review not found", "professional_review_not_found");
+  }
+  return json({ review: professionalReviewFromRow(row), messages: await professionalReviewMessages(db, reviewId) });
+}
+
+async function cancelProfessionalReview(request, env, projectId, reviewId) {
+  requireTrustedOrigin(request, env);
+  const db = requireDatabase(env);
+  const session = await getSession(request, env);
+  await requireCsrf(request, session);
+  await ownedProject(db, projectId, session.user_id);
+  const now = sqliteTimestamp();
+  const result = await db.prepare(
+    `UPDATE professional_review_requests SET status='cancelled',updated_at=?
+      WHERE id=? AND project_id=? AND owner_id=? AND status='requested'
+      RETURNING id`,
+  ).bind(now, reviewId, projectId, session.user_id).first();
+  if (!result) throw new HttpError(409, "only an unassigned review request can be cancelled", "professional_review_not_cancellable");
+  await professionalReviewEvent(db, reviewId, session.user_id, "cancelled", { previousStatus: "requested" });
+  return empty();
+}
+
+async function listReviewerWork(request, env) {
+  const db = requireDatabase(env);
+  const session = await getSession(request, env);
+  await verifiedReviewer(db, session.user_id);
+  const result = await db.prepare(
+    `${PROFESSIONAL_REVIEW_SELECT}
+      WHERE r.status='requested' OR r.reviewer_id=?
+      ORDER BY CASE WHEN r.reviewer_id=? THEN 0 ELSE 1 END,r.updated_at DESC,r.id DESC LIMIT 50`,
+  ).bind(session.user_id, session.user_id).all();
+  return json({
+    reviews: (result.results || []).map((row) => {
+      const review = professionalReviewFromRow(row);
+      // Free text may identify an owner. Keep it out of the unassigned queue;
+      // the claimed reviewer receives it only through their assigned record.
+      if (row.reviewer_id !== session.user_id) review.ownerNote = "";
+      return review;
+    }),
+  });
+}
+
+async function claimProfessionalReview(request, env, reviewId) {
+  requireTrustedOrigin(request, env);
+  const db = requireDatabase(env);
+  const session = await getSession(request, env);
+  await requireCsrf(request, session);
+  await verifiedReviewer(db, session.user_id);
+  const now = sqliteTimestamp();
+  const claimed = await db.prepare(
+    `UPDATE professional_review_requests
+        SET reviewer_id=?,status='assigned',assigned_at=?,updated_at=?
+      WHERE id=? AND status='requested' AND reviewer_id IS NULL
+      RETURNING id`,
+  ).bind(session.user_id, now, now, reviewId).first();
+  if (!claimed) {
+    const existing = await db.prepare("SELECT reviewer_id,status FROM professional_review_requests WHERE id=?").bind(reviewId).first();
+    if (!existing) throw new HttpError(404, "professional review not found", "professional_review_not_found");
+    if (existing.reviewer_id !== session.user_id) throw new HttpError(409, "this review was already claimed", "professional_review_claimed");
+  } else await professionalReviewEvent(db, reviewId, session.user_id, "claimed", { assignedAt: now });
+  const row = await db.prepare(`${PROFESSIONAL_REVIEW_SELECT} WHERE r.id=?`).bind(reviewId).first();
+  return json({ review: professionalReviewFromRow(row) });
+}
+
+async function reviewerProfessionalReview(request, env, reviewId) {
+  const db = requireDatabase(env);
+  const session = await getSession(request, env);
+  await verifiedReviewer(db, session.user_id);
+  const row = await professionalReviewDetailRow(db, reviewId);
+  if (!row || row.reviewer_id !== session.user_id) {
+    throw new HttpError(404, "professional review not found", "professional_review_not_found");
+  }
+  if (await digestHex(row.content_json) !== row.report_content_hash) {
+    throw new HttpError(500, "professional review source evidence is invalid", "professional_review_source_invalid");
+  }
+  return json({
+    review: professionalReviewFromRow(row),
+    project: { id: row.project_id, name: row.project_name || row.name || "Private project" },
+    report: parseStoredJson(row.content_json, null),
+    messages: await professionalReviewMessages(db, reviewId),
+  });
+}
+
+async function addProfessionalReviewMessage(request, env, reviewId) {
+  requireTrustedOrigin(request, env);
+  const db = requireDatabase(env);
+  const session = await getSession(request, env);
+  await requireCsrf(request, session);
+  const body = await readJson(request);
+  requireStrictStringObject(body, ["message"], [], "message is the only supported field", "invalid_professional_review_message");
+  const message = normalizeProfessionalReviewText(body.message, "message", 2000, 1);
+  const review = await db.prepare("SELECT owner_id,reviewer_id,status FROM professional_review_requests WHERE id=?").bind(reviewId).first();
+  if (!review) throw new HttpError(404, "professional review not found", "professional_review_not_found");
+  let authorRole;
+  let nextStatus;
+  let expectedStatus;
+  let action = "message_added";
+  if (review.owner_id === session.user_id && review.status === "needs_owner_input") {
+    authorRole = "owner"; expectedStatus = "needs_owner_input"; nextStatus = "assigned"; action = "owner_response";
+  } else if (review.reviewer_id === session.user_id && review.status === "assigned") {
+    await verifiedReviewer(db, session.user_id);
+    authorRole = "reviewer"; expectedStatus = "assigned"; nextStatus = "needs_owner_input";
+  } else {
+    throw new HttpError(409, "a message is not accepted in the current review state", "professional_review_message_closed");
+  }
+  const now = sqliteTimestamp();
+  const messageId = crypto.randomUUID();
+  const results = await db.batch([
+    db.prepare(
+      `INSERT INTO professional_review_messages (id,review_id,author_id,author_role,body,created_at)
+       SELECT ?,r.id,?,?,?,? FROM professional_review_requests r
+        WHERE r.id=? AND r.status=?
+          AND ((?='owner' AND r.owner_id=?) OR (?='reviewer' AND r.reviewer_id=?))
+       RETURNING id`,
+    ).bind(
+      messageId, session.user_id, authorRole, message, now, reviewId, expectedStatus,
+      authorRole, session.user_id, authorRole, session.user_id,
+    ),
+    db.prepare(
+      `UPDATE professional_review_requests SET status=?,updated_at=?
+        WHERE id=? AND status=?
+          AND EXISTS (SELECT 1 FROM professional_review_messages WHERE id=? AND review_id=?)`,
+    ).bind(nextStatus, now, reviewId, expectedStatus, messageId, reviewId),
+    db.prepare(
+      `INSERT INTO professional_review_events (id,review_id,actor_id,action,detail_hash,created_at)
+       SELECT ?,?,?,?,?,? WHERE EXISTS (
+         SELECT 1 FROM professional_review_messages WHERE id=? AND review_id=?
+       )`,
+    ).bind(crypto.randomUUID(), reviewId, session.user_id, action, await digestHex(message), now, messageId, reviewId),
+  ]);
+  if (!results?.[0]?.results?.[0]) {
+    throw new HttpError(409, "a message is not accepted in the current review state", "professional_review_message_closed");
+  }
+  return json({ message: { id: messageId, authorRole, body: message, createdAt: now }, status: nextStatus }, 201);
+}
+
+async function completeProfessionalReview(request, env, reviewId) {
+  requireTrustedOrigin(request, env);
+  const db = requireDatabase(env);
+  const session = await getSession(request, env);
+  await requireCsrf(request, session);
+  await verifiedReviewer(db, session.user_id);
+  const body = await readJson(request);
+  requireStrictStringObject(body, ["summary"], [], "summary is the only supported field", "invalid_professional_review_summary");
+  const summary = normalizeProfessionalReviewText(body.summary, "summary", 4000, 20);
+  const now = sqliteTimestamp();
+  const updated = await db.prepare(
+    `UPDATE professional_review_requests
+        SET status='reviewed',reviewer_summary=?,completed_at=?,updated_at=?
+      WHERE id=? AND reviewer_id=? AND status='assigned'
+      RETURNING id`,
+  ).bind(summary, now, now, reviewId, session.user_id).first();
+  if (!updated) throw new HttpError(409, "resolve the open clarification before completing this review", "professional_review_not_completable");
+  await professionalReviewEvent(db, reviewId, session.user_id, "reviewed", { summaryHash: await digestHex(summary) });
+  const row = await db.prepare(`${PROFESSIONAL_REVIEW_SELECT} WHERE r.id=?`).bind(reviewId).first();
+  return json({ review: professionalReviewFromRow(row) });
+}
+
 function normalizeFileName(value) {
   const name = String(value || "").split(/[\\/]/u).pop().replace(/[\u0000-\u001f\u007f]/gu, "").trim();
   if (!name || name === "." || name === ".." || name.length > 160) throw new HttpError(400, "file name must be between 1 and 160 characters", "invalid_file_name");
@@ -7687,34 +8654,231 @@ function verifyFileSignature(bytes, type) {
   return true;
 }
 
-async function readUpload(request) {
-  const declaredLength = Number(request.headers.get("content-length") || 0);
-  if (declaredLength > MAX_FILE_BYTES + 1024 * 1024) throw new HttpError(413, "file exceeds the 10 MB limit", "file_too_large");
-  const requestType = (request.headers.get("content-type") || "").toLowerCase();
-  let source;
-  let name;
-  let type;
-  let kind;
-  if (requestType.includes("multipart/form-data")) {
-    const form = await request.formData();
-    source = form.get("file");
-    if (!source || typeof source.arrayBuffer !== "function") throw new HttpError(400, "multipart field 'file' is required", "file_required");
-    name = normalizeFileName(source.name || form.get("name"));
-    type = String(source.type || form.get("contentType") || "application/octet-stream").toLowerCase();
-    kind = normalizeFileKind(form.get("kind"));
-  } else {
-    source = request;
-    name = normalizeFileName(request.headers.get("x-file-name"));
-    type = requestType.split(";", 1)[0] || "application/octet-stream";
-    kind = normalizeFileKind(request.headers.get("x-file-kind"));
+function concatBytes(parts) {
+  const size = parts.reduce((total, part) => total + part.byteLength, 0);
+  const result = new Uint8Array(size);
+  let offset = 0;
+  for (const part of parts) {
+    result.set(part, offset);
+    offset += part.byteLength;
   }
+  return result;
+}
+
+function validImageDimensions(width, height) {
+  return Number.isInteger(width) && Number.isInteger(height)
+    && width > 0 && height > 0 && width * height <= MAX_IMAGE_PIXELS;
+}
+
+function invalidStaticImage() {
+  throw new HttpError(400, "image could not be safely normalized", "invalid_file_content");
+}
+
+function sanitizePng(bytes) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const kept = [bytes.slice(0, 8)];
+  const allowed = new Set(["IHDR", "PLTE", "IDAT", "IEND", "tRNS"]);
+  let offset = 8;
+  let ihdr = false;
+  let idat = false;
+  let iend = false;
+  while (offset < bytes.byteLength) {
+    if (offset + 12 > bytes.byteLength) invalidStaticImage();
+    const length = view.getUint32(offset, false);
+    const end = offset + 12 + length;
+    if (end > bytes.byteLength) invalidStaticImage();
+    const typeBytes = bytes.slice(offset + 4, offset + 8);
+    if (![...typeBytes].every((value) => (value >= 65 && value <= 90) || (value >= 97 && value <= 122))) invalidStaticImage();
+    const type = String.fromCharCode(...typeBytes);
+    if (!ihdr) {
+      if (type !== "IHDR" || length !== 13) invalidStaticImage();
+      const width = view.getUint32(offset + 8, false);
+      const height = view.getUint32(offset + 12, false);
+      if (!validImageDimensions(width, height)) invalidStaticImage();
+      ihdr = true;
+    } else if (type === "IHDR") invalidStaticImage();
+    if (type === "IDAT") idat = true;
+    if (type === "IEND") {
+      if (length !== 0 || !idat || end !== bytes.byteLength) invalidStaticImage();
+      iend = true;
+    }
+    const critical = (typeBytes[0] & 0x20) === 0;
+    if (critical && !allowed.has(type)) invalidStaticImage();
+    if (allowed.has(type)) kept.push(bytes.slice(offset, end));
+    offset = end;
+  }
+  if (!ihdr || !idat || !iend) invalidStaticImage();
+  return concatBytes(kept);
+}
+
+function sanitizeJpeg(bytes) {
+  const kept = [bytes.slice(0, 2)];
+  let offset = 2;
+  let sawFrame = false;
+  let sawScan = false;
+  while (offset < bytes.byteLength) {
+    if (bytes[offset] !== 0xff) invalidStaticImage();
+    const markerStart = offset;
+    while (offset < bytes.byteLength && bytes[offset] === 0xff) offset += 1;
+    if (offset >= bytes.byteLength) invalidStaticImage();
+    const marker = bytes[offset];
+    if (marker === 0x00 || marker === 0xd8) invalidStaticImage();
+    if (marker === 0xd9) {
+      if (!sawFrame || !sawScan || offset + 1 !== bytes.byteLength) invalidStaticImage();
+      kept.push(bytes.slice(markerStart, offset + 1));
+      return concatBytes(kept);
+    }
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) {
+      kept.push(bytes.slice(markerStart, offset + 1));
+      offset += 1;
+      continue;
+    }
+    if (offset + 2 >= bytes.byteLength) invalidStaticImage();
+    const length = (bytes[offset + 1] << 8) | bytes[offset + 2];
+    const end = offset + 1 + length;
+    if (length < 2 || end > bytes.byteLength) invalidStaticImage();
+    const frameMarker = new Set([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf]).has(marker);
+    if (frameMarker) {
+      if (length < 8) invalidStaticImage();
+      const height = (bytes[offset + 4] << 8) | bytes[offset + 5];
+      const width = (bytes[offset + 6] << 8) | bytes[offset + 7];
+      if (!validImageDimensions(width, height)) invalidStaticImage();
+      sawFrame = true;
+    }
+    const strip = (marker >= 0xe1 && marker <= 0xef) || marker === 0xfe;
+    if (!strip) kept.push(bytes.slice(markerStart, end));
+    offset = end;
+    if (marker !== 0xda) continue;
+    sawScan = true;
+    const scanStart = offset;
+    while (offset < bytes.byteLength) {
+      if (bytes[offset] !== 0xff) {
+        offset += 1;
+        continue;
+      }
+      let markerOffset = offset + 1;
+      while (markerOffset < bytes.byteLength && bytes[markerOffset] === 0xff) markerOffset += 1;
+      if (markerOffset >= bytes.byteLength) invalidStaticImage();
+      const scanMarker = bytes[markerOffset];
+      if (scanMarker === 0x00 || (scanMarker >= 0xd0 && scanMarker <= 0xd7)) {
+        offset = markerOffset + 1;
+        continue;
+      }
+      kept.push(bytes.slice(scanStart, offset));
+      break;
+    }
+  }
+  invalidStaticImage();
+}
+
+function littleEndianUint32(bytes, offset) {
+  return bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16) | (bytes[offset + 3] << 24 >>> 0);
+}
+
+function sanitizeWebp(bytes) {
+  const inputSize = littleEndianUint32(bytes, 4) >>> 0;
+  if (inputSize + 8 !== bytes.byteLength) invalidStaticImage();
+  const kept = [];
+  let offset = 12;
+  let imagePayload = false;
+  let dimensions = false;
+  while (offset < bytes.byteLength) {
+    if (offset + 8 > bytes.byteLength) invalidStaticImage();
+    const type = String.fromCharCode(...bytes.slice(offset, offset + 4));
+    const length = littleEndianUint32(bytes, offset + 4) >>> 0;
+    const paddedEnd = offset + 8 + length + (length % 2);
+    if (paddedEnd > bytes.byteLength) invalidStaticImage();
+    if (type === "ANIM" || type === "ANMF") invalidStaticImage();
+    if (type === "VP8X") {
+      if (length !== 10) invalidStaticImage();
+      const width = 1 + bytes[offset + 12] + (bytes[offset + 13] << 8) + (bytes[offset + 14] << 16);
+      const height = 1 + bytes[offset + 15] + (bytes[offset + 16] << 8) + (bytes[offset + 17] << 16);
+      if (!validImageDimensions(width, height) || (bytes[offset + 8] & 0x02) !== 0) invalidStaticImage();
+      const chunk = bytes.slice(offset, paddedEnd);
+      chunk[8] &= 0xd0;
+      kept.push(chunk);
+      dimensions = true;
+    } else if (type === "VP8 ") {
+      if (length < 10 || bytes[offset + 11] !== 0x9d || bytes[offset + 12] !== 0x01 || bytes[offset + 13] !== 0x2a) invalidStaticImage();
+      const width = (bytes[offset + 14] | (bytes[offset + 15] << 8)) & 0x3fff;
+      const height = (bytes[offset + 16] | (bytes[offset + 17] << 8)) & 0x3fff;
+      if (!validImageDimensions(width, height)) invalidStaticImage();
+      kept.push(bytes.slice(offset, paddedEnd));
+      imagePayload = true;
+      dimensions = true;
+    } else if (type === "VP8L") {
+      if (length < 5 || bytes[offset + 8] !== 0x2f) invalidStaticImage();
+      const bits = littleEndianUint32(bytes, offset + 9) >>> 0;
+      const width = (bits & 0x3fff) + 1;
+      const height = ((bits >>> 14) & 0x3fff) + 1;
+      if (!validImageDimensions(width, height)) invalidStaticImage();
+      kept.push(bytes.slice(offset, paddedEnd));
+      imagePayload = true;
+      dimensions = true;
+    } else if (type === "ALPH") kept.push(bytes.slice(offset, paddedEnd));
+    offset = paddedEnd;
+  }
+  if (!imagePayload || !dimensions) invalidStaticImage();
+  const body = concatBytes(kept);
+  const result = new Uint8Array(12 + body.byteLength);
+  result.set([0x52, 0x49, 0x46, 0x46], 0);
+  new DataView(result.buffer).setUint32(4, result.byteLength - 8, true);
+  result.set([0x57, 0x45, 0x42, 0x50], 8);
+  result.set(body, 12);
+  return result;
+}
+
+function sanitizeStaticImage(bytes, type) {
+  if (!verifyFileSignature(bytes, type)) invalidStaticImage();
+  if (type === "image/png") return sanitizePng(bytes);
+  if (type === "image/jpeg") return sanitizeJpeg(bytes);
+  if (type === "image/webp") return sanitizeWebp(bytes);
+  invalidStaticImage();
+}
+
+async function readBoundedUploadBody(request) {
+  if (!request.body) return new Uint8Array();
+  const reader = request.body.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MAX_FILE_BYTES) {
+        await reader.cancel();
+        throw new HttpError(413, "file exceeds the 10 MB limit", "file_too_large");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return concatBytes(chunks);
+}
+
+async function readUpload(request) {
+  const rawLength = request.headers.get("content-length");
+  const declaredLength = rawLength == null ? null : Number(rawLength);
+  if (declaredLength != null && (!Number.isSafeInteger(declaredLength) || declaredLength < 0)) {
+    throw new HttpError(400, "content length is invalid", "invalid_file_size");
+  }
+  if (declaredLength != null && declaredLength > MAX_FILE_BYTES) throw new HttpError(413, "file exceeds the 10 MB limit", "file_too_large");
+  const requestType = (request.headers.get("content-type") || "").toLowerCase();
+  if (requestType.includes("multipart/form-data")) {
+    throw new HttpError(415, "send one image as the request body", "unsupported_upload_encoding");
+  }
+  let headerName = request.headers.get("x-file-name");
+  try { headerName = decodeURIComponent(headerName || ""); } catch { /* The normalizer returns a fixed validation error. */ }
+  const name = normalizeFileName(headerName);
+  const type = requestType.split(";", 1)[0] || "application/octet-stream";
+  const kind = normalizeFileKind(request.headers.get("x-file-kind"));
   if (!FILE_TYPES.has(type)) throw new HttpError(415, "file type is not supported", "unsupported_file_type");
-  const buffer = await source.arrayBuffer();
-  if (!buffer.byteLength) throw new HttpError(400, "file is empty", "empty_file");
-  if (buffer.byteLength > MAX_FILE_BYTES) throw new HttpError(413, "file exceeds the 10 MB limit", "file_too_large");
-  const bytes = new Uint8Array(buffer);
-  if (!verifyFileSignature(bytes, type)) throw new HttpError(400, "file content does not match its declared type", "invalid_file_content");
-  return { buffer, name, type, kind };
+  const original = await readBoundedUploadBody(request);
+  if (!original.byteLength) throw new HttpError(400, "file is empty", "empty_file");
+  const sanitized = sanitizeStaticImage(original, type);
+  return { buffer: sanitized, originalSizeBytes: original.byteLength, name, type, kind };
 }
 
 function fileFromRow(row) {
@@ -7726,6 +8890,7 @@ function fileFromRow(row) {
     sizeBytes: Number(row.size_bytes),
     kind: row.kind,
     checksumSha256: row.checksum_sha256,
+    sanitizationProfile: row.sanitization_profile,
     createdAt: row.created_at,
   };
 }
@@ -7741,22 +8906,25 @@ async function uploadFile(request, env, projectId) {
   const upload = await readUpload(request);
   const id = crypto.randomUUID();
   const objectKey = `users/${session.user_id}/projects/${projectId}/${id}`;
-  const checksum = await digestHex(new Uint8Array(upload.buffer));
+  const checksum = await digestHex(upload.buffer);
   const createdAt = sqliteTimestamp();
   await store.put(objectKey, upload.buffer, {
     httpMetadata: { contentType: upload.type, cacheControl: "private, no-store" },
-    customMetadata: { projectId, userId: session.user_id, fileId: id, checksumSha256: checksum },
+    customMetadata: { projectId, userId: session.user_id, fileId: id, checksumSha256: checksum, sanitizationProfile: FILE_SANITIZATION_PROFILE },
   });
   try {
     await db.prepare(
-      `INSERT INTO project_files (id,project_id,user_id,object_key,file_name,content_type,size_bytes,kind,checksum_sha256,created_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?)`,
-    ).bind(id, projectId, session.user_id, objectKey, upload.name, upload.type, upload.buffer.byteLength, upload.kind, checksum, createdAt).run();
+      `INSERT INTO project_files (id,project_id,user_id,object_key,file_name,content_type,size_bytes,kind,checksum_sha256,created_at,storage_state,sanitization_profile,original_size_bytes)
+       VALUES (?,?,?,?,?,?,?,?,?,?,'ready',?,?)`,
+    ).bind(id, projectId, session.user_id, objectKey, upload.name, upload.type, upload.buffer.byteLength, upload.kind, checksum, createdAt, FILE_SANITIZATION_PROFILE, upload.originalSizeBytes).run();
   } catch (error) {
     try { await store.delete(objectKey); } catch { /* Preserve the original database error. */ }
+    if (/project file limit reached/iu.test(String(error?.message || error))) {
+      throw new HttpError(409, "this project or account has reached its private image limit", "file_limit_reached");
+    }
     throw error;
   }
-  return json({ file: { id, projectId, name: upload.name, contentType: upload.type, sizeBytes: upload.buffer.byteLength, kind: upload.kind, checksumSha256: checksum, createdAt } }, 201);
+  return json({ file: { id, projectId, name: upload.name, contentType: upload.type, sizeBytes: upload.buffer.byteLength, kind: upload.kind, checksumSha256: checksum, sanitizationProfile: FILE_SANITIZATION_PROFILE, createdAt } }, 201);
 }
 
 async function listFiles(request, env, projectId) {
@@ -7764,13 +8932,13 @@ async function listFiles(request, env, projectId) {
   const session = await getSession(request, env);
   await ownedProject(db, projectId, session.user_id);
   const result = await db.prepare(
-    "SELECT * FROM project_files WHERE project_id=? AND user_id=? ORDER BY created_at DESC,id DESC",
+    "SELECT * FROM project_files WHERE project_id=? AND user_id=? AND storage_state='ready' ORDER BY created_at DESC,id DESC",
   ).bind(projectId, session.user_id).all();
   return json({ files: (result.results || []).map(fileFromRow) });
 }
 
 async function ownedFile(db, projectId, fileId, userId) {
-  const row = await db.prepare("SELECT * FROM project_files WHERE id=? AND project_id=? AND user_id=?").bind(fileId, projectId, userId).first();
+  const row = await db.prepare("SELECT * FROM project_files WHERE id=? AND project_id=? AND user_id=? AND storage_state='ready'").bind(fileId, projectId, userId).first();
   if (!row) throw new HttpError(404, "file not found", "file_not_found");
   return row;
 }
@@ -7871,6 +9039,9 @@ async function api(request, env, ctx, url) {
       let reportHandoffControlState = "unknown";
       let projectCreationSchema = "unknown";
       let authSchema = "unknown";
+      let accountLifecycleSchema = "unknown";
+      let privateUploadSchema = "unknown";
+      let professionalReviewSchema = "unknown";
       if (env.DB) {
         try {
           ({
@@ -7888,6 +9059,9 @@ async function api(request, env, ctx, url) {
             reportHandoffControlState,
             projectCreationSchema,
             authSchema,
+            accountLifecycleSchema,
+            privateUploadSchema,
+            professionalReviewSchema,
           } = await readinessDatabaseState(env.DB));
         } catch {
           database = "error";
@@ -7911,6 +9085,14 @@ async function api(request, env, ctx, url) {
       const geminiConfigured = geminiConfiguration === "valid"
         && aiSchema === "current"
         && aiAbuseControl === "configured";
+      let transactionalEmail = "unavailable";
+      try {
+        transactionalEmailConfig(env);
+        transactionalEmail = "configured";
+      } catch {
+        // The account export and eligible deletion paths remain available, but
+        // verification and recovery stay visibly closed without email.
+      }
       const freeReady = database === "ok" && schema === "current" && rateLimit === "configured";
       const acceptingPlans = commerceCatalog(env).filter((plan) => plan.acceptingOrders).map((plan) => plan.id);
       return publicJson({
@@ -7934,13 +9116,17 @@ async function api(request, env, ctx, url) {
           reportShareAbuseHashing,
           projectCreationSchema,
           authSchema,
+          accountLifecycleSchema,
+          privateUploadSchema,
+          professionalReviewSchema,
+          transactionalEmail,
           ai: geminiConfigured ? "configured" : "unavailable",
-          privateStorage: env.FILES ? "configured" : "unavailable",
+          privateStorage: env.FILES && privateUploadSchema === "current" ? "configured" : "unavailable",
           acceptingPaidPlans: acceptingPlans,
         },
         capabilities: {
           freePlanning: freeReady,
-          privateUploads: Boolean(env.FILES),
+          privateUploads: freeReady && privateUploadSchema === "current" && Boolean(env.FILES),
           paidCheckout: freeReady && acceptingPlans.length > 0,
           paidFulfillment: enabledFlag(env.DECISION_COMPARE_FULFILLMENT_ENABLED),
           aiPlanningBrief: geminiConfigured,
@@ -7951,6 +9137,10 @@ async function api(request, env, ctx, url) {
           reportHandoff: freeReady && reportShareSchema === "current"
             && reportHandoffControlState === "enabled" && reportShareAbuseHashing === "configured",
           accountSecurity: freeReady && authSchema === "current" && rateLimit === "configured",
+          accountLifecycle: freeReady && accountLifecycleSchema === "current",
+          emailVerification: freeReady && accountLifecycleSchema === "current" && transactionalEmail === "configured",
+          passwordRecovery: freeReady && accountLifecycleSchema === "current" && transactionalEmail === "configured",
+          professionalReview: freeReady && professionalReviewSchema === "current",
         },
         time: new Date().toISOString(),
       }, freeReady ? 200 : 503);
@@ -8028,6 +9218,18 @@ async function api(request, env, ctx, url) {
     if (url.pathname === "/api/auth/me") {
       return request.method === "GET" ? await me(request, env) : methodNotAllowed(["GET"]);
     }
+    if (url.pathname === "/api/auth/email-verification/request") {
+      return request.method === "POST" ? await createEmailVerification(request, env) : methodNotAllowed(["POST"]);
+    }
+    if (url.pathname === "/api/auth/email-verification/confirm") {
+      return request.method === "POST" ? await confirmEmailVerification(request, env) : methodNotAllowed(["POST"]);
+    }
+    if (url.pathname === "/api/auth/password-reset/request") {
+      return request.method === "POST" ? await requestPasswordReset(request, env) : methodNotAllowed(["POST"]);
+    }
+    if (url.pathname === "/api/auth/password-reset/confirm") {
+      return request.method === "POST" ? await confirmPasswordReset(request, env) : methodNotAllowed(["POST"]);
+    }
     if (url.pathname === "/api/auth/password") {
       return request.method === "PUT" ? await changePassword(request, env) : methodNotAllowed(["PUT"]);
     }
@@ -8036,6 +9238,12 @@ async function api(request, env, ctx, url) {
     }
     if (url.pathname === "/api/auth/sessions/revoke-others") {
       return request.method === "POST" ? await revokeOtherAuthSessions(request, env) : methodNotAllowed(["POST"]);
+    }
+    if (url.pathname === "/api/account/export") {
+      return request.method === "GET" ? await exportAccount(request, env) : methodNotAllowed(["GET"]);
+    }
+    if (url.pathname === "/api/account") {
+      return request.method === "DELETE" ? await deleteAccount(request, env) : methodNotAllowed(["DELETE"]);
     }
     if (url.pathname === "/api/projects") {
       if (request.method === "GET") return await listProjects(request, env, url);
@@ -8187,6 +9395,30 @@ async function api(request, env, ctx, url) {
       if (request.method === "PUT") return await putDecisionCompare(request, env, projectId);
       return methodNotAllowed(["GET", "PUT"]);
     }
+    const ownerReviewMessageMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/professional-reviews\/([^/]+)\/messages$/u);
+    if (ownerReviewMessageMatch) {
+      const projectId = decodeProjectPathSegment(ownerReviewMessageMatch[1]);
+      const reviewId = decodeResourcePathSegment(ownerReviewMessageMatch[2], "professional review not found", "professional_review_not_found");
+      await ownedProject(requireDatabase(env), projectId, (await getSession(request, env)).user_id);
+      return request.method === "POST"
+        ? await addProfessionalReviewMessage(request, env, reviewId)
+        : methodNotAllowed(["POST"]);
+    }
+    const ownerReviewMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/professional-reviews\/([^/]+)$/u);
+    if (ownerReviewMatch) {
+      const projectId = decodeProjectPathSegment(ownerReviewMatch[1]);
+      const reviewId = decodeResourcePathSegment(ownerReviewMatch[2], "professional review not found", "professional_review_not_found");
+      if (request.method === "GET") return await ownerProfessionalReview(request, env, projectId, reviewId);
+      if (request.method === "DELETE") return await cancelProfessionalReview(request, env, projectId, reviewId);
+      return methodNotAllowed(["GET", "DELETE"]);
+    }
+    const ownerReviewsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/professional-reviews$/u);
+    if (ownerReviewsMatch) {
+      const projectId = decodeProjectPathSegment(ownerReviewsMatch[1]);
+      if (request.method === "GET") return await listProjectProfessionalReviews(request, env, projectId);
+      if (request.method === "POST") return await createProfessionalReview(request, env, projectId);
+      return methodNotAllowed(["GET", "POST"]);
+    }
     const fileMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/files\/([^/]+)$/u);
     if (fileMatch) {
       const projectId = decodeProjectPathSegment(fileMatch[1]);
@@ -8201,6 +9433,30 @@ async function api(request, env, ctx, url) {
       if (request.method === "GET") return await listFiles(request, env, projectId);
       if (request.method === "POST") return await uploadFile(request, env, projectId);
       return methodNotAllowed(["GET", "POST"]);
+    }
+    const reviewerMessageMatch = url.pathname.match(/^\/api\/professional-reviews\/([^/]+)\/messages$/u);
+    if (reviewerMessageMatch) {
+      const reviewId = decodeResourcePathSegment(reviewerMessageMatch[1], "professional review not found", "professional_review_not_found");
+      return request.method === "POST"
+        ? await addProfessionalReviewMessage(request, env, reviewId)
+        : methodNotAllowed(["POST"]);
+    }
+    const reviewerClaimMatch = url.pathname.match(/^\/api\/professional-reviews\/([^/]+)\/claim$/u);
+    if (reviewerClaimMatch) {
+      const reviewId = decodeResourcePathSegment(reviewerClaimMatch[1], "professional review not found", "professional_review_not_found");
+      return request.method === "POST"
+        ? await claimProfessionalReview(request, env, reviewId)
+        : methodNotAllowed(["POST"]);
+    }
+    const reviewerReviewMatch = url.pathname.match(/^\/api\/professional-reviews\/([^/]+)$/u);
+    if (reviewerReviewMatch) {
+      const reviewId = decodeResourcePathSegment(reviewerReviewMatch[1], "professional review not found", "professional_review_not_found");
+      if (request.method === "GET") return await reviewerProfessionalReview(request, env, reviewId);
+      if (request.method === "PUT") return await completeProfessionalReview(request, env, reviewId);
+      return methodNotAllowed(["GET", "PUT"]);
+    }
+    if (url.pathname === "/api/professional-reviews") {
+      return request.method === "GET" ? await listReviewerWork(request, env) : methodNotAllowed(["GET"]);
     }
     const projectHomeMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/home$/u);
     if (projectHomeMatch) {
@@ -8249,9 +9505,15 @@ function isApiRoute(pathname) {
     "/api/auth/login",
     "/api/auth/logout",
     "/api/auth/me",
+    "/api/auth/email-verification/request",
+    "/api/auth/email-verification/confirm",
+    "/api/auth/password-reset/request",
+    "/api/auth/password-reset/confirm",
     "/api/auth/password",
     "/api/auth/sessions",
     "/api/auth/sessions/revoke-others",
+    "/api/account",
+    "/api/account/export",
     "/api/projects",
     "/api/orders",
     "/api/events",
@@ -8264,7 +9526,8 @@ function isApiRoute(pathname) {
     || /^\/api\/orders\/[^/]+(?:\/(?:fulfillment|artifact|progress))?$/u.test(pathname)
     || /^\/api\/shared\/decision-compare\/[^/]+$/u.test(pathname)
     || /^\/api\/family-alignment\/[^/]+(?:\/response)?$/u.test(pathname)
-    || /^\/api\/projects\/[^/]+(?:\/home|\/report|\/report-shares(?:\/[^/]+)?|\/ai-brief|\/orders|\/revisions(?:\/preview|\/\d+(?:\/report|\/reports\/\d+\/feedback)?)?|\/family-alignment(?:\/[^/]+)?|\/decision-compare(?:\/choice|\/shares(?:\/[^/]+)?)?|\/files(?:\/[^/]+)?)?$/u.test(pathname);
+    || /^\/api\/projects\/[^/]+(?:\/home|\/report|\/report-shares(?:\/[^/]+)?|\/ai-brief|\/orders|\/revisions(?:\/preview|\/\d+(?:\/report|\/reports\/\d+\/feedback)?)?|\/family-alignment(?:\/[^/]+)?|\/decision-compare(?:\/choice|\/shares(?:\/[^/]+)?)?|\/professional-reviews(?:\/[^/]+(?:\/messages)?)?|\/files(?:\/[^/]+)?)?$/u.test(pathname)
+    || /^\/api\/professional-reviews(?:\/[^/]+(?:\/(?:claim|messages))?)?$/u.test(pathname);
 }
 
 function isAppNavigation(request, url) {
@@ -8448,6 +9711,9 @@ export default {
       env.DB.prepare("DELETE FROM ai_generation_counters WHERE updated_at<datetime('now','-8 days')"),
       env.DB.prepare("DELETE FROM login_attempt_fences WHERE expires_at<=datetime('now')"),
       env.DB.prepare("DELETE FROM password_change_attempt_counters WHERE updated_at<datetime('now','-2 days')"),
+      env.DB.prepare("DELETE FROM email_verification_tokens WHERE expires_at<=datetime('now') OR consumed_at<datetime('now','-2 days')"),
+      env.DB.prepare("DELETE FROM password_reset_tokens WHERE expires_at<=datetime('now') OR consumed_at<datetime('now','-2 days')"),
+      env.DB.prepare("DELETE FROM transactional_email_events WHERE created_at<datetime('now','-400 days')"),
       env.DB.prepare("DELETE FROM report_share_read_counters WHERE updated_at<datetime('now','-2 days')"),
       env.DB.prepare("DELETE FROM report_share_create_counters WHERE updated_at<datetime('now','-2 days')"),
       env.DB.prepare("DELETE FROM decision_shares WHERE expires_at<datetime('now','-90 days') OR (revoked_at IS NOT NULL AND revoked_at<datetime('now','-90 days'))"),
@@ -8528,6 +9794,7 @@ export const __test = {
   validateAiAdvisoryBoundary,
   validateAiBriefContent,
   verifyFileSignature,
+  sanitizeStaticImage,
   verifyRazorpaySignature,
   verifyPassword,
   webhookPaymentDetails,

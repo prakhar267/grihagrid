@@ -4,7 +4,7 @@ India-first concept-stage home-planning SaaS. GrihaGrid turns a plot brief into 
 
 Production: <https://grihagrid.prakhargupta267.workers.dev>
 
-The public site and free planning journey are live. The ₹999 Decision Compare checkout is intentionally fail-closed until the dated paid-launch gates in `docs/launch-readiness.md` are satisfied; the working comparison and public sample remain available without payment.
+The public site and free planning journey are live. The ₹999 Decision Compare checkout remains intentionally fail-closed; this readiness work does not open payments or make a legal approval decision. Account verification/recovery/export/deletion, static private-image handling, and an owner-to-verified-reviewer workflow are implemented behind explicit dependency and operational gates.
 
 ## Local development
 
@@ -27,6 +27,7 @@ npm run check
 npm run check:worker
 npm run check:worker:staging
 npm audit --audit-level=high
+npm run load:smoke
 ```
 
 `check:migrations` applies every migration, in order, to a fresh temporary local
@@ -58,7 +59,7 @@ Each deployment environment stores its own `CLOUDFLARE_API_TOKEN`,
 `GRIHAGRID_CANARY_EMAIL`, and `GRIHAGRID_CANARY_PASSWORD` as encrypted GitHub
 environment secrets. Cloudflare tokens are account-scoped service credentials
 limited to Worker scripts, D1, KV reads needed for bindings, and Worker tailing;
-they never include R2, payment-provider, or Gemini credentials. A future
+they never include R2, email-provider, payment-provider, or Gemini credentials. A future
 pending migration cannot run until the workflow has made and encrypted a
 mode-0600 export, authenticated AES-256-GCM encryption, a successful decrypt
 check, and recorded checksums, Time Travel bookmark, and prior Worker version.
@@ -73,7 +74,7 @@ release cannot leave an unsafe migration queued for a later release.
 
 The deployment target is a Cloudflare Worker with static assets, D1 for application and immutable purchase records, KV for abuse controls, version metadata for release correlation, and a daily cleanup cron. Production and staging use separate Workers, D1 databases, KV namespaces, origins, and paid kill switches. Configure the bindings and secrets documented in `docs/backend-api.md` and `docs/payments.md`; normal releases then flow through the protected GitHub deployment workflow, with the runbook commands retained for verified break-glass recovery.
 
-The public calculator, authentication, private projects, deterministic report, structured Brief Check feedback, working Decision Compare, and dashboard work without payment-provider secrets. Registration accepts only its documented email/password/optional-name fields, and login accepts exactly email plus password. Login combines a fail-closed 12-attempt per-IP KV perimeter with a `user_id`-only D1 fence that reserves at most 12 password checks in one fixed, non-sliding 15-minute account window before PBKDF2. Unknown, wrong-password, deleted, malformed-record, short/long-password and account-fenced credentials each perform one real-or-dummy derivation and return the same generic 401; an exact successful session transaction or password rotation clears the fence. Authenticated customers can review the current session plus at most 20 other current-authentication, unexpired sessions using only start/expiry times and a `hasMore` signal—never IDs, device, browser, IP, location or last-active data. Password-confirmed bulk revocation atomically advances only the authentication generation/revision, removes all old sessions and creates one replacement while preserving the password, `password_changed_at` and login-attempt fence. The control remains useful when only the current row is visible because a copied bearer cannot be identified separately; anyone who still knows the unchanged password may sign in again after the boundary. Password rotation remains the stronger response to suspected credential disclosure. Important-security-event notifications and email-based recovery are still unavailable, so ID-06 remains partial; registration still exposes `email_in_use`, and targeted 15-minute account lockout remains a known risk. See `docs/account-security.md`. The calculator is server-authoritative, validates and reconciles the exact public tuple, exposes its published calculation rule and current-market calibration limitation, omits account credentials, and never supplies a trusted estimate to project creation; see `docs/public-estimator.md`. Feedback is a separate owner-scoped record on one immutable report revision, contains no free text, and never rewrites report bytes; see `docs/report-feedback.md`. The optional AI brief uses a server-only `GEMINI_API_KEY`, sends only an allowlisted sanitized planning record, and fails closed behind atomic D1 spend limits and a per-project generation lease; see `docs/gemini-ai.md`. Decision Compare needs no upload storage. R2-backed uploads remain unavailable until R2 is activated. Live checkout remains closed until Razorpay live-mode/KYC and webhook reconciliation, receipts/tax/refund operations, customer recovery/deletion, monitoring, and rollback evidence are all proven.
+The public calculator, authentication, private projects, deterministic report, structured Brief Check feedback, working Decision Compare, and dashboard work without payment-provider secrets. Login combines a fail-closed per-IP KV perimeter with a `user_id`-only D1 fence before PBKDF2 and generic credential errors. Authenticated customers can review bounded session metadata, rotate credentials, request email verification and password recovery, export their data, and request deletion. Email delivery remains unavailable until a verified sender and `RESEND_API_KEY` are configured; recovery requests are non-enumerating and links keep tokens in URL fragments. Account deletion is password-confirmed, revokes sessions, and refuses records that require governed financial or professional offboarding. See `docs/account-security.md` and `docs/account-lifecycle.md`. The calculator is server-authoritative and reports its concept-stage boundary; see `docs/public-estimator.md`. Feedback never rewrites report bytes; see `docs/report-feedback.md`. The optional AI brief uses a server-only `GEMINI_API_KEY`, allowlisted data, and strict admission controls; see `docs/gemini-ai.md`. Private uploads accept only bounded static JPEG/PNG/WebP, normalize metadata before private R2 persistence, and remain unavailable until separate production and staging buckets are created and bound; see `docs/private-uploads.md`. Exact-report professional review is a controlled, non-approval workflow for verified reviewer accounts; see `docs/professional-review.md`. Live checkout remains closed until its separately governed gates are proven.
 
 Professional Handoff creates a revocable, expiring bearer link to only the
 owner-selected sections of one immutable schema-v2 report. It exposes no account

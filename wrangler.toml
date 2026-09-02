@@ -50,13 +50,12 @@ migrations_dir = "migrations"
 binding = "GRIHAGRID_CACHE"
 id = "c5044339222a4172ad7c91724b98d4fb"
 
-# Enable R2 in the Cloudflare dashboard before activating this binding.
-# [[r2_buckets]]
-# binding = "FILES"
-# bucket_name = "grihagrid-files"
+# Private-image support is implemented, but activation stays fail-closed until
+# an operator with R2 OAuth scope creates and verifies this private bucket.
+# When verified, add a production R2 bucket binding named FILES for the private
+# bucket `grihagrid-private-files` in this section.
 
-# Staging uses physically separate data and a different Worker hostname. It has
-# no R2 binding because Decision Compare is a structured-input, no-upload wedge.
+# Staging uses physically separate data and a different Worker hostname.
 # Provider secrets must be test-mode and entered with `wrangler secret put
 # --env staging`; never reuse production secrets.
 [env.staging]
@@ -95,3 +94,7 @@ migrations_dir = "migrations"
 [[env.staging.kv_namespaces]]
 binding = "GRIHAGRID_CACHE"
 id = "f48c3f765bc84088a88376e887daf7b1"
+
+# Create and verify the isolated staging bucket before uncommenting this block.
+# When verified, add an env.staging R2 bucket binding named FILES for the private
+# bucket `grihagrid-staging-private-files` in this section.

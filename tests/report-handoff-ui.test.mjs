@@ -10,7 +10,7 @@ async function sources() {
     readFile(new URL("src/styles.css",root),"utf8"),
   ]);
   const ownerStart=app.indexOf("function ReportHandoffPanel(");
-  const ownerEnd=app.indexOf("function ReportPage(",ownerStart);
+  const ownerEnd=app.indexOf("const professionalReviewStatusCopy",ownerStart);
   const publicStart=app.indexOf("function SharedReportState(");
   const publicEnd=app.indexOf("function FamilyReviewComparison(",publicStart);
   assert.ok(ownerStart>=0&&ownerEnd>ownerStart,"ReportHandoffPanel must remain a discrete owner component");

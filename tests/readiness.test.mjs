@@ -135,14 +135,14 @@ function querySources(sql) {
   return [...sql.matchAll(/\b(?:FROM|JOIN)\s+([a-z_][a-z0-9_]*)/giu)].map((match) => match[1].toLowerCase());
 }
 
-test("readiness manifests stay pinned to the independently reviewed 299-key contract", () => {
+test("readiness manifests stay pinned to the reviewed 414-key lifecycle, upload, and professional-review contract", () => {
   const keys = __test.readinessInventoryRowsForTest()
     .map(({ kind, scope, name }) => `${kind}:${scope}:${name}`)
     .sort();
-  assert.equal(keys.length, 299);
+  assert.equal(keys.length, 414);
   assert.equal(
     createHash("sha256").update(JSON.stringify(keys)).digest("hex"),
-    "1dc3a4ee497a8783ac1eb68f6d52e61a0f3d6b9dfcbfcee4194b7078ab1bc40d",
+    "568af54b3711f03b599ba9484a22ac437cdc50a1b298a9606034e12f3969209b",
     "a readiness schema key changed without an explicit contract review",
   );
   for (const key of [
@@ -152,6 +152,13 @@ test("readiness manifests stay pinned to the independently reviewed 299-key cont
     "object:trigger:archived_family_response_update_guard",
     "object:trigger:report_handoff_enabled_insert_guard",
     "column:login_attempt_fences:expires_at",
+    "column:users:email_verified_at",
+    "object:table:password_reset_tokens",
+    "object:trigger:transactional_email_events_immutable",
+    "column:project_files:sanitization_profile",
+    "object:trigger:project_file_ready_insert_guard",
+    "column:professional_review_requests:report_content_hash",
+    "object:trigger:professional_review_assignment_guard",
   ]) {
     assert.ok(keys.includes(key), `readiness contract omitted ${key}`);
   }

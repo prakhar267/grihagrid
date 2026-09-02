@@ -5,6 +5,29 @@
 **The free public demonstration is live with paid checkout closed. NO-GO for
 accepting public money or issuing paid Decision Compare artifacts.**
 
+### 2026-09-02 engineering readiness update
+
+This candidate adds migrations `0018`–`0020` for account lifecycle, normalized
+private static images, and controlled professional review. Payments and legal
+approval were explicitly excluded and remain unchanged. Exact remote/deployment
+evidence must be attached to the candidate PR before any production claim.
+
+- Account verification, non-enumerating password recovery, export, and
+  password-confirmed deletion are implemented. Production mail remains closed
+  until a verified sender and Resend secret are configured and exercised.
+- Private static JPEG/PNG/WebP ingestion and owner-scoped delivery are
+  implemented. R2 remains closed because the current Cloudflare OAuth grant
+  lacks R2 scope; no bucket or binding is claimed.
+- Owner/reviewer requests, verified reviewer claim, clarification, immutable
+  event/message history, exact report hashing, completion notes, and cancellation
+  are implemented. No practitioner has been represented as verified by this
+  engineering change, and no professional approval is implied.
+- Bounded load smoke, bundle splitting, lifecycle/upload/reviewer tests, and
+  explicit quality-evidence procedures are checked in. Human assistive-technology
+  review, independent security assessment, practitioner review, remote restore,
+  named ownership, and production canaries remain external evidence—not inferred
+  from automation.
+
 The application, free estimator, authentication, projects, deterministic
 report, Gemini brief, production Worker/D1/KV and an isolated staging D1/KV are
 implemented. Decision Compare is the intended no-upload ₹999 pilot wedge. Its

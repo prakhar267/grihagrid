@@ -41,7 +41,10 @@ class PaymentD1 {
       || normalized.startsWith("DELETE FROM family_alignment_rooms")
       || normalized.startsWith("DELETE FROM report_shares")
       || normalized.startsWith("DELETE FROM report_share_read_counters")
-      || normalized.startsWith("DELETE FROM report_share_create_counters")) this.maintenanceStatements.push(normalized);
+      || normalized.startsWith("DELETE FROM report_share_create_counters")
+      || normalized.startsWith("DELETE FROM email_verification_tokens")
+      || normalized.startsWith("DELETE FROM password_reset_tokens")
+      || normalized.startsWith("DELETE FROM transactional_email_events")) this.maintenanceStatements.push(normalized);
     return new PaymentStatement(this, normalized);
   }
 
@@ -290,6 +293,9 @@ class PaymentStatement {
     if (this.sql.startsWith("DELETE FROM ai_generation_counters WHERE updated_at")) return { success: true };
     if (this.sql.startsWith("DELETE FROM login_attempt_fences WHERE expires_at")) return { success: true };
     if (this.sql.startsWith("DELETE FROM password_change_attempt_counters WHERE updated_at")) return { success: true };
+    if (this.sql.startsWith("DELETE FROM email_verification_tokens WHERE")) return { success: true };
+    if (this.sql.startsWith("DELETE FROM password_reset_tokens WHERE")) return { success: true };
+    if (this.sql.startsWith("DELETE FROM transactional_email_events WHERE")) return { success: true };
     if (this.sql.startsWith("DELETE FROM decision_shares WHERE")) return { success: true };
     if (this.sql.startsWith("DELETE FROM family_alignment_rooms WHERE")) return { success: true };
     if (this.sql.startsWith("DELETE FROM report_shares WHERE")) return { success: true };
@@ -843,6 +849,9 @@ test("daily maintenance expires stale checkout links and covers new retention ta
   assert.equal(DB.maintenanceStatements.some((sql) => sql.startsWith("DELETE FROM ai_generation_counters")), true);
   assert.equal(DB.maintenanceStatements.some((sql) => sql.startsWith("DELETE FROM login_attempt_fences")), true);
   assert.equal(DB.maintenanceStatements.some((sql) => sql.startsWith("DELETE FROM password_change_attempt_counters")), true);
+  assert.equal(DB.maintenanceStatements.some((sql) => sql.startsWith("DELETE FROM email_verification_tokens")), true);
+  assert.equal(DB.maintenanceStatements.some((sql) => sql.startsWith("DELETE FROM password_reset_tokens")), true);
+  assert.equal(DB.maintenanceStatements.some((sql) => sql.startsWith("DELETE FROM transactional_email_events")), true);
   assert.equal(DB.maintenanceStatements.some((sql) => sql.startsWith("DELETE FROM family_alignment_rooms")), true);
   assert.equal(
     DB.maintenanceStatements.includes(

@@ -23,12 +23,12 @@ are only streamed after a D1 ownership check.
    ```toml
    [[r2_buckets]]
    binding = "FILES"
-   bucket_name = "grihagrid-files"
+   bucket_name = "grihagrid-private-files"
    ```
 
-   Project, auth, estimate, report, and file-metadata listing routes remain
-   usable without R2. Upload/download/delete routes return `503
-   storage_unavailable` until `FILES` exists.
+   Project, auth, estimate, and report routes remain usable without R2. File
+   listing and mutations return `503 storage_unavailable` until `FILES` exists;
+   legacy pre-normalization rows are never listed as ready.
 4. Optionally set `APP_ORIGIN` or comma-separated `ALLOWED_ORIGINS`. The request
    URL's origin is always trusted. Production should normally serve the UI and
    API from the same origin. Canonical bearer URLs require HTTPS in every
@@ -1265,24 +1265,53 @@ Cache hits consume no strict generation allowance; refreshes do.
 AI POST requires a previously generated current report and returns
 `409 report_required` otherwise. It never creates a report as a side effect.
 
+## Account lifecycle endpoints
+
+- `POST /api/auth/email-verification/request` requires an authenticated session.
+- `POST /api/auth/email-verification/confirm` consumes `{ token }` once.
+- `POST /api/auth/password-reset/request` accepts `{ email }` and returns the
+  same accepted response for known and unknown accounts.
+- `POST /api/auth/password-reset/confirm` consumes `{ token, newPassword }`,
+  rotates the credential, and revokes old sessions atomically.
+- `GET /api/account/export` returns the authenticated account graph as no-store
+  JSON.
+- `DELETE /api/account` requires `{ currentPassword, confirmation: "DELETE" }`.
+  Financial-retention and professional-offboarding cases return a stable 409.
+
+One-time tokens are stored only as hashes and are delivered in URL fragments.
+Verification and recovery readiness require migration 0018 plus a valid
+`RESEND_API_KEY` and `TRANSACTIONAL_EMAIL_FROM`.
+
+## Professional review endpoints
+
+Owners use `GET|POST /api/projects/:projectId/professional-reviews`,
+`GET|DELETE /api/projects/:projectId/professional-reviews/:reviewId`, and
+`POST .../:reviewId/messages`. Verified reviewers use
+`GET /api/professional-reviews`, `POST .../:reviewId/claim`,
+`GET|PUT .../:reviewId`, and `POST .../:reviewId/messages`.
+
+Requests bind to the exact immutable report revision, schema version, and
+verified content hash. The queue withholds owner identity. A reviewer cannot
+complete while an owner clarification is outstanding. Completion is an advisory
+summary—not approval—and messages/events are immutable.
+
 ## Private file endpoints
 
-Files are limited to 10 MiB. Allowed MIME types are PDF, JPEG, PNG, and WebP.
-Declared PDF and image signatures are checked. Files
+Files are limited to 10 MiB, 40 megapixels, 20 ready objects per project, and
+100 ready objects per account. Allowed MIME types are JPEG, PNG, and WebP only.
+Signatures, dimensions, chunk/marker structure, exact termination, and declared
+type are checked. Accepted bytes are rebuilt into the static-image profile so
+metadata and unsupported chunks are not persisted. Files
 are never exposed through a public R2 hostname; download is an authenticated
 Worker stream with `Content-Disposition: attachment`, `nosniff`, and
 `private, no-store`.
 
 ### `POST /api/projects/:projectId/files`
 
-Requires CSRF and R2. Send `multipart/form-data` with:
-
-- `file` (required)
-- `kind`: `site-plan`, `survey`, `reference`, `inspiration`, `document`, or
-  `other`
-
-Raw-body uploads are also accepted with `Content-Type`, `x-file-name`, and
-optional `x-file-kind`. Returns `201 { file }` including SHA-256 checksum.
+Requires CSRF and R2. Send a raw body with an exact supported `Content-Type`,
+URL-encoded `x-file-name`, and optional `x-file-kind`. Multipart input and PDF
+are rejected. Returns `201 { file }` including the checksum of stored normalized
+bytes and the sanitization profile.
 Archived projects return `409 project_archived` before the Worker reads the
 upload body or requires R2.
 
@@ -1310,21 +1339,24 @@ older than 400 days. The Worker applies CSP, HSTS, frame denial, MIME sniffing
 protection, referrer policy, permissions policy, and no-store JSON defaults to
 every API response.
 
-The free backend is functional without a payment or email vendor. Razorpay
+The free backend is functional without a payment or email vendor. Account email
+verification, password recovery, export, and deletion are implemented by
+migration 0018; outbound verification/recovery mail fails closed until a verified
+sender and Resend credential are configured. Razorpay
 checkout, signature verification, idempotent paid state, refund and dispute
 containment are implemented, but production sales remain fail-closed until
 live account/KYC, tax/receipt, settlement and reconciliation evidence exists.
-External work still required includes:
+External provider work still required includes:
 
 - Razorpay live credentials/webhook registration, invoices/GST receipts,
   settlement reconciliation, and a controlled live purchase/refund proof;
-- transactional email for verification, password reset, receipts, and report
-  delivery (sending domain/provider credentials required).
+- sender-domain verification and Resend production delivery proof; receipts and
+  report delivery are separate future mail streams.
 
-Before selling, also add email verification/password reset, legal-copy review,
-alerting on 5xx/D1/payment errors, remote backup/restore drills, and a
-malware-scanning workflow before any future product accepts files from
-untrusted third parties.
+Before selling, complete the separately governed payment/legal gates, alerting
+on 5xx/D1/payment errors, and remote backup/restore drills. The implemented upload
+boundary is static images only; widening formats requires a new quarantine and
+content-scanning design.
 
 Login hardening does not close registration enumeration or prevent repeated
 targeted account-window exhaustion. Treat a sustained aggregate rise in generic

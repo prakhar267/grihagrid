@@ -12,7 +12,7 @@ async function sources() {
     readFile(new URL("src/styles.css", root), "utf8"),
   ]);
   const start = app.indexOf("function ReportFeedback(");
-  const end = app.indexOf("function ReportPage(", start);
+  const end = app.indexOf("function ReportHandoffPanel(", start);
   assert.ok(start >= 0 && end > start, "ReportFeedback must remain a discrete report-footer component");
   return { app, styles, component: app.slice(start, end) };
 }
