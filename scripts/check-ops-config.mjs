@@ -191,6 +191,9 @@ export async function checkOpsConfig() {
   assert.match(productionBackup, /backup-crypto\.mjs encrypt/u, "scheduled backup must use authenticated encryption");
   assert.match(productionBackup, /backup-crypto\.mjs decrypt/u, "scheduled backup must decrypt-verify before storage");
   assert.match(productionBackup, /wrangler d1 execute DB --local[\s\S]*--file "\$verified_backup"/u, "scheduled backup must rehearse an isolated restore");
+  assert.match(productionBackup, /import \{ DatabaseSync \} from "node:sqlite"/u, "restore verification must inspect the isolated SQLite database directly");
+  assert.match(productionBackup, /new DatabaseSync\(process\.env\.RESTORED_DATABASE, \{ readOnly: true \}\)/u, "restore verification must open only the local database in read-only mode");
+  assert.match(productionBackup, /! -name 'metadata\.sqlite'/u, "restore verification must exclude Miniflare metadata from the application database check");
   assert.match(productionBackup, /PRAGMA integrity_check;/u, "scheduled backup restore must pass SQLite integrity verification");
   assert.match(productionBackup, /PRAGMA foreign_key_check;/u, "scheduled backup restore must pass foreign-key verification");
   assert.match(productionBackup, /actions\/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a/u, "scheduled backup must use the reviewed upload-artifact v7 pin");

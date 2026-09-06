@@ -65,6 +65,9 @@ human/external evidence in the table above remains independent of this result.
   checksum, restores into isolated local D1, and gates SQLite integrity and
   foreign-key checks. It retains only ciphertext and a bounded manifest for 7
   days and removes runner material unconditionally.
+  The imported application database is opened read-only with Node SQLite for
+  these PRAGMAs because workerd correctly rejects `integrity_check` with
+  `SQLITE_AUTH`; the workflow never weakens the Worker SQL sandbox.
 - Backup and hourly public-smoke failures each own one bounded GitHub issue,
   assign it to the repository owner, and close it after recovery. Both expose a
   deliberate manual failure exercise that must be followed by a successful run.
