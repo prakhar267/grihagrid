@@ -26,6 +26,11 @@ test("hero image, estimator range, and route focus remain stable across viewport
   assert.match(styles, /@media print/u);
 });
 
+test("the featured pricing card cannot outgrow the tablet page gutter", () => {
+  assert.match(styles, /@media \(max-width: 900px\)[\s\S]*?\.plan-table > article\.featured \{[\s\S]*?margin-inline: max\(-2rem, -4vw\);[\s\S]*?padding-inline: min\(2rem, 4vw\);/u);
+  assert.match(styles, /@media \(max-width: 600px\)[\s\S]*?\.plan-table > article,[\s\S]*?\.plan-table > article\.featured \{[\s\S]*?margin-inline: -0\.75rem;[\s\S]*?padding: 2rem 0\.75rem;/u);
+});
+
 test("authentication capability copy never promises unavailable email delivery", () => {
   const auth = app.slice(app.indexOf("function AuthPage("), app.indexOf("function accountSecurityFailure("));
   const recovery = app.slice(app.indexOf("function PasswordRecoveryPage("), app.indexOf("function EmailVerificationPage("));

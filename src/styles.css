@@ -6131,6 +6131,11 @@ blockquote {
     grid-template-columns: 44px 1fr auto;
   }
 
+  .plan-table > article.featured {
+    margin-inline: max(-2rem, -4vw);
+    padding-inline: min(2rem, 4vw);
+  }
+
   .plan-table ul {
     grid-column: 2 / -1;
   }
