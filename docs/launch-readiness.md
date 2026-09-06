@@ -2,8 +2,64 @@
 
 ## Current decision
 
-**The free public demonstration is live with paid checkout closed. NO-GO for
+**The free public demonstration is live and engineering-ready for controlled
+noncommercial use. Paid checkout and fulfillment remain closed: NO-GO for
 accepting public money or issuing paid Decision Compare artifacts.**
+
+### 2026-09-06 noncommercial operations release
+
+PR [#62](https://github.com/prakhar267/grihagrid/pull/62) introduced the
+twice-daily encrypted production backup, restore rehearsal, and owner-assigned
+backup/public-smoke incident routes. Its exact head
+`bae1aff5c0497eaf4fd75f361fd5971656fea6af` passed
+[CI](https://github.com/prakhar267/grihagrid/actions/runs/34026702853) and
+[CodeQL](https://github.com/prakhar267/grihagrid/actions/runs/34026701639)
+before squash merge as `20026f04d2a49933a1c493e6a662097370239564`.
+The first protected backup exercise reached an isolated restore but exposed a
+workerd `SQLITE_AUTH` limitation for `PRAGMA integrity_check`; it opened
+owner-assigned incident [#63](https://github.com/prakhar267/grihagrid/issues/63)
+without retaining plaintext.
+
+PR [#64](https://github.com/prakhar267/grihagrid/pull/64) fixed only that
+verification boundary by opening the isolated restored application database
+read-only with Node SQLite. Its exact head
+`44157821568afd13402e6e020e14e7541527c069` passed
+[CI](https://github.com/prakhar267/grihagrid/actions/runs/34030162500) and
+[CodeQL](https://github.com/prakhar267/grihagrid/actions/runs/34030161407), then
+squash-merged as `cae4f34187b29decaff37053e5405aef513d595e`.
+Exact-main [CI](https://github.com/prakhar267/grihagrid/actions/runs/34030486356),
+[CodeQL](https://github.com/prakhar267/grihagrid/actions/runs/34030486016), and
+the [protected deployment](https://github.com/prakhar267/grihagrid/actions/runs/34030813096)
+passed. Staging version `445e384a-e502-4927-a434-1ee7c0b2bd65` and production
+version `5941b093-74bd-41ef-84de-f88ab5f5251b` serve 100% traffic for the exact
+SHA. Production readiness passed 20/20 samples at 264 ms p95; the full
+30-minute observation passed 220/220 checks with zero invocation/server-tail
+events.
+
+The corrected normal backup
+[run](https://github.com/prakhar267/grihagrid/actions/runs/34032877094) retained
+only AES-256-GCM ciphertext and a bounded manifest for seven days, proved
+decrypt checksum, an isolated restore, SQLite integrity `ok`, zero foreign-key
+violations, and closed incident #63. A deliberate pre-export failure
+[run](https://github.com/prakhar267/grihagrid/actions/runs/34033189322) skipped
+all export/storage steps and opened owner-assigned incident
+[#65](https://github.com/prakhar267/grihagrid/issues/65); the next normal
+[backup](https://github.com/prakhar267/grihagrid/actions/runs/34033502508)
+repeated the full proof and closed it. The deliberate public-smoke
+[run](https://github.com/prakhar267/grihagrid/actions/runs/34033801131) passed
+real read-only probes before opening owner-assigned incident
+[#66](https://github.com/prakhar267/grihagrid/issues/66), and the normal
+[recovery run](https://github.com/prakhar267/grihagrid/actions/runs/34033824978)
+passed both environments and closed it.
+
+The repository-controlled technical demo path, encrypted backup cadence,
+single-owner incident routing, and exercised recovery loops are therefore GO.
+Checkout, fulfillment, paid-plan allowlisting, private uploads, transactional
+email, and the custom domain remain visibly closed. Human legal,
+accessibility, independent security, practitioner-quality, staffing, external
+two-region monitoring, and timed remote-restore evidence remain separately
+required before broad public promotion; automation does not fabricate those
+approvals.
 
 ### 2026-09-06 free-production release
 
