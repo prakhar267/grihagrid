@@ -389,6 +389,23 @@ function printSharedReportWithoutCapability() {
   } catch { finish(); }
 }
 
+function printArchitectPackOnly() {
+  const root=document.documentElement;
+  let finished=false;
+  const finish=()=>{
+    if(finished)return;
+    finished=true;
+    root.classList.remove("architect-export");
+    window.removeEventListener("afterprint",finish);
+  };
+  root.classList.add("architect-export");
+  window.addEventListener("afterprint",finish,{once:true});
+  window.requestAnimationFrame(()=>{
+    try { window.print(); }
+    catch { finish(); }
+  });
+}
+
 function publicReportText(value) {
   return typeof value==="string"&&value.trim()?value.trim():null;
 }
@@ -816,7 +833,7 @@ function AboutPage() {
 
 function SamplePlanPage() {
   const sampleArchitecture=buildArchitecturalHandoff({width:30,length:50,city:"Pune",facing:"East",floors:"G+1",bedrooms:3,bathrooms:3,parking:"1 car",style:"Warm modern",quality:"Signature",roadWidthFt:null,plotShape:"regular",accessibility:"none",futureUse:"none",budgetLakh:45},{city:"Pune",floors:"G+1",quality:"Signature",plotSqft:1500,builtUpSqft:1830});
-  return <main className="sample-page"><section className="sample-cover"><div><span className="kicker">Sample decision book · Pune</span><h1>A 30 × 50 ft<br/>family home.</h1><p>East-facing · G+1 · Three bedrooms · Signature finish</p><div className="sample-cover__actions"><button className="copper-button" onClick={()=>route('/start')}>Create mine <ArrowRight/></button><button className="underlined-action" onClick={()=>route('/compare/sample')}>See two options compared</button></div></div><img width="1536" height="1024" src="/assets/grihagrid-hero.jpg" alt="Sample warm modern home elevation"/></section><section className="sample-facts"><div><span>Brief Check</span><strong>Programme under tension</strong><small>Parking and circulation need testing</small></div><div><span>Built-up</span><strong>1,830 sq ft</strong><small>Likely concept area</small></div><div><span>Planning range</span><strong>₹37L–₹44L</strong><small>Signature finish · Pune</small></div></section><section className="sample-narrative"><div><span className="kicker">Executive readout</span><h2>There is enough to explore—with one important tension.</h2></div><div><p>Three bedrooms and generous common spaces are worth testing across two floors. Ground-floor parking width remains unresolved; a compact stair and vertically aligned wet areas may protect usable space and cost.</p><p><strong>Direction to test:</strong> Ask a licensed local architect whether the east entry, southeast kitchen and southwest primary bedroom can work after verified setbacks, access and circulation.</p></div></section><section className="sample-architect-pack"><ArchitecturalHandoffSections architecture={sampleArchitecture}/><div className="sample-architect-pack__action"><p><strong>This is the level of detail generated inside a saved report.</strong> Your version uses your frozen project facts and planning estimate.</p><button className="copper-button" onClick={()=>route('/start')}>Create my review pack <ArrowRight/></button></div></section></main>;
+  return <main className="sample-page"><section className="sample-cover"><div><span className="kicker">Sample decision book · Pune</span><h1>A 30 × 50 ft<br/>family home.</h1><p>East-facing · G+1 · Three bedrooms · Signature finish</p><div className="sample-cover__actions"><button className="copper-button" onClick={()=>route('/start')}>Create mine <ArrowRight/></button><button className="underlined-action" onClick={()=>route('/compare/sample')}>See two options compared</button></div></div><img width="1536" height="1024" src="/assets/grihagrid-hero.jpg" alt="Sample warm modern home elevation"/></section><section className="sample-facts"><div><span>Brief Check</span><strong>Programme under tension</strong><small>Parking and circulation need testing</small></div><div><span>Built-up</span><strong>1,830 sq ft</strong><small>Likely concept area</small></div><div><span>Planning range</span><strong>₹37L–₹44L</strong><small>Signature finish · Pune</small></div></section><section className="sample-narrative"><div><span className="kicker">Executive readout</span><h2>There is enough to explore—with one important tension.</h2></div><div><p>Three bedrooms and generous common spaces are worth testing across two floors. Ground-floor parking width remains unresolved; a compact stair and vertically aligned wet areas may protect usable space and cost.</p><p><strong>Direction to test:</strong> Ask a licensed local architect whether the east entry, southeast kitchen and southwest primary bedroom can work after verified setbacks, access and circulation.</p></div></section><section className="sample-architect-pack"><ArchitecturalHandoffSections architecture={sampleArchitecture}/><div className="sample-architect-pack__action"><p><strong>This is the level of detail generated inside a saved report.</strong> Your version uses your frozen project facts and planning estimate.</p><button className="copper-button" onClick={()=>route('/start')}>Create my design document <ArrowRight/></button></div></section></main>;
 }
 
 const wizardSteps = ["Plot", "Home", "Context", "Review"];
@@ -2893,11 +2910,13 @@ function SiteWorkingDiagram({ site, areas }) {
   </figure>;
 }
 
-function ArchitecturalHandoffSections({ architecture }) {
+function ArchitecturalHandoffSections({ architecture, projectName=null, generatedAt=null, revisionLabel=null }) {
   const pack=normalizeArchitecturalHandoff(architecture);
   if(!pack)return null;
   const site=pack.siteBrief||{};
   const areas=pack.areaReconciliation||{};
+  const requirements=pack.requirementRegister||[];
+  const levelAreas=pack.levelAreaSchedule||[];
   const siteFacts=[
     ["Plot entered",`${site.widthFt||0} × ${site.lengthFt||0} ft`],
     ["Plot area",`${Number(site.plotSqft||0).toLocaleString("en-IN")} sq ft`],
@@ -2907,6 +2926,9 @@ function ArchitecturalHandoffSections({ architecture }) {
     ["Parking",site.parking||"Not stated"],
     ["Accessibility",site.accessibility||"Not confirmed"],
     ["Future use",site.futureUse||"Not confirmed"],
+    ["Style direction",site.styleDirection||"Not shared / not stated"],
+    ["Finish level",site.finishLevel||"Not stated"],
+    ["Working budget",site.budgetLakh!==null&&site.budgetLakh!==undefined?`₹${Number(site.budgetLakh).toLocaleString("en-IN")} lakh`:"Not confirmed"],
   ];
   const areaRows=[
     ["Plot area",areas.plotSqft,"Entered width × length"],
@@ -2918,9 +2940,16 @@ function ArchitecturalHandoffSections({ architecture }) {
   ];
   return <section className="architect-pack" aria-labelledby="architect-pack-title">
     <header className="architect-pack__intro">
-      <div><span className="kicker">{pack.stage}</span><h2 id="architect-pack-title">{pack.title}</h2><p>{pack.purpose}</p></div>
-      <aside><Blueprint/><strong>Prepared for review</strong><span>Frozen brief → verified site → professional drawings</span></aside>
+      <div><span className="kicker">{pack.stage}</span><h2 id="architect-pack-title">{pack.title}</h2>{projectName&&<div className="architect-pack__issue-meta"><strong>{projectName}</strong><span>{revisionLabel||`Pack v${pack.version}`}{generatedAt?` · ${formatDate(generatedAt)}`:""}</span></div>}<p>{pack.purpose}</p></div>
+      <aside><Blueprint/><strong>Prepared for design</strong><span>Frozen brief → verified site → professional drawings</span></aside>
     </header>
+
+    <section className="architect-pack__review-route" aria-label="Architecture design document workflow">
+      <div><span>01</span><strong>Accept the brief</strong><p>Mark requirements accepted, commented or to be revised.</p></div>
+      <div><span>02</span><strong>Replace assumptions</strong><p>Attach survey, title, statutory and utility evidence to the named registers.</p></div>
+      <div><span>03</span><strong>Test one concept</strong><p>Issue plans, sections, area statement, outline specification and cost plan together.</p></div>
+      <div><span>04</span><strong>Record departures</strong><p>Keep every room, area, budget or performance change in the decision register.</p></div>
+    </section>
 
     <section className="architect-pack__section" aria-labelledby="architect-site-title">
       <ArchitecturalSectionHeading eyebrow="A · Source brief" title="What the architect is receiving." copy="Client-entered facts are separated from measurements and approvals that still need evidence." id="architect-site-title"/>
@@ -2928,49 +2957,73 @@ function ArchitecturalHandoffSections({ architecture }) {
       <SiteWorkingDiagram site={site} areas={areas}/>
     </section>
 
+    {requirements.length>0&&<section className="architect-pack__section architect-pack__section--wide architect-pack__section--page" aria-labelledby="architect-requirements-title">
+      <ArchitecturalSectionHeading eyebrow="B · Project requirements" title="A brief the architect can accept or challenge." copy="Priority, current basis and acceptance evidence are explicit so briefing decisions do not disappear into meeting notes." id="architect-requirements-title"/>
+      <div className="architect-pack__table-wrap"><table className="architect-pack__table architect-pack__requirements-table"><thead><tr><th>Requirement</th><th>Priority</th><th>Current basis</th><th>Acceptance evidence</th></tr></thead><tbody>{requirements.map((item,index)=><tr key={`${item.code}-${index}`}><th><small>{item.code}</small><strong>{item.requirement}</strong></th><td><span className="architect-pack__status">{item.priority}</span></td><td>{item.currentBasis}</td><td>{item.acceptance}</td></tr>)}</tbody></table></div>
+    </section>}
+
     <section className="architect-pack__section" aria-labelledby="architect-area-title">
-      <ArchitecturalSectionHeading eyebrow="B · Area control" title="One arithmetic trail, no hidden area." copy="The scheduled programme and planning allowance reconcile to the target gross built-up area." id="architect-area-title"/>
+      <ArchitecturalSectionHeading eyebrow="C · Area control" title="One arithmetic trail, no hidden area." copy="The scheduled programme and planning allowance reconcile to the target gross built-up area." id="architect-area-title"/>
       <div className="architect-pack__table-wrap"><table className="architect-pack__table"><thead><tr><th>Area item</th><th>Working area</th><th>Basis</th></tr></thead><tbody>{areaRows.map(([label,value,basis])=><tr key={label}><th>{label}</th><td>{Number(value||0).toLocaleString("en-IN")} sq ft</td><td>{basis}</td></tr>)}</tbody></table></div>
       <p className="architect-pack__note"><WarningCircle/>{areas.note}</p>
+      {levelAreas.length>0&&<><h3 className="architect-pack__subhead">Floor-by-floor reconciliation</h3><div className="architect-pack__table-wrap"><table className="architect-pack__table architect-pack__level-table"><thead><tr><th>Level</th><th>Gross target</th><th>Scheduled net</th><th>Residual</th><th>Test-fit status / action</th></tr></thead><tbody>{levelAreas.map((floor,index)=><tr key={`${floor.level}-${index}`}><th>{floor.level}</th><td>{Number(floor.grossTargetSqft||0).toLocaleString("en-IN")} sq ft</td><td>{Number(floor.scheduledNetSqft||0).toLocaleString("en-IN")} sq ft<br/><small>{Number(floor.netToGrossPercent||0).toLocaleString("en-IN")}% of gross</small></td><td className={Number(floor.residualSqft)<0?"architect-pack__negative":""}>{Number(floor.residualSqft||0).toLocaleString("en-IN")} sq ft</td><td><span className={`architect-pack__status architect-pack__status--${String(floor.status||"").toLowerCase().replace(/[^a-z]+/gu,"-")}`}>{floor.status}</span><p>{floor.action}</p></td></tr>)}</tbody></table></div></>}
     </section>
 
-    <section className="architect-pack__section architect-pack__section--wide" aria-labelledby="architect-room-title">
-      <ArchitecturalSectionHeading eyebrow="C · Room data sheet" title="Room-by-room design targets." copy="Areas and nominal clear dimensions are starting points for coordination—not measured, statutory or construction dimensions." id="architect-room-title"/>
+    <section className="architect-pack__section architect-pack__section--wide architect-pack__section--page" aria-labelledby="architect-room-title">
+      <ArchitecturalSectionHeading eyebrow="D · Room data sheet" title="Room-by-room design targets." copy="Areas and nominal clear dimensions are starting points for coordination—not measured, statutory or construction dimensions." id="architect-room-title"/>
       <div className="architect-pack__table-wrap"><table className="architect-pack__table architect-pack__room-table"><thead><tr><th>Code / room</th><th>Level</th><th>Target</th><th>Nominal clear start</th><th>Design brief</th></tr></thead><tbody>{pack.rooms.map((room,index)=><tr key={`${room.code}-${index}`}><th><small>{room.code} · {room.category}</small><strong>{room.name}</strong></th><td>{room.floor}</td><td>{Number(room.areaSqft||0).toLocaleString("en-IN")} sq ft</td><td>{room.nominalDimensions}</td><td>{room.brief}</td></tr>)}</tbody><tfoot><tr><th colSpan="2">Scheduled net programme</th><td>{Number(areas.programmeNetSqft||0).toLocaleString("en-IN")} sq ft</td><td colSpan="2">Reconciles to the area-control schedule above.</td></tr></tfoot></table></div>
+      {pack.rooms.some(room=>room.performance?.criticalCheck)&&<><h3 className="architect-pack__subhead architect-pack__subhead--page">Room performance schedule</h3><p className="architect-pack__subcopy">Furniture, environment and services must be demonstrated in the architect's concept—not left as unstated assumptions.</p><div className="architect-pack__table-wrap"><table className="architect-pack__table architect-pack__performance-table"><thead><tr><th>Room</th><th>Use and fit-out</th><th>Environment</th><th>Services and acceptance check</th></tr></thead><tbody>{pack.rooms.map((room,index)=><tr key={`performance-${room.code}-${index}`}><th><small>{room.code}</small><strong>{room.name}</strong></th><td><p>{room.performance?.useAndCapacity}</p><small>{room.performance?.fitOutAndStorage}</small></td><td>{room.performance?.environment}</td><td><p>{room.performance?.services}</p><strong>{room.performance?.criticalCheck}</strong></td></tr>)}</tbody></table></div></>}
     </section>
 
     <section className="architect-pack__section" aria-labelledby="architect-floor-title">
-      <ArchitecturalSectionHeading eyebrow="D · Floor zoning" title="A level-by-level coordination brief." copy="This defines intent and vertical relationships; it deliberately stops short of inventing a floor plan." id="architect-floor-title"/>
+      <ArchitecturalSectionHeading eyebrow="E · Floor zoning" title="A level-by-level coordination brief." copy="This defines intent and vertical relationships; it deliberately stops short of inventing a floor plan." id="architect-floor-title"/>
       <div className="architect-pack__floors">{pack.floorStrategies.map((floor,index)=><article key={`${floor.level}-${index}`}><header><span>{String(index+1).padStart(2,"0")}</span><div><h3>{floor.level}</h3><strong>{Number(floor.targetAreaSqft||0).toLocaleString("en-IN")} sq ft working plate</strong></div></header><p>{floor.zoningIntent}</p><ul>{(floor.spaces||[]).map((space,spaceIndex)=><li key={`${space}-${spaceIndex}`}>{space}</li>)}</ul><small>{floor.coordinationHold}</small></article>)}</div>
     </section>
 
     <section className="architect-pack__section" aria-labelledby="architect-adjacency-title">
-      <ArchitecturalSectionHeading eyebrow="E · Planning logic" title="Adjacencies worth protecting." copy="Use these relationships to judge a proposed plan before debating finishes." id="architect-adjacency-title"/>
+      <ArchitecturalSectionHeading eyebrow="F · Planning logic" title="Adjacencies worth protecting." copy="Use these relationships to judge a proposed plan before debating finishes." id="architect-adjacency-title"/>
       <ol className="architect-pack__priority-list">{pack.adjacencyPriorities.map((item,index)=><li key={`${item.pair}-${index}`}><span>{String(index+1).padStart(2,"0")}</span><div><h3>{item.pair}</h3><strong>{item.priority}</strong><p>{item.reason}</p></div></li>)}</ol>
     </section>
 
     <section className="architect-pack__section" aria-labelledby="architect-climate-title">
-      <ArchitecturalSectionHeading eyebrow="F · Site and climate response" title={`Design moves to test in ${site.city||"the project climate"}.`} copy="The local professional must validate exposure, neighbours, air quality, drainage and adopted energy provisions." id="architect-climate-title"/>
+      <ArchitecturalSectionHeading eyebrow="G · Site and climate response" title={`Design moves to test in ${site.city||"the project climate"}.`} copy="The local professional must validate exposure, neighbours, air quality, drainage and adopted energy provisions." id="architect-climate-title"/>
       <ol className="architect-pack__numbered">{pack.climateStrategies.map((item,index)=><li key={`${item.code}-${index}`}><span>{item.code}</span><p>{item.intent}</p></li>)}</ol>
     </section>
 
-    <section className="architect-pack__section" aria-labelledby="architect-services-title">
-      <ArchitecturalSectionHeading eyebrow="G · Structure and services" title="Coordinate the systems before they collide." copy="These are design intents and handoff responsibilities. Engineers must size and issue the technical work." id="architect-services-title"/>
+    <section className="architect-pack__section architect-pack__section--page" aria-labelledby="architect-services-title">
+      <ArchitecturalSectionHeading eyebrow="H · Structure and services" title="Coordinate the systems before they collide." copy="These are design intents and handoff responsibilities. Engineers must size and issue the technical work." id="architect-services-title"/>
       <div className="architect-pack__systems">{pack.structureAndServices.map((item,index)=><article key={`${item.code}-${index}`}><span>{item.code}</span><h3>{item.system}</h3><p>{item.intent}</p><small>{item.coordination}</small></article>)}</div>
     </section>
 
-    <section className="architect-pack__section architect-pack__section--wide" aria-labelledby="architect-verify-title">
-      <ArchitecturalSectionHeading eyebrow="H · Verification register" title="What is known, what is assumed, who closes it." copy="A design item is not ready to freeze until its evidence, owner and decision gate are clear." id="architect-verify-title"/>
+    {pack.statutoryChecklist.length>0&&<section className="architect-pack__section architect-pack__section--wide" aria-labelledby="architect-statutory-title">
+      <ArchitecturalSectionHeading eyebrow="I · Statutory due diligence" title="No rule is assumed to apply until it is cited." copy="The appointed architect completes this plot-specific schedule from current official instruments and records each dated source." id="architect-statutory-title"/>
+      <div className="architect-pack__table-wrap"><table className="architect-pack__table architect-pack__statutory-table"><thead><tr><th>Control</th><th>Current basis</th><th>Professional check</th><th>Required evidence</th></tr></thead><tbody>{pack.statutoryChecklist.map((item,index)=><tr key={`${item.code}-${index}`}><th><small>{item.code}</small><strong>{item.topic}</strong><span className="architect-pack__status">{item.status}</span></th><td>{item.currentBasis}</td><td>{item.check}</td><td>{item.evidence}</td></tr>)}</tbody></table></div>
+    </section>}
+
+    <section className="architect-pack__section architect-pack__section--wide architect-pack__section--page" aria-labelledby="architect-verify-title">
+      <ArchitecturalSectionHeading eyebrow="J · Verification register" title="What is known, what is assumed, who closes it." copy="A design item is not ready to freeze until its evidence, owner and decision gate are clear." id="architect-verify-title"/>
       <div className="architect-pack__table-wrap"><table className="architect-pack__table architect-pack__verify-table"><thead><tr><th>Item</th><th>Status / current evidence</th><th>Required action</th><th>Owner / gate</th></tr></thead><tbody>{pack.verificationRegister.map((item,index)=><tr key={`${item.code}-${index}`}><th><small>{item.code}</small><strong>{item.topic}</strong></th><td><span className={`architect-pack__status architect-pack__status--${String(item.status||"").toLowerCase().replace(/[^a-z]+/gu,"-")}`}>{item.status}</span><p>{item.evidence}</p></td><td>{item.action}</td><td><strong>{item.owner}</strong><small>{item.gate}</small></td></tr>)}</tbody></table></div>
     </section>
 
-    <section className="architect-pack__section" aria-labelledby="architect-drawings-title">
-      <ArchitecturalSectionHeading eyebrow="I · Professional issue register" title="The drawings and checks still to be issued." copy="This list lets the client understand the architect’s next work and prevents a concept brief being mistaken for a drawing package." id="architect-drawings-title"/>
+    {pack.consultantMatrix.length>0&&<section className="architect-pack__section architect-pack__section--responsibility" aria-labelledby="architect-responsibility-title">
+      <ArchitecturalSectionHeading eyebrow="K · Responsibility matrix" title="One owner for every professional output." copy="Appointments and scopes remain contractual; this matrix prevents survey, structure, services and cost work from being silently omitted." id="architect-responsibility-title"/>
+      <div className="architect-pack__table-wrap"><table className="architect-pack__table architect-pack__responsibility-table"><thead><tr><th>Role</th><th>Appoint by</th><th>Minimum responsibility</th><th>Expected issue</th></tr></thead><tbody>{pack.consultantMatrix.map((item,index)=><tr key={`${item.code}-${index}`}><th><small>{item.code}</small><strong>{item.role}</strong></th><td>{item.appointBy}</td><td>{item.responsibility}</td><td>{item.issue}</td></tr>)}</tbody></table></div>
+    </section>}
+
+    {(pack.decisionRegister.length>0||pack.stageGateChecklist.length>0)&&<section className="architect-pack__section architect-pack__section--wide architect-pack__section--page" aria-labelledby="architect-decisions-title">
+      <ArchitecturalSectionHeading eyebrow="L · Decisions and acceptance" title="A review record, not another loose meeting note." copy="The architect records comments and departures here; client acceptance of the brief is not statutory or technical approval." id="architect-decisions-title"/>
+      {pack.decisionRegister.length>0&&<div className="architect-pack__table-wrap"><table className="architect-pack__table architect-pack__decision-table"><thead><tr><th>Decision</th><th>Status / current position</th><th>Owner / needed by</th><th>Architect response</th></tr></thead><tbody>{pack.decisionRegister.map((item,index)=><tr key={`${item.code}-${index}`}><th><small>{item.code}</small><strong>{item.decision}</strong></th><td><span className={`architect-pack__status architect-pack__status--${String(item.status||"").toLowerCase().replace(/[^a-z]+/gu,"-")}`}>{item.status}</span><p>{item.currentPosition}</p></td><td><strong>{item.owner}</strong><small>{item.neededBy}</small></td><td className="architect-pack__response-line">Comment / departure / evidence reference</td></tr>)}</tbody></table></div>}
+      {pack.stageGateChecklist.length>0&&<><h3 className="architect-pack__subhead">Stage gates</h3><div className="architect-pack__gates">{pack.stageGateChecklist.map((item,index)=><article key={`${item.code}-${index}`}><header><span>{item.code}</span><div><h3>{item.gate}</h3><strong>{item.status}</strong></div></header><p>{item.evidence}</p><small>{item.response}</small></article>)}</div></>}
+      <div className="architect-pack__acceptance"><span className="kicker">Brief review record · not a statutory approval</span><div><p>Architect / practice / registration</p><p>Signature / date</p><p>Client decision-maker / date</p></div></div>
+    </section>}
+
+    <section className="architect-pack__section architect-pack__section--page" aria-labelledby="architect-drawings-title">
+      <ArchitecturalSectionHeading eyebrow="M · Professional issue register" title="The drawings and checks still to be issued." copy="This list lets the client understand the architect’s next work and prevents a concept brief being mistaken for a drawing package." id="architect-drawings-title"/>
       <ol className="architect-pack__deliverables">{pack.drawingRegister.map((item,index)=><li key={`${item.code}-${index}`}><span>{item.code}</span><div><h3>{item.deliverable}</h3><strong>{item.scale}</strong><p>{item.purpose}</p></div></li>)}</ol>
     </section>
 
     <section className="architect-pack__section" aria-labelledby="architect-reference-title">
-      <ArchitecturalSectionHeading eyebrow="J · Reference register" title="Current official controls must be retrieved and cited." copy="References identify where professional checking starts; they do not confirm that a clause applies to this plot." id="architect-reference-title"/>
+      <ArchitecturalSectionHeading eyebrow="N · Reference register" title="Current official controls must be retrieved and cited." copy="References identify where professional checking starts; they do not confirm that a clause applies to this plot." id="architect-reference-title"/>
       <ol className="architect-pack__references">{pack.references.map((item,index)=><li key={`${item.code}-${index}`}><span>{item.code}</span><div><h3>{item.title}</h3><strong>{item.authority}</strong><p>{item.use}</p>{item.url&&<a href={item.url} target="_blank" rel="noreferrer">Open official source <ArrowSquareOut/></a>}</div></li>)}</ol>
       <div className="architect-pack__review-notes"><h3>Review notes</h3><ul>{pack.reviewNotes.map((note,index)=><li key={`${note}-${index}`}>{note}</li>)}</ul></div>
     </section>
@@ -3673,7 +3726,7 @@ function ReportPage({ id, revision=null }) {
   const architecturalHandoff=legacyArtifact?null:normalizeArchitecturalHandoff(report.architecturalHandoff)||buildArchitecturalHandoff(input,estimate);
   const costCategories=legacyArtifact?(Array.isArray(report.costPlan?.categories)?report.costPlan.categories:[]):report.costPlan?.categories||[["Civil and structure",38],["Finishes",26],["Electrical and plumbing",14],["Doors and windows",9],["Approvals and setup",5],["Contingency",8]].map(([name,percent])=>({name,percent,amountInr:Math.round(((estimate.lowInr+estimate.highInr)/2||4000000)*percent/100)}));
   const legacyFacts=[report.summary?.city,report.summary?.plotSqft?`${Number(report.summary.plotSqft).toLocaleString("en-IN")} sq ft plot`:null,report.summary?.floorCount?`${report.summary.floorCount} floor${Number(report.summary.floorCount)===1?"":"s"}`:null].filter(Boolean);
-  return <main className={`report-page ${archived?"report-page--archived":""} ${historical?"report-page--historical":""}`}><header><button onClick={()=>route(historical?`/projects/${id}/brief`:`/projects/${id}`)}><ArrowLeft/> {historical?"Brief history":"Project home"}</button><Brand/><button onClick={()=>window.print()}><DownloadSimple/> Download / print</button></header><div className="report-document">
+  return <main className={`report-page ${archived?"report-page--archived":""} ${historical?"report-page--historical":""}`}><header><button onClick={()=>route(historical?`/projects/${id}/brief`:`/projects/${id}`)}><ArrowLeft/> {historical?"Brief history":"Project home"}</button><Brand/><div className="report-print-actions"><button onClick={()=>window.print()}><DownloadSimple/> Full report</button>{architecturalHandoff&&<button onClick={printArchitectPackOnly}><Blueprint/> Architecture design doc</button>}</div></header><div className="report-document">
     {uploadWarning&&!historical&&<div className="report-upload-warning" role="alert"><WarningCircle/><span>{uploadWarning}</span><button onClick={()=>{sessionStorage.removeItem(`grihagrid.uploadWarning.${id}`);setUploadWarning("")}}>Dismiss</button></div>}
     {historical&&<section className="report-archived-notice report-historical-notice" role="status"><LockKey/><div><strong>Immutable revision evidence · Revision {revision}</strong><p>{reportSchemaVersion<2?`Legacy saved report · schema v${reportSchemaVersion}. `:`Saved report schema v${reportSchemaVersion}. `}This is the artifact actually saved with this revision. It is read only, never regenerated, and does not represent the current project unless the history identifies it as current.</p></div></section>}
     {!historical&&archived&&<section className="report-archived-notice" role="status"><LockKey/><div><strong>Archived report · read only</strong><p>This saved report remains readable. AI generation, comparison changes, checkout, link creation, copying and uploads are unavailable. Existing file records remain listed below; opening or permanently deleting them requires private storage to be available, and the file section shows its current state.</p></div></section>}
@@ -3681,7 +3734,7 @@ function ReportPage({ id, revision=null }) {
     {!legacyArtifact&&<section className="report-hero"><img loading="lazy" width="1536" height="1024" src="/assets/grihagrid-hero.jpg" alt="Warm modern home direction"/><div><span>Exterior direction</span><strong>{input.style||"Not stated"}</strong></div></section>}
     {legacyArtifact?<>{(report.summary?.targetBuiltUpSqft||report.costPlan?.lowInr||report.costPlan?.highInr)&&<section className="report-facts">{report.summary?.targetBuiltUpSqft&&<div><span>Saved built-up</span><strong>{Number(report.summary.targetBuiltUpSqft).toLocaleString("en-IN")} sq ft</strong></div>}{report.costPlan?.lowInr&&report.costPlan?.highInr&&<div><span>Saved planning range</span><strong>{formatLakh(report.costPlan.lowInr)}–{formatLakh(report.costPlan.highInr)}</strong></div>}{report.summary?.quality&&<div><span>Saved finish</span><strong>{report.summary.quality}</strong></div>}</section>}<section className="report-copy"><div><span className="kicker">Saved legacy reading</span><h2>{report.summary?.verdict||"Legacy report"}</h2></div><div>{Array.isArray(report.risks)&&report.risks.map((risk,index)=><p key={`legacy-risk-${index}`}>{risk}</p>)}{Array.isArray(report.nextActions)&&report.nextActions.length>0&&<p>{report.nextActions.join(" ")}</p>}</div></section></>:<><section className="report-facts"><div><span>Brief Check</span><strong>{check.label}</strong><small>Evidence status, not professional approval</small></div><div><span>Likely built-up</span><strong>{Number(estimate.builtUpSqft||report.summary?.targetBuiltUpSqft||0).toLocaleString("en-IN")} sq ft</strong><small>{input.floors||"Floor count not stated"} concept</small></div><div><span>Planning range</span><strong>{formatLakh(estimate.lowInr||report.costPlan?.lowInr)}–{formatLakh(estimate.highInr||report.costPlan?.highInr)}</strong><small>{input.quality||"Unstated"} finish</small></div></section><section className="report-copy"><div><span className="kicker">Brief Check reading</span><h2>{check.headline}</h2></div><div><p>{check.summary}</p><p>{firstRisk}</p><p>{report.nextActions?.slice(0,2).join(" ")||"Commission a measured survey and validate the brief with every decision-maker before detailed design."}</p></div></section></>}
     {architecturalHandoff && (
-      <ArchitecturalHandoffSections architecture={architecturalHandoff}/>
+      <ArchitecturalHandoffSections architecture={architecturalHandoff} projectName={reportTitle} generatedAt={report.generatedAt} revisionLabel={historical?`Revision ${revision} · report schema v${reportSchemaVersion}`:`Project revision ${projectRevision} · report schema v${reportSchemaVersion}`}/>
     )}
     {costCategories.length>0&&<section className="report-budget"><h2>Indicative cost allocation</h2>{costCategories.map(category=><div key={category.name}><span>{category.name}</span><i><b style={{width:`${category.percent}%`}}/></i><strong>{formatLakh(category.amountInr)}</strong></div>)}</section>}
     <section className="report-boundary"><ShieldCheck/><p><strong>Use this report to explore—not as professional site validation or construction instruction.</strong> A licensed local architect and structural engineer must validate measurements, access, site conditions, bylaws, drawings and specifications.</p></section>

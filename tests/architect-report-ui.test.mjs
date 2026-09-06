@@ -6,29 +6,38 @@ const app = await readFile(new URL("../src/App.jsx", import.meta.url), "utf8");
 const reportLogic = await readFile(new URL("../src/architect-report.js", import.meta.url), "utf8");
 const styles = await readFile(new URL("../src/styles.css", import.meta.url), "utf8");
 
-test("private, sample, and selected public programme views render the architect review pack", () => {
-  assert.match(app, /function ArchitecturalHandoffSections\(\{ architecture \}\)/u);
+test("private, sample, and selected public programme views render the architecture design document", () => {
+  assert.match(app, /function ArchitecturalHandoffSections\(\{ architecture, projectName=null, generatedAt=null, revisionLabel=null \}\)/u);
   assert.match(app, /normalizeArchitecturalHandoff\(report\.architecturalHandoff\)\|\|buildArchitecturalHandoff\(input,estimate\)/u);
   assert.match(app, /legacyArtifact\?null:normalizeArchitecturalHandoff/u);
   assert.match(app, /<ArchitecturalHandoffSections architecture=\{sampleArchitecture\}\/>/u);
   assert.match(app, /programme\.architecture&&<ArchitecturalHandoffSections architecture=\{programme\.architecture\}\/>/u);
 });
 
-test("architect review pack exposes all professional review registers and clear boundaries", () => {
+test("architecture design document exposes all professional review registers and clear boundaries", () => {
   for (const copy of [
     "Site working diagram · not to scale",
     "Area control",
+    "Project requirements",
     "Room data sheet",
+    "Room performance schedule",
     "Floor zoning",
     "Planning logic",
     "Site and climate response",
     "Structure and services",
+    "Statutory due diligence",
     "Verification register",
+    "Responsibility matrix",
+    "Decisions and acceptance",
     "Professional issue register",
     "Reference register",
   ]) assert.equal(app.includes(copy), true, copy);
   assert.equal(reportLogic.includes("not a measured, sanction, tender, structural or construction drawing set"), true);
   assert.equal(app.includes("dangerouslySetInnerHTML"), false);
+  assert.equal(reportLogic.includes("Architecture Design Document"), true);
+  assert.equal(styles.includes("ARCHITECTURE DESIGN DOCUMENT"), true);
+  assert.equal(app.includes("Architecture design doc"), true);
+  assert.match(app, /function printArchitectPackOnly\(\)/u);
 });
 
 test("architect pack has mobile, reduced-motion, horizontal-table, and A4 print treatment", () => {
@@ -37,9 +46,14 @@ test("architect pack has mobile, reduced-motion, horizontal-table, and A4 print 
   assert.match(styles, /@media \(max-width: 520px\)[\s\S]*\.architect-pack__fact-grid/u);
   assert.match(styles, /@media \(prefers-reduced-motion: reduce\)/u);
   assert.match(styles, /@page\s*\{\s*size:\s*A4;/u);
+  assert.match(styles, /@media print\s*\{[\s\S]*?\.skip-link\s*\{\s*display:\s*none !important;/u);
   assert.match(styles, /\.architect-pack__table thead\s*\{\s*display:\s*table-header-group;/u);
   assert.match(styles, /\.architect-pack__table tfoot\s*\{\s*display:\s*table-row-group;/u);
   assert.match(styles, /\.architect-pack__table tr\s*\{\s*break-inside:\s*avoid;/u);
+  assert.match(app, /architect-pack__section architect-pack__section--responsibility/u);
+  assert.match(styles, /\.architect-pack__section--page,\s*\.architect-pack__section--responsibility,\s*\.architect-pack__subhead--page\s*\{\s*break-before:\s*page;/u);
+  assert.match(styles, /\.architect-export \.report-cover,/u);
+  assert.match(styles, /@bottom-right\s*\{[\s\S]*counter\(page\)[\s\S]*counter\(pages\)/u);
   for (const selector of [".purchase-panel", ".professional-review-panel", ".report-upload-warning", ".sample-architect-pack__action"]) {
     assert.match(styles, new RegExp(`${selector.replace(".", "\\.")},?`), selector);
   }

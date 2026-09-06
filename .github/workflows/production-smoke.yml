@@ -23,8 +23,10 @@ jobs:
         include:
           - environment: production
             origin: https://grihagrid.prakhargupta267.workers.dev
+            expect_ai: "true"
           - environment: staging
             origin: https://grihagrid-staging.prakhargupta267.workers.dev
+            expect_ai: "false"
 
     steps:
       - name: Check out repository
@@ -39,4 +41,38 @@ jobs:
         env:
           GRIHAGRID_SMOKE_ORIGIN: ${{ matrix.origin }}
           EXPECT_PAID_CHECKOUT: "false"
+          EXPECT_AI_PLANNING_BRIEF: ${{ matrix.expect_ai }}
         run: node scripts/smoke.mjs
+
+  alert:
+    name: Maintain the public-smoke incident issue
+    if: ${{ always() && needs.smoke.result != 'cancelled' && github.ref == 'refs/heads/main' }}
+    needs: smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - name: Open, update, or resolve the bounded smoke alert
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SMOKE_RESULT: ${{ needs.smoke.result }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ISSUE_TITLE: "Production monitor: GrihaGrid public smoke failing"
+        run: |
+          set -euo pipefail
+          issue_number="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 100 --json number,title --jq 'map(select(.title == "Production monitor: GrihaGrid public smoke failing"))[0].number // empty')"
+          if [ "$SMOKE_RESULT" = "success" ]; then
+            if [ -n "$issue_number" ]; then
+              gh issue close "$issue_number" --repo "$GITHUB_REPOSITORY" --comment "The hourly production and staging smoke recovered. Evidence: $RUN_URL"
+            fi
+            exit 0
+          fi
+          body="The hourly production/staging public smoke did not complete successfully. Inspect the bounded workflow evidence and follow the incident runbook. Run: $RUN_URL"
+          if [ -n "$issue_number" ]; then
+            gh issue comment "$issue_number" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$ISSUE_TITLE" --body "$body"
+          fi

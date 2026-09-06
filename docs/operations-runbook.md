@@ -761,11 +761,14 @@ Configure checks from at least two external regions. Cloudflare's own dashboard
 does not count as an independent availability check.
 
 `.github/workflows/production-smoke.yml` runs the read-only public suite against
-production and staging hourly and on demand. It is a regression backstop, not a
-one-minute/two-region availability monitor. Keep its paid expectation false
-until the signed launch release; if checkout is intentionally opened, update it
-in the same reviewed change so it asserts that only `decision_compare` accepts
-orders.
+production and staging hourly and on demand. On trusted `main`, a failed run
+opens or updates the single `Production monitor: GrihaGrid public smoke failing`
+issue and a later successful run closes it. The incident owner must subscribe to
+repository issue notifications and test that path before launch. This is a
+regression backstop, not a one-minute/two-region availability monitor. Keep its
+paid expectation false until the signed launch release; if checkout is
+intentionally opened, update it in the same reviewed change so it asserts that
+only `decision_compare` accepts orders.
 
 | Frequency | Check | Success condition |
 |---|---|---|

@@ -69,6 +69,84 @@ function roomDimensions(area, aspect = 1.35) {
   return `≈ ${show(shortSide)}′ × ${show(longSide)}′ clear starting point`;
 }
 
+function roomPerformance(room, accessibility) {
+  const name = text(room?.name).toLowerCase();
+  const category = text(room?.category);
+  const stepFree = accessibility === "step_free" || accessibility === "wheelchair_ready";
+  if (name.includes("kitchen")) return {
+    useAndCapacity: "Daily family cooking with two-person working clearance; confirm appliance list and cooking fuel.",
+    fitOutAndStorage: "Refrigerator, hob, sink, preparation run, tall pantry and segregated dry/wet storage.",
+    environment: "Daylight without glare at worktops; cross-ventilation or code-appropriate mechanical extract.",
+    services: "Hot/cold water, trapped waste, exhaust, protected power and maintainable gas/induction routing.",
+    criticalCheck: "Freeze walls only after a scaled counter and appliance layout is accepted.",
+  };
+  if (name.includes("utility")) return {
+    useAndCapacity: "Laundry, washing and service handling without crossing the principal guest route.",
+    fitOutAndStorage: "Washing machine, service sink, drying provision, cleaning cupboard and refuse segregation.",
+    environment: "Permanent ventilation, weather protection and floor drainage without damp transfer.",
+    services: "Water, trapped waste, power, floor drain and safe equipment isolation.",
+    criticalCheck: "Confirm drying method, equipment sizes and lawful discharge route.",
+  };
+  if (category === "Private") return {
+    useAndCapacity: "Two-person sleeping room unless the client confirms single occupancy; retain an unobstructed bed route.",
+    fitOutAndStorage: "Bed, two side clearances where possible, wardrobe wall, luggage storage and compact study surface.",
+    environment: "Controllable daylight, cross-ventilation where site conditions support it, privacy and protection from traffic/service noise.",
+    services: "Bedside power, task lighting, cooling provision, data and switching reachable from entry and bed.",
+    criticalCheck: stepFree && room.floor === "Ground floor"
+      ? "Test wheelchair turning, bed transfer and the full step-free route with the intended user."
+      : "Prove furniture, door swings and wardrobe use on the coordinated plan.",
+  };
+  if (category === "Wet area") return {
+    useAndCapacity: "WC, basin and bathing zone with dry access; confirm whether assisted use is required.",
+    fitOutAndStorage: "Fixture clearances, mirror/storage, towel space, shower screen and maintenance access.",
+    environment: "Direct ventilation where possible; otherwise sized mechanical extract and moisture-resistant finishes.",
+    services: "Stacked soil/waste, venting, hot/cold water, waterproofing falls, floor trap and safe electrical zones.",
+    criticalCheck: stepFree ? "Test flush threshold, grab-bar backing and transfer clearances." : "Coordinate door swing, shaft and waterproofing before plan freeze.",
+  };
+  if (name.includes("stair")) return {
+    useAndCapacity: "Primary vertical route sized for everyday two-way movement and emergency egress assumptions.",
+    fitOutAndStorage: "Continuous handrail, guarded edges, landings, headroom and no unsafe residual storage.",
+    environment: "Daylight without glare, night lighting and visual contrast at landings and edges.",
+    services: "Two-way switching, emergency/backup lighting strategy and coordinated structure around the opening.",
+    criticalCheck: "Architect to verify adopted rise, going, width, headroom and fire/life-safety requirements.",
+  };
+  if (category === "Social") return {
+    useAndCapacity: "Family use plus guests; confirm the normal and occasional gathering count.",
+    fitOutAndStorage: "Scaled seating/table layout, clear circulation, media/display wall and everyday storage.",
+    environment: "Balanced daylight, glare control, cross-ventilation and acoustic separation from sleeping rooms.",
+    services: "Layered lighting, fan/cooling points, power/data and switching aligned to the accepted furniture plan.",
+    criticalCheck: "Accept a scaled furniture and circulation test before fixing openings.",
+  };
+  if (category === "Arrival") return {
+    useAndCapacity: "Two-person arrival with visitor pause, shoe/bag handling and privacy from principal rooms.",
+    fitOutAndStorage: "Console or seat, shoe storage and a clear door swing outside the circulation path.",
+    environment: "Weather-protected threshold, daylight and a secure sightline to gate/approach.",
+    services: "Doorbell/intercom, entrance lighting, security provision and nearby switching.",
+    criticalCheck: stepFree ? "Coordinate a flush or ramped threshold on the continuous step-free route." : "Test threshold, door swing and visitor privacy together.",
+  };
+  if (category === "Semi-open") return {
+    useAndCapacity: "Weather-protected family spill-out; final use depends on privacy and climate exposure.",
+    fitOutAndStorage: "Outdoor seating with safe guard/parapet zones and a clear maintenance route.",
+    environment: "Shade, rain protection, drainage and privacy without blocking useful daylight to adjoining rooms.",
+    services: "Weatherproof light/power where required and visible, maintainable rainwater drainage.",
+    criticalCheck: "Confirm statutory area treatment, waterproofing, falls and edge safety.",
+  };
+  if (category === "Service") return {
+    useAndCapacity: "Dedicated household support space kept clear of primary circulation.",
+    fitOutAndStorage: "Full-height, labelled storage with shelf depths matched to intended contents.",
+    environment: "Dry, ventilated and inspectable; avoid concealed damp or heat sources.",
+    services: "Only services required by the confirmed use; preserve access to valves and panels.",
+    criticalCheck: "Client to confirm contents before joinery or service points are fixed.",
+  };
+  return {
+    useAndCapacity: "Flexible household use; client to confirm primary and fallback activity.",
+    fitOutAndStorage: "Loose furniture and storage that allow the room to change use without reconstruction.",
+    environment: "Useful daylight, ventilation, privacy and acoustic separation for the confirmed activity.",
+    services: "General lighting, power and data positioned for more than one viable layout.",
+    criticalCheck: "Record the chosen primary use at concept sign-off.",
+  };
+}
+
 function parkingLabel(value) {
   if (value === false || String(value || "").toLowerCase() === "none") return "No on-plot parking requested";
   if (value === true) return "On-plot parking requested; vehicle count not stated";
@@ -210,6 +288,7 @@ function allocateRooms({ bedrooms, bathrooms, floorCount, targetBuiltUpSqft, acc
       areaSqft,
       nominalDimensions: roomDimensions(areaSqft, room.aspect),
       brief: room.brief,
+      performance: roomPerformance(room, accessibility),
     };
   });
   return { rooms: scheduled, programmeNetSqft };
@@ -240,6 +319,112 @@ function floorStrategies({ floorCount, targetBuiltUpSqft, rooms }) {
         : "Carry the structural grid, stair opening, plumbing shaft and façade openings from the coordinated floor below.",
     };
   });
+}
+
+function levelAreaSchedule(floors, rooms) {
+  return floors.map((floor) => {
+    const scheduledNetSqft = rooms
+      .filter((room) => room.floor === floor.level)
+      .reduce((sum, room) => sum + finiteNumber(room.areaSqft), 0);
+    const grossTargetSqft = finiteNumber(floor.targetAreaSqft);
+    const residualSqft = Math.round(grossTargetSqft - scheduledNetSqft);
+    const netToGrossPercent = grossTargetSqft > 0 ? Math.round((scheduledNetSqft / grossTargetSqft) * 1000) / 10 : 0;
+    const status = residualSqft < 0
+      ? "Over target"
+      : netToGrossPercent < 60
+        ? "Redistribute"
+        : "Working range";
+    const action = residualSqft < 0
+      ? `Scheduled rooms exceed this working plate by ${Math.abs(residualSqft)} sq ft; move, resize or change the massing before concept approval.`
+      : netToGrossPercent < 60
+        ? `${residualSqft} sq ft remains outside the scheduled rooms; redistribute programme or justify terrace, void, circulation and service use.`
+        : `${residualSqft} sq ft remains for walls, circulation, structure and shafts on this level; verify through a drawn test-fit.`;
+    return { level: floor.level, grossTargetSqft, scheduledNetSqft, residualSqft, netToGrossPercent, status, action };
+  });
+}
+
+function lakh(value) {
+  if (!hasFiniteNumber(value)) return null;
+  const amount = Math.round((Number(value) / 100_000) * 10) / 10;
+  return `₹${amount.toLocaleString("en-IN", { maximumFractionDigits: 1 })} lakh`;
+}
+
+function requirementRegister(input, estimate, site, areas) {
+  const costRange = hasFiniteNumber(estimate.lowInr) && hasFiniteNumber(estimate.highInr)
+    ? `${lakh(estimate.lowInr)}–${lakh(estimate.highInr)} concept range`
+    : "Planning range not available";
+  const road = hasFiniteNumber(input.roadWidthFt) ? `${input.roadWidthFt} ft client-stated road` : "Road width not confirmed";
+  const budget = hasFiniteNumber(input.budgetLakh) ? `₹${Number(input.budgetLakh).toLocaleString("en-IN")} lakh client budget; ${costRange}` : `Client budget not confirmed; ${costRange}`;
+  return [
+    { code: "BR-01", requirement: "Household programme", priority: "Must", currentBasis: `${site.bedrooms} bedrooms, ${site.bathrooms} bathrooms and ${site.floors} requested.`, acceptance: "Every named space is shown once, usable furniture fits, and circulation is not counted as a room." },
+    { code: "BR-02", requirement: "Area and massing", priority: "Must", currentBasis: `${areas.targetBuiltUpSqft.toLocaleString("en-IN")} sq ft gross concept target on a ${areas.plotSqft.toLocaleString("en-IN")} sq ft entered plot.`, acceptance: "Floor targets, scheduled net rooms and explicit design allowance reconcile; every later departure is recorded." },
+    { code: "BR-03", requirement: "Arrival, parking and access", priority: "Must", currentBasis: `${site.parking}; ${site.accessEdge}; ${road}.`, acceptance: "A scaled gate, vehicle envelope/turning test and protected pedestrian route work together after measured setbacks." },
+    { code: "BR-04", requirement: "Inclusive use", priority: input.accessibility && input.accessibility !== "none" && input.accessibility !== "unknown" ? "Must" : "Confirm", currentBasis: accessibilityLabel(input.accessibility), acceptance: "The client confirms users and the architect records thresholds, route widths, turning, toilet and vertical-access decisions." },
+    { code: "BR-05", requirement: "Future adaptability", priority: input.futureUse && !["none", "unknown"].includes(input.futureUse) ? "Must" : "Confirm", currentBasis: futureUseLabel(input.futureUse), acceptance: "Structure, access, services, metering and fire/life-safety assumptions support the accepted future scenario without unsafe alteration." },
+    { code: "BR-06", requirement: "Budget and value", priority: "Must", currentBasis: budget, acceptance: "An architect/QS cost plan states inclusions, exclusions, fees, approvals, taxes, external works, escalation and contingency against the accepted scope." },
+    { code: "BR-07", requirement: "Quality and specification", priority: "Should", currentBasis: `${site.finishLevel} finish direction; no outline specification issued.`, acceptance: "An outline specification and elemental cost plan are reviewed together before concept sign-off." },
+    { code: "BR-08", requirement: "Environmental performance", priority: "Should", currentBasis: `${site.city} climate response is a design intent only.`, acceptance: "The stage report records shading, daylight, ventilation, envelope, water, drainage and maintainability decisions with evidence." },
+    { code: "BR-09", requirement: "Household operations", priority: "Confirm", currentBasis: "Storage contents, work/study pattern, domestic-help needs, pets, entertaining and laundry routines were not captured.", acceptance: "The client confirms the operational brief or marks each item not applicable before the room layouts are frozen." },
+    { code: "BR-10", requirement: "Privacy, acoustics and security", priority: "Should", currentBasis: `${site.facing}-facing arrival assumption; neighbour openings and noise sources are unverified.`, acceptance: "Concept plans identify privacy sightlines, noisy/quiet edges, entrance security and bedroom/service acoustic separation." },
+  ];
+}
+
+function statutoryChecklist(city) {
+  const jurisdiction = city === "Delhi" ? "DDA / relevant Delhi local body to be confirmed" : "Authority having jurisdiction to be identified";
+  return [
+    ["ST-01", "Jurisdiction, land use and plot eligibility", `${city} city context only`, `Confirm ${jurisdiction}, permissible residential use, tenure/lease conditions and submission route.`, "Authority note with dated source and plot applicability"],
+    ["ST-02", "Plot identity, title and sanctioned layout", "No title/cadastral file supplied", "Reconcile title, plot number, sanctioned layout, easements, acquisition/road-widening lines and court/revenue constraints.", "Checked title/site identity schedule"],
+    ["ST-03", "Measured boundary, area, levels and north", "Client-entered rectangle only", "Overlay licensed survey coordinates, boundaries, contours/spot levels, true north, adjoining plinths, trees, poles and drains.", "Signed measured survey base"],
+    ["ST-04", "Road, access and corner/splay controls", "Road width and facing are client-stated where present", "Verify right-of-way and carriageway, gate, corner splay, fire access, parking entry and any future road line.", "Dimensioned access and swept-path note"],
+    ["ST-05", "Setbacks, coverage and open spaces", "Not calculated", "Identify the exact plot category and calculate required yards, projections, shafts, coverage and treatment of semi-open areas.", "Clause-cited control diagram"],
+    ["ST-06", "FAR/FSI and area definitions", "Concept gross area is not a statutory statement", "Prepare floor-wise permissible/proposed area calculations, exemptions, balconies, stairs, shafts, parking and total FAR/FSI.", "Signed statutory area statement"],
+    ["ST-07", "Height, storeys and vertical circulation", "Requested floor count only", "Confirm permissible height/storeys, stair, lift provision, headroom, terrace access and any fire/life-safety triggers.", "Height and section compliance note"],
+    ["ST-08", "Parking and vehicle movement", "Client requirement only", "Confirm bay size/count, gate width, ramp/turning, stack/mechanical rules if used and pedestrian separation.", "Parking compliance and movement plan"],
+    ["ST-09", "Fire and life safety", "No fire strategy issued", "Classify occupancy/height/area and record exits, travel, stair protection, access, detection/suppression and fire-service requirements adopted locally.", "Project fire/life-safety strategy"],
+    ["ST-10", "Accessibility and inclusive design", "Client requirement may be stated; code basis unverified", "Record the adopted accessibility provisions and reconcile approach, thresholds, doors, toilets, parking and vertical movement.", "Inclusive-design statement and plan mark-up"],
+    ["ST-11", "Structure, soil and hazard exposure", "No geotechnical or structural basis", "Confirm geotechnical scope, seismic/wind/flood exposure, structural system, loading and any peer-review/certification requirement.", "Engineer design-basis reports"],
+    ["ST-12", "Water, drainage, energy, waste and overlays", "Connections and overlays unknown", "Confirm water/sewer/storm outfalls, storage, rainwater/solar/energy duties, waste, trees, heritage, airport, flood and environmental overlays.", "Services/statutory coordination schedule"],
+  ].map(([code, topic, currentBasis, check, evidence]) => ({ code, topic, status: "Open", currentBasis, check, evidence }));
+}
+
+function consultantMatrix() {
+  return [
+    { code: "RS-01", role: "Client / authorised decision-maker", appointBy: "Before kickoff", responsibility: "Confirm brief priorities, budget, programme, land/title information and timely decisions.", issue: "Signed brief and stage decisions" },
+    { code: "RS-02", role: "Lead architect registered for the jurisdiction", appointBy: "Before site/regulatory review", responsibility: "Lead brief, design, statutory coordination, consultant integration, issue control and client advice within the agreed appointment.", issue: "Stage reports, drawings, specifications and statutory submissions" },
+    { code: "RS-03", role: "Licensed land / measured surveyor", appointBy: "Before concept plan freeze", responsibility: "Verify boundary, area, north, access, levels, neighbours, features, utilities and encumbrances within survey scope.", issue: "Signed measured/topographic survey" },
+    { code: "RS-04", role: "Geotechnical engineer", appointBy: "Before foundation design", responsibility: "Define investigation, interpret ground/water conditions and recommend design parameters and construction precautions.", issue: "Geotechnical investigation report" },
+    { code: "RS-05", role: "Structural engineer", appointBy: "During concept, before grids are fixed", responsibility: "Set structural design basis, coordinate grids/openings, assess hazards and issue calculations and construction drawings.", issue: "Design basis, calculations and signed structural set" },
+    { code: "RS-06", role: "MEP / building-services consultants", appointBy: "During concept coordination", responsibility: "Coordinate water, drainage, electrical, cooling/ventilation, fire/life-safety systems, loads, equipment and maintainability.", issue: "Load schedules, schematics and coordinated service drawings" },
+    { code: "RS-07", role: "Cost consultant / quantity surveyor", appointBy: "Before concept option selection", responsibility: "Define cost basis, measure scope, test options, maintain risk/contingency and reconcile changes to budget.", issue: "Elemental cost plan and change log" },
+    { code: "RS-08", role: "Landscape / interiors / specialist advisers", appointBy: "When scope affects planning", responsibility: "Protect external levels/drainage, planting, fixed furniture, lighting, acoustics, security or sustainability outcomes from late redesign.", issue: "Discipline brief and coordinated information" },
+  ];
+}
+
+function decisionRegister(input, estimate, site) {
+  const hasRoad = hasFiniteNumber(input.roadWidthFt);
+  const accessKnown = input.accessibility && input.accessibility !== "unknown";
+  const futureKnown = input.futureUse && input.futureUse !== "unknown";
+  const hasBudget = hasFiniteNumber(input.budgetLakh);
+  return [
+    { code: "DN-01", decision: "Accept the client brief hierarchy", status: "Review", currentPosition: `${site.bedrooms} bedrooms, ${site.bathrooms} bathrooms, ${site.floors}, ${site.parking}.`, owner: "Client + architect", neededBy: "Kickoff close" },
+    { code: "DN-02", decision: "Accept survey and legal site base", status: "Open", currentPosition: "No measured/title base is included in this pack.", owner: "Client + architect", neededBy: "Before concept plan freeze" },
+    { code: "DN-03", decision: "Accept statutory development envelope", status: "Open", currentPosition: `${site.city} references are starting points only; plot controls are unverified.`, owner: "Architect", neededBy: "Before option comparison" },
+    { code: "DN-04", decision: "Accept floor distribution and area departures", status: "Open", currentPosition: `${estimate.builtUpSqft?.toLocaleString?.("en-IN") || site.plotSqft} sq ft gross target with working level allocation.`, owner: "Client + architect", neededBy: "Concept sign-off" },
+    { code: "DN-05", decision: "Accept parking, gate and pedestrian arrival", status: hasRoad ? "Client-stated" : "Missing", currentPosition: `${site.parking}; ${hasRoad ? `${input.roadWidthFt} ft road stated` : "road width missing"}.`, owner: "Client + architect", neededBy: "Before ground-floor plan freeze" },
+    { code: "DN-06", decision: "Accept inclusive-design requirements", status: accessKnown ? "Client-stated" : "Missing", currentPosition: accessibilityLabel(input.accessibility), owner: "Client + architect", neededBy: "Before plan freeze" },
+    { code: "DN-07", decision: "Accept future-use / expansion strategy", status: futureKnown ? "Client-stated" : "Missing", currentPosition: futureUseLabel(input.futureUse), owner: "Client + architect + engineers", neededBy: "Before structural/services concept" },
+    { code: "DN-08", decision: "Accept cost basis and quality level", status: hasBudget ? "Client-stated" : "Missing", currentPosition: `${hasBudget ? `₹${Number(input.budgetLakh).toLocaleString("en-IN")} lakh budget` : "budget not stated"}; ${site.finishLevel} finish.`, owner: "Client + architect / QS", neededBy: "Before concept option selection" },
+    { code: "DN-09", decision: "Approve one architectural concept", status: "Not started", currentPosition: "No measured or professionally authored concept drawing is included.", owner: "Client on architect recommendation", neededBy: "End of concept stage" },
+  ];
+}
+
+function stageGateChecklist() {
+  return [
+    { code: "GT-01", gate: "Kickoff / brief acceptance", status: "Open", evidence: "Appointment/scope, decision-maker, brief priorities, budget, programme, information requirements and consultant plan agreed.", response: "Accept / accept with comments / revise" },
+    { code: "GT-02", gate: "Verified site and rules basis", status: "Blocked pending evidence", evidence: "Measured survey, title/site identity, authority and clause-cited development envelope accepted as the design base.", response: "Proceed / hold" },
+    { code: "GT-03", gate: "Concept approval", status: "Not started", evidence: "Plans/sections/elevations, area statement, room/furniture tests, strategies, outline specification and updated cost plan issued together.", response: "Approve / approve with derogations / revise" },
+    { code: "GT-04", gate: "Spatial coordination", status: "Not started", evidence: "Architecture, structure and services coordinated; residual risks, approvals, cost and programme recorded before technical design.", response: "Proceed / hold" },
+  ];
 }
 
 function verificationRegister(input, estimate) {
@@ -292,45 +477,50 @@ export function buildArchitecturalHandoff(inputValue = {}, estimateValue = {}) {
   const facing = text(input.facing, "Not confirmed");
   const areaPressure = rooms.filter((room) => room.nominalDimensions.startsWith("Area pressure")).map((room) => room.name);
   const references = authorityReferences(city);
+  const siteBrief = {
+    widthFt,
+    lengthFt,
+    plotSqft,
+    city,
+    facing,
+    accessEdge: facing === "Not confirmed" ? "Road-bearing edge not confirmed" : `${facing} edge assumed as the road / primary arrival side`,
+    roadWidthFt: hasFiniteNumber(input.roadWidthFt) ? Number(input.roadWidthFt) : null,
+    plotShape: text(input.plotShape, "unknown"),
+    floors: text(estimate.floors || input.floors, floorCount === 1 ? "G" : `G+${floorCount - 1}`),
+    floorCount,
+    bedrooms,
+    bathrooms,
+    parking: parkingLabel(input.parking),
+    accessibility: accessibilityLabel(input.accessibility),
+    futureUse: futureUseLabel(input.futureUse),
+    styleDirection: text(input.style, "Not stated"),
+    finishLevel: text(estimate.quality || input.quality, "Not stated"),
+    budgetLakh: hasFiniteNumber(input.budgetLakh) ? Number(input.budgetLakh) : null,
+  };
+  const areaReconciliation = {
+    plotSqft,
+    workingFootprintSqft,
+    openGroundSqft,
+    workingCoveragePercent: plotSqft > 0 ? Math.round((workingFootprintSqft / plotSqft) * 1000) / 10 : 0,
+    targetBuiltUpSqft,
+    programmeNetSqft,
+    planningAllowanceSqft,
+    planningAllowancePercent: targetBuiltUpSqft > 0 ? Math.round((planningAllowanceSqft / targetBuiltUpSqft) * 1000) / 10 : 0,
+    note: "The allowance holds internal walls, circulation not separately scheduled, shafts, structural zones and design development. It is not a statutory area statement.",
+  };
+  const floors = floorStrategies({ floorCount, targetBuiltUpSqft, rooms });
 
   return {
-    version: 1,
-    title: "Architect review pack",
+    version: 2,
+    title: "Architecture Design Document",
     stage: "Concept-design handoff",
     purpose: "A coordinated client brief for architect review and professional development—not a measured, sanction, tender, structural or construction drawing set.",
-    siteBrief: {
-      widthFt,
-      lengthFt,
-      plotSqft,
-      city,
-      facing,
-      accessEdge: facing === "Not confirmed" ? "Road-bearing edge not confirmed" : `${facing} edge assumed as the road / primary arrival side`,
-      roadWidthFt: hasFiniteNumber(input.roadWidthFt) ? Number(input.roadWidthFt) : null,
-      plotShape: text(input.plotShape, "unknown"),
-      floors: text(estimate.floors || input.floors, floorCount === 1 ? "G" : `G+${floorCount - 1}`),
-      floorCount,
-      bedrooms,
-      bathrooms,
-      parking: parkingLabel(input.parking),
-      accessibility: accessibilityLabel(input.accessibility),
-      futureUse: futureUseLabel(input.futureUse),
-      styleDirection: text(input.style, "Not stated"),
-      finishLevel: text(estimate.quality || input.quality, "Not stated"),
-      budgetLakh: hasFiniteNumber(input.budgetLakh) ? Number(input.budgetLakh) : null,
-    },
-    areaReconciliation: {
-      plotSqft,
-      workingFootprintSqft,
-      openGroundSqft,
-      workingCoveragePercent: plotSqft > 0 ? Math.round((workingFootprintSqft / plotSqft) * 1000) / 10 : 0,
-      targetBuiltUpSqft,
-      programmeNetSqft,
-      planningAllowanceSqft,
-      planningAllowancePercent: targetBuiltUpSqft > 0 ? Math.round((planningAllowanceSqft / targetBuiltUpSqft) * 1000) / 10 : 0,
-      note: "The allowance holds internal walls, circulation not separately scheduled, shafts, structural zones and design development. It is not a statutory area statement.",
-    },
+    siteBrief,
+    areaReconciliation,
+    requirementRegister: requirementRegister(input, estimate, siteBrief, areaReconciliation),
     rooms,
-    floorStrategies: floorStrategies({ floorCount, targetBuiltUpSqft, rooms }),
+    floorStrategies: floors,
+    levelAreaSchedule: levelAreaSchedule(floors, rooms),
     adjacencyPriorities: [
       { pair: "Arrival ↔ living", priority: "Protect", reason: "Create a legible entry without exposing the full private interior from the front door." },
       { pair: "Living ↔ dining", priority: "Direct", reason: "Keep shared family use connected while allowing furniture zones to remain clear of through-circulation." },
@@ -350,7 +540,11 @@ export function buildArchitecturalHandoff(inputValue = {}, estimateValue = {}) {
       { code: "SS-06", system: "Cooling and ventilation", intent: "Prioritise shaded natural ventilation, then coordinate equipment and condensate without damaging façades or wet areas.", coordination: "Architect/MEP consultant to confirm heat-load assumptions, fresh air, exhaust, outdoor units and maintenance access." },
       { code: "SS-07", system: "Life safety", intent: "Keep a continuous, well-lit escape route and avoid unprotected hazards on the path to the final exit.", coordination: "Licensed professionals to apply the requirements adopted for the exact occupancy, height, area and jurisdiction." },
     ],
+    statutoryChecklist: statutoryChecklist(city),
     verificationRegister: verificationRegister(input, estimate),
+    consultantMatrix: consultantMatrix(),
+    decisionRegister: decisionRegister(input, estimate, siteBrief),
+    stageGateChecklist: stageGateChecklist(),
     drawingRegister: [
       { code: "DR-01", deliverable: "Measured survey and existing-site drawing", scale: "Typically 1:100 / 1:200", purpose: "Authoritative boundary, north, levels, road, neighbours, trees, utilities and constraints." },
       { code: "DR-02", deliverable: "Statutory control and area statement", scale: "Authority format", purpose: "Plot-category controls, setbacks, coverage, FAR/FSI, height, parking and area definitions with source clauses." },
@@ -379,24 +573,42 @@ function cleanObjectList(value, maximum = 64) {
   return Array.isArray(value) ? value.filter((item) => item && typeof item === "object" && !Array.isArray(item)).slice(0, maximum) : [];
 }
 
+function cleanPerformance(value) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return {
+    useAndCapacity: text(source.useAndCapacity),
+    fitOutAndStorage: text(source.fitOutAndStorage),
+    environment: text(source.environment),
+    services: text(source.services),
+    criticalCheck: text(source.criticalCheck),
+  };
+}
+
 export function normalizeArchitecturalHandoff(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value) || Number(value.version) !== 1) return null;
+  const version = Number(value?.version);
+  if (!value || typeof value !== "object" || Array.isArray(value) || ![1, 2].includes(version)) return null;
   const siteBrief = value.siteBrief && typeof value.siteBrief === "object" && !Array.isArray(value.siteBrief) ? value.siteBrief : null;
   const areaReconciliation = value.areaReconciliation && typeof value.areaReconciliation === "object" && !Array.isArray(value.areaReconciliation) ? value.areaReconciliation : null;
   if (!siteBrief || !areaReconciliation) return null;
   return {
-    version: 1,
-    title: text(value.title, "Architect review pack"),
+    version,
+    title: "Architecture Design Document",
     stage: text(value.stage, "Concept-design handoff"),
     purpose: text(value.purpose),
     siteBrief: { ...siteBrief },
     areaReconciliation: { ...areaReconciliation },
     rooms: cleanObjectList(value.rooms),
+    requirementRegister: cleanObjectList(value.requirementRegister, 24),
     floorStrategies: cleanObjectList(value.floorStrategies, 8),
+    levelAreaSchedule: cleanObjectList(value.levelAreaSchedule, 8),
     adjacencyPriorities: cleanObjectList(value.adjacencyPriorities, 24),
     climateStrategies: cleanObjectList(value.climateStrategies, 24),
     structureAndServices: cleanObjectList(value.structureAndServices, 24),
+    statutoryChecklist: cleanObjectList(value.statutoryChecklist, 32),
     verificationRegister: cleanObjectList(value.verificationRegister, 32),
+    consultantMatrix: cleanObjectList(value.consultantMatrix, 24),
+    decisionRegister: cleanObjectList(value.decisionRegister, 32),
+    stageGateChecklist: cleanObjectList(value.stageGateChecklist, 16),
     drawingRegister: cleanObjectList(value.drawingRegister, 24),
     references: cleanObjectList(value.references, 16),
     reviewNotes: cleanStringList(value.reviewNotes, 16),
@@ -408,7 +620,7 @@ export function publicArchitecturalProgramme(value) {
   if (!source) return null;
   const site = source.siteBrief;
   return {
-    version: 1,
+    version: source.version,
     purpose: source.purpose,
     siteBrief: {
       widthFt: finiteNumber(site.widthFt),
@@ -440,12 +652,18 @@ export function publicArchitecturalProgramme(value) {
       planningAllowancePercent: finiteNumber(source.areaReconciliation.planningAllowancePercent),
       note: text(source.areaReconciliation.note),
     },
-    rooms: source.rooms.map(({ code, name, category, floor, areaSqft, nominalDimensions, brief }) => ({ code, name, category, floor, areaSqft, nominalDimensions, brief })),
+    requirementRegister: source.requirementRegister.map(({ code, requirement, priority, currentBasis, acceptance }) => ({ code, requirement, priority, currentBasis, acceptance })),
+    rooms: source.rooms.map(({ code, name, category, floor, areaSqft, nominalDimensions, brief, performance }) => ({ code, name, category, floor, areaSqft, nominalDimensions, brief, performance: cleanPerformance(performance) })),
     floorStrategies: source.floorStrategies.map(({ level, targetAreaSqft, spaces, zoningIntent, coordinationHold }) => ({ level, targetAreaSqft, spaces: cleanStringList(spaces), zoningIntent, coordinationHold })),
+    levelAreaSchedule: source.levelAreaSchedule.map(({ level, grossTargetSqft, scheduledNetSqft, residualSqft, netToGrossPercent, status, action }) => ({ level, grossTargetSqft, scheduledNetSqft, residualSqft, netToGrossPercent, status, action })),
     adjacencyPriorities: source.adjacencyPriorities.map(({ pair, priority, reason }) => ({ pair, priority, reason })),
     climateStrategies: source.climateStrategies.map(({ code, intent }) => ({ code, intent })),
     structureAndServices: source.structureAndServices.map(({ code, system, intent, coordination }) => ({ code, system, intent, coordination })),
+    statutoryChecklist: source.statutoryChecklist.map(({ code, topic, status, currentBasis, check, evidence }) => ({ code, topic, status, currentBasis, check, evidence })),
     verificationRegister: source.verificationRegister.map(({ code, topic, status, evidence, action, owner, gate }) => ({ code, topic, status, evidence, action, owner, gate })),
+    consultantMatrix: source.consultantMatrix.map(({ code, role, appointBy, responsibility, issue }) => ({ code, role, appointBy, responsibility, issue })),
+    decisionRegister: source.decisionRegister.map(({ code, decision, status, currentPosition, owner, neededBy }) => ({ code, decision, status, currentPosition, owner, neededBy })),
+    stageGateChecklist: source.stageGateChecklist.map(({ code, gate, status, evidence, response }) => ({ code, gate, status, evidence, response })),
     drawingRegister: source.drawingRegister.map(({ code, deliverable, scale, purpose }) => ({ code, deliverable, scale, purpose })),
     references: source.references.map(({ code, title, authority, url, use }) => ({ code, title, authority, url, use })),
     reviewNotes: source.reviewNotes,

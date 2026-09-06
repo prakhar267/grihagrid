@@ -24,7 +24,7 @@ revoked links are `410` and cannot be reactivated. The report stays pinned to th
 original `(project_id, project_revision, report_schema_version=2)` record even if
 the project later changes.
 
-The `programme` selection includes the Architect review pack described in
+The `programme` selection includes the Architecture Design Document described in
 `docs/architect-review-pack.md`: entered plot dimensions, city, facing, road
 width when known, room/budget context, area and room schedules, floor zoning,
 services, verification and professional deliverable registers. The owner UI

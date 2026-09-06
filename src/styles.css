@@ -3998,6 +3998,30 @@ blockquote {
   justify-self: end;
 }
 
+.report-print-actions {
+  justify-self: end;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.report-print-actions button {
+  padding: 0.45rem 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  border: 0;
+  border-bottom: 1px solid transparent;
+  background: transparent;
+  color: var(--ink-soft);
+  font-family: var(--serif);
+}
+
+.report-print-actions button:last-child {
+  border-bottom-color: var(--copper);
+  color: var(--copper-dark);
+}
+
 .report-page > header svg {
   width: 17px;
   height: 17px;
@@ -4229,6 +4253,27 @@ blockquote {
   line-height: 1.7;
 }
 
+.architect-pack__issue-meta {
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  display: grid;
+  gap: 0.25rem;
+  border-top: 1px solid var(--rule);
+}
+
+.architect-pack__issue-meta strong {
+  font-family: var(--serif);
+  font-size: 1.2rem;
+  font-weight: 500;
+}
+
+.architect-pack__issue-meta span {
+  color: var(--muted);
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
 .architect-pack__intro aside {
   min-height: 190px;
   padding: 1.5rem;
@@ -4258,6 +4303,41 @@ blockquote {
   font-size: 0.65rem;
   line-height: 1.5;
   text-transform: uppercase;
+}
+
+.architect-pack__review-route {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border-bottom: 1px solid var(--rule-strong);
+  border-left: 1px solid var(--rule);
+}
+
+.architect-pack__review-route > div {
+  min-width: 0;
+  padding: 1.2rem;
+  border-right: 1px solid var(--rule);
+}
+
+.architect-pack__review-route span {
+  display: block;
+  margin-bottom: 1.4rem;
+  color: var(--copper);
+  font-family: var(--serif);
+  font-size: 1.25rem;
+}
+
+.architect-pack__review-route strong {
+  display: block;
+  font-family: var(--serif);
+  font-size: 1.05rem;
+  font-weight: 500;
+}
+
+.architect-pack__review-route p {
+  margin: 0.45rem 0 0;
+  color: var(--muted);
+  font-size: 0.66rem;
+  line-height: 1.55;
 }
 
 .architect-pack__section {
@@ -4493,11 +4573,110 @@ blockquote {
   font-weight: 700;
 }
 
+.architect-pack__subhead {
+  margin: 2.6rem 0 0;
+  font-family: var(--serif);
+  font-size: 1.65rem;
+  font-weight: 500;
+}
+
+.architect-pack__subcopy {
+  max-width: 720px;
+  margin: 0.6rem 0 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+  line-height: 1.65;
+}
+
 .architect-pack__room-table th:first-child { width: 18%; }
 .architect-pack__room-table th:nth-child(2) { width: 13%; }
 .architect-pack__room-table th:nth-child(3) { width: 10%; }
 .architect-pack__room-table th:nth-child(4) { width: 19%; }
 .architect-pack__room-table th:nth-child(5) { width: 40%; }
+
+.architect-pack__requirements-table th:nth-child(1) { width: 20%; }
+.architect-pack__requirements-table th:nth-child(2) { width: 10%; }
+.architect-pack__requirements-table th:nth-child(3) { width: 30%; }
+.architect-pack__requirements-table th:nth-child(4) { width: 40%; }
+
+.architect-pack__level-table th:nth-child(1) { width: 14%; }
+.architect-pack__level-table th:nth-child(2) { width: 13%; }
+.architect-pack__level-table th:nth-child(3) { width: 15%; }
+.architect-pack__level-table th:nth-child(4) { width: 12%; }
+.architect-pack__level-table th:nth-child(5) { width: 46%; }
+
+.architect-pack__level-table td p,
+.architect-pack__performance-table td p,
+.architect-pack__decision-table td p {
+  margin: 0.45rem 0 0;
+}
+
+.architect-pack__level-table td small,
+.architect-pack__performance-table td small {
+  display: block;
+  margin-top: 0.35rem;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.architect-pack__negative {
+  color: #7c3d25;
+  font-weight: 700;
+}
+
+.architect-pack__performance-table th:nth-child(1) { width: 15%; }
+.architect-pack__performance-table th:nth-child(2) { width: 31%; }
+.architect-pack__performance-table th:nth-child(3) { width: 23%; }
+.architect-pack__performance-table th:nth-child(4) { width: 31%; }
+
+.architect-pack__performance-table td:last-child strong {
+  display: block;
+  margin-top: 0.5rem;
+  padding-top: 0.45rem;
+  border-top: 1px solid var(--rule);
+  font-size: 0.62rem;
+  line-height: 1.45;
+}
+
+.architect-pack__statutory-table th:nth-child(1) { width: 21%; }
+.architect-pack__statutory-table th:nth-child(2) { width: 21%; }
+.architect-pack__statutory-table th:nth-child(3) { width: 36%; }
+.architect-pack__statutory-table th:nth-child(4) { width: 22%; }
+
+.architect-pack__statutory-table tbody th .architect-pack__status {
+  margin-top: 0.55rem;
+}
+
+.architect-pack__responsibility-table th:nth-child(1) { width: 23%; }
+.architect-pack__responsibility-table th:nth-child(2) { width: 15%; }
+.architect-pack__responsibility-table th:nth-child(3) { width: 38%; }
+.architect-pack__responsibility-table th:nth-child(4) { width: 24%; }
+
+.architect-pack__decision-table th:nth-child(1) { width: 23%; }
+.architect-pack__decision-table th:nth-child(2) { width: 30%; }
+.architect-pack__decision-table th:nth-child(3) { width: 20%; }
+.architect-pack__decision-table th:nth-child(4) { width: 27%; }
+
+.architect-pack__decision-table td:nth-child(3) strong,
+.architect-pack__decision-table td:nth-child(3) small {
+  display: block;
+}
+
+.architect-pack__decision-table td:nth-child(3) small {
+  margin-top: 0.35rem;
+  color: var(--muted);
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.architect-pack__response-line {
+  min-height: 3.8rem;
+  color: var(--muted);
+  background: repeating-linear-gradient(0deg, transparent 0 1.55rem, var(--rule) 1.55rem calc(1.55rem + 1px));
+  font-size: 0.58rem;
+}
 
 .architect-pack__note {
   display: flex;
@@ -4664,6 +4843,94 @@ blockquote {
 .architect-pack__status--unverified { border-color: #a55e43; color: #7c3d25; }
 
 .architect-pack__status--client-stated { border-color: #8b7f61; color: #675d43; }
+
+.architect-pack__status--open,
+.architect-pack__status--review,
+.architect-pack__status--redistribute,
+.architect-pack__status--over-target,
+.architect-pack__status--blocked-pending-evidence { border-color: #a55e43; color: #7c3d25; }
+
+.architect-pack__status--working-range { border-color: #657763; color: #465c44; }
+
+.architect-pack__gates {
+  margin-top: 1rem;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border-top: 1px solid var(--rule-strong);
+  border-left: 1px solid var(--rule);
+}
+
+.architect-pack__gates article {
+  min-width: 0;
+  padding: 1.2rem;
+  border-right: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+}
+
+.architect-pack__gates header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.8rem;
+}
+
+.architect-pack__gates header > span {
+  color: var(--copper);
+  font-family: var(--serif);
+  font-size: 1.2rem;
+}
+
+.architect-pack__gates h3 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.architect-pack__gates strong {
+  display: block;
+  margin-top: 0.25rem;
+  color: var(--muted);
+  font-size: 0.58rem;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.architect-pack__gates p {
+  color: var(--ink-soft);
+  font-size: 0.7rem;
+  line-height: 1.6;
+}
+
+.architect-pack__gates small {
+  display: block;
+  padding-top: 0.7rem;
+  border-top: 1px solid var(--rule);
+  color: var(--muted);
+  font-size: 0.6rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.architect-pack__acceptance {
+  margin-top: 2rem;
+  padding: 1.3rem;
+  border: 1px solid var(--rule-strong);
+  background: var(--paper-deep);
+}
+
+.architect-pack__acceptance > div {
+  margin-top: 1.2rem;
+  display: grid;
+  grid-template-columns: 1.4fr 1fr 1.2fr;
+  gap: 1rem;
+}
+
+.architect-pack__acceptance p {
+  min-height: 3rem;
+  margin: 0;
+  padding-top: 2rem;
+  border-bottom: 1px solid var(--rule-strong);
+  color: var(--muted);
+  font-size: 0.6rem;
+}
 
 .architect-pack__references a {
   margin-top: 0.65rem;
@@ -6745,7 +7012,8 @@ blockquote {
 
   .architect-pack__intro,
   .architect-pack__floors,
-  .architect-pack__systems {
+  .architect-pack__systems,
+  .architect-pack__gates {
     grid-template-columns: 1fr;
   }
 
@@ -6759,6 +7027,14 @@ blockquote {
 
   .architect-pack__fact-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .architect-pack__review-route {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .architect-pack__acceptance > div {
+    grid-template-columns: 1fr;
   }
 
   .architect-site-diagram {
@@ -6846,8 +7122,13 @@ blockquote {
 }
 
 @media print {
+  html,
   body {
     background: #fff;
+  }
+
+  .skip-link {
+    display: none !important;
   }
 
   .shared-estimate-page {
@@ -6889,7 +7170,22 @@ blockquote {
 
   @page {
     size: A4;
-    margin: 12mm;
+    margin: 12mm 12mm 16mm;
+
+    @bottom-left {
+      content: "GRIHAGRID · ARCHITECTURE DESIGN DOCUMENT";
+      color: #756d65;
+      font-family: Arial, sans-serif;
+      font-size: 6pt;
+      letter-spacing: 0.08em;
+    }
+
+    @bottom-right {
+      content: counter(page) " / " counter(pages);
+      color: #756d65;
+      font-family: Arial, sans-serif;
+      font-size: 6pt;
+    }
   }
 
   .report-cover {
@@ -6908,20 +7204,22 @@ blockquote {
     break-before: page;
   }
 
-  .architect-pack__section--wide,
-  .architect-pack__section:nth-of-type(4),
-  .architect-pack__section:nth-of-type(7),
-  .architect-pack__section:nth-of-type(9) {
+  .architect-pack__section--page,
+  .architect-pack__section--responsibility,
+  .architect-pack__subhead--page {
     break-before: page;
   }
 
   .architect-pack__intro,
   .architect-pack__heading,
+  .architect-pack__review-route > div,
   .architect-pack__fact-grid > div,
   .architect-site-diagram,
   .architect-pack__note,
   .architect-pack__floors article,
   .architect-pack__systems article,
+  .architect-pack__gates article,
+  .architect-pack__acceptance,
   .architect-pack__priority-list > li,
   .architect-pack__numbered li,
   .architect-pack__deliverables > li,
@@ -6937,7 +7235,7 @@ blockquote {
 
   .architect-pack__table {
     min-width: 0;
-    font-size: 7pt;
+    font-size: 7.2pt;
   }
 
   .architect-pack__table thead {
@@ -6956,6 +7254,26 @@ blockquote {
   .architect-site-diagram__plot { min-height: 0; }
 
   .architect-site-diagram__plate { min-height: 55mm; }
+
+  .architect-export .report-cover,
+  .architect-export .report-hero,
+  .architect-export .report-facts,
+  .architect-export .report-copy,
+  .architect-export .report-feedback,
+  .architect-export .report-handoff,
+  .architect-export .professional-review-panel,
+  .architect-export .report-upload-warning,
+  .architect-export .ai-brief {
+    display: none !important;
+  }
+
+  .architect-export .architect-pack__intro {
+    break-before: auto;
+  }
+
+  .architect-export .report-budget {
+    break-before: page;
+  }
 
   .report-hero,
   .report-copy,
@@ -13272,6 +13590,10 @@ blockquote {
 
 @media (max-width: 520px) {
   .architect-pack__fact-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .architect-pack__review-route {
     grid-template-columns: 1fr;
   }
 

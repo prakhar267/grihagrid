@@ -18,6 +18,7 @@ const files = Object.freeze({
   wrangler: new URL("../wrangler.toml", import.meta.url),
   package: new URL("../package.json", import.meta.url),
   gitignore: new URL("../.gitignore", import.meta.url),
+  devVars: new URL("../.dev.vars.example", import.meta.url),
   ci: new URL("../.github/workflows/ci.yml", import.meta.url),
   smokeWorkflow: new URL("../.github/workflows/production-smoke.yml", import.meta.url),
   deployWorkflow: new URL("../.github/workflows/deploy.yml", import.meta.url),
@@ -61,7 +62,7 @@ function workflowStep(source, name) {
 }
 
 export async function checkOpsConfig() {
-  const [wrangler, packageText, gitignore, ci, smokeWorkflow, deployWorkflow, releaseScope, smoke, waitForRelease, readinessLatency, authenticatedSmoke, canarySessionFence, runCanarySessionFence, releaseDbEvidence, worker] = await Promise.all(
+  const [wrangler, packageText, gitignore, devVars, ci, smokeWorkflow, deployWorkflow, releaseScope, smoke, waitForRelease, readinessLatency, authenticatedSmoke, canarySessionFence, runCanarySessionFence, releaseDbEvidence, worker] = await Promise.all(
     Object.values(files).map((file) => readFile(file, "utf8")),
   );
   const packageJson = JSON.parse(packageText);
@@ -137,6 +138,12 @@ export async function checkOpsConfig() {
     assert.doesNotMatch(wrangler, new RegExp(`^${secret}\\s*=`, "mu"), `${secret} must not be committed to Wrangler config`);
   }
   assert.match(gitignore, /^\.dev\.vars$/mu, ".dev.vars must remain ignored");
+  for (const secret of ["GEMINI_API_KEY", "METRICS_READ_TOKEN", "REPORT_SHARE_ABUSE_HMAC_KEY", "RESEND_API_KEY", "TRANSACTIONAL_EMAIL_FROM", "RAZORPAY_KEY_ID", "RAZORPAY_KEY_SECRET", "RAZORPAY_WEBHOOK_SECRET"]) {
+    assert.match(devVars, new RegExp(`^${secret}=$`, "mu"), `${secret} must be documented without a value`);
+  }
+  assert.match(devVars, /^PAID_CHECKOUT_ENABLED=false$/mu, "local checkout must default closed");
+  assert.match(devVars, /^DECISION_COMPARE_FULFILLMENT_ENABLED=false$/mu, "local fulfillment must default closed");
+  assert.match(devVars, /^ENABLED_PAYMENT_PLANS=$/mu, "local paid plan allowlist must default empty");
   assert.equal(packageJson.scripts?.["check:ops"], "node scripts/check-ops-config.mjs");
   assert.equal(packageJson.scripts?.["smoke:auth"], "node scripts/authenticated-smoke.mjs");
   assert.equal(packageJson.scripts?.["monitor:release"], "node scripts/monitor-release.mjs");
@@ -164,6 +171,13 @@ export async function checkOpsConfig() {
   }
   assert.match(smokeWorkflow, /cron:\s*"23 \* \* \* \*"/u, "public smoke must run hourly");
   assert.match(smokeWorkflow, /EXPECT_PAID_CHECKOUT:\s*"false"/u, "public smoke must expect checkout to remain closed");
+  assert.match(smokeWorkflow, /environment:\s*production[\s\S]*?expect_ai:\s*"true"/u, "production smoke must require configured AI");
+  assert.match(smokeWorkflow, /environment:\s*staging[\s\S]*?expect_ai:\s*"false"/u, "staging smoke must require fail-closed AI");
+  assert.match(smokeWorkflow, /github\.ref == 'refs\/heads\/main'/u, "only trusted main smoke runs may update the alert issue");
+  assert.match(smokeWorkflow, /issues:\s*write/u, "the alert job must have narrowly scoped issue permission");
+  assert.match(smokeWorkflow, /Production monitor: GrihaGrid public smoke failing/u, "the public smoke must maintain one bounded incident issue");
+  assert.match(smokeWorkflow, /gh issue (?:create|comment)/u, "failed public smoke must open or update the incident issue");
+  assert.match(smokeWorkflow, /gh issue close/u, "recovered public smoke must resolve its incident issue");
   assert.doesNotMatch(smokeWorkflow, /permissions:\s*[\s\S]*?contents:\s*write/u, "read-only smoke may not request content writes");
   assert.match(deployWorkflow, /workflow_run:[\s\S]*workflows:\s*\["CI"\]/u, "deployment must follow completed CI");
   assert.match(deployWorkflow, /concurrency:[\s\S]*queue:\s*max/u, "deployment runs must queue instead of replacing pending releases");

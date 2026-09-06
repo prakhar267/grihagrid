@@ -120,6 +120,9 @@ async function sharedEstimateDocumentCheck(origin, method) {
 export async function runSmoke(rawOrigin, options = {}) {
   const origin = canonicalOrigin(rawOrigin);
   const expectCheckout = options.expectCheckout === true;
+  const expectAiPlanningBrief = typeof options.expectAiPlanningBrief === "boolean"
+    ? options.expectAiPlanningBrief
+    : null;
   const expectedReleaseId = options.expectedReleaseId ? String(options.expectedReleaseId) : "";
   const legacyWorker = options.legacyWorker === true;
   const expectReportHandoff = options.expectReportHandoff !== false;
@@ -197,7 +200,16 @@ export async function runSmoke(rawOrigin, options = {}) {
   // can never be counted toward the sustained propagation window.
   checks.push(await jsonCheck(origin, readinessPath, readinessInit, (body) => {
     assert.equal(body.status, "ready");
+    assert.equal(body.checks?.database, "ok");
+    assert.equal(body.checks?.schema, "current");
+    assert.equal(body.checks?.rateLimit, "configured");
+    assert.equal(body.checks?.aiSchema, "current");
+    assert.equal(body.checks?.aiAbuseControl, "configured");
+    assert.equal(body.checks?.decisionSchema, "current");
+    assert.equal(body.checks?.paymentSchema, "current");
     assert.equal(body.checks?.familyAlignmentSchema, "current");
+    assert.equal(body.checks?.archiveSafetySchema, "current");
+    assert.equal(body.checks?.revisionSchema, "current");
     assert.equal(body.checks?.reportFeedbackSchema, "current");
     if (!legacyWorker) {
       assert.equal(body.checks?.reportShareSchema, "current");
@@ -206,16 +218,38 @@ export async function runSmoke(rawOrigin, options = {}) {
     }
     assert.equal(body.checks?.projectCreationSchema, "current");
     assert.equal(body.checks?.authSchema, "current");
+    assert.equal(body.checks?.accountLifecycleSchema, "current");
+    assert.equal(body.checks?.privateUploadSchema, "current");
+    assert.equal(body.checks?.professionalReviewSchema, "current");
+    assert.equal(body.checks?.transactionalEmail, "unavailable");
     assert.equal(body.checks?.privateStorage, "unavailable");
     assert.deepEqual(body.checks?.acceptingPaidPlans, expectCheckout ? ["decision_compare"] : []);
     assert.equal(body.capabilities?.freePlanning, true);
+    assert.equal(body.capabilities?.decisionCompare, true);
     assert.equal(body.capabilities?.familyAlignment, true);
+    assert.equal(body.capabilities?.briefCheck, true);
     assert.equal(body.capabilities?.reportFeedback, true);
     if (!legacyWorker) assert.equal(body.capabilities?.reportHandoff, expectReportHandoff);
     assert.equal(body.capabilities?.accountSecurity, true);
+    assert.equal(body.capabilities?.accountLifecycle, true);
+    assert.equal(body.capabilities?.emailVerification, false);
+    assert.equal(body.capabilities?.passwordRecovery, false);
+    assert.equal(body.capabilities?.professionalReview, true);
     assert.equal(body.capabilities?.privateUploads, false);
     assert.equal(body.capabilities?.paidCheckout, expectCheckout);
     assert.notEqual(body.capabilities?.paidFulfillment, true, "fulfillment is unexpectedly open");
+    if (expectAiPlanningBrief !== null) {
+      assert.equal(
+        body.checks?.ai,
+        expectAiPlanningBrief ? "configured" : "unavailable",
+        "AI readiness does not match the environment contract",
+      );
+      assert.equal(
+        body.capabilities?.aiPlanningBrief,
+        expectAiPlanningBrief,
+        "AI capability does not match the environment contract",
+      );
+    }
     if (expectedReleaseId) {
       assert.equal(body.releaseId, expectedReleaseId, "readiness is not serving the expected Worker version");
       assert.equal(body.capabilities?.paidFulfillment, false, "versioned readiness must expose closed fulfillment");
@@ -229,6 +263,7 @@ export async function runSmoke(rawOrigin, options = {}) {
     checkedAt: new Date().toISOString(),
     legacyWorker,
     expectReportHandoff,
+    expectAiPlanningBrief,
     checks,
   };
 }
@@ -236,8 +271,11 @@ export async function runSmoke(rawOrigin, options = {}) {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const origin = process.argv[2] || process.env.GRIHAGRID_SMOKE_ORIGIN;
   assert.ok(origin, "usage: npm run smoke -- https://worker.example or set GRIHAGRID_SMOKE_ORIGIN");
+  const aiExpectation = process.env.EXPECT_AI_PLANNING_BRIEF;
+  assert.match(aiExpectation || "", /^(?:|true|false)$/u, "EXPECT_AI_PLANNING_BRIEF must be true or false when set");
   const result = await runSmoke(origin, {
     expectCheckout: process.env.EXPECT_PAID_CHECKOUT === "true",
+    expectAiPlanningBrief: aiExpectation ? aiExpectation === "true" : undefined,
     expectedReleaseId: process.env.EXPECT_RELEASE_ID,
     legacyWorker: process.env.LEGACY_WORKER_COMPAT === "true",
     expectReportHandoff: process.env.EXPECT_REPORT_HANDOFF !== "false",
