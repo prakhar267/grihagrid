@@ -56,7 +56,7 @@ and a 30-minute production observation passed. The observation completed 20
 samples and 220 checks with zero invocation/server-error events. The
 human/external evidence in the table above remains independent of this result.
 
-## Noncommercial operations closure candidate — 2026-09-06
+## Noncommercial operations release — 2026-09-06
 
 - Release artifact actions are upgraded to their reviewed Node 24 generations
   and remain pinned by commit SHA.
@@ -75,8 +75,32 @@ human/external evidence in the table above remains independent of this result.
   workflow cannot enable checkout, paid fulfillment, a paid-plan allowlist, or
   private uploads.
 
-Protected exact-SHA CI/CodeQL and an exercised backup plus monitor failure/
-recovery route must be attached to the release that merges this candidate. A
-real remote recovery drill, independent two-region monitoring, human
+PRs [#62](https://github.com/prakhar267/grihagrid/pull/62) and
+[#64](https://github.com/prakhar267/grihagrid/pull/64) merged these controls as
+exact main SHA `cae4f34187b29decaff37053e5405aef513d595e`. Exact-main
+[CI](https://github.com/prakhar267/grihagrid/actions/runs/34030486356),
+[CodeQL](https://github.com/prakhar267/grihagrid/actions/runs/34030486016), and
+[deployment](https://github.com/prakhar267/grihagrid/actions/runs/34030813096)
+passed. Production readiness passed 20/20 samples at 264 ms p95, and the
+30-minute exact-version monitor passed 220/220 checks with zero invocation or
+server-tail events.
+
+Normal encrypted backup
+[34032877094](https://github.com/prakhar267/grihagrid/actions/runs/34032877094)
+proved encryption, checksum, isolated restore, SQLite integrity and zero
+foreign-key violations, retained only ciphertext plus the bounded seven-day
+manifest, and closed the earlier restore incident. Deliberate pre-export
+failure [34033189322](https://github.com/prakhar267/grihagrid/actions/runs/34033189322)
+opened owner-assigned incident
+[#65](https://github.com/prakhar267/grihagrid/issues/65); recovery backup
+[34033502508](https://github.com/prakhar267/grihagrid/actions/runs/34033502508)
+closed it only after repeating the full backup proof. Deliberate public-smoke
+failure [34033801131](https://github.com/prakhar267/grihagrid/actions/runs/34033801131)
+opened owner-assigned incident
+[#66](https://github.com/prakhar267/grihagrid/issues/66), and normal smoke
+[34033824978](https://github.com/prakhar267/grihagrid/actions/runs/34033824978)
+passed both origins and closed it.
+
+A real remote recovery drill, independent two-region monitoring, human
 accessibility/security/practitioner review, qualified legal approval, and named
 staffing remain external evidence and are not inferred from automation.
