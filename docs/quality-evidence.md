@@ -12,6 +12,36 @@ unchecked row into a claim.
 | Security and privacy | Cross-owner tests, one-time hashed tokens, exact-report hashes, immutable events, normalized images, fail-closed provider bindings, dependency audit, and CodeQL gate | Independent penetration review, provider/domain review, retention review, and incident exercise |
 | Professional quality | Verified-profile workflow and no-approval language | License verification by a named operator and review of representative reports by a suitably qualified practitioner |
 
+## Responsive production release — 2026-09-07
+
+- PR [#68](https://github.com/prakhar267/grihagrid/pull/68) head
+  `cd3ec7fd835c197acf28bd9ee08dbe47beb16968` passed exact-head
+  [CI](https://github.com/prakhar267/grihagrid/actions/runs/34051697700) and
+  [CodeQL](https://github.com/prakhar267/grihagrid/actions/runs/34051696648),
+  then squash-merged as `6cd4b76a6506a7455e12793a98b017f960fb54f5`.
+  Exact-main [CI](https://github.com/prakhar267/grihagrid/actions/runs/34052014393),
+  [CodeQL](https://github.com/prakhar267/grihagrid/actions/runs/34052014419),
+  and the [protected release](https://github.com/prakhar267/grihagrid/actions/runs/34052368832)
+  passed.
+- The locked local verification built the production bundle, passed all 460
+  tests and all 21 migrations on a fresh D1 database, completed production and
+  staging Worker dry-runs, reported zero high-severity audit findings, and left
+  payment, fulfillment, the payment-plan allowlist, and private uploads closed.
+- Staging `c7fb1e05-59ab-4d09-b53e-3fc0bbc5bf17` and production
+  `a3d6f043-820d-4e04-abdb-bea54bf0b498` serve 100% traffic for the exact SHA.
+  Staging readiness passed 20/20 samples at 290 ms p95; production passed 20/20
+  at 319 ms p95. Both authenticated canaries left zero project/report/share
+  residue and restored the report-handoff control.
+- The production monitor completed 20 samples, 220 requests and 220 successful
+  checks over the full 30 minutes. Request latency ranged from 10 to 897 ms and
+  averaged 59 ms; both exact-version tail aggregates recorded zero events and
+  zero unexpected stderr.
+- Deployed browser checks confirmed the fixed pricing-card reflow at 390, 601,
+  720, 799, 800, 900, and 1440 px. A 17-route audit at 390/720/1440 px produced
+  51 clean route/width results for overflow and basic semantic/accessibility
+  structure. This automated inspection does not replace the human keyboard,
+  VoiceOver/NVDA, independent security, legal, or practitioner reviews.
+
 ## Human test record template
 
 Record candidate SHA, environment/version, date/time zone, tester and role,

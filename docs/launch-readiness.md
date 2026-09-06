@@ -6,6 +6,40 @@
 noncommercial use. Paid checkout and fulfillment remain closed: NO-GO for
 accepting public money or issuing paid Decision Compare artifacts.**
 
+### 2026-09-07 responsive production release
+
+Live browser inspection found that the recommended pricing card extended 3 px
+beyond the viewport at a 720 px CSS width, which represents a common 200%-zoom
+desktop reflow width. PR [#68](https://github.com/prakhar267/grihagrid/pull/68)
+constrained that decorative bleed to the responsive page gutter and added a
+source regression assertion. Its exact head
+`cd3ec7fd835c197acf28bd9ee08dbe47beb16968` passed
+[CI](https://github.com/prakhar267/grihagrid/actions/runs/34051697700) and
+[CodeQL](https://github.com/prakhar267/grihagrid/actions/runs/34051696648)
+before squash merge as `6cd4b76a6506a7455e12793a98b017f960fb54f5`.
+Exact-main [CI](https://github.com/prakhar267/grihagrid/actions/runs/34052014393),
+[CodeQL](https://github.com/prakhar267/grihagrid/actions/runs/34052014419), and
+the [protected deployment](https://github.com/prakhar267/grihagrid/actions/runs/34052368832)
+passed.
+
+Staging version `c7fb1e05-59ab-4d09-b53e-3fc0bbc5bf17` and production
+version `a3d6f043-820d-4e04-abdb-bea54bf0b498` serve 100% traffic for that
+exact SHA. Both environments had no pending migration, passed sustained public
+smoke, the strict readiness-latency gate, an authenticated canary, zero canary
+database residue, and final report-handoff restoration. Production readiness
+passed 20/20 samples at 319 ms p95 against a strict 500 ms limit. The full
+30-minute observation from 2026-09-06 18:50:57Z to 19:20:57Z passed 220/220
+checks with zero invocation-tail and handled-server-error events.
+
+After deployment, the pricing route had no horizontal overflow at 390, 601,
+720, 799, 800, 900, or 1440 px and the paid option remained disabled with
+“Not accepting orders.” A wider automated browser audit checked 17 public
+routes at 390, 720, and 1440 px (51 route/width combinations): each retained
+one main landmark and one H1, with no horizontal overflow, duplicate IDs,
+unnamed visible buttons, unlabeled visible fields, or images missing `alt`.
+This is deployed engineering evidence, not the still-required human keyboard
+and assistive-technology review.
+
 ### 2026-09-06 noncommercial operations release
 
 PR [#62](https://github.com/prakhar267/grihagrid/pull/62) introduced the
