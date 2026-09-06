@@ -21,6 +21,7 @@ const files = Object.freeze({
   devVars: new URL("../.dev.vars.example", import.meta.url),
   ci: new URL("../.github/workflows/ci.yml", import.meta.url),
   smokeWorkflow: new URL("../.github/workflows/production-smoke.yml", import.meta.url),
+  productionBackup: new URL("../.github/workflows/production-backup.yml", import.meta.url),
   deployWorkflow: new URL("../.github/workflows/deploy.yml", import.meta.url),
   releaseScope: new URL("./release-scope.mjs", import.meta.url),
   smoke: new URL("./smoke.mjs", import.meta.url),
@@ -62,7 +63,7 @@ function workflowStep(source, name) {
 }
 
 export async function checkOpsConfig() {
-  const [wrangler, packageText, gitignore, devVars, ci, smokeWorkflow, deployWorkflow, releaseScope, smoke, waitForRelease, readinessLatency, authenticatedSmoke, canarySessionFence, runCanarySessionFence, releaseDbEvidence, worker] = await Promise.all(
+  const [wrangler, packageText, gitignore, devVars, ci, smokeWorkflow, productionBackup, deployWorkflow, releaseScope, smoke, waitForRelease, readinessLatency, authenticatedSmoke, canarySessionFence, runCanarySessionFence, releaseDbEvidence, worker] = await Promise.all(
     Object.values(files).map((file) => readFile(file, "utf8")),
   );
   const packageJson = JSON.parse(packageText);
@@ -157,7 +158,7 @@ export async function checkOpsConfig() {
   assert.match(ci, /Reject pull request edits to existing migrations/u, "required CI must enforce migration immutability before merge");
   assert.match(ci, /new migrations must follow the trusted 0012 baseline/u, "required CI must reject low-sequence migration policy bypasses");
   assert.match(ci, /npm audit --audit-level=high/u, "CI must fail on high-severity dependency findings");
-  for (const [name, workflow] of [["CI", ci], ["public smoke", smokeWorkflow], ["deployment", deployWorkflow]]) {
+  for (const [name, workflow] of [["CI", ci], ["public smoke", smokeWorkflow], ["production backup", productionBackup], ["deployment", deployWorkflow]]) {
     assert.match(
       workflow,
       /actions\/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1/u,
@@ -178,7 +179,33 @@ export async function checkOpsConfig() {
   assert.match(smokeWorkflow, /Production monitor: GrihaGrid public smoke failing/u, "the public smoke must maintain one bounded incident issue");
   assert.match(smokeWorkflow, /gh issue (?:create|comment)/u, "failed public smoke must open or update the incident issue");
   assert.match(smokeWorkflow, /gh issue close/u, "recovered public smoke must resolve its incident issue");
+  assert.match(smokeWorkflow, /inputs\.exercise_alert == true/u, "public smoke must expose a deliberate alert exercise");
+  assert.match(smokeWorkflow, /--assignee "\$GITHUB_REPOSITORY_OWNER"/u, "new public-smoke incidents must route to the repository owner");
   assert.doesNotMatch(smokeWorkflow, /permissions:\s*[\s\S]*?contents:\s*write/u, "read-only smoke may not request content writes");
+  assert.match(productionBackup, /cron:\s*"47 1,13 \* \* \*"/u, "encrypted D1 backup must run at least twice daily");
+  assert.match(productionBackup, /if: github\.ref == 'refs\/heads\/main'/u, "scheduled backup may receive production secrets only from trusted main");
+  assert.match(productionBackup, /environment:\s*[\s\S]*?name:\s*production/u, "scheduled D1 backup must use the protected production environment");
+  assert.match(productionBackup, /inputs\.exercise_alert == true/u, "scheduled D1 backup must expose a deliberate alert exercise");
+  assert.match(productionBackup, /wrangler d1 export DB --remote --env="" --skip-confirmation/u, "scheduled backup must export the production D1 binding");
+  assert.match(productionBackup, /wrangler d1 time-travel info DB --env="" --json/u, "scheduled backup must record a Time Travel recovery point");
+  assert.match(productionBackup, /backup-crypto\.mjs encrypt/u, "scheduled backup must use authenticated encryption");
+  assert.match(productionBackup, /backup-crypto\.mjs decrypt/u, "scheduled backup must decrypt-verify before storage");
+  assert.match(productionBackup, /wrangler d1 execute DB --local[\s\S]*--file "\$verified_backup"/u, "scheduled backup must rehearse an isolated restore");
+  assert.match(productionBackup, /PRAGMA integrity_check;/u, "scheduled backup restore must pass SQLite integrity verification");
+  assert.match(productionBackup, /PRAGMA foreign_key_check;/u, "scheduled backup restore must pass foreign-key verification");
+  assert.match(productionBackup, /actions\/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a/u, "scheduled backup must use the reviewed upload-artifact v7 pin");
+  assert.match(productionBackup, /retention-days:\s*7/u, "scheduled encrypted backups must use the existing bounded seven-day evidence window");
+  assert.match(productionBackup, /issues:\s*write/u, "backup alert must have narrowly scoped issue permission");
+  assert.match(productionBackup, /--assignee "\$GITHUB_REPOSITORY_OWNER"/u, "new backup incidents must route to the repository owner");
+  assert.match(productionBackup, /gh issue close/u, "a recovered backup must resolve its incident issue");
+  assert.doesNotMatch(productionBackup, /permissions:\s*[\s\S]*?contents:\s*write/u, "backup workflow may not request repository writes");
+  const scheduledExport = workflowStep(productionBackup, "Export production D1 and record recovery point");
+  const scheduledEncryption = workflowStep(productionBackup, "Encrypt, decrypt-verify, and rehearse an isolated restore");
+  assert.match(scheduledExport, /CLOUDFLARE_API_TOKEN:\s*\$\{\{ secrets\.CLOUDFLARE_API_TOKEN \}\}/u, "D1 export must receive the Cloudflare credential");
+  assert.doesNotMatch(scheduledExport, /D1_BACKUP_PASSPHRASE/u, "D1 export must not receive the backup passphrase");
+  assert.match(scheduledEncryption, /D1_BACKUP_PASSPHRASE:\s*\$\{\{ secrets\.D1_BACKUP_PASSPHRASE \}\}/u, "backup encryption must receive its passphrase");
+  assert.doesNotMatch(scheduledEncryption, /CLOUDFLARE_(?:API_TOKEN|ACCOUNT_ID)/u, "backup encryption and restore rehearsal must not receive Cloudflare credentials");
+  assert.doesNotMatch(productionBackup, /path:\s*.*(?:d1-export\.sql|d1-verified\.sql)(?:\s|$)/u, "plaintext D1 exports must never enter an artifact");
   assert.match(deployWorkflow, /workflow_run:[\s\S]*workflows:\s*\["CI"\]/u, "deployment must follow completed CI");
   assert.match(deployWorkflow, /concurrency:[\s\S]*queue:\s*max/u, "deployment runs must queue instead of replacing pending releases");
   assert.match(deployWorkflow, /checks:\s*read/u, "deployment gate must read exact-SHA check results");
@@ -821,7 +848,9 @@ export async function checkOpsConfig() {
   assert.match(deployWorkflow, /npm run check:ops/u, "deployment must revalidate fail-closed configuration");
   assert.match(deployWorkflow, /npm run check:migrations/u, "deployment must validate the full local migration chain");
   assert.match(deployWorkflow, /check-migration-policy\.mjs/u, "privileged migration jobs must recheck the forward-only SQL policy");
-  assert.match(deployWorkflow, /actions\/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093/u, "privileged jobs must restore the validated build on fresh runners");
+  assert.match(deployWorkflow, /actions\/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c/u, "privileged jobs must restore the validated build on fresh runners");
+  assert.match(deployWorkflow, /actions\/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a/u, "release evidence must use the reviewed upload-artifact v7 pin");
+  assert.doesNotMatch(deployWorkflow, /actions\/(?:upload|download)-artifact@(?:ea165f8d65b6e75b540449e92b4886f43607fa02|d3f86a106a0bac45b974a628896c90dbdf5c8093)/u, "deployment must not use the deprecated Node 20 artifact actions");
   assert.match(deployWorkflow, /path:\s*\$\{\{ runner\.temp \}\}\/grihagrid-release-build/u, "validated builds must restore outside the candidate checkout");
   assert.match(deployWorkflow, /rm -rf -- "\$GITHUB_WORKSPACE\/dist"/u, "privileged jobs must remove candidate-controlled dist files before installing the validated build");
   assert.match(deployWorkflow, /npm install --global --ignore-scripts --no-audit --no-fund[\s\\]+--registry=https:\/\/registry\.npmjs\.org "wrangler@\$WRANGLER_VERSION"/u, "privileged jobs must use the public registry without candidate install hooks");
@@ -832,6 +861,8 @@ export async function checkOpsConfig() {
     productionOrigin: quotedVariable(production, "APP_ORIGIN"),
     stagingOrigin: quotedVariable(staging, "APP_ORIGIN"),
     paidDefaults: "closed",
+    scheduledBackup: "encrypted-and-restore-verified",
+    incidentRouting: "owner-assigned-and-exercisable",
   };
 }
 

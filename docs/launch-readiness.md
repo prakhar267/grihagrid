@@ -5,10 +5,22 @@
 **The free public demonstration is live with paid checkout closed. NO-GO for
 accepting public money or issuing paid Decision Compare artifacts.**
 
-### 2026-09-06 free-production candidate
+### 2026-09-06 free-production release
 
-The repository-controlled free-demo path is ready for protected CI and staged
-promotion. Checkout, fulfillment and the paid-plan allowlist remain closed, the
+PR [#61](https://github.com/prakhar267/grihagrid/pull/61) was squash-merged as
+`737f1df28dbb2dba4e809fa82ea2d1473df3e6fa`. Exact-SHA
+[CI](https://github.com/prakhar267/grihagrid/actions/runs/34002022259),
+[CodeQL](https://github.com/prakhar267/grihagrid/actions/runs/34002022029),
+[staged deployment](https://github.com/prakhar267/grihagrid/actions/runs/34002273249),
+and [post-release public smoke](https://github.com/prakhar267/grihagrid/actions/runs/34002881957)
+all passed. Staging Worker version
+`00d060d0-02ea-4691-b090-2c610ed83131` and production Worker version
+`2572bf74-55d2-475e-b637-feb41bf22f24` were bound to the exact SHA. The final
+30-minute production observation passed 20 samples and 220 checks with zero
+invocation/server-error events.
+
+The repository-controlled free-demo path is therefore released. Checkout,
+fulfillment and the paid-plan allowlist remain closed, the
 canonical origin remains the existing `workers.dev` hostname, and unavailable
 email and private-upload dependencies remain visibly fail-closed. The public
 smoke now asserts every current free schema/capability, requires the reviewed
@@ -28,8 +40,12 @@ design service. Before broad public promotion, an accountable owner must still:
   practitioner-quality and security reviews recorded in `docs/quality-evidence.md`.
 
 Custom-domain setup, transactional email tied to a verified sender domain, R2
-uploads, and all payment/provider work are outside this free-release candidate.
+uploads, and all payment/provider work are outside this free release.
 No UI or readiness response claims those dependencies are available.
+
+The detailed candidate gates below are retained as historical audit records.
+Their old “not recorded until release” wording does not override the exact-SHA
+release evidence above; unchecked human approvals remain unchecked.
 
 ### 2026-09-02 engineering readiness update
 
@@ -69,10 +85,10 @@ paid-closed product release. They remain concept-stage planning aids rather than
 feasibility, code, design, structural or construction approval. Paid checkout,
 fulfillment, the paid-plan allowlist and private uploads remain closed.
 
-## Login-attempt fence release gate
+## Historical login-attempt fence candidate gate
 
-Distributed account login fencing is **not recorded as live until the protected
-release finishes**. The candidate adds migration
+Distributed account login fencing was recorded live by the protected release
+above. This historical checklist covered migration
 `0017_login_attempt_fence.sql`; it does not add recovery, MFA, email
 verification, account deletion, payment, fulfillment, upload or professional
 capability.
@@ -137,10 +153,10 @@ capability.
 Until exact dated evidence replaces this gate, the existing production login
 must not be described as having the migration 0017 per-account guarantee.
 
-## Professional Handoff release gate
+## Historical Professional Handoff candidate gate
 
-Selective report handoff is **not recorded as live until the protected release
-finishes**. The candidate adds migration `0016_report_handoff_links.sql` and a
+Selective report handoff was recorded live by the protected release above. This
+historical checklist covered migration `0016_report_handoff_links.sql` and a
 free bearer-link flow for one exact immutable schema-v2 report. It does not
 enable checkout, fulfillment, uploads, professional review, or any claim of
 architect/engineer acceptance.

@@ -4,6 +4,12 @@ on:
   schedule:
     - cron: "23 * * * *"
   workflow_dispatch:
+    inputs:
+      exercise_alert:
+        description: "Fail the production probe after real checks to test incident routing"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -44,6 +50,12 @@ jobs:
           EXPECT_AI_PLANNING_BRIEF: ${{ matrix.expect_ai }}
         run: node scripts/smoke.mjs
 
+      - name: Exercise the public-smoke failure route
+        if: ${{ inputs.exercise_alert == true && matrix.environment == 'production' }}
+        run: |
+          echo "::error::Deliberate public-smoke alert exercise requested"
+          exit 1
+
   alert:
     name: Maintain the public-smoke incident issue
     if: ${{ always() && needs.smoke.result != 'cancelled' && github.ref == 'refs/heads/main' }}
@@ -74,5 +86,5 @@ jobs:
           if [ -n "$issue_number" ]; then
             gh issue comment "$issue_number" --repo "$GITHUB_REPOSITORY" --body "$body"
           else
-            gh issue create --repo "$GITHUB_REPOSITORY" --title "$ISSUE_TITLE" --body "$body"
+            gh issue create --repo "$GITHUB_REPOSITORY" --assignee "$GITHUB_REPOSITORY_OWNER" --title "$ISSUE_TITLE" --body "$body"
           fi
