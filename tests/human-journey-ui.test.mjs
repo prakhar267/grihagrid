@@ -38,6 +38,13 @@ test("the tablet workspace track can shrink below its navigation content width",
   );
 });
 
+test("the tablet authentication back action reserves space before the form heading", () => {
+  assert.match(
+    styles,
+    /@media \(max-width: 900px\)[\s\S]*?\.auth-form \.back-action \{[\s\S]*?margin-bottom: clamp\(2rem, 4vw, 3rem\);[\s\S]*?position: static;[\s\S]*?align-self: flex-start;/u,
+  );
+});
+
 test("authentication capability copy never promises unavailable email delivery", () => {
   const auth = app.slice(app.indexOf("function AuthPage("), app.indexOf("function accountSecurityFailure("));
   const recovery = app.slice(app.indexOf("function PasswordRecoveryPage("), app.indexOf("function EmailVerificationPage("));
