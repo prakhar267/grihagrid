@@ -6175,6 +6175,12 @@ blockquote {
     position: relative;
   }
 
+  .auth-form .back-action {
+    margin-bottom: clamp(2rem, 4vw, 3rem);
+    position: static;
+    align-self: flex-start;
+  }
+
   .workspace {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -6840,10 +6846,6 @@ blockquote {
   .auth-form {
     min-height: 630px;
     padding: 5.5rem 1.25rem 3rem;
-  }
-
-  .auth-form .back-action {
-    top: 1.5rem;
   }
 
   .auth-form h1 {
