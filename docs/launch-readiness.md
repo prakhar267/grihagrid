@@ -6,6 +6,61 @@
 noncommercial use. Paid checkout and fulfillment remain closed: NO-GO for
 accepting public money or issuing paid Decision Compare artifacts.**
 
+### 2026-09-07 runtime and tablet-auth production release
+
+PR [#70](https://github.com/prakhar267/grihagrid/pull/70) updated the supported
+runtime toolchain to React/React DOM 19.2.8, Vite 8.2.2,
+`@vitejs/plugin-react` 6.1.1, and Wrangler 4.129.0. It also corrected the signed-
+in workspace reflow at 720 px and added a regression assertion. Its exact head
+`8c19a7e7ea5b8267f5a4327c07edd2b5f840d5f2` passed
+[CI](https://github.com/prakhar267/grihagrid/actions/runs/34056177988) and
+[CodeQL](https://github.com/prakhar267/grihagrid/actions/runs/34056176670), then
+squash-merged as `2f1498aa9f46f42480f7e70716d5f2a2e43139c1`.
+Exact-main [CI](https://github.com/prakhar267/grihagrid/actions/runs/34056495039),
+[CodeQL](https://github.com/prakhar267/grihagrid/actions/runs/34056494493), and
+the [protected deployment](https://github.com/prakhar267/grihagrid/actions/runs/34056840262)
+passed. Staging `9cc45632-bd33-4e39-a284-0202c0e8bd6f` and production
+`da2f748b-4c64-4cef-997e-2f0ce5fb0741` passed 20/20 readiness samples at
+366 ms and 246 ms p95 respectively. The 30-minute production observation
+completed 20 samples and 220/220 checks, with request latency from 9 to 270 ms,
+48 ms average, and zero exact-version tail events.
+
+The deployed browser review then found that the tablet authentication back
+action could overlap the form kicker. PR
+[#71](https://github.com/prakhar267/grihagrid/pull/71) moved that control into
+normal flow through the tablet breakpoint and added a regression assertion.
+Its exact head `49cb5f87a14e093ebb565e2d8c672f5aca5ca4f4` passed
+[CI](https://github.com/prakhar267/grihagrid/actions/runs/34057793849) and
+[CodeQL](https://github.com/prakhar267/grihagrid/actions/runs/34057792671), then
+squash-merged as `da348f23e644cd9cc78efffab7c7b4cd008fb101`.
+Exact-main [CI](https://github.com/prakhar267/grihagrid/actions/runs/34059055433)
+and [CodeQL](https://github.com/prakhar267/grihagrid/actions/runs/34059054828)
+passed. Protected deployment
+[34059381087](https://github.com/prakhar267/grihagrid/actions/runs/34059381087)
+promoted staging version `9093a84c-9520-4cfd-b21a-df3ea43d89fd` after 20/20
+readiness samples at 253 ms p95, its authenticated canary, zero canary residue,
+and final report-handoff restoration. Production version
+`892cd66a-288a-4072-9dad-591835786477` then passed 20/20 readiness samples at
+249 ms p95, its authenticated canary with zero residue, and final handoff
+restoration. The full observation from 2026-09-06 21:05:49Z to 21:35:49Z
+passed 220/220 checks; latency ranged from 8 to 353 ms and averaged 46 ms,
+with zero exact-version invocation or handled-server-error tail events.
+
+The final deployed browser audit covered 17 public routes at 390, 720, and
+1440 px (51 route/width combinations), plus all five authentication routes at
+390, 720, 900, and 901 px. Every result was clean for horizontal overflow and
+the tested structural/accessibility heuristics; the authentication back action
+remained separated from its heading at every breakpoint. Repository alerts
+were also clear: zero open Dependabot, CodeQL, or secret-scanning alerts.
+Required CI and CodeQL checks, administrator enforcement, conversation
+resolution, and blocked force pushes/deletions remain configured on `main`.
+
+Checkout, fulfillment, paid-plan allowlisting, private uploads, transactional
+email, and custom-domain work remain closed. Human legal, keyboard/assistive-
+technology, independent security/privacy, practitioner-quality, staffing,
+external two-region monitoring, and governed remote-restore evidence are still
+external approvals; these automated results do not represent those approvals.
+
 ### 2026-09-07 responsive production release
 
 Live browser inspection found that the recommended pricing card extended 3 px

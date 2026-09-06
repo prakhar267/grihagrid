@@ -12,6 +12,63 @@ unchecked row into a claim.
 | Security and privacy | Cross-owner tests, one-time hashed tokens, exact-report hashes, immutable events, normalized images, fail-closed provider bindings, dependency audit, and CodeQL gate | Independent penetration review, provider/domain review, retention review, and incident exercise |
 | Professional quality | Verified-profile workflow and no-approval language | License verification by a named operator and review of representative reports by a suitably qualified practitioner |
 
+## Runtime and tablet-auth production release — 2026-09-07
+
+- PR [#70](https://github.com/prakhar267/grihagrid/pull/70) head
+  `8c19a7e7ea5b8267f5a4327c07edd2b5f840d5f2` passed exact-head
+  [CI](https://github.com/prakhar267/grihagrid/actions/runs/34056177988) and
+  [CodeQL](https://github.com/prakhar267/grihagrid/actions/runs/34056176670),
+  then squash-merged as `2f1498aa9f46f42480f7e70716d5f2a2e43139c1`.
+  Exact-main [CI](https://github.com/prakhar267/grihagrid/actions/runs/34056495039),
+  [CodeQL](https://github.com/prakhar267/grihagrid/actions/runs/34056494493),
+  and [deployment](https://github.com/prakhar267/grihagrid/actions/runs/34056840262)
+  passed. The local locked gate built successfully, passed all 461 tests and
+  all 21 migrations, completed both Worker dry-runs, and reported zero high-
+  severity audit findings.
+- That release serves React/React DOM 19.2.8, Vite 8.2.2,
+  `@vitejs/plugin-react` 6.1.1, and Wrangler 4.129.0. Staging
+  `9cc45632-bd33-4e39-a284-0202c0e8bd6f` passed 20/20 readiness samples at
+  366 ms p95; production `da2f748b-4c64-4cef-997e-2f0ce5fb0741` passed 20/20
+  at 246 ms p95. Its full 30-minute observation passed 220/220 checks; latency
+  ranged from 9 to 270 ms and averaged 48 ms, with zero invocation-tail or
+  handled-server-error events.
+- PR [#71](https://github.com/prakhar267/grihagrid/pull/71) head
+  `49cb5f87a14e093ebb565e2d8c672f5aca5ca4f4` reserved normal-flow space for
+  the tablet authentication back action. Exact-head
+  [CI](https://github.com/prakhar267/grihagrid/actions/runs/34057793849) and
+  [CodeQL](https://github.com/prakhar267/grihagrid/actions/runs/34057792671)
+  passed before squash merge as `da348f23e644cd9cc78efffab7c7b4cd008fb101`.
+  Exact-main [CI](https://github.com/prakhar267/grihagrid/actions/runs/34059055433),
+  [CodeQL](https://github.com/prakhar267/grihagrid/actions/runs/34059054828),
+  and protected [deployment](https://github.com/prakhar267/grihagrid/actions/runs/34059381087)
+  passed as the final release gates. The local locked gate built successfully,
+  passed all 462 tests and 21 migrations, completed both Worker dry-runs, and
+  reported zero high-severity audit findings.
+- Staging `9093a84c-9520-4cfd-b21a-df3ea43d89fd` served 100% traffic for the
+  exact release SHA and passed 20/20 readiness samples at 253 ms p95. Its
+  authenticated canary completed the owner-scoped project, report, feedback,
+  share/revoke, paid-closed, upload-closed, cleanup, and logout path; it left
+  zero project/report/share residue and restored the report-handoff control.
+- Production `892cd66a-288a-4072-9dad-591835786477` also served 100% traffic
+  for the exact release SHA and passed 20/20 readiness samples at 249 ms p95.
+  Its authenticated canary left zero project/report/share residue, restored
+  its session baseline, and restored the enabled report-handoff control. The
+  full observation from 2026-09-06 21:05:49Z to 21:35:49Z passed 220/220
+  checks; latency ranged from 8 to 353 ms and averaged 46 ms. Exact-version
+  invocation and handled-server-error tails each recorded zero events and zero
+  bytes, remained alive through the monitor, and stopped only during teardown.
+- The final production browser pass produced 51 clean public route/width
+  checks at 390/720/1440 px and 20 clean authentication breakpoint checks at
+  390/720/900/901 px. It found no horizontal overflow or tested structural-
+  accessibility defect, and confirmed a non-overlapping 32–93 px gap between
+  the back action and heading. This does not substitute for keyboard-only,
+  VoiceOver/NVDA, independent security, legal, or practitioner review.
+- Repository APIs reported zero open Dependabot, CodeQL, or secret-scanning
+  alerts. `main` still requires exact CI and CodeQL checks, enforces those rules
+  for administrators and resolved conversations, and disallows force pushes
+  and deletion. Payment, fulfillment, the paid-plan allowlist, private uploads,
+  email delivery, and custom-domain dependencies remain fail-closed.
+
 ## Responsive production release — 2026-09-07
 
 - PR [#68](https://github.com/prakhar267/grihagrid/pull/68) head
