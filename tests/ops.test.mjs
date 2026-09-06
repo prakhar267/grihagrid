@@ -124,7 +124,16 @@ test("read-only smoke verifies private documents, health, readiness, estimate an
         status: "ready",
         releaseId: "11111111-1111-4111-8111-111111111111",
         checks: {
+          database: "ok",
+          schema: "current",
+          rateLimit: "configured",
+          aiSchema: "current",
+          aiAbuseControl: "configured",
+          decisionSchema: "current",
+          paymentSchema: "current",
           familyAlignmentSchema: "current",
+          archiveSafetySchema: "current",
+          revisionSchema: "current",
           reportFeedbackSchema: "current",
           ...(legacyReadiness ? {} : {
             reportShareSchema: "current",
@@ -133,15 +142,27 @@ test("read-only smoke verifies private documents, health, readiness, estimate an
           }),
           projectCreationSchema: "current",
           authSchema: "current",
+          accountLifecycleSchema: "current",
+          privateUploadSchema: "current",
+          professionalReviewSchema: "current",
+          transactionalEmail: "unavailable",
+          ai: "configured",
           privateStorage: "unavailable",
           acceptingPaidPlans: [],
         },
         capabilities: {
           freePlanning: true,
+          aiPlanningBrief: true,
+          decisionCompare: true,
           familyAlignment: true,
+          briefCheck: true,
           reportFeedback: true,
           ...(legacyReadiness ? {} : { reportHandoff: handoffEnabled }),
           accountSecurity: true,
+          accountLifecycle: true,
+          emailVerification: false,
+          passwordRecovery: false,
+          professionalReview: true,
           privateUploads: false,
           paidCheckout: false,
           paidFulfillment: false,
@@ -189,7 +210,10 @@ test("read-only smoke verifies private documents, health, readiness, estimate an
   };
 
   try {
-    const result = await runSmoke("https://worker.example.test", { expectedReleaseId: "11111111-1111-4111-8111-111111111111" });
+    const result = await runSmoke("https://worker.example.test", {
+      expectedReleaseId: "11111111-1111-4111-8111-111111111111",
+      expectAiPlanningBrief: true,
+    });
     assert.equal(result.checks.length, 11);
     assert.equal(result.checks.find((check) => check.path === "/api/readiness")?.attempts, 2);
     assert.deepEqual(requested, [
@@ -218,6 +242,12 @@ test("read-only smoke verifies private documents, health, readiness, estimate an
     assert.equal(cacheBusted.checks.find((check) => check.path.includes("/api/readiness"))?.attempts, 2);
     assert.deepEqual(readinessProbes.slice(-2), ["7-1786000000000", "7-1786000000000"]);
     assert.deepEqual(readinessCacheControls.slice(-2), ["no-cache", "no-cache"]);
+
+    readinessAttempts = 0;
+    await assert.rejects(
+      () => runSmoke("https://worker.example.test", { expectAiPlanningBrief: false }),
+      /AI readiness does not match the environment contract/u,
+    );
 
     requested.length = 0;
     readinessAttempts = 0;

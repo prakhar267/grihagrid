@@ -31,3 +31,24 @@ A fully migrated local Worker completed 60 bounded requests at concurrency six:
 20 health, 20 readiness, and 20 estimate requests. Failures were zero; nearest-
 rank p95 was 50 ms and maximum was 56 ms. This is local regression evidence,
 not a production capacity claim or multi-region observation.
+
+## Free-production candidate rehearsal — 2026-09-06
+
+- A locked `npm ci` install and `npm run check` completed successfully: the
+  production bundle built, all 459 serialized tests passed, and operational
+  configuration validation confirmed paid defaults closed.
+- All 21 migrations applied to a fresh local D1 database. Production and
+  staging Worker dry-runs completed with isolated D1/KV resources and no R2 or
+  paid bindings. `npm audit --audit-level=high` reported zero vulnerabilities.
+- The strengthened public smoke passed 11 checks against each live origin.
+  Production reported configured AI; staging reported unavailable AI; both
+  reported current schemas, available free capabilities, unavailable private
+  storage/email delivery, and closed checkout/fulfillment.
+- The sample Architecture Design Document rendered as a tagged, unencrypted,
+  27-page A4 PDF. All rendered pages were visually inspected as a contact sheet;
+  the eight-row responsibility matrix stayed together on its own page and
+  screen-only skip navigation was absent from the final render.
+
+This is pre-merge engineering evidence. Protected exact-SHA CI, CodeQL,
+staging/production promotion and post-deploy canaries remain required, and the
+human/external evidence in the table above remains independent of this result.

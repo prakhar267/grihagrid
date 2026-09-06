@@ -174,7 +174,7 @@ test("public report projection is selected, bounded, and recursively redacted", 
     "estimatedFloorPlateSqft", "estimatedOpenAreaSqft", "suggestedSpaces",
     "architecture",
   ]);
-  assert.equal(sections.programme.architecture.version, 1);
+  assert.equal(sections.programme.architecture.version, 2);
   assert.equal(sections.programme.architecture.siteBrief.city, "Pune");
   assert.equal(sections.programme.architecture.siteBrief.facing, "East");
   assert.ok(sections.programme.architecture.rooms.length >= 1);

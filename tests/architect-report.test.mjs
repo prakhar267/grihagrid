@@ -36,7 +36,7 @@ test("architect handoff is deterministic, detailed, and arithmetically reconcile
   const first = buildArchitecturalHandoff(input, estimate);
   const second = buildArchitecturalHandoff(structuredClone(input), structuredClone(estimate));
   assert.deepEqual(first, second);
-  assert.equal(first.version, 1);
+  assert.equal(first.version, 2);
   assert.equal(first.stage, "Concept-design handoff");
   assert.equal(first.siteBrief.city, "Delhi");
   assert.equal(first.siteBrief.bedrooms, 3);
@@ -52,9 +52,18 @@ test("architect handoff is deterministic, detailed, and arithmetically reconcile
     first.areaReconciliation.programmeNetSqft,
   );
   assert.equal(first.floorStrategies.reduce((sum, floor) => sum + floor.targetAreaSqft, 0), 1_830);
+  assert.equal(first.levelAreaSchedule.reduce((sum, floor) => sum + floor.grossTargetSqft, 0), 1_830);
+  assert.equal(first.levelAreaSchedule.reduce((sum, floor) => sum + floor.scheduledNetSqft, 0), first.areaReconciliation.programmeNetSqft);
+  assert.equal(first.levelAreaSchedule.reduce((sum, floor) => sum + floor.residualSqft, 0), first.areaReconciliation.planningAllowanceSqft);
   assert.ok(first.rooms.length >= 15);
+  assert.ok(first.rooms.every((room) => room.performance?.criticalCheck));
+  assert.equal(first.requirementRegister.length, 10);
+  assert.equal(first.statutoryChecklist.length, 12);
   assert.ok(first.verificationRegister.length >= 10);
   assert.ok(first.structureAndServices.length >= 7);
+  assert.equal(first.consultantMatrix.length, 8);
+  assert.equal(first.decisionRegister.length, 9);
+  assert.equal(first.stageGateChecklist.length, 4);
   assert.ok(first.drawingRegister.length >= 8);
   assert.ok(first.references.some((reference) => /Unified Building Bye-Laws for Delhi/iu.test(reference.title)));
   assert.ok(first.references.every((reference) => /verify|confirm|test|identify|use only/iu.test(reference.use)));
@@ -82,6 +91,10 @@ test("public architect programme excludes free-text style and remains bounded", 
   assert.equal(serialized.includes("owner@example.test"), false);
   assert.equal(serialized.includes("private note"), false);
   assert.equal(Object.hasOwn(publicPack.siteBrief, "styleDirection"), false);
+  assert.equal(publicPack.version, 2);
+  assert.equal(publicPack.requirementRegister.length, 10);
+  assert.equal(publicPack.statutoryChecklist.length, 12);
+  assert.ok(publicPack.rooms.every((room) => room.performance?.services));
   assert.ok(publicPack.rooms.length <= 64);
   assert.ok(publicPack.references.length <= 16);
   assert.equal(normalizeArchitecturalHandoff(publicPack)?.siteBrief.city, "Delhi");
@@ -119,4 +132,13 @@ test("unknown evidence stays missing instead of becoming an optimistic default",
     assert.equal(pack.verificationRegister.find((item) => item.topic === topic)?.status, "Missing", topic);
   }
   assert.match(pack.references[0].use, /must identify and retrieve the current official instruments/iu);
+});
+
+test("saved handoff titles render with the current Architecture Design Document label", () => {
+  const pack = buildArchitecturalHandoff(
+    { width: 30, length: 50, city: "Delhi", floors: "G+1", bedrooms: 3, quality: "Signature" },
+    { city: "Delhi", floors: "G+1", quality: "Signature", plotSqft: 1500, builtUpSqft: 1830 },
+  );
+  const normalized = normalizeArchitecturalHandoff({ ...pack, title: "Legacy document label" });
+  assert.equal(normalized.title, "Architecture Design Document");
 });

@@ -5,6 +5,32 @@
 **The free public demonstration is live with paid checkout closed. NO-GO for
 accepting public money or issuing paid Decision Compare artifacts.**
 
+### 2026-09-06 free-production candidate
+
+The repository-controlled free-demo path is ready for protected CI and staged
+promotion. Checkout, fulfillment and the paid-plan allowlist remain closed, the
+canonical origin remains the existing `workers.dev` hostname, and unavailable
+email and private-upload dependencies remain visibly fail-closed. The public
+smoke now asserts every current free schema/capability, requires the reviewed
+production/staging AI states, and maintains one bounded GitHub incident issue
+for failures from trusted `main`. The Architecture Design Document v2 also has
+a separately printable, A4-verified professional handoff with explicit brief,
+area, performance, statutory, responsibility and decision registers.
+
+This engineering result is not authority to market the site as an approved
+design service. Before broad public promotion, an accountable owner must still:
+
+- approve the privacy/terms/disclaimer and brand copy with qualified counsel;
+- verify that `hello@grihagrid.in` is staffed and name the incident owner;
+- subscribe that owner to the smoke issue and deliberately test the notification
+  and recovery path;
+- run independent two-region availability checks plus the manual accessibility,
+  practitioner-quality and security reviews recorded in `docs/quality-evidence.md`.
+
+Custom-domain setup, transactional email tied to a verified sender domain, R2
+uploads, and all payment/provider work are outside this free-release candidate.
+No UI or readiness response claims those dependencies are available.
+
 ### 2026-09-02 engineering readiness update
 
 This candidate adds migrations `0018`–`0020` for account lifecycle, normalized
