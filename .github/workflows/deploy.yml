@@ -19,7 +19,7 @@ concurrency:
 
 env:
   RELEASE_SHA: ${{ github.event_name == 'workflow_dispatch' && github.sha || github.event.workflow_run.head_sha }}
-  WRANGLER_VERSION: "4.122.0"
+  WRANGLER_VERSION: "4.129.0"
   BACKUP_KEY_VERSION: "2026-08-15-1"
 
 jobs:
