@@ -97,17 +97,24 @@ jobs:
           encrypted_sha256="$(sha256sum "$encrypted_backup" | awk '{ print $1 }')"
 
           npx wrangler d1 execute DB --local --persist-to "$RESTORE_DIRECTORY/d1" --file "$verified_backup" > /dev/null
-          npx wrangler d1 execute DB --local --persist-to "$RESTORE_DIRECTORY/d1" --command "PRAGMA integrity_check;" --json > "$RESTORE_DIRECTORY/integrity.json"
-          npx wrangler d1 execute DB --local --persist-to "$RESTORE_DIRECTORY/d1" --command "PRAGMA foreign_key_check;" --json > "$RESTORE_DIRECTORY/foreign-keys.json"
-          node --input-type=module - "$RESTORE_DIRECTORY/integrity.json" "$RESTORE_DIRECTORY/foreign-keys.json" <<'NODE'
+          mapfile -t restored_databases < <(find "$RESTORE_DIRECTORY/d1/v3/d1" -type f -name '*.sqlite' ! -name 'metadata.sqlite' -print)
+          test "${#restored_databases[@]}" -eq 1
+          restored_database="${restored_databases[0]}"
+          RESTORED_DATABASE="$restored_database" node --no-warnings --input-type=module - "$RESTORE_DIRECTORY/verification.json" <<'NODE'
           import assert from "node:assert/strict";
-          import { readFileSync } from "node:fs";
-          const integrity = JSON.parse(readFileSync(process.argv[2], "utf8"));
-          const foreignKeys = JSON.parse(readFileSync(process.argv[3], "utf8"));
-          const integrityRows = integrity.flatMap((entry) => entry.results || []);
-          const foreignKeyRows = foreignKeys.flatMap((entry) => entry.results || []);
-          assert.deepEqual(integrityRows, [{ integrity_check: "ok" }]);
-          assert.deepEqual(foreignKeyRows, []);
+          import { writeFileSync } from "node:fs";
+          import { DatabaseSync } from "node:sqlite";
+          const database = new DatabaseSync(process.env.RESTORED_DATABASE, { readOnly: true });
+          try {
+            const integrityRows = database.prepare("PRAGMA integrity_check;").all();
+            const foreignKeyRows = database.prepare("PRAGMA foreign_key_check;").all();
+            assert.equal(integrityRows.length, 1);
+            assert.equal(integrityRows[0].integrity_check, "ok");
+            assert.equal(foreignKeyRows.length, 0);
+          } finally {
+            database.close();
+          }
+          writeFileSync(process.argv[2], '{"integrity":"ok","foreignKeyViolations":0}\n', { mode: 0o600 });
           NODE
 
           ENCRYPTED_SHA256="$encrypted_sha256" node --input-type=module - "$BACKUP_DIRECTORY/manifest.json" <<'NODE'
@@ -130,7 +137,7 @@ jobs:
           writeFileSync(process.argv[2], `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
           NODE
 
-          rm -f -- "$raw_backup" "$verified_backup" "$BACKUP_DIRECTORY/time-travel.json" "$RESTORE_DIRECTORY/integrity.json" "$RESTORE_DIRECTORY/foreign-keys.json"
+          rm -f -- "$raw_backup" "$verified_backup" "$BACKUP_DIRECTORY/time-travel.json" "$RESTORE_DIRECTORY/verification.json"
           test "$(find "$BACKUP_DIRECTORY" -maxdepth 1 -type f | wc -l)" -eq 2
           test -f "$encrypted_backup"
           test -f "$BACKUP_DIRECTORY/manifest.json"
