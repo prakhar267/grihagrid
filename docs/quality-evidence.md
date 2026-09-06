@@ -49,6 +49,31 @@ not a production capacity claim or multi-region observation.
   the eight-row responsibility matrix stayed together on its own page and
   screen-only skip navigation was absent from the final render.
 
-This is pre-merge engineering evidence. Protected exact-SHA CI, CodeQL,
-staging/production promotion and post-deploy canaries remain required, and the
+PR [#61](https://github.com/prakhar267/grihagrid/pull/61) subsequently released
+this candidate as exact SHA `737f1df28dbb2dba4e809fa82ea2d1473df3e6fa`.
+Exact-SHA CI, CodeQL, staged deployment, authenticated canaries, public smoke,
+and a 30-minute production observation passed. The observation completed 20
+samples and 220 checks with zero invocation/server-error events. The
 human/external evidence in the table above remains independent of this result.
+
+## Noncommercial operations closure candidate — 2026-09-06
+
+- Release artifact actions are upgraded to their reviewed Node 24 generations
+  and remain pinned by commit SHA.
+- A protected-`main`, twice-daily production D1 workflow exports, records a Time
+  Travel point, encrypts with authenticated AES-256-GCM, decrypt-verifies the
+  checksum, restores into isolated local D1, and gates SQLite integrity and
+  foreign-key checks. It retains only ciphertext and a bounded manifest for 7
+  days and removes runner material unconditionally.
+- Backup and hourly public-smoke failures each own one bounded GitHub issue,
+  assign it to the repository owner, and close it after recovery. Both expose a
+  deliberate manual failure exercise that must be followed by a successful run.
+- Cloudflare credentials and the backup passphrase remain step-isolated. The
+  workflow cannot enable checkout, paid fulfillment, a paid-plan allowlist, or
+  private uploads.
+
+Protected exact-SHA CI/CodeQL and an exercised backup plus monitor failure/
+recovery route must be attached to the release that merges this candidate. A
+real remote recovery drill, independent two-region monitoring, human
+accessibility/security/practitioner review, qualified legal approval, and named
+staffing remain external evidence and are not inferred from automation.

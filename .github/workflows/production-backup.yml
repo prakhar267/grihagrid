@@ -1,0 +1,192 @@
+name: Production D1 encrypted backup
+
+on:
+  schedule:
+    - cron: "47 1,13 * * *"
+  workflow_dispatch:
+    inputs:
+      exercise_alert:
+        description: "Fail before export to test the backup incident route"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-d1-encrypted-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    name: Export, encrypt, and rehearse restore
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment:
+      name: production
+
+    steps:
+      - name: Check out trusted main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Exercise the backup failure route
+        if: ${{ inputs.exercise_alert == true }}
+        run: |
+          echo "::error::Deliberate backup alert exercise requested"
+          exit 1
+
+      - name: Export production D1 and record recovery point
+        id: export
+        env:
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          umask 077
+          backup_directory="$RUNNER_TEMP/grihagrid-production-scheduled-backup"
+          restore_directory="$RUNNER_TEMP/grihagrid-production-scheduled-restore"
+          mkdir -m 700 "$backup_directory" "$restore_directory"
+          raw_backup="$backup_directory/d1-export.sql"
+          npx wrangler d1 export DB --remote --env="" --skip-confirmation --output "$raw_backup"
+          chmod 600 "$raw_backup"
+          raw_sha256="$(sha256sum "$raw_backup" | awk '{ print $1 }')"
+          raw_permissions="$(stat -c '%a' "$raw_backup")"
+          test "$raw_permissions" = "600"
+          time_travel="$backup_directory/time-travel.json"
+          npx wrangler d1 time-travel info DB --env="" --json > "$time_travel"
+          bookmark="$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).bookmark' "$time_travel")"
+          [[ "$bookmark" =~ ^[A-Za-z0-9._:-]{16,256}$ ]]
+          {
+            echo "backup_directory=$backup_directory"
+            echo "restore_directory=$restore_directory"
+            echo "raw_sha256=$raw_sha256"
+            echo "raw_permissions=$raw_permissions"
+            echo "bookmark=$bookmark"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Encrypt, decrypt-verify, and rehearse an isolated restore
+        env:
+          D1_BACKUP_PASSPHRASE: ${{ secrets.D1_BACKUP_PASSPHRASE }}
+          BACKUP_DIRECTORY: ${{ steps.export.outputs.backup_directory }}
+          RESTORE_DIRECTORY: ${{ steps.export.outputs.restore_directory }}
+          RAW_SHA256: ${{ steps.export.outputs.raw_sha256 }}
+          RAW_PERMISSIONS: ${{ steps.export.outputs.raw_permissions }}
+          TIME_TRAVEL_BOOKMARK: ${{ steps.export.outputs.bookmark }}
+          BACKUP_KEY_VERSION: "2026-08-15-1"
+        run: |
+          set -euo pipefail
+          umask 077
+          test "${#D1_BACKUP_PASSPHRASE}" -ge 20
+          raw_backup="$BACKUP_DIRECTORY/d1-export.sql"
+          encrypted_backup="$BACKUP_DIRECTORY/d1-export.sql.ggrid"
+          verified_backup="$RESTORE_DIRECTORY/d1-verified.sql"
+          node scripts/backup-crypto.mjs encrypt "$raw_backup" "$encrypted_backup"
+          node scripts/backup-crypto.mjs decrypt "$encrypted_backup" "$verified_backup"
+          test "$(sha256sum "$verified_backup" | awk '{ print $1 }')" = "$RAW_SHA256"
+          encrypted_sha256="$(sha256sum "$encrypted_backup" | awk '{ print $1 }')"
+
+          npx wrangler d1 execute DB --local --persist-to "$RESTORE_DIRECTORY/d1" --file "$verified_backup" > /dev/null
+          npx wrangler d1 execute DB --local --persist-to "$RESTORE_DIRECTORY/d1" --command "PRAGMA integrity_check;" --json > "$RESTORE_DIRECTORY/integrity.json"
+          npx wrangler d1 execute DB --local --persist-to "$RESTORE_DIRECTORY/d1" --command "PRAGMA foreign_key_check;" --json > "$RESTORE_DIRECTORY/foreign-keys.json"
+          node --input-type=module - "$RESTORE_DIRECTORY/integrity.json" "$RESTORE_DIRECTORY/foreign-keys.json" <<'NODE'
+          import assert from "node:assert/strict";
+          import { readFileSync } from "node:fs";
+          const integrity = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          const foreignKeys = JSON.parse(readFileSync(process.argv[3], "utf8"));
+          const integrityRows = integrity.flatMap((entry) => entry.results || []);
+          const foreignKeyRows = foreignKeys.flatMap((entry) => entry.results || []);
+          assert.deepEqual(integrityRows, [{ integrity_check: "ok" }]);
+          assert.deepEqual(foreignKeyRows, []);
+          NODE
+
+          ENCRYPTED_SHA256="$encrypted_sha256" node --input-type=module - "$BACKUP_DIRECTORY/manifest.json" <<'NODE'
+          import { writeFileSync } from "node:fs";
+          const manifest = {
+            environment: "production",
+            database: "grihagrid-db",
+            createdAt: new Date().toISOString(),
+            keyVersion: process.env.BACKUP_KEY_VERSION,
+            encryption: "GGRIDBK1-AES-256-GCM",
+            rawPermissions: process.env.RAW_PERMISSIONS,
+            rawSha256: process.env.RAW_SHA256,
+            encryptedSha256: process.env.ENCRYPTED_SHA256,
+            timeTravelBookmark: process.env.TIME_TRAVEL_BOOKMARK,
+            isolatedRestore: {
+              integrity: "ok",
+              foreignKeyViolations: 0,
+            },
+          };
+          writeFileSync(process.argv[2], `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
+          NODE
+
+          rm -f -- "$raw_backup" "$verified_backup" "$BACKUP_DIRECTORY/time-travel.json" "$RESTORE_DIRECTORY/integrity.json" "$RESTORE_DIRECTORY/foreign-keys.json"
+          test "$(find "$BACKUP_DIRECTORY" -maxdepth 1 -type f | wc -l)" -eq 2
+          test -f "$encrypted_backup"
+          test -f "$BACKUP_DIRECTORY/manifest.json"
+
+      - name: Store encrypted backup and bounded restore evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: production-d1-scheduled-${{ github.run_id }}
+          path: ${{ steps.export.outputs.backup_directory }}
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+      - name: Remove plaintext and encrypted runner material
+        if: always()
+        env:
+          BACKUP_DIRECTORY: ${{ steps.export.outputs.backup_directory }}
+          RESTORE_DIRECTORY: ${{ steps.export.outputs.restore_directory }}
+        run: |
+          set -euo pipefail
+          if [ -n "${BACKUP_DIRECTORY:-}" ] && [[ "$BACKUP_DIRECTORY" == "$RUNNER_TEMP/"* ]]; then
+            rm -rf -- "$BACKUP_DIRECTORY"
+          fi
+          if [ -n "${RESTORE_DIRECTORY:-}" ] && [[ "$RESTORE_DIRECTORY" == "$RUNNER_TEMP/"* ]]; then
+            rm -rf -- "$RESTORE_DIRECTORY"
+          fi
+
+  alert:
+    name: Maintain the production-backup incident issue
+    if: ${{ always() && needs.backup.result != 'cancelled' && github.ref == 'refs/heads/main' }}
+    needs: backup
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - name: Open, update, or resolve the bounded backup alert
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BACKUP_RESULT: ${{ needs.backup.result }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ISSUE_TITLE: "Production backup: GrihaGrid encrypted backup failing"
+        run: |
+          set -euo pipefail
+          issue_number="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 100 --json number,title --jq 'map(select(.title == "Production backup: GrihaGrid encrypted backup failing"))[0].number // empty')"
+          if [ "$BACKUP_RESULT" = "success" ]; then
+            if [ -n "$issue_number" ]; then
+              gh issue close "$issue_number" --repo "$GITHUB_REPOSITORY" --comment "The encrypted production backup and isolated restore rehearsal recovered. Evidence: $RUN_URL"
+            fi
+            exit 0
+          fi
+          body="The scheduled production D1 backup did not complete successfully. Inspect the bounded workflow evidence and follow the backup/restore runbook. Run: $RUN_URL"
+          if [ -n "$issue_number" ]; then
+            gh issue comment "$issue_number" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --assignee "$GITHUB_REPOSITORY_OWNER" --title "$ISSUE_TITLE" --body "$body"
+          fi

@@ -15,6 +15,8 @@ const opsScript = fileURLToPath(new URL("../scripts/check-ops-config.mjs", impor
 test("version-controlled production and staging configuration stays isolated and paid-closed", async () => {
   const result = await checkOpsConfig();
   assert.equal(result.paidDefaults, "closed");
+  assert.equal(result.scheduledBackup, "encrypted-and-restore-verified");
+  assert.equal(result.incidentRouting, "owner-assigned-and-exercisable");
   assert.equal(result.productionOrigin, "https://grihagrid.prakhargupta267.workers.dev");
   assert.equal(result.stagingOrigin, "https://grihagrid-staging.prakhargupta267.workers.dev");
 });

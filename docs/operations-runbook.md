@@ -24,7 +24,8 @@ while the isolated R2 buckets or binding are absent.
 | Razorpay | Payment Links API and signed webhook | Checkout and paid-state confirmation | **Not active:** live account configuration, secrets, webhook registration, and reconciliation evidence are absent |
 | Google Gemini | Structured Interactions API | Optional sanitized planning brief | Active for sanitized beta; shared free-tier project must be isolated before material customer volume |
 | Cron | `17 2 * * *` | Session/order/AI admission cleanup | Configured daily at 02:17 UTC / 07:47 IST |
-| Observability | Worker observability, `head_sampling_rate = 1`; automatic invocation logs disabled | Templated custom request logs and traces | Enabled at 100% sampling; raw-URL invocation logs stay off because share URLs contain bearer secrets; alert rules and external synthetics still need proof |
+| Backup | `.github/workflows/production-backup.yml` at `47 1,13 * * *` | Encrypted D1 export, Time Travel point, and isolated restore proof | Runs twice daily from protected `main`; retains only ciphertext and a bounded manifest for 7 days; remote restore remains incident-authorized |
+| Observability | Worker observability, `head_sampling_rate = 1`; automatic invocation logs disabled | Templated custom request logs and traces | Enabled at 100% sampling; raw-URL invocation logs stay off because share URLs contain bearer secrets; hourly GitHub smoke owns a bounded incident issue, while independent two-region synthetics still need an external provider |
 
 `/api/health` is a dependency-independent liveness probe. `/api/readiness`
 checks D1 reachability, the required schema, the KV binding, and reports
@@ -763,8 +764,15 @@ does not count as an independent availability check.
 `.github/workflows/production-smoke.yml` runs the read-only public suite against
 production and staging hourly and on demand. On trusted `main`, a failed run
 opens or updates the single `Production monitor: GrihaGrid public smoke failing`
-issue and a later successful run closes it. The incident owner must subscribe to
-repository issue notifications and test that path before launch. This is a
+issue, assigns it to the repository owner, and a later successful run closes it.
+Exercise the route without skipping the real probes, then run a normal recovery:
+
+```sh
+gh workflow run production-smoke.yml --ref main -f exercise_alert=true
+gh workflow run production-smoke.yml --ref main -f exercise_alert=false
+```
+
+The incident owner must subscribe to repository issue notifications. This is a
 regression backstop, not a one-minute/two-region availability monitor. Keep its
 paid expectation false until the signed launch release; if checkout is
 intentionally opened, update it in the same reviewed change so it asserts that
@@ -942,14 +950,32 @@ remain complete at lower sampling.
 
 ### Backup policy
 
-Baseline evidence before Decision Compare: the 2026-08-13 production export was
-stored outside the repository with mode 0600 and SHA-256
-`5e36b156b46a789915a054cd7ca10e7acd94b48f1dcff24e28532cf2c0aeb595`.
-An isolated local restore recovered users=1, projects=1, reports=1, AI briefs=1
-and orders=0. `PRAGMA integrity_check` was unavailable through the authenticated
-D1 path, so schema and aggregate checks were used. This proves the export is
-readable, not the remote RPO/RTO gate; move it to approved encrypted storage and
-perform a timed remote staging restore before paid launch.
+`.github/workflows/production-backup.yml` exports production D1 twice daily from
+the protected production environment. The Cloudflare export step receives no
+encryption secret; the encryption/verification step receives no Cloudflare
+credential. It uses the repository's authenticated AES-256-GCM envelope,
+decrypt-verifies the checksum, imports the plaintext into an isolated local D1,
+requires `PRAGMA integrity_check` to return `ok` and requires an empty
+`PRAGMA foreign_key_check`. Plaintext and the local restore are removed from the
+runner. Only ciphertext plus a bounded manifest is stored as a private GitHub
+artifact for the existing bounded seven-day release-evidence window. Longer
+retention requires an approved privacy/retention policy.
+
+A failed backup opens or updates the single
+`Production backup: GrihaGrid encrypted backup failing` issue and assigns the
+repository owner; a later successful backup closes it. Test the failure and
+recovery route with:
+
+```sh
+gh workflow run production-backup.yml --ref main -f exercise_alert=true
+gh workflow run production-backup.yml --ref main -f exercise_alert=false
+```
+
+The deliberate failure happens before export. A normal run must then succeed,
+produce the encrypted artifact, prove the isolated restore, and close the issue.
+The scheduled local restore proves export readability and gives a separate-
+provider recovery copy. It does not authorize a production restore, replace a
+timed remote recovery exercise, or settle legal retention requirements.
 
 - Export production D1 daily and before every migration or payment-state
   release.
@@ -1416,11 +1442,14 @@ schema/state, deploy a small compatibility fix instead of forcing rollback.
 
 ### Free public demo / lead collection
 
-- [ ] `npm run check` is green from the release commit.
-- [ ] Migrations list is clean and `/api/readiness` reports `status=ready`.
-- [ ] Homepage, estimate, registration/login, project CRUD, and report smoke pass.
-- [ ] External homepage/health/estimate monitors and 5xx alert are firing to a
-  tested contact path.
+- [x] `npm run check` is green from release `737f1df28dbb2dba4e809fa82ea2d1473df3e6fa`.
+- [x] Migrations are current and `/api/readiness` reports `status=ready`.
+- [x] Homepage, estimate, registration/login, project CRUD, and report smoke pass
+  on the protected release path.
+- [x] Hourly production/staging homepage, health, readiness, estimate, and
+  fail-closed commerce smoke owns one bounded, repository-owner-assigned alert.
+- [ ] Independent two-region monitoring and its external contact path are
+  configured and deliberately tested.
 - [ ] Legal review approves brand, privacy, terms, report disclaimer, and lead
   collection.
 - [ ] Support/contact route and incident owner are staffed.
@@ -1478,8 +1507,9 @@ legal/brand approval, practitioner quality evidence and staffed ownership are
 not yet proven. R2 is not a blocker for Decision Compare and remains a blocker
 for any upload-bearing offer.
 
-**Potential GO for a clearly labelled free prototype** after the free-demo
-checklist passes. Re-evaluate paid launch only when every mandatory item has an
+**GO for the currently labelled free public demonstration at the existing
+`workers.dev` origin.** Broad promotion still requires the unchecked human and
+independent-provider items above. Re-evaluate paid launch only when every mandatory item has an
 owner, dated evidence, and no unresolved SEV-1/SEV-2 finding. The founder,
 engineering on-call, and payment owner must all sign the launch record; silence
 or partial completion is a no-go.
