@@ -1,9 +1,10 @@
 # Local render studio
 
-The app can submit a validated house and camera tour to a paired renderer on
-this computer, show job progress and preview images, cancel or resume work,
-and play/download the finished MP4, GLB and editable Blender scene. Blender
-and FFmpeg run locally; the Cloudflare Worker does not run either program.
+The app can submit a validated house, camera tour and current saved viewpoints
+to a paired renderer on this computer, show job progress and preview images,
+cancel or resume work, and play/download the finished MP4, GLB and editable
+Blender scene. Blender and FFmpeg run locally; the Cloudflare Worker does not
+run either program.
 No provider account, paid rendering service, R2 bucket or upload is involved.
 
 ## Start and pair once
@@ -95,6 +96,16 @@ be strict UTF-8 JSON with a two-MiB body limit and valid shared model/tour
 references. CLI inputs use one opened regular-file descriptor, a bounded
 MAX+1 read loop, and a `finally` close, avoiding a path-stat/read race.
 
+The app request is `{model, tour, viewpoints, settings}`; CLI scene bundles use
+`{model, tour, viewpoints}`. Omitting `viewpoints` preserves the earlier
+model/tour workflow. The shared `src/spatial/viewpoints.js` validator checks up
+to 40 named poses before creating outputs or starting Blender. References must
+match the building and current concept revision, with a valid optional floor,
+distinct finite position/target coordinates and vertical FOV of 20–110 degrees.
+Duplicate IDs, unsupported fields and stale or foreign cameras fail validation.
+The app includes only current-concept views and reports older views explicitly;
+**Download camera library** preserves every stored pose separately.
+
 Artifact endpoints accept only fixed generated filenames, never arbitrary
 paths. Static symlinked job, attempt and preview directories are rejected. They open a regular file without following a final symlink, bound the
 stream to its opened size, enforce a 256 MiB download limit, and disable
@@ -128,11 +139,27 @@ Blender's vertical sensor convention. Linear per-frame keys avoid additional
 Bezier overshoot; source cuts remain cuts and deliberate fades use a keyed
 black compositor overlay.
 
+Each supplied viewpoint also becomes an unanimated Blender camera named from
+the saved label. `tour-camera` remains the active animated camera. Saved-camera
+IDs use `viewpoint:<id>` to avoid geometry collisions. GLB extras preserve
+`viewpointId`, full `viewpointName`, `buildingId`, `sourceRevision` and optional
+`floorId`; the manifest retains the canonical record and actual Blender label.
+The full label survives even when Blender truncates its display name. Their
+canonical poses and vertical lenses are also exported to
+GLB. The immutable job input and serialized scene retain these viewpoints, so
+the existing provenance hashes cover the camera library used for that render.
+
 After export, Blender reimports the GLB into an empty scene and checks mesh IDs,
 room associations, world bounds within 1 mm, camera position and direction.
 Node independently checks GLB room/floor/stair/wall/opening associations, browser-axis
-translations, camera direction and vertical FOV. These results are written to
-`manifest.json`; a failed check fails the job. Before film encoding, every expected frame must have complete native-1080p PNG headers and termination; FFmpeg then decodes the sequence with errors treated as fatal.
+translations, camera direction and vertical FOV, including every saved camera.
+The saved `.blend` is reopened to check its static cameras and the active tour
+at the first, middle and final keyed frames. These results are written to
+`manifest.json`; a failed check fails the job. A resumable construction proof
+is written only after both the exported GLB and reopened Blender scene pass.
+Before film encoding, every expected frame must have complete native-1080p PNG
+headers and termination; FFmpeg then decodes the sequence with errors treated
+as fatal.
 
 Cycles uses persistent scene data, GPU denoising where supported, bounded bounce
 depth, physical light sources, subtle bevels, procedural wood/fabric/stone grain,
@@ -195,6 +222,20 @@ end-hinged door. It completed in 3.37 seconds, with maximum bounds error
 0.000477 mm. Three.js raycasts confirmed the L-shaped missing corner and stair
 aperture are empty. The exported door leaf has the intended 90-degree pose and
 retains its floor, wall and opening IDs.
+
+The named-camera checkpoint in
+`output/spatial-saved-cameras-20260915/verification.json` verified an actual
+two-floor Blender scene with 148 meshes, three saved cameras and the active
+tour camera. Reopening `.blend` preserved all three static poses and checked
+tour frames 1, 120 and 240. Blender GLB reimport and actual Three.js GLTFLoader
+both preserved camera identities, source/floor associations and names,
+including a long multilingual label. Maximum saved-camera position error in
+the browser coordinates was 0.000611 mm, direction-vector error was below
+0.00000031 and vertical-FOV error was below 0.0000062 degrees. The record
+contains exact source and artifact hashes. An injected failure during reopened
+camera verification left no resumable construction proof. This was a scene
+export check; it did not rerender the completed film or establish the separate
+browser UI journey or final repository gates.
 
 The paired service's full Cycles demonstration completed through its real
 authenticated HTTP job API. Job `3d52bc1d-156f-4de0-b290-e2e2f9afe56b` produced

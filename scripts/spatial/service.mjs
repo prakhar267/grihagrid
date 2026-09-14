@@ -35,13 +35,13 @@ export async function boundedBody(request, maximum = MAX_BODY) {
 }
 
 export function validateRenderRequest(body) {
-  if (!exact(body, ['model', 'tour', 'settings']) || !body.model || !exact(body.settings, ['mode', 'samples'])) throw fail(400, 'Unsupported render request fields.');
+  if (!exact(body, ['model', 'tour', 'viewpoints', 'settings']) || !body.model || !exact(body.settings, ['mode', 'samples'])) throw fail(400, 'Unsupported render request fields.');
   const { mode = 'preview', samples = 8 } = body.settings;
   if (!['scene', 'preview', 'film'].includes(mode) || ![4, 8, 16, 32, 64].includes(samples)) throw fail(400, 'Choose a supported render mode and quality.');
   let scene;
-  try { scene = serializeScene(body.model, 20, body.tour); } catch (error) { throw fail(400, error.message); }
+  try { scene = serializeScene(body.model, 20, body.tour, body.viewpoints); } catch (error) { throw fail(400, error.message); }
   if (scene.cameraSamples.length > 1800) throw fail(400, 'Local app renders are limited to 60 seconds.');
-  return { request: { model: body.model, tour: scene.tour }, scene, settings: { mode, samples, engine: 'cycles', device: 'auto', duration: 20, timeout: 7200 } };
+  return { request: { model: body.model, tour: scene.tour, viewpoints: scene.viewpoints }, scene, settings: { mode, samples, engine: 'cycles', device: 'auto', duration: 20, timeout: 7200 } };
 }
 
 async function atomicJson(filename, value) {

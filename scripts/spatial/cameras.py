@@ -45,6 +45,39 @@ def build_camera(payload):
     return camera
 
 
+def build_saved_cameras(payload):
+    """Keep the validated library editable without changing the active tour."""
+    cameras = []
+    for view in payload.get('viewpoints', []):
+        data = bpy.data.cameras.new('Saved viewpoint lens')
+        camera = bpy.data.objects.new(view['name'], data)
+        bpy.context.scene.collection.objects.link(camera)
+        camera['id'] = 'viewpoint:' + view['id']
+        camera['viewpointId'] = view['id']
+        # Blender limits display-name bytes; this full name survives unchanged.
+        camera['viewpointName'] = view['name']
+        camera['category'] = 'viewpoint'
+        camera['buildingId'] = view['buildingId']
+        camera['sourceRevision'] = view['sourceRevision']
+        if view.get('floorId') is not None:
+            camera['floorId'] = view['floorId']
+        data.clip_start = .05
+        data.clip_end = 250
+        data.dof.use_dof = False
+        set_camera_pose(camera, view)
+        cameras.append(camera)
+    return cameras
+
+
+def camera_manifest(payload, camera, saved):
+    """Canonical viewpoints plus actual Blender labels for export inspection."""
+    return [{'id': 'tour-camera', 'name': camera.name, 'kind': 'tour',
+             **{key: payload['cameraSamples'][0][key] for key in ('position', 'target', 'fov')}}] + [
+        {'id': obj['id'], 'blenderName': obj.name, 'kind': 'saved', 'viewpointId': view['id'],
+         **{key: value for key, value in view.items() if key != 'id'}}
+        for obj, view in zip(saved, payload.get('viewpoints', []))]
+
+
 def build_tour_fades(payload):
     """Match the browser's intentional room-jump fades in the rendered film."""
     if not any(sample.get('fade', 0) for sample in payload['cameraSamples']):

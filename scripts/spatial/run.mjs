@@ -9,6 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildPrimitives, createDemoBuilding, validateBuilding } from '../../src/spatial/model.js';
 import { generateTour, sampleTour, validateTour } from '../../src/spatial/tours.js';
+import { validateViewpoints } from '../../src/spatial/viewpoints.js';
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(scriptDirectory, '../..');
@@ -58,9 +59,10 @@ export function parseArgs(argv) {
   return options;
 }
 
-export function serializeScene(model, duration = 24, suppliedTour) {
+export function serializeScene(model, duration = 24, suppliedTour, suppliedViewpoints = []) {
   const validation = validateBuilding(model);
   if (!validation.valid) throw new Error(`Invalid building: ${JSON.stringify(validation.errors)}`);
+  if (!validateViewpoints(suppliedViewpoints, model)) throw new Error('Invalid or stale saved viewpoints. Update or remove cameras from an older concept before exporting.');
   const tour = suppliedTour || model.tour || generateTour(model, { duration, includeExterior: true });
   const tourValidation = validateTour(model, tour);
   if (!tourValidation.valid) throw new Error(`Invalid tour: ${JSON.stringify(tourValidation.errors)}`);
@@ -74,7 +76,9 @@ export function serializeScene(model, duration = 24, suppliedTour) {
     if (!sample || ![...sample.position, ...sample.target].every(Number.isFinite)) throw new Error('Invalid camera sample');
     return sample;
   });
-  return { schemaVersion: 1, sourceRevision: model.revision, primitives, rooms: model.rooms, floors: model.floors, fps, cameraSamples, tour };
+  const viewpoints = structuredClone(suppliedViewpoints);
+  if (primitives.some(item => viewpoints.some(view => item.id === `viewpoint:${view.id}`) || item.id === 'tour-camera')) throw new Error('Reserved camera identifier used by geometry');
+  return { schemaVersion: 1, sourceRevision: model.revision, primitives, rooms: model.rooms, floors: model.floors, fps, cameraSamples, tour, viewpoints };
 }
 
 export function verifyGltfCoordinates(buffer, payload) {
@@ -82,31 +86,49 @@ export function verifyGltfCoordinates(buffer, payload) {
     throw new Error('Blender did not produce a supported binary glTF');
   }
   const json = JSON.parse(buffer.subarray(20, 20 + buffer.readUInt32LE(12)).toString('utf8'));
-  const nodes = new Map((json.nodes || []).map(node => [node.extras?.id, node]));
+  const identifiedNodes = (json.nodes || []).filter(node => typeof node.extras?.id === 'string');
+  const nodes = new Map(identifiedNodes.map(node => [node.extras.id, node]));
+  if (nodes.size !== identifiedNodes.length) throw new Error('GLB contains duplicate stable identifiers');
   const toGltf = ([x, y, z]) => [x / 1000, z / 1000, -y / 1000];
   const distance = (a, b) => Math.hypot(...a.map((value, i) => value - b[i]));
+  const transformVector = (value, fallback, length) => {
+    const vector = value === undefined ? fallback : value;
+    if (!Array.isArray(vector) || vector.length !== length || !vector.every(Number.isFinite)) throw new Error('GLB contains an invalid transform vector');
+    return vector;
+  };
   let maxPositionErrorMm = 0;
   for (const primitive of payload.primitives) {
     const node = nodes.get(primitive.id);
     if (!node || node.matrix || ['roomId', 'floorId', 'stairId', 'wallId', 'openingId'].some(key => (node.extras[key] ?? null) !== (primitive[key] ?? null))) throw new Error(`GLB node contract failed for ${primitive.id}`);
-    maxPositionErrorMm = Math.max(maxPositionErrorMm, distance(node.translation || [0, 0, 0], toGltf(primitive.position)) * 1000);
+    maxPositionErrorMm = Math.max(maxPositionErrorMm, distance(transformVector(node.translation, [0, 0, 0], 3), toGltf(primitive.position)) * 1000);
   }
-  const cameraNode = nodes.get('tour-camera');
-  if (!cameraNode || cameraNode.matrix) throw new Error('Missing GLB camera transform');
-  const first = payload.cameraSamples[0];
-  const cameraPositionErrorMm = distance(cameraNode.translation || [0, 0, 0], toGltf(first.position)) * 1000;
-  const expectedPosition = toGltf(first.position), target = toGltf(first.target);
-  const length = distance(expectedPosition, target);
-  const expectedDirection = target.map((v, i) => (v - expectedPosition[i]) / length);
-  const [x, y, z, w] = cameraNode.rotation || [0, 0, 0, 1];
-  const actualDirection = [-2 * (x * z + w * y), -2 * (y * z - w * x), -(1 - 2 * (x * x + y * y))];
-  const cameraDirectionError = distance(expectedDirection, actualDirection);
-  const yfov = json.cameras?.[cameraNode.camera]?.perspective?.yfov;
-  const fovErrorDegrees = Math.abs(yfov * 180 / Math.PI - first.fov);
-  if (!Number.isFinite(fovErrorDegrees) || maxPositionErrorMm > 1 || cameraPositionErrorMm > 1 || cameraDirectionError > .0001 || fovErrorDegrees > .001) {
+  const inspectCamera = (id, expected, saved = false) => {
+    const cameraNode = nodes.get(id);
+    if (!cameraNode || cameraNode.matrix || !Number.isInteger(cameraNode.camera)) throw new Error('Missing GLB camera transform');
+    if (saved && (cameraNode.extras.category !== 'viewpoint' || cameraNode.extras.viewpointId !== expected.id || cameraNode.extras.viewpointName !== expected.name ||
+        ['buildingId', 'sourceRevision', 'floorId'].some(key => (cameraNode.extras[key] ?? null) !== (expected[key] ?? null)))) throw new Error('GLB lost saved camera identity or source association');
+    const positionErrorMm = distance(transformVector(cameraNode.translation, [0, 0, 0], 3), toGltf(expected.position)) * 1000;
+    const expectedPosition = toGltf(expected.position), target = toGltf(expected.target);
+    const length = distance(expectedPosition, target);
+    const expectedDirection = target.map((v, i) => (v - expectedPosition[i]) / length);
+    const rotation = transformVector(cameraNode.rotation, [0, 0, 0, 1], 4);
+    if (Math.abs(Math.hypot(...rotation) - 1) > .0001) throw new Error('GLB camera quaternion must have unit length');
+    const [x, y, z, w] = rotation;
+    const actualDirection = [-2 * (x * z + w * y), -2 * (y * z - w * x), -(1 - 2 * (x * x + y * y))];
+    const directionError = distance(expectedDirection, actualDirection);
+    const yfov = json.cameras?.[cameraNode.camera]?.perspective?.yfov;
+    const fovError = Math.abs(yfov * 180 / Math.PI - expected.fov);
+    if (![positionErrorMm, directionError, fovError].every(Number.isFinite) || positionErrorMm > 1 || directionError > .0001 || fovError > .001) throw new Error('GLB does not preserve browser coordinate or vertical lens conventions');
+    return { positionErrorMm, directionError, fovErrorDegrees: fovError };
+  };
+  const firstCamera = inspectCamera('tour-camera', payload.cameraSamples[0]);
+  const cameraPositionErrorMm = firstCamera.positionErrorMm, cameraDirectionError = firstCamera.directionError, fovErrorDegrees = firstCamera.fovErrorDegrees;
+  const savedCameras = (payload.viewpoints || []).map(view => ({ id: view.id, ...inspectCamera(`viewpoint:${view.id}`, view, true) }));
+  if (!Number.isFinite(maxPositionErrorMm) || maxPositionErrorMm > 1) {
     throw new Error('GLB does not preserve browser coordinate or vertical lens conventions');
   }
-  return { passed: true, objectsChecked: payload.primitives.length, maxPositionErrorMm, cameraPositionErrorMm, cameraDirectionError, fovErrorDegrees };
+  return { passed: true, objectsChecked: payload.primitives.length, maxPositionErrorMm, cameraPositionErrorMm, cameraDirectionError, fovErrorDegrees,
+    savedViewpointsChecked: savedCameras.length, savedCameras };
 }
 
 export async function findExecutable(name, explicit) {
@@ -181,13 +203,15 @@ export async function runJob(options) {
   // Validate before creating outputs or executing Blender.
   let model = createDemoBuilding();
   let suppliedTour;
+  let suppliedViewpoints;
   if (options.input) {
     const input = path.resolve(options.input);
     const inputData = await readSceneInput(input);
     model = inputData.model || inputData;
     suppliedTour = inputData.model ? inputData.tour : undefined;
+    suppliedViewpoints = inputData.model ? inputData.viewpoints : undefined;
   }
-  const payload = serializeScene(model, options.duration, suppliedTour);
+  const payload = serializeScene(model, options.duration, suppliedTour, suppliedViewpoints);
   const blender = await findExecutable('blender', options.blender);
   const ffmpeg = options.mode === 'film' ? await findExecutable('ffmpeg') : undefined;
   const output = options.output ? path.resolve(options.output) : path.join(root, 'output', `spatial-${Date.now()}`);

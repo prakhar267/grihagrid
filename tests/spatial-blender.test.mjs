@@ -77,6 +77,63 @@ test('multi-floor serialization preserves triangle slabs, stair identifiers and 
   assert.ok(payload.cameraSamples.some(sample => sample.position[2] < 2000));
 });
 
+test('saved camera serialization shares strict library identity, revision and lens validation', async () => {
+  const model = createMultiFloorDemo();
+  const tour = generateTour(model, { roomIds: ['ground-gallery'], duration: 8, includeExterior: false });
+  const view = { id: 'upper-camera', name: 'Upper gallery', buildingId: model.id, sourceRevision: model.revision,
+    floorId: 'upper', position: [6000, 5000, 4850], target: [7000, 6000, 4750], fov: 42 };
+  const payload = serializeScene(model, 8, tour, [view]);
+  assert.deepEqual(payload.viewpoints, [view]);
+  assert.notEqual(payload.viewpoints[0], view);
+  assert.deepEqual(payload.cameraSamples, serializeScene(model, 8, tour).cameraSamples);
+  for (const change of [{ sourceRevision: 99 }, { buildingId: 'different' }, { floorId: 'missing' }, { target: view.position }, { fov: 111 }, { script: 'arbitrary' }]) {
+    assert.throws(() => serializeScene(model, 8, tour, [{ ...view, ...change }]), /Invalid or stale saved viewpoints/);
+  }
+  assert.throws(() => serializeScene(model, 8, tour, [view, view]), /saved viewpoints/);
+  assert.throws(() => serializeScene(model, 8, tour, Array.from({ length: 41 }, (_, i) => ({ ...view, id: `camera-${i}` }))), /saved viewpoints/);
+  const directory = await mkdtemp(path.join(tmpdir(), 'grihagrid-camera-input-'));
+  try {
+    const input = path.join(directory, 'bundle.json');
+    await writeFile(input, JSON.stringify({ model, tour, viewpoints: [{ ...view, sourceRevision: 99 }] }));
+    await assert.rejects(runJob({ ...parseArgs(['--mode', 'scene']), input, blender: '/missing/blender' }), /stale saved viewpoints/);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('GLB saved cameras retain names, source associations, poses and vertical lenses', () => {
+  const view = { id: 'library-camera', name: 'Gallery north', buildingId: 'gallery', sourceRevision: 3, floorId: 'upper',
+    position: [1000, 2000, 4800], target: [1000, 3000, 4800], fov: 42 };
+  const payload = { primitives: [], cameraSamples: [{ position: [0, 0, 1650], target: [0, 1000, 1650], fov: 60 }], viewpoints: [view] };
+  const document = { nodes: [
+    { extras: { id: 'tour-camera' }, camera: 0, translation: [0, 1.65, 0] },
+    { name: view.name, extras: { id: `viewpoint:${view.id}`, category: 'viewpoint', viewpointId: view.id, viewpointName: view.name,
+      buildingId: view.buildingId, sourceRevision: view.sourceRevision, floorId: view.floorId }, camera: 1, translation: [1, 4.8, -2] },
+  ], cameras: [{ perspective: { yfov: Math.PI / 3 } }, { perspective: { yfov: view.fov * Math.PI / 180 } }] };
+  const inspect = value => {
+    const bytes = Buffer.from(JSON.stringify(value)), header = Buffer.alloc(20);
+    header.write('glTF'); header.writeUInt32LE(2, 4); header.writeUInt32LE(bytes.length + 20, 8);
+    header.writeUInt32LE(bytes.length, 12); header.writeUInt32LE(0x4e4f534a, 16);
+    return verifyGltfCoordinates(Buffer.concat([header, bytes]), payload);
+  };
+  assert.equal(inspect(document).savedViewpointsChecked, 1);
+  for (const mutate of [
+    doc => { doc.nodes.pop(); },
+    doc => { doc.nodes[1].extras.viewpointName = 'Renamed'; },
+    doc => { doc.nodes[1].extras.sourceRevision = 4; },
+    doc => { doc.nodes[1].extras.floorId = 'ground'; },
+    doc => { doc.nodes[1].translation = [1, 2, 4.8]; },
+    doc => { doc.nodes[1].rotation = [0, 1, 0, 0]; },
+    doc => { doc.nodes[1].translation = [1, 4.8]; },
+    doc => { doc.nodes[1].translation = [1, null, -2]; },
+    doc => { doc.nodes[1].rotation = [0, 0, 0]; },
+    doc => { doc.nodes[1].rotation = [0, 0, 0, 2]; },
+    doc => { doc.cameras[1].perspective.yfov = Math.PI / 2; },
+    doc => { doc.nodes.push(structuredClone(doc.nodes[1])); },
+  ]) {
+    const corrupted = structuredClone(document); mutate(corrupted);
+    assert.throws(() => inspect(corrupted), /GLB/);
+  }
+});
+
 test('local job refuses to overwrite an existing output directory', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'grihagrid-spatial-test-'));
   try {
@@ -172,6 +229,18 @@ test('GLB inspection detects axis, scale, vertical lens and direction mistakes',
     return Buffer.concat([header, json]);
   };
   assert.equal(verifyGltfCoordinates(binary(document), payload).passed, true);
+  for (const mutate of [
+    doc => { doc.nodes[0].translation = [1, .5]; },
+    doc => { doc.nodes[0].translation = [1, 'invalid', -2]; },
+    doc => { doc.nodes[1].translation = []; },
+    doc => { doc.nodes[1].translation = null; },
+    doc => { doc.nodes[1].rotation = [0, 0, 0]; },
+    doc => { doc.nodes[1].rotation = [0, null, 0, 1]; },
+    doc => { doc.nodes[1].rotation = [0, 0, 0, .5]; },
+  ]) {
+    const malformed = structuredClone(document); mutate(malformed);
+    assert.throws(() => verifyGltfCoordinates(binary(malformed), payload), /GLB/);
+  }
   document.nodes[0].translation = [1, 2, .5];
   assert.throws(() => verifyGltfCoordinates(binary(document), payload), /coordinate/);
   document.nodes[0].translation = [1, .5, -2];

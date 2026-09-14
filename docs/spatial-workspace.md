@@ -47,9 +47,14 @@ this task.
    Node service runs reusable Blender Python in a child process, keeps durable
    local jobs and returns progress and authenticated artifacts to the browser.
 
-The scene bundle is `{model, tour, viewpoints}`. No generated Python or
-JavaScript from an AI response is executed. Browser-local recognition is
-separate from the deliberately disabled private server-upload product.
+The scene bundle is `{model, tour, viewpoints}`. Scene JSON, browser GLB and
+local render requests include saved viewpoints for the current building ID and
+concept revision. A separate **Download camera library** action preserves all
+poses, including older concepts, as `{kind: "grihagrid-camera-library", viewpoints}`.
+The export panel reports how many current cameras are included and how many
+older cameras remain in the library. No generated Python or JavaScript from an
+AI response is executed. Browser-local recognition is separate from the
+deliberately disabled private server-upload product.
 
 ## Shared geometry and coordinate conventions
 
@@ -121,6 +126,22 @@ optional `floorId`, `position`, `target`, and `fov`. A private library revision
 contains up to 40 views. Older poses can be retained, renamed or removed; they
 cannot be restored into an incompatible concept. Camera rename/delete drafts
 survive tour saves and retain their original concurrency fence.
+
+`src/spatial/viewpoints.js` supplies the same strict validator to private
+persistence, browser GLB export and the local renderer. Exported views must
+reference the current concept, use a valid floor when specified, have distinct
+finite position/target coordinates and a vertical field of view of 20–110
+degrees. Invalid, duplicate, foreign or stale records are rejected at the
+renderer boundary. The persistence path alone can retain an unchanged older
+pose from its existing library.
+
+Browser GLB and Blender exports create a static named camera for each included
+view. Its metadata preserves `viewpointId`, the full `viewpointName`,
+`buildingId`, `sourceRevision` and optional `floorId`; the exported camera ID
+is `viewpoint:<id>`, separate from geometry IDs. Blender keeps the animated
+`tour-camera` active. Saving or exporting these viewpoints does not alter the
+tour sequence. The native export verification and its exact artifact/source
+hashes are recorded in [Blender rendering](spatial-blender.md).
 
 ## Private API and AI boundary
 

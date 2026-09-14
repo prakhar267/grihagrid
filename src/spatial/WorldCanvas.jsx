@@ -1,4 +1,4 @@
-import { Component, forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
+import { Component, forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Canvas, extend, useFrame, useThree } from '@react-three/fiber'
 import { Html, OrbitControls } from '@react-three/drei'
 import * as THREE from 'three'
@@ -7,6 +7,7 @@ import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.j
 import { buildPrimitives, toBrowser, fromBrowser, floorApertures, pointInPolygon } from './model.js'
 import { resolveCollision, floorAtPosition } from './navigation.js'
 import { getOverviewView, getRoomView, sampleTour } from './tours.js'
+import { validateViewpoints } from './viewpoints.js'
 import './world-canvas.css'
 
 extend({ RoundedBoxGeometry })
@@ -173,7 +174,7 @@ function Environment({ model, mode, selectedRoomId, hoveredRoomId, onRoomHover, 
   </>
 }
 
-function CameraDirector({ model, mode, selectedRoomId, tour, tourPlaying, tourTime, onTourTime, onTourPause, onMetrics, onFade, controllerRef, movement, reducedMotion, sceneRef, playbackRate, eyeHeight, activeFloorId, isolateFloor, onFloorChange }) {
+function CameraDirector({ model, mode, selectedRoomId, tour, tourPlaying, tourTime, onTourTime, onTourPause, onMetrics, onFade, controllerRef, movement, reducedMotion, sceneRef, playbackRate, eyeHeight, activeFloorId, isolateFloor, onFloorChange, restoreState }) {
   const { camera, gl, scene, invalidate, size: viewport } = useThree()
   const controls = useRef()
   const live = useRef({})
@@ -202,7 +203,7 @@ function CameraDirector({ model, mode, selectedRoomId, tour, tourPlaying, tourTi
     target.current.copy(vector(view.target))
     camera.lookAt(target.current)
     if (controls.current) controls.current.target.copy(target.current)
-    if (Number.isFinite(view.fov)) camera.fov = THREE.MathUtils.clamp(view.fov, 20, 100)
+    if (Number.isFinite(view.fov)) camera.fov = THREE.MathUtils.clamp(view.fov, 20, 110)
     camera.updateProjectionMatrix()
     invalidate()
   }
@@ -215,7 +216,7 @@ function CameraDirector({ model, mode, selectedRoomId, tour, tourPlaying, tourTi
   }
 
   useEffect(() => {
-    controllerRef.current = {
+    const controller = {
       reset: () => jumpTo(overviewView(live.current.model)),
       focusRoom: id => jumpTo(getRoomView(live.current.model, id, live.current.eyeHeight)),
       setView: view => { manualView.current = { view, fromMode: live.current.mode }; jumpTo(view) },
@@ -223,8 +224,10 @@ function CameraDirector({ model, mode, selectedRoomId, tour, tourPlaying, tourTi
         const direction = new THREE.Vector3(); camera.getWorldDirection(direction)
         return { position: fromBrowser(camera.position.toArray()), target: fromBrowser(camera.position.clone().addScaledVector(direction, 3).toArray()), fov: camera.fov }
       },
-      exportGLB: async () => {
+      getRuntimeState: () => ({ view: controller.getView(), orbitTarget: fromBrowser((controls.current?.target || target.current).toArray()), time: elapsed.current, published: published.current, mode: live.current.mode, modelId: live.current.model.id, revision: live.current.model.revision }),
+      exportGLB: async (viewpoints = []) => {
         if (!sceneRef.current) throw new Error('The scene is still loading.')
+        if (!validateViewpoints(viewpoints, live.current.model)) throw new Error('Saved cameras must belong to the current concept before exporting.')
         // Rebuild from canonical dimensions: the overview's cutaway is presentation only.
         const complete = new THREE.Group()
         complete.name = 'GrihaGrid_Building'
@@ -238,8 +241,16 @@ function CameraDirector({ model, mode, selectedRoomId, tour, tourPlaying, tourTi
           mesh.position.set(...toBrowser(primitive.position))
           if (primitive.kind !== 'mesh') mesh.scale.set(primitive.size[0] / 1000, primitive.size[2] / 1000, primitive.size[1] / 1000)
           mesh.rotation.y = primitive.rotation || 0
-          mesh.userData = { id: primitive.id, roomId: primitive.roomId || null, category: primitive.category, floorId: primitive.floorId || null, stairId: primitive.stairId || null }
+          mesh.userData = { id: primitive.id, roomId: primitive.roomId || null, category: primitive.category, floorId: primitive.floorId || null, stairId: primitive.stairId || null, wallId: primitive.wallId || null, openingId: primitive.openingId || null }
           complete.add(mesh)
+        }
+        for (const view of viewpoints) {
+          const savedCamera = new THREE.PerspectiveCamera(view.fov, 16 / 9, 0.05, 180)
+          savedCamera.name = view.name
+          savedCamera.position.copy(vector(view.position))
+          savedCamera.lookAt(vector(view.target))
+          savedCamera.userData = { id: `viewpoint:${view.id}`, viewpointId: view.id, viewpointName: view.name, category: 'viewpoint', buildingId: view.buildingId, sourceRevision: view.sourceRevision, ...(view.floorId ? { floorId: view.floorId } : {}) }
+          complete.add(savedCamera)
         }
         complete.updateMatrixWorld(true)
         try {
@@ -254,7 +265,8 @@ function CameraDirector({ model, mode, selectedRoomId, tour, tourPlaying, tourTi
         return gl.domElement.toDataURL('image/png')
       },
     }
-    return () => { controllerRef.current = null }
+    controllerRef.current = controller
+    return () => { if (controllerRef.current === controller) controllerRef.current = null }
   }, [camera, controllerRef, gl, scene, sceneRef])
 
   useEffect(() => {
@@ -331,11 +343,25 @@ function CameraDirector({ model, mode, selectedRoomId, tour, tourPlaying, tourTi
     }
   }, [mode, model, onMetrics, gl])
 
+  useEffect(() => {
+    // Antialias changes need a new WebGL context. Restore after initial camera
+    // effects so a quality change does not reset navigation or tour playback.
+    if (!restoreState || restoreState.mode !== mode || restoreState.modelId !== model.id || restoreState.revision !== model.revision) return
+    pendingView.current = null
+    applyView(restoreState.view)
+    target.current.copy(vector(restoreState.orbitTarget))
+    controls.current?.target.copy(target.current)
+    elapsed.current = restoreState.time
+    published.current = restoreState.published
+    onFade?.(0)
+  }, [])
+
   useFrame((state, delta) => {
     const settings = live.current
     if (settings.mode !== 'overview') { if (metrics.current.frames) metrics.current.seconds += delta; metrics.current.frames++ }
     if (settings.mode !== 'overview' && metrics.current.seconds >= 1.2) {
-      settings.onMetrics?.({ fps: Math.round(metrics.current.frames / metrics.current.seconds), renderMode: 'always', drawCalls: gl.info.render.calls, triangles: gl.info.render.triangles })
+      // The first callback establishes the baseline; N callbacks contain N-1 intervals.
+      settings.onMetrics?.({ fps: Math.round((metrics.current.frames - 1) / metrics.current.seconds), renderMode: 'always', drawCalls: gl.info.render.calls, triangles: gl.info.render.triangles })
       metrics.current = { seconds: 0, frames: 0 }
     }
     if (pendingView.current) {
@@ -393,6 +419,9 @@ function RendererHealth({ onError, onContextLost }) {
   const { gl } = useThree()
   useEffect(() => {
     const lost = event => {
+      // R3F intentionally loses the detached renderer's context on teardown.
+      // Only a loss in the live canvas should replace the viewer with fallback.
+      if (!gl.domElement.isConnected) return
       event.preventDefault()
       onContextLost(true)
       onError?.('Graphics context was lost. The 2D plan remains available.')
@@ -421,6 +450,15 @@ const WorldCanvas = forwardRef(function WorldCanvas({ model, mode = 'overview', 
   const setFading = value => { if (fadeRef.current) fadeRef.current.style.opacity = String(Number(value) || 0) }
   const [contextLost, setContextLost] = useState(false)
   const [graphicsAvailable, setGraphicsAvailable] = useState(null)
+  const [contextProfile, setContextProfile] = useState(quality === 'low' ? 'light' : 'antialiased')
+  const restoreState = useRef(null)
+  const eventSource = useRef(null)
+  useLayoutEffect(() => {
+    const next = quality === 'low' ? 'light' : 'antialiased'
+    if (next === contextProfile) return
+    restoreState.current = controller.current?.getRuntimeState() || null
+    setContextProfile(next)
+  }, [quality, contextProfile])
   useEffect(() => {
     // R3F configures its renderer asynchronously; test capability before that
     // promise can reject outside React's error boundary on unsupported devices.
@@ -441,7 +479,7 @@ const WorldCanvas = forwardRef(function WorldCanvas({ model, mode = 'overview', 
     focusRoom: id => controller.current?.focusRoom(id),
     getView: () => controller.current?.getView(),
     setView: view => controller.current?.setView(view),
-    exportGLB: () => controller.current?.exportGLB(),
+    exportGLB: views => controller.current?.exportGLB(views),
     captureImage: () => controller.current?.captureImage(),
   }), [])
   useEffect(() => { movement.current = {} }, [mode])
@@ -452,9 +490,9 @@ const WorldCanvas = forwardRef(function WorldCanvas({ model, mode = 'overview', 
     <ViewerErrorBoundary onError={onError}>
       {graphicsAvailable === null && <div className="world-fallback" role="status">Preparing the 3D view…</div>}
       {graphicsAvailable === false && <div className="world-fallback" role="status"><strong>3D graphics are unavailable.</strong><span>Open 2D Plan to inspect and edit this concept.</span></div>}
-      {graphicsAvailable && !contextLost && <Canvas frameloop={mode === 'overview' ? 'demand' : 'always'} shadows={quality !== 'low' ? 'percentage' : false} dpr={quality === 'low' ? 1 : quality === 'high' ? [1, 2] : [1, 1.5]}
+      {graphicsAvailable && !contextLost && <div ref={eventSource} style={{ width: '100%', height: '100%' }}><Canvas key={contextProfile} eventSource={eventSource} style={{ pointerEvents: 'auto' }} frameloop={mode === 'overview' ? 'demand' : 'always'} shadows={quality !== 'low' ? 'percentage' : false} dpr={quality === 'low' ? 1 : quality === 'high' ? [1, 2] : [1, 1.5]}
         camera={{ fov: 52, near: 0.05, far: 180, position: [17, 17, 15] }}
-        gl={{ antialias: quality !== 'low', alpha: false, powerPreference: 'high-performance', preserveDrawingBuffer: true }}
+        gl={{ antialias: contextProfile !== 'light', alpha: false, powerPreference: 'high-performance', preserveDrawingBuffer: true }}
         fallback={<div className="world-fallback" aria-hidden="true">WebGL is unavailable. Use the 2D Plan to explore this design.</div>}
         onCreated={({ gl }) => {
           gl.toneMapping = THREE.ACESFilmicToneMapping; gl.toneMappingExposure = 1.05
@@ -465,8 +503,8 @@ const WorldCanvas = forwardRef(function WorldCanvas({ model, mode = 'overview', 
         }}>
         <RendererHealth onError={onError} onContextLost={setContextLost} />
         <Environment model={model} mode={mode} selectedRoomId={selectedRoomId} hoveredRoomId={hoveredRoomId} onRoomHover={handleHover} onRoomSelect={onRoomSelect} sceneRef={sceneRef} quality={quality} activeFloorId={activeFloorId} isolateFloor={isolateFloor} selectedObjectId={selectedObjectId || pickedObject?.id} onObjectSelect={pickObject} />
-        <CameraDirector model={model} mode={mode} selectedRoomId={selectedRoomId} tour={tour} tourPlaying={tourPlaying} tourTime={tourTime} onTourTime={onTourTime} onTourPause={onTourPause} onMetrics={onMetrics} onFade={setFading} controllerRef={controller} movement={movement} reducedMotion={reducedMotion} sceneRef={sceneRef} playbackRate={playbackRate} eyeHeight={eyeHeight} activeFloorId={activeFloorId} isolateFloor={isolateFloor} onFloorChange={onFloorChange} />
-      </Canvas>}
+        <CameraDirector model={model} mode={mode} selectedRoomId={selectedRoomId} tour={tour} tourPlaying={tourPlaying} tourTime={tourTime} onTourTime={onTourTime} onTourPause={onTourPause} onMetrics={onMetrics} onFade={setFading} controllerRef={controller} movement={movement} reducedMotion={reducedMotion} sceneRef={sceneRef} playbackRate={playbackRate} eyeHeight={eyeHeight} activeFloorId={activeFloorId} isolateFloor={isolateFloor} onFloorChange={onFloorChange} restoreState={restoreState.current} />
+      </Canvas></div>}
       {contextLost && <div className="world-fallback" role="status">The graphics session ended. Your 2D plan is still available.</div>}
     </ViewerErrorBoundary>
     {pickedObject && <div className="world-object-card" role="status"><strong>{pickedObject.label}</strong><span>{model.floors.find(floor => floor.id === pickedObject.floorId)?.name || model.floors[0]?.name}{pickedObject.size ? ` · ${pickedObject.size.map(value => (value / 1000).toFixed(2)).join(' × ')} m` : ''}</span><span>Edit dimensions and placement in 2D Plan.</span><button type="button" aria-label="Clear object selection" onClick={() => { setPickedObject(null); onObjectSelect?.(null) }}>×</button></div>}

@@ -61,6 +61,25 @@ test('job settings accept only bounded fixed Cycles operations and valid scene r
   assert.throws(() => validateRenderRequest({ ...requestBody, tour: { ...scene.tour, sourceRevision: 99 } }), /older|revision/i);
 });
 
+test('paired jobs persist validated camera libraries and reject stale or unsupported cameras', async () => {
+  const view = { id: 'living-camera', name: 'Living room', buildingId: model.id, sourceRevision: model.revision,
+    floorId: model.floors[0].id, position: [3000, 2500, 1650], target: [4000, 3500, 1650], fov: 48 };
+  let input;
+  const f = await fixture({ executor: async options => { input = JSON.parse(await readFile(options.input, 'utf8')); } });
+  try {
+    const response = await f.request('/jobs', { method: 'POST', body: JSON.stringify({ ...requestBody, viewpoints: [view] }) });
+    assert.equal(response.status, 201);
+    const { job } = await response.json();
+    await waitFor(f.jobs, jobs => jobs.find(item => item.id === job.id)?.status === 'complete');
+    assert.deepEqual(input.viewpoints, [view]);
+    assert.deepEqual(input.tour, scene.tour);
+    for (const invalid of [[{ ...view, sourceRevision: 99 }], [view, view], [{ ...view, python: 'code' }]]) {
+      assert.equal((await f.request('/jobs', { method: 'POST', body: JSON.stringify({ ...requestBody, viewpoints: invalid }) })).status, 400);
+    }
+    assert.equal((await f.jobs()).length, 1);
+  } finally { await f.close(); }
+});
+
 test('queued jobs run serially and cancellation releases the next job', async () => {
   let running = 0, maxRunning = 0; const releases = new Map();
   const executor = async (options, progress, signal) => {

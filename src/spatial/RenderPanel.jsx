@@ -10,7 +10,7 @@ function useMountedState(initial, mounted) {
   return [value, update]
 }
 
-export default function RenderPanel({ model, tour, disabled = false }) {
+export default function RenderPanel({ model, tour, viewpoints = [], disabled = false }) {
   const mounted = useRef(true)
   const requests = useRef(new Set())
   const refreshing = useRef(false)
@@ -75,7 +75,7 @@ export default function RenderPanel({ model, tour, disabled = false }) {
   async function submit(mode) {
     setBusy(true); setError('')
     try {
-      await (await api('/jobs', { method: 'POST', body: JSON.stringify({ model, tour, settings: { mode, samples: quality } }) })).json()
+      await (await api('/jobs', { method: 'POST', body: JSON.stringify({ model, tour, viewpoints, settings: { mode, samples: quality } }) })).json()
       await refresh()
     } catch (error) { setError(error.message) } finally { setBusy(false) }
   }

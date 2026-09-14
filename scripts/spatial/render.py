@@ -6,21 +6,62 @@ import sys
 import time
 import platform
 import hashlib
+import math
 import bpy
 from mathutils import Vector
 
 sys.path.insert(0, str(Path(__file__).parent))
 from scene import build_scene, mesh_bounds, scene_manifest
-from cameras import build_camera, build_tour_fades
+from cameras import build_camera, build_saved_cameras, camera_manifest, build_tour_fades
 
 
 def progress(stage, **extra):
     print('GRIHAGRID_PROGRESS ' + json.dumps({'stage': stage, **extra}), flush=True)
 
 
+def camera_pose_errors(camera, expected):
+    position = Vector(expected['position']) / 1000
+    forward = (Vector(expected['target']) / 1000 - position).normalized()
+    actual_forward = camera.matrix_world.to_quaternion() @ Vector((0, 0, -1))
+    projection = camera.calc_matrix_camera(bpy.context.evaluated_depsgraph_get(), x=1920, y=1080)
+    return {'positionErrorMm': (camera.matrix_world.translation - position).length * 1000,
+            'directionError': (actual_forward - forward).length,
+            'fovErrorDegrees': abs(math.degrees(2 * math.atan(1 / projection[1][1])) - expected['fov'])}
+
+
+def assert_camera_pose(camera, expected):
+    errors = camera_pose_errors(camera, expected)
+    if errors['positionErrorMm'] > 1 or errors['directionError'] > .0001 or errors['fovErrorDegrees'] > .001:
+        raise ValueError('Camera coordinate or vertical FOV round trip failed')
+    return errors
+
+
+def verify_editable_cameras(payload):
+    """Reopen the saved .blend and inspect real objects and animated poses."""
+    scene = bpy.context.scene
+    objects = {obj.get('id'): obj for obj in scene.objects if obj.type == 'CAMERA'}
+    tour = objects.get('tour-camera')
+    if tour is None or scene.camera != tour or not tour.animation_data or not tour.data.animation_data:
+        raise ValueError('The editable scene lost its active animated tour camera')
+    checks = []
+    for view in payload.get('viewpoints', []):
+        camera = objects.get('viewpoint:' + view['id'])
+        if camera is None or camera.animation_data or camera.data.animation_data or camera.get('viewpointName') != view['name'] or camera.get('viewpointId') != view['id']:
+            raise ValueError('The editable scene lost a named static viewpoint')
+        if camera.get('category') != 'viewpoint' or any(camera.get(key) != view.get(key) for key in ('buildingId', 'sourceRevision', 'floorId')):
+            raise ValueError('The editable scene lost a saved camera association')
+        checks.append({'id': view['id'], **assert_camera_pose(camera, view)})
+    frames = sorted(set([1, max(1, len(payload['cameraSamples']) // 2), len(payload['cameraSamples'])]))
+    for frame in frames:
+        scene.frame_set(frame)
+        bpy.context.view_layer.update()
+        assert_camera_pose(tour, payload['cameraSamples'][frame - 1])
+    scene.frame_set(1)
+    return {'passed': True, 'activeCameraId': 'tour-camera', 'savedViewpointsChecked': len(checks),
+            'savedCameras': checks, 'tourFramesChecked': frames, 'tourFrameCount': len(payload['cameraSamples'])}
+
+
 def verify_roundtrip(glb_path, manifest, camera):
-    original_forward = camera.matrix_world.to_quaternion() @ Vector((0, 0, -1))
-    original_camera = camera.location.copy()
     bpy.ops.object.select_all(action='SELECT')
     bpy.ops.object.delete(use_global=False)
     bpy.ops.import_scene.gltf(filepath=str(glb_path))
@@ -40,16 +81,19 @@ def verify_roundtrip(glb_path, manifest, camera):
             maximum_error = max(maximum_error, *[abs(a-b) for a, b in zip(actual[edge], expected['boundsMm'][edge])])
     if maximum_error > 1:
         raise ValueError(f'GLB round-trip bounds differ by {maximum_error} mm')
-    restored_camera = imported.get('tour-camera')
-    if restored_camera is None:
-        raise ValueError('GLB lost tour camera')
-    camera_error = (restored_camera.matrix_world.translation - original_camera).length * 1000
-    direction = restored_camera.matrix_world.to_quaternion() @ Vector((0, 0, -1))
-    direction_error = (direction - original_forward).length
-    if camera_error > 1 or direction_error > .0001:
-        raise ValueError('GLB camera coordinate round trip failed')
+    camera_checks = []
+    for expected in manifest['cameras']:
+        restored = imported.get(expected['id'])
+        if restored is None or restored.type != 'CAMERA':
+            raise ValueError('GLB lost an exported camera')
+        if expected['kind'] == 'saved':
+            if restored.get('category') != 'viewpoint' or restored.get('viewpointName') != expected['name'] or any(restored.get(key) != expected.get(key) for key in ('viewpointId', 'buildingId', 'sourceRevision', 'floorId')):
+                raise ValueError('GLB lost a saved camera name or association')
+        camera_checks.append({'id': expected['id'], **assert_camera_pose(restored, expected)})
+    first = camera_checks[0]
     return {'passed': True, 'objectsChecked': len(manifest['objects']), 'maxBoundsErrorMm': maximum_error,
-            'cameraPositionErrorMm': camera_error, 'cameraDirectionError': direction_error}
+            'cameraPositionErrorMm': first['positionErrorMm'], 'cameraDirectionError': first['directionError'],
+            'savedViewpointsChecked': len(camera_checks) - 1, 'cameras': camera_checks}
 
 
 def main():
@@ -67,6 +111,7 @@ def main():
     progress('building', primitives=len(payload['primitives']))
     scene = build_scene(payload)
     camera = build_camera(payload)
+    saved_cameras = build_saved_cameras(payload)
     build_tour_fades(payload)
     scene.render.engine = 'CYCLES'
     scene.cycles.samples = args.samples
@@ -113,6 +158,7 @@ def main():
     if config.exists():
         proof['recipeSha256'] = hashlib.sha256(config.read_bytes()).hexdigest()
     manifest = scene_manifest(payload)
+    manifest['cameras'] = camera_manifest(payload, camera, saved_cameras)
     progress('exporting')
     glb_path = output / 'house.glb'
     # glTF carries the matching base colours; Cycles keeps procedural grain in .blend.
@@ -130,9 +176,12 @@ def main():
     (output / 'manifest.json').write_text(json.dumps(manifest, indent=2))
     # A resumable build includes verified exports, not only a saved .blend.
     proof['exportSha256'] = hashlib.sha256(glb_path.read_bytes()).hexdigest()
-    (output / 'build-proof.json').write_text(json.dumps(proof))
     bpy.ops.wm.open_mainfile(filepath=str(blend_path))
     scene = bpy.context.scene
+    manifest['editableCameras'] = verify_editable_cameras(payload)
+    (output / 'manifest.json').write_text(json.dumps(manifest, indent=2))
+    # Failed construction must not become resumable before every export gate.
+    (output / 'build-proof.json').write_text(json.dumps(proof))
     if args.mode in ('preview', 'film'):
         previews = output / 'previews'
         previews.mkdir(exist_ok=True)

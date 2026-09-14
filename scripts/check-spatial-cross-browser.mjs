@@ -89,6 +89,22 @@ for (const name of requested) {
       await page.waitForFunction(value => Number(document.querySelector('[aria-label="Tour progress"]').value) > value + 0.2, takeover);
       await page.getByRole('button', { name: 'Pause tour', exact: true }).click();
       result.checks.push('Actual WebGL tour advances, pauses exactly, resumes, pauses on pointer takeover, and resumes again.');
+      const qualityTime = Number(await progress.inputValue());
+      for (const quality of ['low', 'balanced']) {
+        await page.getByLabel('Rendering quality', { exact: true }).selectOption(quality);
+        await page.waitForFunction(expected => {
+          // role is assigned by onCreated; avoid creating a default GL context
+          // ourselves before the renderer applies the requested attributes.
+          const canvas = document.querySelector('.world-canvas-shell canvas[role="img"]');
+          return canvas?.getContext('webgl2')?.getContextAttributes()?.antialias === expected;
+        }, quality !== 'low');
+        await page.waitForTimeout(800); // Includes delayed disposal of the previous context.
+        assert.equal(Number(await progress.inputValue()), qualityTime);
+        await page.locator('.world-canvas-shell canvas').waitFor();
+        const draws = await page.evaluate(() => window.__spatialDraws);
+        await page.waitForFunction(before => window.__spatialDraws > before, draws);
+      }
+      result.checks.push('Direct Light/Balanced context transitions apply real antialias settings and retain paused tour time without a false fallback.');
     } else result.checks.push('3D tour movement not claimed: this headless engine has no usable WebGL context.');
 
     await page.getByRole('button', { name: '2D Plan', exact: true }).click();
