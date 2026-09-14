@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import {createDemoBuilding,createMultiFloorDemo,buildPrimitives,validateBuilding,toV2} from '../src/spatial/model.js'
+import {createDemoBuilding,createMultiFloorDemo,buildPrimitives,validateBuilding,toV2,resizeBuilding} from '../src/spatial/model.js'
 import {doorLeafPrimitive,recalculateBounds} from '../src/spatial/model-v2.js'
-import {isWalkable,isRouteClear,resolveCollision,validateConnectivity} from '../src/spatial/navigation.js'
+import {isWalkable,isRouteClear,isPathClear,findRoute,resolveCollision,validateConnectivity} from '../src/spatial/navigation.js'
+import {floorScene} from '../src/spatial/navigation-v2.js'
 import {applySceneEdit} from '../src/spatial/editor-ops.js'
-import {generateTour,validateTour} from '../src/spatial/tours.js'
+import {generateTour,validateTour,parseTourIntent} from '../src/spatial/tours.js'
 
 function fixture(angle){
   const scene=createMultiFloorDemo(),turn=([x,y])=>[3000+Math.cos(angle)*(x-3000)-Math.sin(angle)*(y-3000),3000+Math.sin(angle)*(x-3000)+Math.cos(angle)*(y-3000)]
@@ -48,4 +49,27 @@ test('directed living-to-kitchen walks preserve continuous clearance around the 
   const scene=toV2(model),walk=tour.shots.find(shot=>shot.kind==='walk')
   assert.ok(walk)
   for(let i=1;i<walk.path.length;i++){const a=walk.path[i-1],b=walk.path[i],steps=Math.ceil(Math.hypot(...a.map((v,j)=>v-b[j]))/10);for(let n=0;n<=steps;n++)assert.equal(isWalkable(scene,a.map((v,j)=>v+(b[j]-v)*n/steps)),true)}
+})
+
+test('changing a directed door into a window clears only inherited door metadata',()=>{
+  const {scene}=fixture(0)
+  const directed=applySceneEdit(scene,{type:'upsertOpening',wallId:'partition',opening:{id:'passage',hinge:'end',swing:-1}})
+  const patch={id:'passage',kind:'window',sill:900,height:1400,open:false}
+  const converted=applySceneEdit(directed,{type:'upsertOpening',wallId:'partition',opening:patch})
+  const window=converted.walls[0].openings[0]
+  assert.equal(window.kind,'window');assert.equal(window.hinge,undefined);assert.equal(window.swing,undefined)
+  assert.equal(window.offset,2400);assert.equal(window.width,1200);assert.equal(converted.revision,directed.revision+1)
+  assert.equal(directed.walls[0].openings[0].hinge,'end')
+  assert.equal(buildPrimitives(converted).some(primitive=>primitive.id==='passage-leaf'),false)
+  assert.throws(()=>applySceneEdit(directed,{type:'upsertOpening',wallId:'partition',opening:{...patch,hinge:'end'}}),/Invalid opening/)
+})
+
+test('scaled open leaves route through narrow clearance bands without a finer global grid',()=>{
+  const model=resizeBuilding(createDemoBuilding(),{width:13000,depth:10000})
+  const intent=parseTourIntent('Slowly reveal the kitchen island, orbit the dining table, then linger in the main bedroom for a 40 second tour.',model)
+  const tour=generateTour(model,intent),projected=floorScene(toV2(model),'ground')
+  assert.equal(tour.duration,40);assert.equal(validateTour(model,tour).valid,true)
+  for(const shot of tour.shots.filter(shot=>shot.kind==='walk'))assert.equal(isPathClear(projected,shot.path),true,'Every generated segment preserves exact swept obstacle clearance.')
+  const {scene}=fixture(0);scene.walls[0].openings[0].open=false
+  assert.deepEqual(findRoute(scene,[3000,2000,1650],[3000,4000,1650]),[],'The fallback must not cross a closed partition.')
 })

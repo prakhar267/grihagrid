@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, writeFile, mkdir, rm, symlink, stat, rename } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { randomUUID, createHash } from 'node:crypto';
+import { randomBytes, randomUUID, createHash } from 'node:crypto';
 import http from 'node:http';
+import fsPromises from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import { startRenderService, validateRenderRequest } from '../scripts/spatial/service.mjs';
 import { createDemoBuilding } from '../src/spatial/model.js';
 import { serializeScene } from '../scripts/spatial/run.mjs';
@@ -20,9 +22,10 @@ async function waitFor(read, predicate) {
 }
 async function fixture(options = {}) {
   const rootDirectory = await mkdtemp(path.join(tmpdir(), 'grihagrid-render-service-'));
-  const service = await startRenderService({ rootDirectory, port: 0, allowedOrigins: [ORIGIN], checkDependencies: false, checkDisk: false, ...options });
+  const code = randomBytes(24).toString('base64url');
+  const service = await startRenderService({ rootDirectory, port: 0, allowedOrigins: [ORIGIN], checkDependencies: false, checkDisk: false, ...options, pairingCode: code });
   const baseHeaders = { Origin: ORIGIN, 'Content-Type': 'application/json' };
-  const code = await readFile(service.pairingFile, 'utf8');
+  assert.equal(await readFile(service.pairingFile, 'utf8'), code);
   const pair = await fetch(`${service.origin}/pair`, { method: 'POST', headers: baseHeaders, body: JSON.stringify({ code }) });
   assert.equal(pair.status, 200);
   const { token } = await pair.json();
@@ -59,11 +62,12 @@ test('job settings accept only bounded fixed Cycles operations and valid scene r
 });
 
 test('queued jobs run serially and cancellation releases the next job', async () => {
-  let running = 0, maxRunning = 0; const releases = [];
+  let running = 0, maxRunning = 0; const releases = new Map();
   const executor = async (options, progress, signal) => {
-    running++; maxRunning = Math.max(maxRunning, running); progress({ stage: 'frame', frame: 1, total: 600 });
-    try { await new Promise((resolve, reject) => { releases.push(resolve); signal.addEventListener('abort', () => { const e = new Error('cancelled'); e.name = 'AbortError'; reject(e); }, { once: true }); }); }
-    finally { running--; }
+    const id = path.basename(path.dirname(options.output));
+    running++; maxRunning = Math.max(maxRunning, running);
+    try { await new Promise((resolve, reject) => { releases.set(id, resolve); const cancel = () => { const e = new Error('cancelled'); e.name = 'AbortError'; reject(e); }; signal.addEventListener('abort', cancel, { once: true }); if (signal.aborted) cancel(); progress({ stage: 'frame', frame: 1, total: 600 }); }); }
+    finally { releases.delete(id); running--; }
   };
   const f = await fixture({ executor });
   try {
@@ -73,11 +77,54 @@ test('queued jobs run serially and cancellation releases the next job', async ()
     assert.equal((await f.jobs()).find(j => j.id === second.job.id).status, 'queued');
     assert.equal((await f.request(`/jobs/${first.job.id}/cancel`, { method: 'POST', body: '{}' })).status, 200);
     await waitFor(f.jobs, jobs => jobs.find(j => j.id === second.job.id)?.status === 'running');
-    releases.at(-1)();
+    const releaseSecond = await waitFor(async () => releases.get(second.job.id), release => typeof release === 'function');
+    releaseSecond();
     await waitFor(f.jobs, jobs => jobs.find(j => j.id === second.job.id)?.status === 'complete');
     assert.equal(maxRunning, 1);
     assert.equal((await f.jobs()).find(j => j.id === first.job.id).status, 'cancelled');
   } finally { await f.close(); }
+});
+
+test('an accepted cancellation stays cancelled when an executor returns normally after abort', async () => {
+  const f = await fixture({ executor: async (options, progress, signal) => {
+    await new Promise(resolve => { signal.addEventListener('abort', resolve, { once: true }); if (signal.aborted) resolve(); progress({ stage: 'frame', frame: 1, total: 600 }); });
+  } });
+  try {
+    const { job } = await (await f.request('/jobs', { method: 'POST', body: JSON.stringify(requestBody) })).json();
+    await waitFor(f.jobs, jobs => jobs.find(item => item.id === job.id)?.progress.frame === 1);
+    assert.equal((await f.request(`/jobs/${job.id}/cancel`, { method: 'POST', body: '{}' })).status, 200);
+    await waitFor(f.jobs, jobs => jobs.find(item => item.id === job.id)?.status === 'cancelled');
+  } finally { await f.close(); }
+});
+
+test('cancellation fences a renderer finishing while its cancellation record is being written', async () => {
+  let finish, signal, abortedBeforePersistence;
+  const originalWriteFile = fsPromises.writeFile;
+  const f = await fixture({ executor: async (options, progress, abortSignal) => {
+    signal = abortSignal;
+    await new Promise(resolve => { finish = resolve; progress({ stage: 'frame', frame: 1, total: 600 }); });
+  } });
+  try {
+    const { job } = await (await f.request('/jobs', { method: 'POST', body: JSON.stringify(requestBody) })).json();
+    const directory = path.join(f.service.rootDirectory, 'jobs', job.id);
+    await waitFor(async () => JSON.parse(await readFile(path.join(directory, 'record.json'), 'utf8')), record => record.progress.frame === 1);
+    // Delay only this synthetic job's cancellation write. Other tests run in
+    // separate test-file processes, and this file's cases run sequentially.
+    fsPromises.writeFile = async (filename, data, options) => {
+      if (String(filename).startsWith(path.join(directory, 'record.json.')) && JSON.parse(data).status === 'cancelling') {
+        abortedBeforePersistence = signal.aborted;
+        finish();
+        await new Promise(resolve => setImmediate(resolve));
+      }
+      return originalWriteFile(filename, data, options);
+    };
+    syncBuiltinESMExports();
+    assert.equal((await f.request(`/jobs/${job.id}/cancel`, { method: 'POST', body: '{}' })).status, 200);
+    await waitFor(f.jobs, jobs => ['cancelled', 'complete'].includes(jobs.find(item => item.id === job.id)?.status));
+    assert.equal(abortedBeforePersistence, true, 'Abort must be visible before the cancellation record is written.');
+    assert.equal((await f.jobs()).find(item => item.id === job.id).status, 'cancelled');
+    await waitFor(async () => JSON.parse(await readFile(path.join(directory, 'record.json'), 'utf8')), record => record.status === 'cancelled');
+  } finally { fsPromises.writeFile = originalWriteFile; syncBuiltinESMExports(); finish?.(); await f.close(); }
 });
 
 test('resume keeps complete frames and rejects tampered provenance', async () => {
@@ -278,8 +325,9 @@ test('artifact parents and recovered job directories cannot be symlinks', async 
     await f.service.close(); firstClosed = true;
     const jobPath = path.join(f.rootDirectory, 'jobs', job.id), moved = path.join(f.rootDirectory, 'moved-job');
     await rename(jobPath, moved); await symlink(moved, jobPath);
-    second = await startRenderService({ rootDirectory: f.rootDirectory, port: 0, allowedOrigins: [ORIGIN], checkDependencies: false, checkDisk: false, executor: async () => {} });
-    const code = await readFile(second.pairingFile, 'utf8');
+    const code = randomBytes(24).toString('base64url');
+    second = await startRenderService({ rootDirectory: f.rootDirectory, port: 0, allowedOrigins: [ORIGIN], checkDependencies: false, checkDisk: false, executor: async () => {}, pairingCode: code });
+    assert.equal(await readFile(second.pairingFile, 'utf8'), code);
     const pair = await fetch(`${second.origin}/pair`, { method: 'POST', headers: { Origin: ORIGIN, 'Content-Type': 'application/json' }, body: JSON.stringify({ code }) });
     const { token } = await pair.json();
     const response = await fetch(`${second.origin}/jobs`, { headers: { Origin: ORIGIN, Authorization: `Bearer ${token}` } });

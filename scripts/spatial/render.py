@@ -141,8 +141,8 @@ def main():
         for frame in frames:
             scene.frame_set(frame)
             scene.render.filepath = str(previews / f'frame-{frame:04d}.png')
-            progress('preview-frame', frame=frame, total=scene.frame_end)
             bpy.ops.render.render(write_still=True)
+            progress('preview-frame', frame=frame, total=scene.frame_end)
     if args.mode == 'film':
         frames_dir = output / 'frames'
         frames_dir.mkdir(exist_ok=True)

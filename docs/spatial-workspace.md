@@ -142,6 +142,12 @@ limits and SQL compare-and-swap. Camera writes add `expectedCameraRevision` to
 `expectedInputRevision` and `expectedSpatialRevision`. Idempotency keys preserve
 retries. Archived projects are read-only. Other owners cannot read/write any
 part of the library. Explicit project deletion follows existing cascade rules.
+Account downloads include the owner's complete spatial layout, tour and camera
+history with explicit public fields; persistence request keys and hashes are
+excluded. Account deletion cascades through only that owner's spatial rows.
+Cloud requests retain the existing 64 KiB JSON envelope and 48,000-character
+serialized-model budget; the schema's object-count limits are additional
+bounds, not a promise that every maximum can be combined into one saved model.
 
 Local language parsing matches rooms, object subjects, shot type, pace, timing
 and eye height without a provider request. The Gemini endpoint receives that

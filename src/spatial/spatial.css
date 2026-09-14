@@ -17,6 +17,12 @@
   .sp-panel-heading{margin-bottom:8px}
   .sp-dimensions{padding:10px 0}
   .sp-study,.sp-saved-views,.sp-footnote details,.sp-space-details button{display:none!important}
+  .sp-plan-actions,.sp-global-dimensions,.layout-editor .le-heading,.layout-editor .le-stage-help,.layout-editor .le-muted{display:none!important}
+  .le-plan-stage{break-inside:avoid}
+  .sp-studio .le-plan-stage svg{height:650px}
+  .le-plan-stage svg text{font-size:350px}
+  .le-plan-stage svg>rect[role=button]{opacity:.18}
+  .le-plan-stage svg>circle{display:none}
   .sp-footnote{padding:12px 0}
 }
 

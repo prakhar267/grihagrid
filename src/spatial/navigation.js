@@ -148,6 +148,30 @@ export function smoothPath(scene,path,clearance=220) {
   return result
 }
 
+// A fixed grid can miss a real passage when a door leaf leaves only a narrow
+// band of valid camera centres. Use bounded visibility nodes at inflated
+// obstacle corners, retaining the same exact swept-clearance test on every edge.
+function cornerPath(scene,start,end,clearance,smooth) {
+  const candidates=[],seen=new Set(),radius=clearance+1
+  for(const box of getObstacles(scene))for(const x of[-1,1])for(const y of[-1,1]){
+    const c=Math.cos(box.rotation),s=Math.sin(box.rotation),lx=x*(box.size[0]/2+radius),ly=y*(box.size[1]/2+radius),p=[box.position[0]+lx*c-ly*s,box.position[1]+lx*s+ly*c],key=p.map(v=>Math.round(v)).join(',')
+    if(seen.has(key)||!isWalkable(scene,p,clearance))continue
+    seen.add(key);candidates.push(p)
+  }
+  candidates.sort((a,b)=>distance(start,a)+distance(a,end)-distance(start,b)-distance(b,end))
+  const nodes=[start.slice(0,2),end.slice(0,2),...candidates.slice(0,510)],costs=new Float64Array(nodes.length).fill(Infinity),parents=new Int32Array(nodes.length).fill(-1),closed=new Uint8Array(nodes.length),heap=new MinHeap(),edges=new Map()
+  costs[0]=0;heap.push({i:0,score:distance(start,end)})
+  while(heap.items.length){
+    const {i}=heap.pop();if(closed[i])continue
+    if(i===1){const path=[];for(let j=i;j!==-1;j=parents[j])path.push(nodes[j]);path.reverse();const simple=simplifyPath(scene,path,clearance);return smooth?smoothPath(scene,simple,clearance):simple}
+    closed[i]=1
+    const nearest=nodes.map((p,j)=>({j,d:distance(nodes[i],p),angle:Math.atan2(p[1]-nodes[i][1],p[0]-nodes[i][0])})).filter(n=>n.j!==i).sort((a,b)=>a.d-b.d),selected=new Set([1,...nearest.slice(0,24).map(n=>n.j)]),sectors=new Set()
+    for(const n of nearest){const sector=Math.floor((n.angle+Math.PI)/(Math.PI/4));if(!sectors.has(sector)){sectors.add(sector);selected.add(n.j)}}
+    for(const j of selected){if(closed[j])continue;const next=costs[i]+distance(nodes[i],nodes[j]);if(next>=costs[j])continue;const key=i<j?`${i}-${j}`:`${j}-${i}`;let clear=edges.get(key);if(clear===undefined){clear=isSegmentClear(scene,nodes[i],nodes[j],clearance);edges.set(key,clear)}if(clear){costs[j]=next;parents[j]=i;heap.push({i:j,score:next+distance(nodes[j],end)})}}
+  }
+  return []
+}
+
 export function findPath(scene,start,end,{clearance=220,step=200,smooth=true}={}) {
   if(scene.schemaVersion===2)return findPathV2(scene,start,end,{clearance,step,smooth,floorId:arguments[3]?.floorId})
   if(!isWalkable(scene,start,clearance)||!isWalkable(scene,end,clearance))return []
@@ -158,7 +182,7 @@ export function findPath(scene,start,end,{clearance=220,step=200,smooth=true}={}
     for(let dy=-3;dy<=3;dy++)for(let dx=-3;dx<=3;dx++){const x=gx+dx,y=gy+dy,i=y*width+x;if(x>=0&&x<width&&y>=0&&y<height&&cells[i])options.push({i,d:distance(p,point(i))})}
     options.sort((a,b)=>a.d-b.d);return options.find(o=>isSegmentClear(scene,p,point(o.i),clearance))?.i
   }
-  const first=closest(start),last=closest(end);if(first===undefined||last===undefined)return []
+  const first=closest(start),last=closest(end);if(first===undefined||last===undefined)return scene.exactClearance?cornerPath(scene,start,end,clearance,smooth):[]
   const costs=new Float64Array(cells.length).fill(Infinity),parents=new Int32Array(cells.length).fill(-1),closed=new Uint8Array(cells.length),heap=new MinHeap()
   costs[first]=0;heap.push({i:first,score:distance(point(first),end)})
   while(heap.items.length) {
@@ -173,7 +197,7 @@ export function findPath(scene,start,end,{clearance=220,step=200,smooth=true}={}
       if(cost<costs[j]){costs[j]=cost;parents[j]=i;heap.push({i:j,score:cost+distance(point(j),point(last))})}
     }
   }
-  return []
+  return scene.exactClearance?cornerPath(scene,start,end,clearance,smooth):[]
 }
 
 export function validateConnectivity(scene,{clearance=220}={}) {

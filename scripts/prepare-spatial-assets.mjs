@@ -9,6 +9,7 @@ await mkdir(ocr,{recursive:true});
 await mkdir(pdf,{recursive:true});
 await mkdir(new URL('public/licenses/',root),{recursive:true});
 await copyFile(new URL('node_modules/three/LICENSE',root),new URL('public/licenses/Three-MIT.txt',root));
+await copyFile(new URL('node_modules/dompurify/LICENSE',root),new URL('public/licenses/DOMPurify.txt',root));
 const files=[
   ['node_modules/tesseract.js/dist/worker.min.js','worker.min.js'],
   ['node_modules/tesseract.js-core/tesseract-core-simd-lstm.wasm.js','tesseract-core-simd-lstm.wasm.js'],

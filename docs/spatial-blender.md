@@ -196,12 +196,33 @@ end-hinged door. It completed in 3.37 seconds, with maximum bounds error
 aperture are empty. The exported door leaf has the intended 90-degree pose and
 retains its floor, wall and opening IDs.
 
-The paired service's full Cycles demonstration was submitted through its real
-HTTP job API, using a 20-second tour, 600 native frames, 30 fps and eight samples.
-Its private job ID is `3d52bc1d-156f-4de0-b290-e2e2f9afe56b`; current durable status
-is in the local service record. Completion, encoded-frame verification and
-visual inspection must be recorded after the actual job finishes; the earlier
-Eevee artifact is not evidence of a completed Cycles film.
+The paired service's full Cycles demonstration completed through its real
+authenticated HTTP job API. Job `3d52bc1d-156f-4de0-b290-e2e2f9afe56b` produced
+600 native 1920×1080 frames at 30 fps with eight samples and Metal GPU rendering.
+The H.264 film is 20.000 seconds and 7,580,848 bytes. The measured wall time was
+3,001 seconds (50 minutes, 1 second), including 2,950.22 seconds in Blender.
+Every source PNG passed native-dimension, complete-file and all-chunk checksum
+checks; FFprobe independently decoded and counted all 600 video frames.
+GLB verification preserved all 315 object associations, with maximum browser
+position error 0.001224 mm and camera direction error below 0.000000042.
+
+Review copies are in `output/spatial-cycles-film`: `tour.mp4`, `house.blend`,
+`house.glb`, `manifest.json`, a native living-room still, a 20-view contact sheet
+and `video-evidence.json`. All every-second views and the native still were
+visually inspected. The exterior, living room, corridor, kitchen, bedroom and
+garden remain coherent; lighting is soft and furnishings are procedural.
+This is an inspected concept-visualization film, not a photorealistic result.
+The original private render outputs and earlier Eevee film remain intact.
+
+Real browser controls created preview job
+`5d817235-319e-43ac-a260-52a59610f7a4`, then cancelled and resumed it. A subsequent
+native Blender check cancelled it after its first completed PNG, resumed the
+same saved scene, stopped the service process after two previews, and restarted
+the service. Automatic recovery completed all six previews in the same attempt.
+The first PNG's SHA-256 and modification time remained unchanged through both
+recoveries. Authenticated preview bytes and the downloaded GLB were verified.
+`output/spatial-cycles-film/native-recovery-evidence.json` records this actual
+process recovery, alongside separate fixture-based failure and admission tests.
 
 The earlier `output/spatial-demo-film/tour.mp4` remains intact: Eevee, H.264,
 1920×1080, 600 frames, 30 fps, 20.000 seconds, 10,163,242 bytes. Its every-second

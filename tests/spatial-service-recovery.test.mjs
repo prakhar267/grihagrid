@@ -3,6 +3,7 @@ import test from 'node:test'
 import {mkdtemp,readFile,rm} from 'node:fs/promises'
 import {tmpdir} from 'node:os'
 import path from 'node:path'
+import {randomBytes} from 'node:crypto'
 import {startRenderService} from '../scripts/spatial/service.mjs'
 import {createDemoBuilding} from '../src/spatial/model.js'
 import {generateTour} from '../src/spatial/tours.js'
@@ -13,14 +14,16 @@ const waitFor=async(fn,predicate)=>{for(let i=0;i<200;i++){const result=await fn
 test('rejected resume admission leaves the original attempt and persistent recovery state unchanged',async()=>{
   const rootDirectory=await mkdtemp(path.join(tmpdir(),'grihagrid-resume-admission-'))
   let calls=0
-  const service=await startRenderService({rootDirectory,port:0,checkDependencies:false,checkDisk:false,allowedOrigins:[ORIGIN],executor:async(options,progress,signal)=>{
+  const code=randomBytes(24).toString('base64url')
+  const service=await startRenderService({rootDirectory,port:0,checkDependencies:false,checkDisk:false,allowedOrigins:[ORIGIN],pairingCode:code,executor:async(options,progress,signal)=>{
     if(++calls===1)throw new Error('Synthetic incomplete construction')
     if(signal.aborted)throw new Error('Stopped')
     await new Promise((resolve,reject)=>signal.addEventListener('abort',()=>reject(new Error('Stopped')),{once:true}))
   }})
   try {
     const headers={Origin:ORIGIN,'Content-Type':'application/json'}
-    const paired=await fetch(service.origin+'/pair',{method:'POST',headers,body:JSON.stringify({code:await readFile(service.pairingFile,'utf8')})})
+    assert.equal(await readFile(service.pairingFile,'utf8'),code)
+    const paired=await fetch(service.origin+'/pair',{method:'POST',headers,body:JSON.stringify({code})})
     assert.equal(paired.status,200);headers.Authorization='Bearer '+(await paired.json()).token
     const request=(endpoint,body)=>fetch(service.origin+endpoint,{method:body?'POST':'GET',headers,...(body?{body:JSON.stringify(body)}:{})})
     const model=createDemoBuilding(),body={model,tour:generateTour(model,{duration:10}),settings:{mode:'scene',samples:4}}

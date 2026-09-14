@@ -39,6 +39,7 @@ if config['mode'] in ('preview', 'film'):
             scene.frame_set(frame)
             scene.render.filepath = str(target)
             bpy.ops.render.render(write_still=True)
+        print('GRIHAGRID_PROGRESS ' + json.dumps({'stage': 'preview-frame', 'frame': frame, 'total': scene.frame_end}), flush=True)
 scene.render.resolution_percentage = 100
 if config['mode'] == 'film':
     (output / 'frames').mkdir(exist_ok=True)

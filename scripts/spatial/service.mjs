@@ -74,8 +74,10 @@ function runWorker(options, onProgress, signal) {
 
 export async function startRenderService({ rootDirectory = path.join(homedir(), '.local/share/grihagrid/render-service'), port = 43127,
   allowedOrigins = ['http://127.0.0.1:5277', 'http://localhost:5277', 'http://127.0.0.1:5173', 'http://localhost:5173', 'http://127.0.0.1:4173', 'http://localhost:4173'],
-  executor = runWorker, checkDependencies = true, checkDisk = true,
+  executor = runWorker, checkDependencies = true, checkDisk = true, pairingCode = randomBytes(24).toString('base64url'),
   readDiskSpace = async directory => { const disk = await statfs(directory); return disk.bavail * disk.bsize; } } = {}) {
+  // Internal embedding/test option only; HTTP and CLI callers cannot select it.
+  if (typeof pairingCode !== 'string' || !/^[A-Za-z0-9_-]{32}$/.test(pairingCode)) throw new Error('Pairing codes must contain 32 base64url characters.');
   for (const origin of allowedOrigins) {
     const url = new URL(origin);
     if (url.origin !== origin || !(url.protocol === 'https:' || url.protocol === 'http:' && ['127.0.0.1', 'localhost'].includes(url.hostname))) throw new Error('Render origins must be explicit HTTPS or loopback origins.');
@@ -86,7 +88,6 @@ export async function startRenderService({ rootDirectory = path.join(homedir(), 
   const jobsDirectory = path.join(rootDirectory, 'jobs');
   await mkdir(jobsDirectory, { recursive: true, mode: 0o700 });
   await assertPrivateDirectory(jobsDirectory);
-  const pairingCode = randomBytes(24).toString('base64url');
   const pairingFile = path.join(rootDirectory, 'pairing-code.txt');
   const pairingTemporary = `${pairingFile}.${randomUUID()}`;
 
@@ -103,7 +104,7 @@ export async function startRenderService({ rootDirectory = path.join(homedir(), 
   };
   const publicJob = job => ({ id: job.id, name: job.name, sourceRevision: job.sourceRevision, buildingId: job.buildingId,
     status: job.status, mode: job.settings.mode, samples: job.settings.samples, engine: 'Cycles', createdAt: job.createdAt,
-    updatedAt: job.updatedAt, progress: job.progress, error: job.publicError || null, attempt: job.attempt,
+    updatedAt: job.updatedAt, progress: job.status === 'complete' && job.settings.mode === 'film' && Number.isInteger(job.frames) ? { stage: 'complete', frame: job.frames, total: job.frames } : job.progress, error: job.publicError || null, attempt: job.attempt,
     completedAt: job.completedAt || null, recovery: job.recovery || null });
   const emit = job => {
     const data = `event: job\ndata: ${JSON.stringify(publicJob(job))}\n\n`;
@@ -141,6 +142,7 @@ export async function startRenderService({ rootDirectory = path.join(homedir(), 
       let lastPersist = 0, storageError; let writing = Promise.resolve();
       try {
         job.status = 'running'; job.recoverOnRestart = false; job.updatedAt = new Date().toISOString(); await persist(job); emit(job);
+        if (controller.signal.aborted) throw new DOMException('Cancelled before the renderer started.', 'AbortError');
         const options = { ...job.settings, input: path.join(jobDirectory(job.id), 'request.json'), output: artifactDirectory(job), resume: !!job.resume };
         await executor(options, progress => {
           if (!object(progress)) return;
@@ -153,6 +155,7 @@ export async function startRenderService({ rootDirectory = path.join(homedir(), 
           }
         }, controller.signal);
         if (storageError) throw storageError;
+        if (controller.signal.aborted || job.status === 'cancelling') throw new DOMException('Cancelled while the renderer finished.', 'AbortError');
         job.status = 'complete'; job.completedAt = new Date().toISOString(); job.publicError = null;
       } catch (error) {
         job.status = stopping && job.recoverOnRestart ? 'interrupted' : !storageError && (controller.signal.aborted || error.name === 'AbortError') ? 'cancelled' : 'failed';
@@ -244,8 +247,12 @@ export async function startRenderService({ rootDirectory = path.join(homedir(), 
       if (action === 'cancel' && request.method === 'POST') {
         const body = await boundedBody(request, 128); if (!exact(body, []) || Object.keys(body).length) throw fail(400, 'Cancellation has no fields.');
         if (!['queued', 'running', 'cancelling'].includes(job.status)) throw fail(409, 'This job is not running.');
-        job.status = active?.id === job.id ? 'cancelling' : 'cancelled'; job.recoverOnRestart = false; job.updatedAt = new Date().toISOString(); await persist(job); emit(job);
-        if (active?.id === job.id) active.controller.abort(); send({ job: publicJob(job) }); return;
+        const controller = active?.id === job.id ? active.controller : null;
+        job.status = controller ? 'cancelling' : 'cancelled'; job.recoverOnRestart = false; job.updatedAt = new Date().toISOString();
+        // Fence completion before yielding to disk I/O: the renderer can finish
+        // while this cancellation snapshot is being written.
+        controller?.abort();
+        await persist(job); emit(job); send({ job: publicJob(job) }); return;
       }
       if (action === 'resume' && request.method === 'POST') {
         const body = await boundedBody(request, 128); if (!exact(body, []) || Object.keys(body).length) throw fail(400, 'Resume uses the original job inputs.');

@@ -123,7 +123,7 @@ export default function RenderPanel({ model, tour, disabled = false }) {
         const percent = job.progress?.total ? Math.min(100, Math.round((job.progress.frame || 0) / job.progress.total * 100)) : 0
         return <article className="render-job" key={job.id} data-render-job-id={job.id}>
           <div className="render-job-title"><strong>{job.name}</strong><span>{job.mode === 'film' ? 'Film' : job.mode === 'preview' ? 'Previews' : 'Scene'} · Cycles · {job.samples} samples</span></div>
-          <p className="render-job-status">{job.status.replaceAll('-', ' ')} · revision {job.sourceRevision}{active ? ` · ${job.progress?.stage || 'waiting'}` : ''}{job.progress?.frame > 0 ? ` · ${job.progress.frame} / ${job.progress.total} frames` : ''}</p>
+          <p className="render-job-status">{job.status.replaceAll('-', ' ')} · revision {job.sourceRevision}{active ? ` · ${job.progress?.stage || 'waiting'}` : ''}{job.progress?.frame > 0 ? job.mode === 'preview' ? ` · preview at tour frame ${job.progress.frame} of ${job.progress.total}` : ` · ${job.progress.frame} / ${job.progress.total} frames` : ''}</p>
           {active && <progress max="100" value={percent} aria-label={`${job.name} render progress`}>{percent}%</progress>}
           {job.error && <p>{job.error}</p>}
           {job.recovery && <p className="render-note">{job.recovery}</p>}

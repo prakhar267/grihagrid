@@ -1,21 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
+import { sanitizedSvg } from './drawing-svg.js'
 import { recognizeRaster, recognitionToBuilding, roomsFromWalls, calibrateScale, dimensionCandidates } from './drawing-recognition.js'
 import { validateBuilding, pointInPolygon } from './model.js'
 import './layout-editor.css'
 
 const uid = prefix => `${prefix}-${crypto.randomUUID().slice(0, 8)}`
 const middle = polygon => polygon.reduce((sum, p) => [sum[0] + p[0] / polygon.length, sum[1] + p[1] / polygon.length], [0, 0])
-
-function sanitizedSvg(text) {
-  if (/<!DOCTYPE|<!ENTITY/i.test(text)) throw new Error('SVG documents with external entities are not supported.')
-  const doc = new DOMParser().parseFromString(text, 'image/svg+xml')
-  if (doc.querySelector('parsererror') || doc.documentElement.localName !== 'svg') throw new Error('This SVG could not be read.')
-  doc.querySelectorAll('script,foreignObject,iframe,object,embed,audio,video,image,use,style,link').forEach(node => node.remove())
-  for (const node of doc.querySelectorAll('*')) for (const attribute of [...node.attributes]) {
-    if (/^on/i.test(attribute.name) || /href|src|style/i.test(attribute.name) || /url\((?!\s*#)/i.test(attribute.value)) node.removeAttribute(attribute.name)
-  }
-  return new XMLSerializer().serializeToString(doc)
-}
 
 async function imageCanvas(file) {
   let blob = file
