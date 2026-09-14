@@ -1,8 +1,14 @@
-# Spatial studio verification — 14 September 2026
+# Spatial studio verification — updated 15 September 2026
 
 This report covers the expanded local implementation on `agent/spatial-camera-tours`.
 No deployment, remote migration, payment activation or paid infrastructure was performed.
 Completed local checks and remaining external verification limits are recorded below.
+
+On 15 September the user explicitly deferred physical iPhone and spoken
+VoiceOver testing and requested completion of all remaining work. Those two
+checks are excluded from this delivery's completion gates and remain unverified.
+Browser, keyboard, touch-emulation and accessibility-tree checks retain their
+recorded scope; none is relabelled as physical-device or spoken-screen-reader proof.
 
 ## Environment
 
@@ -36,7 +42,7 @@ fixtures are synthetic and cleanup targets only their exact identifiers.
 | Film in the app | The paired UI opened the exact completed job as a blob video, reported 1920×1080 and 20 seconds, and played to the end: 600 decoded frames, one dropped frame, no media error. Seeks at 0.5, 5, 10, 15 and 19.5 seconds were captured; the complete app view and the 10-second kitchen frame were inspected. |
 | Native cancellation/restart | A real Blender preview job was manually cancelled with its completed frame retained, resumed, then interrupted by stopping the local service. After service restart it recovered automatically and completed all six previews. The first frame's hash and modification time were unchanged; GLB/camera comparison also passed. This proves native preview-job recovery, rather than a second full-film recovery run. |
 | Packaging/security | The isolated packaged Worker imports without checkout `node_modules`. Final same-origin OCR/PDF and DOMPurify import checks passed with zero page errors, external requests or CSP violations; one expected loopback renderer health request occurred. The malicious-SVG check removed active/external content, rejected entities/non-SVG input, preserved a normal drawing pixel and observed no script execution or external request. |
-| Repository validation | The pre-live-Gemini checkpoint's `npm run check` exited 0: 540 tests passed, zero failed, skipped or cancelled; test duration 414,830.6 ms. `check:ops` also reported valid operational configuration. The later live integration fix passed 15 focused intent/API checks; its final full-suite/CI results are recorded on the draft PR. |
+| Repository validation | The latest implementation checkpoint (`5c76aa9cedf39338abe17709ed035fd07aa001eb`) passed all 546 tests, zero failed, skipped or cancelled; test duration 427,727.3 ms. `check:ops`, locked install, fresh migrations, both Worker dry runs, audit and diff checks passed. CI and all CodeQL checks passed on the same commit. Earlier 540/542-test results remain historical checkpoints. |
 | Migration/audit/build | Locked `npm ci`, production build, fresh 23-migration chain, production and staging Worker dry runs, and zero-vulnerability audit passed. After the print-only CSS adjustment, the production build and both Worker dry runs passed again. |
 
 Browser evidence and screenshots are in ignored local directories:
@@ -53,6 +59,7 @@ Browser evidence and screenshots are in ignored local directories:
 - `qa-artifacts/spatial-ids/`: UUID fallback unit and browser checks, including actionable errors when secure entropy is unavailable.
 - `qa-artifacts/spatial-phone-static/lan-edit-verification.json`: real LAN HTTP browser environment, edited scene, screenshot and exact source/served-asset hashes. This is desktop Chrome with a mobile viewport, not a physical phone.
 - `qa-artifacts/spatial-final/native-accessibility-resume.json`: actual VoiceOver runtime, native spoken-text probe, restored settings and the physical iPhone authentication limit.
+- `qa-artifacts/spatial-final/final-checks-lan-fix.json`: 546-test local result, exact-commit CI/CodeQL results, source/served-asset verification and temporary LAN-server cleanup.
 
 The strict-CSP import checkpoint verified the build from `2026-09-14T12:04:02.957Z`
 at `2026-09-14T12:07:16.916Z`. Its manifest includes every spatial JS/JSX/CSS
@@ -131,12 +138,13 @@ VoiceOver was started without its tutorial and its real runtime was observed.
 Native Safari navigation and copy-last-spoken commands did not yield verifiable
 spoken output in the temporary native TextEdit probe. Its original off setting
 and disabled caption panel were restored, and the temporary document was
-discarded. No VoiceOver navigation pass is claimed. iPhone Mirroring remains
-explicitly locked at a Mac
-login/unlock prompt; the user has not unlocked it, so physical iPhone traversal
-is unverified. Chrome viewport emulation, headless WebKit, native Safari UI
-inspection and accessibility-tree inspection are not substitutes for physical
-phone or screen-reader testing.
+discarded. A later attempt to enable scripting was interrupted; fresh native UI
+inspection confirmed that scripting remained disabled and VoiceOver remained
+off. No AppleScript was executed. Physical iPhone testing had stopped at iPhone
+Mirroring's separate login prompt. The user subsequently deferred both tests;
+neither is claimed as passed. Chrome viewport emulation, headless WebKit,
+native Safari UI inspection and accessibility-tree inspection are not substitutes
+for physical phone or spoken screen-reader testing.
 
 Recognition currently targets legible orthogonal plan strokes, with dimensions
 calibrated and all geometry reviewed by the user. Ambiguous/freehand/diagonal

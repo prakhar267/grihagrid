@@ -16,6 +16,8 @@ Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts
 
 The spatial studio should provide a complete explorable house and directed camera tours: shared millimetre geometry for 2D, browser 3D and Blender, accessible room selection, collision-aware walking, and honest local/AI/render states. Keep the Architectural Monograph direction in this workspace. The full requested scope includes reviewed browser-local drawing import/OCR, independent layout edits, multiple floors and stairs, subject-aware camera direction, a persisted camera library, and a paired local render service. Do not call the goal complete merely because sample-house exploration works; distinguish actual provider/device verification from simulations.
 
+For this spatial-studio delivery, the user explicitly deferred physical iPhone and spoken VoiceOver testing on 15 September 2026. Record both as deferred, not passed, and complete the remaining implementation and verification without using those two checks as completion gates. Preserve the existing accessibility controls and browser/keyboard checks. Deployment remains outside the original task scope.
+
 ## Product and platform invariants
 
 Treat `README.md`, `package.json`, `wrangler.toml`, `worker/index.js`, `src/App.jsx`, `src/styles.css`, and the relevant files in `docs/` as the canonical implementation and operating context. Before architectural changes, inspect the architecture, backend API, launch-readiness, operations, feature, and test-plan documentation. Inspect the configured live product and existing styles before material UI changes; evolve the current system rather than redesigning it.
