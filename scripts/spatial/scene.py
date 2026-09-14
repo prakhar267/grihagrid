@@ -21,6 +21,34 @@ def material_for(primitive, materials):
     bsdf = material.node_tree.nodes.get('Principled BSDF')
     bsdf.inputs['Base Color'].default_value = material.diffuse_color
     bsdf.inputs['Roughness'].default_value = .42 if 'wood' in name else .72
+    if name == 'metal':
+        bsdf.inputs['Metallic'].default_value = .8
+        bsdf.inputs['Roughness'].default_value = .28
+    if name in ('wood', 'fabric', 'matte', 'stone'):
+        nodes = material.node_tree.nodes
+        links = material.node_tree.links
+        noise = nodes.new('ShaderNodeTexNoise')
+        noise.inputs['Scale'].default_value = 5 if name == 'wood' else 95
+        noise.inputs['Detail'].default_value = 2
+        mapping = nodes.new('ShaderNodeVectorMath')
+        mapping.operation = 'MULTIPLY'
+        mapping.inputs[1].default_value = (2, 38, 3) if name == 'wood' else (1, 1, 1)
+        tex = nodes.new('ShaderNodeTexCoord')
+        links.new(tex.outputs['Generated'], mapping.inputs[0])
+        links.new(mapping.outputs['Vector'], noise.inputs['Vector'])
+        ramp = nodes.new('ShaderNodeValToRGB')
+        rgb = linear_rgb(color)
+        ramp.color_ramp.elements[0].color = (*[c * .82 for c in rgb], 1)
+        ramp.color_ramp.elements[1].color = (*[min(1, c * 1.08) for c in rgb], 1)
+        links.new(noise.outputs['Fac'], ramp.inputs['Fac'])
+        links.new(ramp.outputs['Color'], bsdf.inputs['Base Color'])
+        bump = nodes.new('ShaderNodeBump')
+        bump.inputs['Strength'].default_value = .14 if name == 'fabric' else .08
+        bump.inputs['Distance'].default_value = .002 if name == 'fabric' else .001
+        links.new(noise.outputs['Fac'], bump.inputs['Height'])
+        links.new(bump.outputs['Normal'], bsdf.inputs['Normal'])
+        if name == 'fabric':
+            bsdf.inputs['Sheen Weight'].default_value = .18
     if 'glass' in name:
         bsdf.inputs['Transmission Weight'].default_value = .8
         bsdf.inputs['Roughness'].default_value = .08
@@ -44,19 +72,29 @@ def build_scene(payload):
             bpy.ops.mesh.primitive_cylinder_add(vertices=20, radius=.5, depth=1)
         elif kind == 'sphere':
             bpy.ops.mesh.primitive_uv_sphere_add(segments=20, ring_count=12, radius=.5)
+        elif kind == 'mesh':
+            mesh = bpy.data.meshes.new(item['id'])
+            vertices = [tuple(v / 1000 for v in vertex) for vertex in item['vertices']]
+            indices = item['indices']
+            mesh.from_pydata(vertices, [], [indices[i:i+3] for i in range(0, len(indices), 3)])
+            mesh.update()
+            obj = bpy.data.objects.new(item['id'], mesh)
+            bpy.context.collection.objects.link(obj)
+            bpy.context.view_layer.objects.active = obj
         else:
             raise ValueError(f'Unsupported primitive kind: {kind}')
-        obj = bpy.context.object
+        obj = bpy.context.view_layer.objects.active
         obj.name = item['id']
         obj.location = Vector(item['position']) / 1000
-        obj.dimensions = Vector(item['size']) / 1000
+        if kind != 'mesh':
+            obj.dimensions = Vector(item['size']) / 1000
         obj.rotation_euler.z = item.get('rotation', 0)
         obj.data.materials.append(material_for(item, materials))
-        for key in ('id', 'roomId', 'category', 'collidable'):
+        for key in ('id', 'roomId', 'floorId', 'stairId', 'wallId', 'openingId', 'category', 'collidable'):
             if item.get(key) is not None:
                 obj[key] = item[key]
         obj['sourceRevision'] = payload['sourceRevision']
-        if kind != 'box':
+        if kind in ('sphere', 'cylinder'):
             for polygon in obj.data.polygons:
                 polygon.use_smooth = True
         if kind == 'box' and min(item['size']) >= 60:
@@ -78,9 +116,12 @@ def build_scene(payload):
     sun.data.energy = 2.5
     sun.data.angle = math.radians(10)
     for room in payload.get('rooms', []):
+        if room.get('exterior'):
+            continue
         points = room['polygon']
         center = [sum(p[i] for p in points) / len(points) / 1000 for i in (0, 1)]
-        bpy.ops.object.light_add(type='AREA', location=(*center, 2.72))
+        floor = next((floor for floor in payload.get('floors', []) if floor['id'] == room['floorId']), {'elevation': 0, 'height': 3000})
+        bpy.ops.object.light_add(type='AREA', location=(*center, (floor['elevation'] + floor['height'] - 250) / 1000))
         light = bpy.context.object
         light.name = f"{room['id']}:ceiling-light"
         light.data.energy = 120
@@ -105,7 +146,8 @@ def scene_manifest(payload):
     for obj in bpy.context.scene.objects:
         if obj.type == 'MESH' and 'id' in obj:
             objects.append({
-                'id': obj['id'], 'roomId': obj.get('roomId'),
+                'id': obj['id'], 'roomId': obj.get('roomId'), 'floorId': obj.get('floorId'), 'stairId': obj.get('stairId'),
+                'wallId': obj.get('wallId'), 'openingId': obj.get('openingId'),
                 'category': obj.get('category'), 'boundsMm': mesh_bounds(obj),
             })
     return {

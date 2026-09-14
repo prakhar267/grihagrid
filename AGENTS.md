@@ -14,7 +14,7 @@ The product name is **GrihaGrid**. The core promise is: “Know what fits. Know 
 
 Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts/prepare-sites-build.mjs`, and `tests/sites-worker.test.mjs` intact so the same local prototype can be handed to Sites. Before a Sites handoff, run `npm run build` and `npm run test:sites`; the build must leave `dist/client/index.html`, `dist/server/index.js`, and `dist/.openai/hosting.json`.
 
-The spatial studio should provide a complete explorable house and directed camera tours: shared millimetre geometry for 2D, browser 3D and Blender, accessible room selection, collision-aware walking, and honest local/AI/render states. Keep the Architectural Monograph direction in this workspace.
+The spatial studio should provide a complete explorable house and directed camera tours: shared millimetre geometry for 2D, browser 3D and Blender, accessible room selection, collision-aware walking, and honest local/AI/render states. Keep the Architectural Monograph direction in this workspace. The full requested scope includes reviewed browser-local drawing import/OCR, independent layout edits, multiple floors and stairs, subject-aware camera direction, a persisted camera library, and a paired local render service. Do not call the goal complete merely because sample-house exploration works; distinguish actual provider/device verification from simulations.
 
 ## Product and platform invariants
 

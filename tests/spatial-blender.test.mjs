@@ -1,10 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile, mkdir, chmod } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { createDemoBuilding, buildPrimitives } from '../src/spatial/model.js';
-import { parseArgs, serializeScene, runJob, runProcess, verifyGltfCoordinates, readSceneInput } from '../scripts/spatial/run.mjs';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { createDemoBuilding, createMultiFloorDemo, buildPrimitives } from '../src/spatial/model.js';
+import { generateTour } from '../src/spatial/tours.js';
+import { parseArgs, serializeScene, runJob, runProcess, verifyGltfCoordinates, readSceneInput, verifyFrameSequence } from '../scripts/spatial/run.mjs';
 
 test('scene input preserves a UTF-8 model/tour bundle at the exact byte limit', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'grihagrid-spatial-input-'));
@@ -61,6 +64,19 @@ test('Blender serialization preserves shared geometry and each sampled camera fr
   assert.throws(() => serializeScene({ ...model, revision: -1 }), /Invalid building/);
 });
 
+test('multi-floor serialization preserves triangle slabs, stair identifiers and camera elevation', () => {
+  const model = createMultiFloorDemo();
+  const tour = generateTour(model, { roomIds: ['ground-gallery', 'upper-gallery'], duration: 8, includeExterior: false });
+  const payload = serializeScene(model, 8, tour);
+  const slabs = payload.primitives.filter(item => item.kind === 'mesh');
+  assert.ok(slabs.length >= 4);
+  assert.ok(slabs.every(item => item.vertices.length > 0 && item.indices.length % 3 === 0));
+  assert.ok(payload.primitives.some(item => item.stairId === 'gallery-stair'));
+  assert.deepEqual(new Set(payload.primitives.map(item => item.floorId)), new Set(['ground', 'upper']));
+  assert.ok(payload.cameraSamples.some(sample => sample.position[2] > 4000));
+  assert.ok(payload.cameraSamples.some(sample => sample.position[2] < 2000));
+});
+
 test('local job refuses to overwrite an existing output directory', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'grihagrid-spatial-test-'));
   try {
@@ -94,6 +110,51 @@ test('local process forwards literal arguments and enforces its timeout', async 
   const result = await runProcess(process.execPath, ['-e', 'console.log(process.argv[1])', literal], { timeoutMs: 5000 });
   assert.equal(result.tail.trim(), literal);
   await assert.rejects(runProcess(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { timeoutMs: 40 }), /timeout/);
+});
+
+test('film encoding requires every expected native frame, rejecting truncation or preview dimensions', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'grihagrid-native-frame-check-'));
+  try {
+    await mkdir(path.join(directory, 'frames'));
+    const frame = Buffer.alloc(45); Buffer.from('89504e470d0a1a0a', 'hex').copy(frame);
+    frame.writeUInt32BE(13, 8); frame.write('IHDR', 12); frame.writeUInt32BE(1920, 16); frame.writeUInt32BE(1080, 20);
+    Buffer.from('0000000049454e44ae426082', 'hex').copy(frame, frame.length - 12);
+    const filename = path.join(directory, 'frames/frame-0001.png'); await writeFile(filename, frame);
+    assert.deepEqual(await verifyFrameSequence(directory, 1), { count: 1, width: 1920, height: 1080 });
+    await assert.rejects(verifyFrameSequence(directory, 2), { code: 'ENOENT' });
+    frame.writeUInt32BE(633, 16); await writeFile(filename, frame);
+    await assert.rejects(verifyFrameSequence(directory, 1), /native/);
+    await writeFile(filename, frame.subarray(0, 40)); await assert.rejects(verifyFrameSequence(directory, 1), /bounded PNG/);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('losing the service IPC connection terminates its renderer subprocess', { skip: process.platform === 'win32', timeout: 15000 }, async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'grihagrid-worker-disconnect-'));
+  let worker, rendererPid;
+  try {
+    const input = path.join(directory, 'input.json'), output = path.join(directory, 'job'), pidFile = path.join(directory, 'renderer.pid');
+    const executable = path.join(directory, 'fake-blender.mjs');
+    await writeFile(input, JSON.stringify(createDemoBuilding()));
+    await writeFile(executable, `#!/usr/bin/env node\nimport {writeFileSync} from 'node:fs';\nwriteFileSync(${JSON.stringify(pidFile)}, String(process.pid));\nsetInterval(() => {}, 1000);\n`);
+    await chmod(executable, 0o700);
+    worker = spawn(process.execPath, [fileURLToPath(new URL('../scripts/spatial/worker.mjs', import.meta.url))], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+    const closed = new Promise((resolve, reject) => { worker.once('exit', resolve); worker.once('error', reject); });
+    worker.send({ options: { ...parseArgs(['--mode', 'scene', '--duration', '8']), input, output, blender: executable } });
+    for (let attempt = 0; attempt < 300; attempt++) {
+      rendererPid = await readFile(pidFile, 'utf8').then(Number, () => null);
+      if (rendererPid) break;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    assert(rendererPid, 'the renderer subprocess started');
+    worker.disconnect(); await closed;
+    assert.throws(() => process.kill(rendererPid, 0), { code: 'ESRCH' });
+    rendererPid = null;
+    assert.equal(JSON.parse(await readFile(path.join(output, 'job.json'))).status, 'cancelled');
+  } finally {
+    if (worker && worker.exitCode === null) worker.kill('SIGKILL');
+    if (rendererPid) { try { process.kill(rendererPid, 'SIGKILL'); } catch { /* Already terminated. */ } }
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test('GLB inspection detects axis, scale, vertical lens and direction mistakes', () => {

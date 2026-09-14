@@ -1,6 +1,9 @@
 import { validateBuilding } from '../src/spatial/model.js';
 import { validateConnectivity } from '../src/spatial/navigation.js';
 import { validateTour } from '../src/spatial/tours.js';
+import {validateSpatialIntent,providerIntentContext,tourIntentResponseSchema,preservesRequestedDirection} from './spatial-intent.js';
+import {saveViewpoints} from './spatial-viewpoints.js';
+export {validateSpatialIntent} from './spatial-intent.js';
 
 const positive = n => Number.isSafeInteger(n) && n > 0;
 function exact(body, fields, HttpError) {
@@ -13,14 +16,6 @@ function assertBase(body, project, revision, HttpError) {
   if (body.expectedInputRevision !== Number(project.input_revision) || body.expectedSpatialRevision !== Number(revision?.revision || 0))
     throw new HttpError(409, 'The project changed. Reload before saving this study.', 'spatial_revision_conflict');
 }
-export function validateSpatialIntent(intent, model) {
-  const roomIds = new Set(model.rooms.map(room => room.id));
-  return Boolean(intent && typeof intent === 'object' && !Array.isArray(intent)
-    && Object.keys(intent).every(k => ['roomIds', 'duration'].includes(k))
-    && Array.isArray(intent.roomIds) && intent.roomIds.length >= 1 && intent.roomIds.length <= 12
-    && intent.roomIds.every(id => typeof id === 'string' && roomIds.has(id))
-    && Number.isFinite(intent.duration) && intent.duration >= 10 && intent.duration <= 180);
-}
 function normalizeModel(value, nextRevision, HttpError) {
   if (JSON.stringify(value)?.length > 48000) throw new HttpError(400, 'The spatial model is too large', 'invalid_spatial_model');
   const result = validateBuilding(value);
@@ -30,11 +25,12 @@ function normalizeModel(value, nextRevision, HttpError) {
   return { ...value, revision: nextRevision };
 }
 async function latestRows(db, projectId) {
-  const [model, tour] = await Promise.all([
+  const [model, tour, cameras] = await Promise.all([
     db.prepare('SELECT * FROM spatial_revisions WHERE project_id=? ORDER BY revision DESC LIMIT 1').bind(projectId).first(),
     db.prepare('SELECT * FROM spatial_tour_revisions WHERE project_id=? ORDER BY revision DESC LIMIT 1').bind(projectId).first(),
+    db.prepare('SELECT * FROM spatial_camera_revisions WHERE project_id=? ORDER BY revision DESC LIMIT 1').bind(projectId).first(),
   ]);
-  return { model, tour };
+  return { model, tour, cameras };
 }
 function projection(project, rows, history) {
   return {
@@ -42,6 +38,8 @@ function projection(project, rows, history) {
     spatialRevision: Number(rows.model?.revision || 0), tourRevision: Number(rows.tour?.revision || 0),
     model: rows.model ? JSON.parse(rows.model.model_json) : null,
     tour: rows.tour ? JSON.parse(rows.tour.tour_json) : null,
+    cameraRevision:Number(rows.cameras?.revision||0),
+    viewpoints:rows.cameras?JSON.parse(rows.cameras.viewpoints_json):[],
     sourceInputRevision: rows.model ? Number(rows.model.input_revision) : null,
     stale: Boolean(rows.model && Number(rows.model.input_revision) !== Number(project.input_revision)),
     tourStale: Boolean(rows.tour && (Number(rows.tour.spatial_revision) !== Number(rows.model?.revision) || Number(rows.tour.input_revision) !== Number(project.input_revision))),
@@ -70,8 +68,9 @@ export async function handleSpatialRequest(request, env, projectId, action, h) {
   await rateLimit(request, env, `spatial:${session.user_id}`, 60, 3600);
   const body = await readJson(request);
   const fields = ['expectedInputRevision', 'expectedSpatialRevision'];
-  if ((action === 'tour' || action === 'tour-intent') && rows.model && Number(rows.model.input_revision) !== Number(project.input_revision))
+  if ((action === 'tour' || action === 'tour-intent' || action === 'viewpoints') && rows.model && Number(rows.model.input_revision) !== Number(project.input_revision))
     throw new HttpError(409, 'The brief changed. Review and accept the spatial concept before directing a tour.', 'spatial_source_stale');
+  if(action==='viewpoints')return saveViewpoints({request,body,db,project,rows,session,helpers:h,assertBase,projection,latestRows});
   if (action === 'tour-intent') {
     exact(body, [...fields, 'acceptedAiTerms', 'intent'], HttpError);
     assertBase(body, project, rows.model, HttpError);
@@ -83,19 +82,16 @@ export async function handleSpatialRequest(request, env, projectId, action, h) {
     const sourceHash = await digestHex(rows.model.model_json);
     const lease = await h.acquireAiGenerationAdmission(db, projectId, session.user_id, sourceHash);
     try {
-      // Only generated numeric labels and known room IDs leave the application.
-      // Raw natural-language instructions, custom room names and drawings do not.
-      const aliases = new Map(model.rooms.map((room, i) => [room.id, `room-${i + 1}`]));
-      const originalIds = new Map([...aliases].map(([id, alias]) => [alias, id]));
-      const sanitized = { rooms: [...aliases.values()].map(id => ({ id })), requested: { roomIds: body.intent.roomIds.map(id => aliases.get(id)), duration: body.intent.duration } };
+      const context=providerIntentContext(model,body.intent);
+      const sanitized=context.data;
       const provider = typeof env.GEMINI_FETCH === 'function' ? env.GEMINI_FETCH : fetch;
       let response;
       try { response = await provider('https://generativelanguage.googleapis.com/v1/interactions', {
         method: 'POST', headers: { 'content-type': 'application/json', 'x-goog-api-key': config.apiKey },
         body: JSON.stringify({ model: config.model, store: false,
-          input: 'Return a house camera-tour itinerary as JSON with roomIds and duration. Preserve requested room order and duration. Use only listed IDs. Do not output coordinates or code. Data: ' + JSON.stringify(sanitized),
-          generation_config: { max_output_tokens: 600, thinking_level: 'low' },
-          response_format: { type: 'text', mime_type: 'application/json', schema: { type: 'object', properties: { roomIds: { type: 'array', items: { type: 'string' } }, duration: { type: 'number' } }, required: ['roomIds', 'duration'], additionalProperties: false } },
+          input: 'Direct a coherent architectural camera tour. Return JSON using roomIds, duration, optional eyeHeight and shotPreferences. Each preference has roomId, optional subjectId, kind (reveal/orbit/hold/walk), pace (slow/normal/fast), optional duration seconds. Preserve requested room order and total duration; honor explicit subject, kind and pace requests. Choose complementary restrained shots where unspecified. Only use supplied anonymized IDs and subjects belonging to their rooms. Do not invent coordinates, names, code or design changes. Geometry and collision paths are calculated by our application. Data: ' + JSON.stringify(sanitized),
+          generation_config: { max_output_tokens: 2400, thinking_level: 'low' },
+          response_format: { type: 'text', mime_type: 'application/json', schema:tourIntentResponseSchema },
         }), signal: AbortSignal.timeout(25000),
       }); } catch { throw new HttpError(503, 'AI direction is temporarily unavailable. Manual tours remain available.', 'tour_ai_unavailable'); }
       if (!response.ok) throw new HttpError(503, 'AI direction is temporarily unavailable. Manual tours remain available.', 'tour_ai_unavailable');
@@ -105,8 +101,8 @@ export async function handleSpatialRequest(request, env, projectId, action, h) {
       catch { await reader.cancel().catch(() => {}); throw new HttpError(502, 'The AI response could not be validated', 'invalid_tour_intent'); }
       let intent;
       try { intent = JSON.parse(h.extractGeminiText(JSON.parse(text))); } catch { throw new HttpError(502, 'The AI response could not be validated', 'invalid_tour_intent'); }
-      if (Array.isArray(intent?.roomIds)) intent = { ...intent, roomIds: intent.roomIds.map(id => originalIds.get(id) || null) };
-      if (!validateSpatialIntent(intent, model)) throw new HttpError(502, 'The AI referenced an unavailable room or unsupported timing', 'invalid_tour_intent');
+      intent=context.fromProvider(intent);
+      if (!validateSpatialIntent(intent, model)||!preservesRequestedDirection(intent,body.intent)) throw new HttpError(502, 'The AI direction did not preserve the requested rooms, subjects or timing', 'invalid_tour_intent');
       const current = await ownedProject(db, projectId, session.user_id);
       const currentRows = await latestRows(db, projectId);
       requireActiveProject(current); assertBase(body, current, currentRows.model, HttpError);
@@ -139,7 +135,7 @@ export async function handleSpatialRequest(request, env, projectId, action, h) {
   if (action === 'preview') {
     assertBase(body, project, rows.model, HttpError);
     return json({ model, baseRevision: body.expectedSpatialRevision, proposedRevision: body.expectedSpatialRevision + 1,
-      changeStudy: { summary: rows.model ? 'The spatial layout will become a new immutable concept revision. Existing tours will need review.' : 'Save this demonstration-derived layout as the first spatial concept for this project.', rooms: model.rooms.length, existingToursBecomeStale: Boolean(rows.tour), estimateUnchanged: true } });
+      changeStudy: { summary: rows.model ? 'The spatial layout will become a new immutable concept revision. Existing tours will need review.' : 'Save this reviewed layout as the first spatial concept for this project.', rooms: model.rooms.length, existingToursBecomeStale: Boolean(rows.tour), estimateUnchanged: true } });
   }
   if (body.acceptedImpact !== true) throw new HttpError(400, 'Review and accept the Change Study first', 'impact_acceptance_required');
   const key = await digestHex(session.user_id + ':' + normalizeIdempotencyKey(request));

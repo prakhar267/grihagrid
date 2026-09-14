@@ -1,0 +1,33 @@
+import assert from 'node:assert/strict';
+import {mkdir,readFile,writeFile} from 'node:fs/promises';
+import {chromium} from '@playwright/test';
+const origin=process.env.SPATIAL_UI_ORIGIN||'http://127.0.0.1:5277',pairFile=process.env.SPATIAL_PAIR_FILE;
+assert.ok(['127.0.0.1','localhost'].includes(new URL(origin).hostname),'Local preview only');
+assert.ok(pairFile,'Provide SPATIAL_PAIR_FILE; never put its contents in command arguments');
+const output=new URL('../qa-artifacts/spatial-render-ui/',import.meta.url);await mkdir(output,{recursive:true});
+const browser=await chromium.launch({channel:'chrome',headless:true}),page=await browser.newPage({viewport:{width:1440,height:1000}}),errors=[];
+page.setDefaultTimeout(30000);page.setDefaultNavigationTimeout(60000);
+const stage=message=>console.log(new Date().toISOString(),message);
+const bounded=async(promise,label)=>{let timer;try{return await Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error(label+' exceeded 20 seconds')),20000)})])}finally{clearTimeout(timer)}};
+page.on('pageerror',error=>errors.push(error.message));let id;
+try{
+  stage('Opening render studio');
+  await page.goto(origin+'/explore');await page.getByRole('button',{name:'Render / Export',exact:true}).click();
+  await page.getByLabel('Pairing code').fill((await readFile(pairFile,'utf8')).trim());await page.getByRole('button',{name:'Connect renderer',exact:true}).click();
+  await page.getByRole('button',{name:'Render previews',exact:true}).waitFor();
+  const primaryStyle=await page.getByRole('button',{name:'Render previews',exact:true}).evaluate(el=>{const style=getComputedStyle(el);return {background:style.backgroundColor,color:style.color}});
+  assert.notEqual(primaryStyle.background,'rgba(0, 0, 0, 0)','Render actions must retain a visible background beneath their light text');
+  stage('Paired; submitting preview job');
+  const created=page.waitForResponse(r=>r.url()==='http://127.0.0.1:43127/jobs'&&r.request().method()==='POST');
+  await page.getByRole('button',{name:'Render previews',exact:true}).click();stage('Preview button clicked');const response=await created;stage(`Preview HTTP status ${response.status()}`);assert.equal(response.status(),201);id=(await bounded(response.json(),'Preview response body')).job.id;
+  stage(`Created local job ${id}; waiting for its card`);
+  assert.match(id,/^[0-9a-f-]{36}$/);const job=page.locator(`[data-render-job-id="${id}"]`);await job.waitFor();
+  const action=async(label,operation)=>{stage(`Requesting ${operation} for ${id}`);const completed=page.waitForResponse(r=>r.url()===`http://127.0.0.1:43127/jobs/${id}/${operation}`&&r.request().method()==='POST');await job.getByRole('button',{name:label,exact:true}).click();assert.equal((await completed).status(),200);stage(`Verified ${operation}`);};
+  await action('Cancel render','cancel');await job.getByRole('button',{name:'Resume render',exact:true}).waitFor();
+  await action('Resume render','resume');await job.getByRole('button',{name:'Cancel render',exact:true}).waitFor();
+  await action('Cancel render','cancel');await job.getByRole('button',{name:'Resume render',exact:true}).waitFor();
+  await page.screenshot({path:new URL('created-cancelled-resumed.png',output).pathname,fullPage:true});
+  const result={jobId:id,checks:['Actual app pairing, visible render actions, preview POST, exact-job cancellation, resume, and final cancellation'],primaryStyle,finalStatus:'cancelled',errors};
+  assert.deepEqual(errors,[]);await writeFile(new URL('verification.json',output),JSON.stringify(result,null,2));console.log(JSON.stringify(result,null,2));
+  await page.getByRole('button',{name:'Disconnect',exact:true}).click();
+}catch(error){await page.screenshot({path:new URL('failure.png',output).pathname,fullPage:true}).catch(()=>{});console.error('Render UI verification failed:',error.message);throw error;}finally{await browser.close();if(id)console.log('UI-created job identifier:',id);}

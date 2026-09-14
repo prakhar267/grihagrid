@@ -1,18 +1,22 @@
 import { roomCenter } from './model.js'
 import { findPath, getRoomAnchor, isPathClear, isWalkable } from './navigation.js'
+import {generateTourV2,validateTourV2,sampleTourV2,roomViewV2,getShotStatuses} from './tours-v2.js'
+export {getSubjectView,getShotStatuses,shotSignature} from './tours-v2.js'
 
 const clamp=(n,a,b)=>Math.max(a,Math.min(b,n))
 const mix=(a,b,t)=>a.map((v,i)=>v+(b[i]-v)*t)
 const dist=(a,b)=>Math.hypot(...a.map((v,i)=>v-b[i]))
 const ease=t=>t*t*(3-2*t)
-export const isTourStale=(scene,tour)=>tour.buildingId!==scene.id||tour.sourceRevision!==scene.revision
+const staleCache=new WeakMap()
+export function isTourStale(scene,tour){if(tour.buildingId!==scene.id||tour.sourceRevision!==scene.revision)return true;if(tour.schemaVersion!==2)return false;let cached=staleCache.get(scene);if(!cached){cached=new WeakMap();staleCache.set(scene,cached)}if(!cached.has(tour))cached.set(tour,getShotStatuses(scene,tour).some(shot=>shot.stale));return cached.get(tour)}
 
 export function getOverviewView(scene) {
   const max=scene.bounds.max,min=scene.bounds.min,w=max[0]-min[0],d=max[1]-min[1]
   return {position:[max[0]+w*.55,min[1]-d*.6,Math.max(w,d)*1.1],target:[(max[0]+min[0])/2,(max[1]+min[1])/2,400],fov:48}
 }
 
-export function getRoomView(scene,roomId) {
+export function getRoomView(scene,roomId,eyeHeight=1650) {
+  if(scene.schemaVersion===2)return roomViewV2(scene,roomId,eyeHeight)||getOverviewView(scene)
   const room=scene.rooms.find(r=>r.id===roomId),anchor=getRoomAnchor(scene,roomId)
   if(!room||!anchor)return getOverviewView(scene)
   const center=roomCenter(room)
@@ -32,7 +36,8 @@ export function defaultTourRoomIds(scene) {
   return (isDemoLayout?preferred:scene.rooms.map(room=>room.id)).slice(0,12)
 }
 
-export function generateTour(scene,{roomIds,duration=30,includeExterior=true,source='deterministic'}={}) {
+export function generateTour(scene,{roomIds,duration=30,includeExterior=true,source='deterministic',eyeHeight=1650,shotPreferences}={}) {
+  if(scene.schemaVersion===2||shotPreferences?.length||eyeHeight!==1650)return generateTourV2(scene,{roomIds,duration,includeExterior,source,eyeHeight,shotPreferences})
   if(!Number.isFinite(duration)||duration<8||duration>300)throw new Error('Tour duration must be between 8 and 300 seconds.')
   const requested=roomIds?.length?roomIds:defaultTourRoomIds(scene)
   const unknown=requested.filter(id=>!scene.rooms.some(room=>room.id===id))
@@ -62,7 +67,7 @@ export function generateTour(scene,{roomIds,duration=30,includeExterior=true,sou
     previous=view.position
   }
   const total=shots.reduce((sum,s)=>sum+s.duration,0),scaled=shots.map(s=>({...s,duration:s.duration*duration/total}))
-  const tour={schemaVersion:1,id:`${scene.id}-tour-r${scene.revision}`,name:'A walk through the courtyard house',buildingId:scene.id,sourceRevision:scene.revision,source,duration,roomIds:ids,shots:schedule(scaled)}
+  const tour={schemaVersion:1,id:`${scene.id}-tour-r${scene.revision}`,name:'A walk through the courtyard house',buildingId:scene.id,sourceRevision:scene.revision,source,duration,eyeHeight:1650,shotPreferences:[],roomIds:ids,shots:schedule(scaled)}
   const validation=validateTour(scene,tour)
   if(!validation.valid)throw new Error(validation.errors.join(' '))
   return tour
@@ -84,6 +89,7 @@ function pointAlong(path,fraction) {
 }
 
 export function sampleTour(tour,timeSeconds) {
+  if(tour?.schemaVersion===2)return sampleTourV2(tour,timeSeconds)
   if(!tour?.shots?.length)return null
   const time=clamp(Number.isFinite(timeSeconds)?timeSeconds:0,0,tour.duration)
   const shot=tour.shots.find(s=>time<s.startTime+s.duration)||tour.shots.at(-1)
@@ -107,11 +113,12 @@ export function sampleTour(tour,timeSeconds) {
 }
 
 export function validateTour(scene,tour) {
+  if(tour?.schemaVersion===2)return validateTourV2(scene,tour)
   const errors=[]
   if(!tour||tour.schemaVersion!==1||!Array.isArray(tour.shots)||!tour.shots.length)return {valid:false,errors:['A versioned tour with shots is required.']}
   const exact=(value,keys)=>value&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).every(key=>keys.includes(key))
   const identifier=value=>typeof value==='string'&&/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$/.test(value)
-  if(!exact(tour,['schemaVersion','id','name','buildingId','sourceRevision','source','duration','roomIds','shots'])||!identifier(tour.id)||typeof tour.name!=='string'||tour.name.length<1||tour.name.length>100||!['deterministic','local','manual','local-rules','gemini'].includes(tour.source)||!Array.isArray(tour.roomIds)||tour.roomIds.length<1||tour.roomIds.length>12||tour.roomIds.some(id=>!scene.rooms.some(r=>r.id===id)))return {valid:false,errors:['Unsupported tour fields, source or room stops.']}
+  if(!exact(tour,['schemaVersion','id','name','buildingId','sourceRevision','source','duration','roomIds','shots','eyeHeight','shotPreferences'])||!identifier(tour.id)||typeof tour.name!=='string'||tour.name.length<1||tour.name.length>100||!['deterministic','local','manual','local-rules','gemini'].includes(tour.source)||!Array.isArray(tour.roomIds)||tour.roomIds.length<1||tour.roomIds.length>12||tour.roomIds.some(id=>!scene.rooms.some(r=>r.id===id))||(tour.eyeHeight!==undefined&&tour.eyeHeight!==1650)||(tour.shotPreferences!==undefined&&(!Array.isArray(tour.shotPreferences)||tour.shotPreferences.length)))return {valid:false,errors:['Unsupported tour fields, source or room stops.']}
   if(tour.shots.length>100||tour.shots.some(s=>!s||typeof s!=='object'))return {valid:false,errors:['The tour has invalid shots or exceeds 100 shots.']}
   if(isTourStale(scene,tour))errors.push('The tour belongs to an older building revision. Regenerate its routes.')
   if(!Number.isFinite(tour.duration)||tour.duration<=0||tour.duration>600)errors.push('Invalid tour duration.')
@@ -141,17 +148,26 @@ export function validateTour(scene,tour) {
 
 export function parseTourIntent(text,scene) {
   if(typeof text!=='string'||text.trim().length<3||text.length>1200)throw new Error('Describe a tour in 3–1,200 characters.')
-  const input=text.toLowerCase(),aliases={living:['living','lounge'],kitchen:['kitchen','dining'],bathroom:['bathroom','bath'],hallway:['gallery','hallway'],'main-bedroom':['main bedroom','master bedroom'],'bedroom-two':['bedroom two','second bedroom','guest bedroom'],study:['study','office'],garden:['garden','courtyard','terrace']}
+  const input=text.toLowerCase(),warnings=[],aliases={living:['living','lounge'],kitchen:['kitchen','dining'],bathroom:['bathroom','bath'],hallway:['gallery','hallway'],'main-bedroom':['main bedroom','master bedroom'],'bedroom-two':['bedroom two','second bedroom','guest bedroom'],study:['study','office'],garden:['garden','courtyard','terrace']}
+  const occurrences=phrase=>{const values=[];let at=input.indexOf(phrase);while(at>=0){if((at===0||!/[a-z0-9]/.test(input[at-1]))&&(at+phrase.length===input.length||!/[a-z0-9]/.test(input[at+phrase.length])))values.push(at);at=input.indexOf(phrase,at+phrase.length)}return values}
   const matches=[]
-  for(const room of scene.rooms)for(const alias of aliases[room.id]||[room.name.toLowerCase()]) {
-    let at=input.indexOf(alias)
-    while(at>=0){matches.push({id:room.id,at});at=input.indexOf(alias,at+alias.length)}
-  }
+  for(const room of scene.rooms)for(const alias of [...new Set([room.name.toLowerCase(),...(aliases[room.id]||[])])])for(const at of occurrences(alias))matches.push({id:room.id,at})
+  const clauses=[];const clauseRegex=/[^,;.]+/g;let clause
+  while((clause=clauseRegex.exec(input)))clauses.push({text:clause[0],start:clause.index,end:clause.index+clause[0].length})
+  const subjectMatches=[]
+  for(const item of scene.furniture){const names=[item.id.replaceAll('-',' '),item.kind.replaceAll('-',' ')];if(item.kind==='table')names.push('dining table');if(item.kind==='island')names.push('kitchen island');for(const name of new Set(names))for(const at of occurrences(name))subjectMatches.push({id:item.id,roomId:item.roomId,at,length:name.length})}
+  subjectMatches.sort((a,b)=>b.length-a.length)
+  const selectedSubjects=[]
+  for(const match of subjectMatches){if(selectedSubjects.some(other=>match.at>=other.at&&match.at<other.at+other.length))continue;const group=subjectMatches.filter(other=>other.at===match.at&&other.length===match.length),part=clauses.find(c=>match.at>=c.start&&match.at<c.end),roomRefs=matches.filter(m=>m.at>=(part?.start||0)&&m.at<(part?.end||input.length)),nearby=group.find(m=>roomRefs.some(r=>r.id===m.roomId));if(group.length>1&&!nearby){warnings.push('An object name is ambiguous; include its room name.');continue}const chosen=nearby||match;selectedSubjects.push(chosen);for(let i=matches.length-1;i>=0;i--)if(matches[i].at>=chosen.at&&matches[i].at<chosen.at+chosen.length&&matches[i].id!==chosen.roomId)matches.splice(i,1);matches.push({id:chosen.roomId,at:chosen.at})}
+  if(/\b(upstairs|upper floor)\b/.test(input)){const floor=[...scene.floors].sort((a,b)=>b.elevation-a.elevation)[0],room=scene.rooms.find(r=>r.floorId===floor.id);if(floor.elevation>0&&room)matches.push({id:room.id,at:input.search(/\b(upstairs|upper floor)\b/)});else warnings.push('There is no upper floor in this scene.')}
   matches.sort((a,b)=>a.at-b.at)
-  const roomIds=matches.map(m=>m.id).filter((id,i,all)=>i===0||id!==all[i-1]),time=input.match(/\b(\d{1,3})\s*(?:seconds?|secs?|s)\b/),warnings=[]
-  if(!roomIds.length)warnings.push('No named rooms matched; using the standard route.')
-  const duration=time?Number(time[1]):30
+  const roomIds=matches.map(m=>m.id).filter((id,i,all)=>i===0||id!==all[i-1]).slice(0,12),shotPreferences=[]
+  for(const roomId of roomIds){if(shotPreferences.some(p=>p.roomId===roomId))continue;const subject=selectedSubjects.find(s=>s.roomId===roomId),reference=subject||matches.find(m=>m.id===roomId),part=clauses.find(c=>reference&&reference.at>=c.start&&reference.at<c.end)?.text||'';const kind=/\b(orbit|circle)\b/.test(part)?'orbit':/\b(reveal|pan|dolly)\b/.test(part)?'reveal':/\b(linger|hold|pause)\b/.test(part)?'hold':'walk',pace=/\b(slow|slowly|gentle|gently)\b/.test(part)?'slow':/\b(fast|quick|quickly)\b/.test(part)?'fast':'normal';const dwellPart=part.replace(/\b(?:for\s+)?(?:a\s+)?\d+(?:\.\d+)?[ -]+seconds?\s+tour\b/g,'');const dwell=dwellPart.match(/\b(?:linger|hold|pause)\b[^,;]*?\b(\d+(?:\.\d+)?)\s*(?:seconds?|secs?)\b/);if(subject||kind!=='walk'||pace!=='normal')shotPreferences.push({roomId,...(subject?{subjectId:subject.id}:{}),kind,pace,...(dwell?{duration:Number(dwell[1])}:{})})}
+  const explicit=[...input.matchAll(/\b(?:in|total|over)\s+(\d{1,3})\s*(?:seconds?|secs?|s)\b/g),...input.matchAll(/\b(\d{1,3})[ -]+seconds?\s+tour\b/g)].sort((a,b)=>a.index-b.index),times=[...input.matchAll(/\b(\d{1,3})\s*(?:seconds?|secs?|s)\b/g)],duration=Number(explicit.at(-1)?.[1]||(!/\b(linger|hold|pause)\b/.test(input)?times.at(-1)?.[1]:null)||30)
   if(duration<8||duration>300)throw new Error('Choose a duration between 8 and 300 seconds.')
-  if(/\b(pool|upstairs|rooftop|basement)\b/.test(input))warnings.push('This demonstration has no pool, upper floor, roof access or basement.')
-  return {roomIds:roomIds.length?roomIds:defaultTourRoomIds(scene),duration,includeExterior:!input.includes('skip exterior'),source:'local',warnings}
+  const eye=input.match(/eye\s*(?:height|level)\s*(?:of|at|:)?\s*(\d+(?:\.\d+)?)\s*(mm|m|metres?|meters?)\b/),eyeHeight=eye?Number(eye[1])*(eye[2]==='mm'?1:1000):1650
+  if(eyeHeight<1400||eyeHeight>1900)throw new Error('Eye height must be between 1.4 and 1.9 metres.')
+  if(!roomIds.length)warnings.push('No named rooms matched; using the standard route.')
+  if(/\b(pool|rooftop|basement)\b/.test(input))warnings.push('This scene has no pool, accessible rooftop or basement.')
+  return {roomIds:roomIds.length?roomIds:defaultTourRoomIds(scene),duration,eyeHeight,shotPreferences,includeExterior:!input.includes('skip exterior'),source:'local',warnings:[...new Set(warnings)]}
 }

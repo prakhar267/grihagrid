@@ -4,8 +4,8 @@ import { Html, OrbitControls } from '@react-three/drei'
 import * as THREE from 'three'
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js'
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js'
-import { buildPrimitives, toBrowser, fromBrowser } from './model.js'
-import { resolveCollision } from './navigation.js'
+import { buildPrimitives, toBrowser, fromBrowser, floorApertures, pointInPolygon } from './model.js'
+import { resolveCollision, floorAtPosition } from './navigation.js'
 import { getOverviewView, getRoomView, sampleTour } from './tours.js'
 import './world-canvas.css'
 
@@ -18,7 +18,6 @@ const MATERIALS = {
   brass: { color: '#b38c4d', roughness: 0.35, metalness: 0.65 },
   water: { color: '#76a9a4', transparent: true, opacity: 0.8, roughness: 0.18, metalness: 0.25 },
 }
-const EYE_HEIGHT = 1650
 const vector = value => new THREE.Vector3(...toBrowser(value))
 
 // Deterministic, original textures: there are no remote asset or font requests.
@@ -63,13 +62,24 @@ function textureType(primitive) {
   return null
 }
 
-function Primitive({ primitive, textures, cutaway }) {
+function meshGeometry(primitive) {
+  const geometry = new THREE.BufferGeometry()
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(primitive.vertices.flatMap(toBrowser), 3))
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(primitive.vertices.flatMap(p => [p[0] / 1800, p[1] / 1800]), 2))
+  geometry.setIndex(primitive.indices)
+  const flat = geometry.toNonIndexed(); geometry.dispose(); flat.computeVertexNormals()
+  return flat
+}
+
+function Primitive({ primitive, textures, cutaway, elevation = 0, object, selected, onObjectSelect, onRoomHover, onRoomSelect }) {
+  const geometry = useMemo(() => primitive.kind === 'mesh' ? meshGeometry(primitive) : null, [primitive])
+  useEffect(() => () => geometry?.dispose(), [geometry])
   let position = [...primitive.position]
   let size = [...primitive.size]
   if (cutaway && primitive.category === 'roof') return null
   if (cutaway && ['wall', 'opening'].includes(primitive.category)) {
     const base = position[2] - size[2] / 2
-    const cap = 950
+    const cap = elevation + 950
     if (base >= cap) return null
     const top = Math.min(cap, position[2] + size[2] / 2)
     size[2] = top - base
@@ -84,26 +94,35 @@ function Primitive({ primitive, textures, cutaway }) {
     name={primitive.id}
     position={toBrowser(position)}
     rotation={[0, primitive.rotation || primitive.rotationZ || 0, 0]}
-    scale={dimensions}
+    scale={kind === 'mesh' ? [1, 1, 1] : dimensions}
     castShadow={!['glass', 'water'].includes(material) && primitive.category !== 'floor'}
     receiveShadow
-    userData={{ id: primitive.id, roomId: primitive.roomId || null, category: primitive.category, canonicalUnits: 'mm' }}
+    onPointerOver={event => { if (primitive.roomId) { event.stopPropagation(); onRoomHover?.(primitive.roomId) } }}
+    onPointerOut={() => onRoomHover?.(null)}
+    onClick={event => { if (event.delta > 4) return; event.stopPropagation(); if (object) onObjectSelect?.(object); else if (primitive.roomId) onRoomSelect?.(primitive.roomId) }}
+    userData={{ id: primitive.id, objectId: object?.id || null, roomId: primitive.roomId || null, floorId: primitive.floorId || null, category: primitive.category, canonicalUnits: 'mm' }}
   >
-    {kind === 'cylinder' ? <cylinderGeometry args={[0.5, 0.5, 1, 16]} /> : kind === 'sphere' ? <sphereGeometry args={[0.5, 12, 8]} /> : isSoftBox(primitive) ? <roundedBoxGeometry args={[1, 1, 1, 2, 0.08]} /> : <boxGeometry args={[1, 1, 1]} />}
-    <meshStandardMaterial color={primitive.color || '#ddd2bd'} roughness={0.86} metalness={0} map={texture} {...config} />
+    {kind === 'mesh' ? <primitive object={geometry} attach="geometry" /> : kind === 'cylinder' ? <cylinderGeometry args={[0.5, 0.5, 1, 16]} /> : kind === 'sphere' ? <sphereGeometry args={[0.5, 12, 8]} /> : isSoftBox(primitive) ? <roundedBoxGeometry args={[1, 1, 1, 2, 0.08]} /> : <boxGeometry args={[1, 1, 1]} />}
+    <meshStandardMaterial color={primitive.color || '#ddd2bd'} roughness={0.86} metalness={0} map={texture} {...config} emissive={selected ? '#a85729' : '#000000'} emissiveIntensity={selected ? 0.22 : 0} />
   </mesh>
 }
 
-function RoomSurface({ room, active, hovered, visible, onHover, onSelect }) {
+function RoomSurface({ room, active, hovered, visible, onHover, onSelect, elevation, apertures }) {
   const shape = useMemo(() => {
     const shape = new THREE.Shape()
     room.polygon.forEach(([x, y], i) => i ? shape.lineTo(x / 1000, y / 1000) : shape.moveTo(x / 1000, y / 1000))
     shape.closePath()
+    for (const aperture of apertures) {
+      if (!pointInPolygon(aperture.polygon[0], room.polygon)) continue
+      const path = new THREE.Path()
+      aperture.polygon.forEach(([x, y], i) => i ? path.lineTo(x / 1000, y / 1000) : path.moveTo(x / 1000, y / 1000))
+      path.closePath(); shape.holes.push(path)
+    }
     return shape
-  }, [room.polygon])
+  }, [room.polygon, apertures])
   const center = useMemo(() => room.polygon.reduce((sum, p) => [sum[0] + p[0] / room.polygon.length, sum[1] + p[1] / room.polygon.length], [0, 0]), [room.polygon])
   return <group>
-    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.035, 0]}
+    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, elevation / 1000 + 0.015, 0]}
       onPointerOver={event => { event.stopPropagation(); onHover?.(room.id) }}
       onPointerOut={() => onHover?.(null)}
       onClick={event => { event.stopPropagation(); if (event.delta <= 4) onSelect?.(room.id) }}
@@ -111,17 +130,24 @@ function RoomSurface({ room, active, hovered, visible, onHover, onSelect }) {
       <shapeGeometry args={[shape]} />
       <meshBasicMaterial color={active ? '#b86a3c' : '#dbb079'} transparent opacity={active ? 0.15 : hovered ? 0.13 : 0} depthWrite={false} polygonOffset polygonOffsetFactor={-2} side={THREE.DoubleSide} />
     </mesh>
-    {visible && <Html position={toBrowser([center[0], center[1], 180])} center zIndexRange={[5, 0]} style={{ pointerEvents: 'none' }}>
+    {visible && <Html position={toBrowser([center[0], center[1], elevation + 180])} center zIndexRange={[5, 0]} style={{ pointerEvents: 'none' }}>
       <span className={`world-room-label${active ? ' is-active' : ''}`}>{room.name}</span>
     </Html>}
   </group>
 }
 
-function Environment({ model, mode, selectedRoomId, hoveredRoomId, onRoomHover, onRoomSelect, sceneRef, quality }) {
+function Environment({ model, mode, selectedRoomId, hoveredRoomId, onRoomHover, onRoomSelect, sceneRef, quality, activeFloorId, isolateFloor, selectedObjectId, onObjectSelect }) {
   const primitives = useMemo(() => buildPrimitives(model), [model])
   const textures = useMemo(() => Object.fromEntries(['wood', 'fabric', 'tile'].map(kind => [kind, makeTexture(kind)])), [])
   useEffect(() => () => Object.values(textures).forEach(texture => texture?.dispose()), [textures])
   const cutaway = mode === 'overview'
+  // Walking and tours always retain every floor so their routes have visible support.
+  const isolated = isolateFloor && !['walk', 'tour'].includes(mode)
+  const showFloor = id => !isolated || !id || id === activeFloorId
+  const apertures = useMemo(() => Object.fromEntries(model.floors.map(floor => [floor.id, floorApertures(model, floor.id)])), [model])
+  const objects = useMemo(() => [...model.furniture.map(item => ({ ...item, type: 'furniture', label: item.kind })), ...model.walls.map(item => ({ ...item, type: 'wall', label: 'Wall' })), ...model.walls.flatMap(wall => wall.openings.map(item => ({ ...item, floorId: wall.floorId, roomId: wall.roomIds[0], wallId: wall.id, type: 'opening', label: item.kind }))), ...(model.stairs || []).map(item => ({ ...item, type: 'stair', label: item.name }))].sort((a, b) => b.id.length - a.id.length), [model])
+  const identify = primitive => objects.find(item => primitive.stairId === item.id || primitive.id === item.id || primitive.id.startsWith(`${item.id}-`))
+
   return <>
     <color attach="background" args={['#e7e0d3']} />
     <fog attach="fog" args={['#e7e0d3', 42, 95]} />
@@ -136,18 +162,22 @@ function Environment({ model, mode, selectedRoomId, hoveredRoomId, onRoomHover, 
       <planeGeometry args={[200, 200]} /><meshStandardMaterial color="#ded8c6" roughness={1} />
     </mesh>
     <group ref={sceneRef} name="GrihaGrid_Building" userData={{ schemaVersion: model.schemaVersion, revision: model.revision, sourceUnits: 'mm', exportedUnits: 'm' }}>
-      {primitives.map(primitive => <Primitive key={primitive.id} primitive={primitive} textures={textures} cutaway={cutaway} />)}
+      {primitives.filter(primitive => showFloor(primitive.floorId)).map(primitive => {
+        const object = identify(primitive)
+        return <Primitive key={primitive.id} primitive={primitive} textures={textures} cutaway={cutaway} elevation={model.floors.find(floor => floor.id === primitive.floorId)?.elevation || 0}
+          object={object} selected={selectedObjectId === object?.id} onObjectSelect={onObjectSelect} onRoomHover={onRoomHover} onRoomSelect={onRoomSelect} />
+      })}
     </group>
-    {model.rooms.map(room => <RoomSurface key={room.id} room={room} active={selectedRoomId === room.id} hovered={hoveredRoomId === room.id}
-      visible={mode === 'overview'} onHover={onRoomHover} onSelect={onRoomSelect} />)}
+    {model.rooms.filter(room => showFloor(room.floorId)).map(room => <RoomSurface key={room.id} room={room} active={selectedRoomId === room.id} hovered={hoveredRoomId === room.id}
+      elevation={model.floors.find(floor => floor.id === room.floorId)?.elevation || 0} apertures={apertures[room.floorId] || []} visible={mode === 'overview'} onHover={onRoomHover} onSelect={onRoomSelect} />)}
   </>
 }
 
-function CameraDirector({ model, mode, selectedRoomId, tour, tourPlaying, tourTime, onTourTime, onTourPause, onMetrics, onFade, controllerRef, movement, reducedMotion, sceneRef, playbackRate }) {
-  const { camera, gl, scene, size: viewport } = useThree()
+function CameraDirector({ model, mode, selectedRoomId, tour, tourPlaying, tourTime, onTourTime, onTourPause, onMetrics, onFade, controllerRef, movement, reducedMotion, sceneRef, playbackRate, eyeHeight, activeFloorId, isolateFloor, onFloorChange }) {
+  const { camera, gl, scene, invalidate, size: viewport } = useThree()
   const controls = useRef()
   const live = useRef({})
-  live.current = { model, mode, tour, tourPlaying, onTourTime, onTourPause, onMetrics, reducedMotion, onFade, playbackRate }
+  live.current = { model, mode, tour, tourPlaying, onTourTime, onTourPause, onMetrics, reducedMotion, onFade, playbackRate, eyeHeight, activeFloorId, isolateFloor, onFloorChange }
   const target = useRef(new THREE.Vector3())
   const elapsed = useRef(0)
   const published = useRef(-1)
@@ -155,32 +185,39 @@ function CameraDirector({ model, mode, selectedRoomId, tour, tourPlaying, tourTi
   const pendingView = useRef(null)
   const manualView = useRef(null)
   const mountedModel = useRef(null)
+  const walkingFloor = useRef(null)
 
   const overviewView = building => {
-    const view = getOverviewView(building)
-    const factor = camera.aspect >= 1.2 ? 0.8 : 1.08
+    let view = getOverviewView(building)
+    const active = building.floors.find(floor => floor.id === live.current.activeFloorId)
+    const lift = live.current.isolateFloor && active ? active.elevation : (Math.max(...building.floors.map(floor => floor.elevation))) / 2
+    view = { ...view, target: [view.target[0], view.target[1], view.target[2] + lift], position: [view.position[0], view.position[1], view.position[2] + lift] }
+    const factor = camera.aspect >= 1.2 ? (building.schemaVersion === 2 ? 0.94 : 0.8) : 1.08
     return { ...view, position: view.position.map((value, axis) => view.target[axis] + (value - view.target[axis]) * factor) }
   }
   const applyView = view => {
     if (!view?.position || !view?.target) return
+    if (controls.current?.enabled) { const damping = controls.current.enableDamping; controls.current.enableDamping = false; controls.current.update(); controls.current.enableDamping = damping }
     camera.position.copy(vector(view.position))
     target.current.copy(vector(view.target))
     camera.lookAt(target.current)
     if (controls.current) controls.current.target.copy(target.current)
     if (Number.isFinite(view.fov)) camera.fov = THREE.MathUtils.clamp(view.fov, 20, 100)
     camera.updateProjectionMatrix()
+    invalidate()
   }
   const jumpTo = (view, fade = true) => {
     if (!view) return
-    if (!fade || live.current.reducedMotion) { applyView(view); onFade?.(0); return }
+    if (!fade || live.current.reducedMotion) { pendingView.current = null; applyView(view); onFade?.(0); return }
     pendingView.current = { view, at: performance.now(), applied: false }
     onFade?.(1)
+    invalidate()
   }
 
   useEffect(() => {
     controllerRef.current = {
       reset: () => jumpTo(overviewView(live.current.model)),
-      focusRoom: id => jumpTo(getRoomView(live.current.model, id)),
+      focusRoom: id => jumpTo(getRoomView(live.current.model, id, live.current.eyeHeight)),
       setView: view => { manualView.current = { view, fromMode: live.current.mode }; jumpTo(view) },
       getView: () => {
         const direction = new THREE.Vector3(); camera.getWorldDirection(direction)
@@ -193,15 +230,15 @@ function CameraDirector({ model, mode, selectedRoomId, tour, tourPlaying, tourTi
         complete.name = 'GrihaGrid_Building'
         complete.userData = { ...sceneRef.current.userData }
         for (const primitive of buildPrimitives(live.current.model)) {
-          const geometry = primitive.kind === 'cylinder' ? new THREE.CylinderGeometry(0.5, 0.5, 1, 16) : primitive.kind === 'sphere' ? new THREE.SphereGeometry(0.5, 12, 8) : isSoftBox(primitive) ? new RoundedBoxGeometry(1, 1, 1, 2, 0.08) : new THREE.BoxGeometry(1, 1, 1)
+          const geometry = primitive.kind === 'mesh' ? meshGeometry(primitive) : primitive.kind === 'cylinder' ? new THREE.CylinderGeometry(0.5, 0.5, 1, 16) : primitive.kind === 'sphere' ? new THREE.SphereGeometry(0.5, 12, 8) : isSoftBox(primitive) ? new RoundedBoxGeometry(1, 1, 1, 2, 0.08) : new THREE.BoxGeometry(1, 1, 1)
           const existing = sceneRef.current.getObjectByName(primitive.id)
           const material = existing?.material?.clone() || new THREE.MeshStandardMaterial({ color: primitive.color || '#ddd2bd', roughness: 0.86, ...(MATERIALS[primitive.material] || {}) })
           const mesh = new THREE.Mesh(geometry, material)
           mesh.name = primitive.id
           mesh.position.set(...toBrowser(primitive.position))
-          mesh.scale.set(primitive.size[0] / 1000, primitive.size[2] / 1000, primitive.size[1] / 1000)
+          if (primitive.kind !== 'mesh') mesh.scale.set(primitive.size[0] / 1000, primitive.size[2] / 1000, primitive.size[1] / 1000)
           mesh.rotation.y = primitive.rotation || 0
-          mesh.userData = { id: primitive.id, roomId: primitive.roomId || null, category: primitive.category }
+          mesh.userData = { id: primitive.id, roomId: primitive.roomId || null, category: primitive.category, floorId: primitive.floorId || null, stairId: primitive.stairId || null }
           complete.add(mesh)
         }
         complete.updateMatrixWorld(true)
@@ -228,9 +265,9 @@ function CameraDirector({ model, mode, selectedRoomId, tour, tourPlaying, tourTi
     if (mode === 'room' && manualView.current && manualView.current.fromMode !== 'room') { jumpTo(manualView.current.view); manualView.current = null; return }
     manualView.current = null
     if (mode === 'overview') jumpTo(overviewView(model), false)
-    else if (mode === 'room' || mode === 'walk') jumpTo(getRoomView(model, selectedRoomId || model.rooms.find(room => !room.exterior)?.id))
-  }, [mode, selectedRoomId, model.revision])
-  useEffect(() => { if (mode === 'overview') applyView(overviewView(model)) }, [viewport.width, viewport.height])
+    else if (mode === 'room' || mode === 'walk') jumpTo(getRoomView(model, selectedRoomId || model.rooms.find(room => !room.exterior)?.id, eyeHeight))
+  }, [mode, selectedRoomId, model, eyeHeight])
+  useEffect(() => { if (mode === 'overview') applyView(overviewView(model)) }, [viewport.width, viewport.height, activeFloorId, isolateFloor])
 
   useEffect(() => {
     if (Math.abs((Number(tourTime) || 0) - published.current) > 0.25) {
@@ -285,11 +322,20 @@ function CameraDirector({ model, mode, selectedRoomId, tour, tourPlaying, tourTi
     }
   }, [camera, gl, movement])
 
+  useEffect(() => {
+    metrics.current = { seconds: 0, frames: 0 }
+    if (mode === 'overview') {
+      const publish = () => onMetrics?.({ fps: null, renderMode: 'demand', drawCalls: gl.info.render.calls, triangles: gl.info.render.triangles })
+      publish(); const timer = window.setTimeout(publish, 350)
+      return () => window.clearTimeout(timer)
+    }
+  }, [mode, model, onMetrics, gl])
+
   useFrame((state, delta) => {
     const settings = live.current
-    metrics.current.seconds += delta; metrics.current.frames++
-    if (metrics.current.seconds >= 1.2) {
-      settings.onMetrics?.({ fps: Math.round(metrics.current.frames / metrics.current.seconds), drawCalls: gl.info.render.calls, triangles: gl.info.render.triangles })
+    if (settings.mode !== 'overview') { if (metrics.current.frames) metrics.current.seconds += delta; metrics.current.frames++ }
+    if (settings.mode !== 'overview' && metrics.current.seconds >= 1.2) {
+      settings.onMetrics?.({ fps: Math.round(metrics.current.frames / metrics.current.seconds), renderMode: 'always', drawCalls: gl.info.render.calls, triangles: gl.info.render.triangles })
       metrics.current = { seconds: 0, frames: 0 }
     }
     if (pendingView.current) {
@@ -297,6 +343,7 @@ function CameraDirector({ model, mode, selectedRoomId, tour, tourPlaying, tourTi
       const time = performance.now() - pending.at
       if (!pending.applied && time >= 140) { applyView(pending.view); pending.applied = true; settings.onFade?.(0) }
       if (time >= 320) pendingView.current = null
+      else invalidate()
       return
     }
     if (settings.mode === 'walk') {
@@ -309,9 +356,12 @@ function CameraDirector({ model, mode, selectedRoomId, tour, tourPlaying, tourTi
         const step = direction.multiplyScalar(forward).addScaledVector(right, side).normalize().multiplyScalar(Math.min(delta, 0.05) * 1.6)
         const current = fromBrowser(camera.position.toArray())
         const proposed = fromBrowser(camera.position.clone().add(step).toArray())
-        proposed[2] = EYE_HEIGHT
-        const resolved = resolveCollision(settings.model, current, proposed, 220)
-        if (resolved) camera.position.copy(vector(resolved))
+        const resolved = resolveCollision(settings.model, current, proposed, 220, settings.eyeHeight)
+        if (resolved) {
+          camera.position.copy(vector(resolved))
+          const floor = (settings.model.schemaVersion === 2 ? floorAtPosition(settings.model, resolved, settings.eyeHeight) : settings.model.floors[0])
+          if (floor && floor.id !== walkingFloor.current) { walkingFloor.current = floor.id; settings.onFloorChange?.(floor.id) }
+        }
       }
       return
     }
@@ -322,6 +372,8 @@ function CameraDirector({ model, mode, selectedRoomId, tour, tourPlaying, tourTi
       if (pose) {
         applyView(pose)
         settings.onFade?.(pose.fade || 0)
+        const floor = (settings.model.schemaVersion === 2 ? floorAtPosition(settings.model, pose.position, settings.tour.eyeHeight || settings.eyeHeight) : settings.model.floors[0])
+        if (floor && floor.id !== walkingFloor.current) { walkingFloor.current = floor.id; settings.onFloorChange?.(floor.id) }
       }
       if (Math.abs(elapsed.current - published.current) >= 0.1 || elapsed.current >= duration) {
         published.current = elapsed.current; settings.onTourTime?.(elapsed.current)
@@ -332,6 +384,7 @@ function CameraDirector({ model, mode, selectedRoomId, tour, tourPlaying, tourTi
   return <OrbitControls ref={controls} makeDefault enabled={mode !== 'walk' && !tourPlaying}
     enableDamping={!reducedMotion} dampingFactor={0.075} minDistance={1.2} maxDistance={48}
     maxPolarAngle={Math.PI / 2 - 0.035} minPolarAngle={0.08} target={target.current}
+    onChange={() => invalidate()}
     onStart={() => { if (live.current.tourPlaying) live.current.onTourPause?.() }} />
 }
 
@@ -358,11 +411,12 @@ class ViewerErrorBoundary extends Component {
   render() { return this.state.error ? <div className="world-fallback" role="status"><strong>The 3D view is unavailable.</strong><span>You can still inspect and edit the 2D plan.</span></div> : this.props.children }
 }
 
-const WorldCanvas = forwardRef(function WorldCanvas({ model, mode = 'overview', selectedRoomId, onRoomHover, onRoomSelect, tour, tourPlaying = false, tourTime = 0, onTourTime, onTourPause, quality = 'balanced', reducedMotion = false, onError, onMetrics, playbackRate = 1 }, ref) {
+const WorldCanvas = forwardRef(function WorldCanvas({ model, mode = 'overview', selectedRoomId, onRoomHover, onRoomSelect, tour, tourPlaying = false, tourTime = 0, onTourTime, onTourPause, quality = 'balanced', reducedMotion = false, onError, onMetrics, playbackRate = 1, activeFloorId, isolateFloor = false, eyeHeight = 1650, selectedObjectId, onObjectSelect, onFloorChange }, ref) {
   const controller = useRef(null)
   const sceneRef = useRef(null)
   const movement = useRef({})
   const [hoveredRoomId, setHoveredRoomId] = useState(null)
+  const [pickedObject, setPickedObject] = useState(null)
   const fadeRef = useRef(null)
   const setFading = value => { if (fadeRef.current) fadeRef.current.style.opacity = String(Number(value) || 0) }
   const [contextLost, setContextLost] = useState(false)
@@ -391,27 +445,31 @@ const WorldCanvas = forwardRef(function WorldCanvas({ model, mode = 'overview', 
     captureImage: () => controller.current?.captureImage(),
   }), [])
   useEffect(() => { movement.current = {} }, [mode])
+  const pickObject = object => { setPickedObject(object); onObjectSelect?.(object) }
+  useEffect(() => { setPickedObject(null) }, [model, activeFloorId])
   const handleHover = id => { setHoveredRoomId(id); onRoomHover?.(id) }
   return <div className={`world-canvas-shell world-mode-${mode}`} aria-label="Interactive 3D house environment">
     <ViewerErrorBoundary onError={onError}>
       {graphicsAvailable === null && <div className="world-fallback" role="status">Preparing the 3D view…</div>}
       {graphicsAvailable === false && <div className="world-fallback" role="status"><strong>3D graphics are unavailable.</strong><span>Open 2D Plan to inspect and edit this concept.</span></div>}
-      {graphicsAvailable && !contextLost && <Canvas shadows={quality !== 'low' ? 'percentage' : false} dpr={quality === 'low' ? 1 : quality === 'high' ? [1, 2] : [1, 1.5]}
+      {graphicsAvailable && !contextLost && <Canvas frameloop={mode === 'overview' ? 'demand' : 'always'} shadows={quality !== 'low' ? 'percentage' : false} dpr={quality === 'low' ? 1 : quality === 'high' ? [1, 2] : [1, 1.5]}
         camera={{ fov: 52, near: 0.05, far: 180, position: [17, 17, 15] }}
         gl={{ antialias: quality !== 'low', alpha: false, powerPreference: 'high-performance', preserveDrawingBuffer: true }}
-        fallback={<div className="world-fallback">WebGL is unavailable. Use the 2D Plan to explore this design.</div>}
+        fallback={<div className="world-fallback" aria-hidden="true">WebGL is unavailable. Use the 2D Plan to explore this design.</div>}
         onCreated={({ gl }) => {
           gl.toneMapping = THREE.ACESFilmicToneMapping; gl.toneMappingExposure = 1.05
           gl.domElement.setAttribute('aria-label', '3D house: drag to look, use the room list to navigate')
           gl.domElement.setAttribute('tabindex', '0')
+          gl.domElement.setAttribute('role', 'img')
 
         }}>
         <RendererHealth onError={onError} onContextLost={setContextLost} />
-        <Environment model={model} mode={mode} selectedRoomId={selectedRoomId} hoveredRoomId={hoveredRoomId} onRoomHover={handleHover} onRoomSelect={onRoomSelect} sceneRef={sceneRef} quality={quality} />
-        <CameraDirector model={model} mode={mode} selectedRoomId={selectedRoomId} tour={tour} tourPlaying={tourPlaying} tourTime={tourTime} onTourTime={onTourTime} onTourPause={onTourPause} onMetrics={onMetrics} onFade={setFading} controllerRef={controller} movement={movement} reducedMotion={reducedMotion} sceneRef={sceneRef} playbackRate={playbackRate} />
+        <Environment model={model} mode={mode} selectedRoomId={selectedRoomId} hoveredRoomId={hoveredRoomId} onRoomHover={handleHover} onRoomSelect={onRoomSelect} sceneRef={sceneRef} quality={quality} activeFloorId={activeFloorId} isolateFloor={isolateFloor} selectedObjectId={selectedObjectId || pickedObject?.id} onObjectSelect={pickObject} />
+        <CameraDirector model={model} mode={mode} selectedRoomId={selectedRoomId} tour={tour} tourPlaying={tourPlaying} tourTime={tourTime} onTourTime={onTourTime} onTourPause={onTourPause} onMetrics={onMetrics} onFade={setFading} controllerRef={controller} movement={movement} reducedMotion={reducedMotion} sceneRef={sceneRef} playbackRate={playbackRate} eyeHeight={eyeHeight} activeFloorId={activeFloorId} isolateFloor={isolateFloor} onFloorChange={onFloorChange} />
       </Canvas>}
       {contextLost && <div className="world-fallback" role="status">The graphics session ended. Your 2D plan is still available.</div>}
     </ViewerErrorBoundary>
+    {pickedObject && <div className="world-object-card" role="status"><strong>{pickedObject.label}</strong><span>{model.floors.find(floor => floor.id === pickedObject.floorId)?.name || model.floors[0]?.name}{pickedObject.size ? ` · ${pickedObject.size.map(value => (value / 1000).toFixed(2)).join(' × ')} m` : ''}</span><span>Edit dimensions and placement in 2D Plan.</span><button type="button" aria-label="Clear object selection" onClick={() => { setPickedObject(null); onObjectSelect?.(null) }}>×</button></div>}
     <div ref={fadeRef} className="world-camera-fade" aria-hidden="true" />
     {mode === 'walk' && graphicsAvailable && !contextLost && <>
       <div className="world-walk-reticle" aria-hidden="true">+</div>

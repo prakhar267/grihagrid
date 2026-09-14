@@ -19,3 +19,17 @@
   .sp-study,.sp-saved-views,.sp-footnote details,.sp-space-details button{display:none!important}
   .sp-footnote{padding:12px 0}
 }
+
+.sp-floor-controls{display:flex;flex-direction:column;gap:12px;margin:0 8px 20px;font-size:11px}
+.sp-floor-controls label{display:flex;align-items:center;gap:8px}
+.sp-floor-controls select{width:100%;min-width:0;background:var(--paper-pale);border:1px solid var(--rule);padding:8px;font:inherit}
+.sp-floor-controls input{accent-color:var(--copper)}
+.sp-plan-actions{display:flex;align-items:center;gap:15px;flex-wrap:wrap;margin-bottom:20px}
+.sp-global-dimensions{margin-top:20px;border-top:1px solid var(--rule);padding-top:15px;font-size:12px}
+.sp-global-dimensions .sp-dimensions{border:0}
+.sp-eye-height{display:flex;align-items:center;gap:9px;font-size:11px;margin:10px 0}
+.sp-eye-height input{width:65px;padding:7px;background:var(--paper-pale);border:1px solid var(--rule)}
+.sp-camera-entry{display:flex;align-items:center;gap:7px;max-width:100%}
+.sp-camera-entry input{width:145px;min-width:0;background:var(--paper-pale);border:1px solid var(--rule);padding:10px;font:inherit;font-size:12px}
+.sp-camera-entry button{font-size:11px;min-height:38px;white-space:nowrap}
+@media(max-width:760px){.sp-floor-controls{flex-direction:row;flex-wrap:wrap;margin:0 0 12px}.sp-floor-controls>label:first-child{flex:1;min-width:150px}.sp-floor-controls select{max-width:170px}.sp-camera-entry{width:100%}.sp-camera-entry input{flex:1;width:100px}.sp-plan-actions{gap:8px}.sp-plan-actions>button{width:100%}}

@@ -1,0 +1,13 @@
+English OCR trained data
+
+The unmodified eng.traineddata.gz binary is copied from the locked
+@tesseract.js-data/eng 1.0.0 package, 4.0.0_best_int directory.
+It is an integerized version of Tesseract's tessdata_best English data.
+
+Data distribution and licence: https://github.com/naptha/tessdata
+Original training data: https://github.com/tesseract-ocr/tessdata_best
+Both upstream data repositories publish the Apache License, Version 2.0.
+The npm package's wrapper metadata separately lists MIT.
+
+The bundled Apache licence is retained beside the browser-served data.
+No model training or binary modification is performed by GrihaGrid.

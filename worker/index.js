@@ -12,7 +12,7 @@ const CORS_HEADERS = {
   "access-control-max-age": "86400",
 };
 const SECURITY_HEADERS = {
-  "content-security-policy": "default-src 'self'; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+  "content-security-policy": "default-src 'self'; object-src 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' http://127.0.0.1:43127; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
   "cross-origin-opener-policy": "same-origin",
   "permissions-policy": "camera=(), microphone=(), geolocation=(), payment=()",
   // Bearer shares must never forward their document URL to another request.
@@ -3635,6 +3635,21 @@ async function exportAccount(request, env) {
          JOIN professional_review_requests r ON r.id=m.review_id
         WHERE r.owner_id=? ORDER BY m.review_id,m.created_at,m.rowid`,
     ).bind(session.user_id),
+    db.prepare(
+      `SELECT r.project_id,r.revision,r.input_revision,r.model_json,r.created_at
+         FROM spatial_revisions r JOIN projects p ON p.id=r.project_id
+        WHERE p.user_id=? ORDER BY r.project_id,r.revision`,
+    ).bind(session.user_id),
+    db.prepare(
+      `SELECT r.project_id,r.revision,r.spatial_revision,r.input_revision,r.tour_json,r.created_at
+         FROM spatial_tour_revisions r JOIN projects p ON p.id=r.project_id
+        WHERE p.user_id=? ORDER BY r.project_id,r.revision`,
+    ).bind(session.user_id),
+    db.prepare(
+      `SELECT r.project_id,r.revision,r.spatial_revision,r.input_revision,r.viewpoints_json,r.created_at
+         FROM spatial_camera_revisions r JOIN projects p ON p.id=r.project_id
+        WHERE p.user_id=? ORDER BY r.project_id,r.revision`,
+    ).bind(session.user_id),
   ]);
   const rows = (index) => Array.isArray(results?.[index]?.results) ? results[index].results : [];
   const user = rows(0)[0];
@@ -3719,6 +3734,18 @@ async function exportAccount(request, env) {
     professionalHandoffs: rows(9).map((row) => ({ ...row, sections: parse(row.sections_json), sections_json: undefined })),
     professionalReviews: rows(10),
     professionalReviewMessages: rows(11),
+    spatialLayouts: rows(12).map((row) => ({
+      projectId: row.project_id, revision: Number(row.revision), inputRevision: Number(row.input_revision),
+      model: parse(row.model_json), createdAt: row.created_at,
+    })),
+    spatialTours: rows(13).map((row) => ({
+      projectId: row.project_id, revision: Number(row.revision), spatialRevision: Number(row.spatial_revision),
+      inputRevision: Number(row.input_revision), tour: parse(row.tour_json), createdAt: row.created_at,
+    })),
+    spatialCameras: rows(14).map((row) => ({
+      projectId: row.project_id, revision: Number(row.revision), spatialRevision: Number(row.spatial_revision),
+      inputRevision: Number(row.input_revision), viewpoints: parse(row.viewpoints_json), createdAt: row.created_at,
+    })),
   };
   return json(artifact, 200, {
     "content-disposition": "attachment; filename=\"grihagrid-account-export.json\"",
@@ -9368,7 +9395,7 @@ async function api(request, env, ctx, url) {
       if (request.method === "POST") return await createReportShare(request, env, projectId);
       return methodNotAllowed(["GET", "POST"]);
     }
-    const spatialMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/spatial(?:\/(preview|tour|tour-intent))?$/u);
+    const spatialMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/spatial(?:\/(preview|tour|tour-intent|viewpoints))?$/u);
     if (spatialMatch) return await handleSpatialRequest(request, env, decodeProjectPathSegment(spatialMatch[1]), spatialMatch[2] || '', {
       HttpError, json, requireDatabase, getSession, ownedProject, requireActiveProject,
       requireTrustedOrigin, requireCsrf, readJson, digestHex, normalizeIdempotencyKey,
@@ -9555,7 +9582,7 @@ function isApiRoute(pathname) {
     || /^\/api\/orders\/[^/]+(?:\/(?:fulfillment|artifact|progress))?$/u.test(pathname)
     || /^\/api\/shared\/decision-compare\/[^/]+$/u.test(pathname)
     || /^\/api\/family-alignment\/[^/]+(?:\/response)?$/u.test(pathname)
-    || /^\/api\/projects\/[^/]+(?:\/spatial(?:\/(?:preview|tour|tour-intent))?|\/home|\/report|\/report-shares(?:\/[^/]+)?|\/ai-brief|\/orders|\/revisions(?:\/preview|\/\d+(?:\/report|\/reports\/\d+\/feedback)?)?|\/family-alignment(?:\/[^/]+)?|\/decision-compare(?:\/choice|\/shares(?:\/[^/]+)?)?|\/professional-reviews(?:\/[^/]+(?:\/messages)?)?|\/files(?:\/[^/]+)?)?$/u.test(pathname)
+    || /^\/api\/projects\/[^/]+(?:\/spatial(?:\/(?:preview|tour|tour-intent|viewpoints))?|\/home|\/report|\/report-shares(?:\/[^/]+)?|\/ai-brief|\/orders|\/revisions(?:\/preview|\/\d+(?:\/report|\/reports\/\d+\/feedback)?)?|\/family-alignment(?:\/[^/]+)?|\/decision-compare(?:\/choice|\/shares(?:\/[^/]+)?)?|\/professional-reviews(?:\/[^/]+(?:\/messages)?)?|\/files(?:\/[^/]+)?)?$/u.test(pathname)
     || /^\/api\/professional-reviews(?:\/[^/]+(?:\/(?:claim|messages))?)?$/u.test(pathname);
 }
 

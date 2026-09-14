@@ -37,7 +37,7 @@ test('spatial workspace enforces authenticated ownership, immutable real-D1 revi
   const env={DB:db,ASSETS:{fetch:async()=>new Response('missing',{status:404})},GRIHAGRID_CACHE:new MemoryKv()}
   const user=await owner(env,'spatial-owner@example.test'),other=await owner(env,'spatial-other@example.test'),path=`/api/projects/${user.project.id}/spatial`
   const count=async table=>(await db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).first()).n
-  let savedModel,savedTour,spatialRevision=0,tourRevision=0
+  let savedModel,savedTour,savedCamera,cameraRevision=0,spatialRevision=0,tourRevision=0
   const base=()=>({expectedInputRevision:1,expectedSpatialRevision:spatialRevision})
 
   await context.test('empty GET never creates a concept and origin, CSRF and ownership fail closed',async()=>{
@@ -85,6 +85,26 @@ test('spatial workspace enforces authenticated ownership, immutable real-D1 revi
     await assert.rejects(()=>db.prepare('UPDATE spatial_tour_revisions SET tour_json=? WHERE project_id=?').bind('{}',user.project.id).run(),/immutable/)
   })
 
+  await context.test('camera library persists privately with CSRF, idempotency, immutability and one concurrent winner',async()=>{
+    savedCamera={id:'camera-one',name:'Kitchen at eye level',buildingId:savedModel.id,sourceRevision:savedModel.revision,floorId:savedModel.floors[0].id,position:[6000,3000,1650],target:[6000,4000,1200],fov:60}
+    const body={...base(),expectedCameraRevision:0,viewpoints:[savedCamera]},key='camera-library-save'
+    await expect(await worker.fetch(request(path+'/viewpoints',other,body),env),404)
+    await expect(await worker.fetch(request(path+'/viewpoints',user,body,{csrf:''}),env),403)
+    await expect(await worker.fetch(request(path+'/viewpoints',user,body,{origin:'https://evil.example'}),env),403)
+    await expect(await worker.fetch(request(path+'/viewpoints',user,{...body,viewpoints:[{...savedCamera,position:[0,0,null]}]}),env),400)
+    const saved=await expect(await worker.fetch(request(path+'/viewpoints',user,body,{key}),env),201)
+    assert.equal(saved.cameraRevision,1);assert.deepEqual(saved.viewpoints,[savedCamera])
+    await expect(await worker.fetch(request(path+'/viewpoints',user,body,{key}),env),200)
+    await expect(await worker.fetch(request(path+'/viewpoints',user,{...body,viewpoints:[]},{key}),env),409)
+    const responses=await Promise.all(['Morning view','Evening view'].map(name=>worker.fetch(request(path+'/viewpoints',user,{...base(),expectedCameraRevision:1,viewpoints:[{...savedCamera,name}]}),env)))
+    assert.deepEqual(responses.map(r=>r.status).sort(),[201,409])
+    const loaded=await expect(await worker.fetch(request(path,user),env),200)
+    cameraRevision=loaded.cameraRevision;savedCamera=loaded.viewpoints[0]
+    assert.equal(cameraRevision,2);assert.ok(['Morning view','Evening view'].includes(savedCamera.name))
+    assert.equal(await count('spatial_camera_revisions'),2)
+    await assert.rejects(()=>db.prepare('UPDATE spatial_camera_revisions SET viewpoints_json=? WHERE project_id=?').bind('[]',user.project.id).run(),/immutable/)
+  })
+
   await context.test('Gemini fails closed without config, validates aliases and sends no private metadata',async()=>{
     const body={...base(),acceptedAiTerms:true,intent:{roomIds:['living','kitchen'],duration:30}}
     const absent=await expect(await worker.fetch(request(path+'/tour-intent',user,body),env),503)
@@ -100,6 +120,13 @@ test('spatial workspace enforces authenticated ownership, immutable real-D1 revi
     assert.deepEqual(result.intent.roomIds,['living','kitchen']);assert.equal(result.source,'gemini')
     assert.ok(!providerBody.includes('PRIVATE-NOTE'));assert.ok(!providerBody.includes('Private spatial'));assert.ok(!providerBody.includes('Living room'));assert.ok(!providerBody.includes('main-bedroom'))
     assert.equal(JSON.parse(providerBody).store,false)
+    const subject=savedModel.furniture.find(f=>f.roomId==='kitchen')
+    const rich={...body,intent:{roomIds:['kitchen'],duration:30,eyeHeight:1700,shotPreferences:[{roomId:'kitchen',subjectId:subject.id,kind:'reveal',pace:'slow',duration:8}]}}
+    env.GEMINI_FETCH=async(_url,init)=>{const data=JSON.parse(JSON.parse(init.body).input.split('Data: ')[1]);return providerResponse(data.requested)}
+    const directed=await expect(await worker.fetch(request(path+'/tour-intent',user,rich),env),200)
+    assert.deepEqual(directed.intent,rich.intent)
+    env.GEMINI_FETCH=async()=>providerResponse({roomIds:['room-2'],duration:30})
+    await expect(await worker.fetch(request(path+'/tour-intent',user,rich),env),502)
     env.GEMINI_FETCH=async()=>{throw new Error('upstream private detail')}
     const failed=await expect(await worker.fetch(request(path+'/tour-intent',user,body),env),503)
     assert.equal(failed.code,'tour_ai_unavailable');assert.ok(!JSON.stringify(failed).includes('private detail'))
@@ -115,6 +142,16 @@ test('spatial workspace enforces authenticated ownership, immutable real-D1 revi
     assert.equal(spatialRevision,2);assert.equal(current.tourStale,true);assert.equal(current.history.length,2)
     assert.equal((await db.prepare('SELECT model_json FROM spatial_revisions WHERE project_id=? AND revision=1').bind(user.project.id).first()).model_json,firstStored.model_json)
     await expect(await worker.fetch(request(path+'/tour',user,{...base(),expectedTourRevision:tourRevision,tour:savedTour}),env),400)
+  })
+
+  await context.test('older cameras can be retained and renamed after layout revision, but not moved or fabricated',async()=>{
+    const renamed={...savedCamera,name:'Original layout view'}
+    const body={...base(),expectedCameraRevision:cameraRevision,viewpoints:[renamed]}
+    const saved=await expect(await worker.fetch(request(path+'/viewpoints',user,body),env),201)
+    cameraRevision=saved.cameraRevision;savedCamera=renamed
+    assert.equal(saved.viewpoints[0].sourceRevision,1);assert.equal(saved.spatialRevision,2)
+    await expect(await worker.fetch(request(path+'/viewpoints',user,{...base(),expectedCameraRevision:cameraRevision,viewpoints:[{...renamed,position:[1000,1000,1700]}]}),env),400)
+    await expect(await worker.fetch(request(path+'/viewpoints',user,{...base(),expectedCameraRevision:cameraRevision,viewpoints:[{...renamed,id:'fabricated'}]}),env),400)
   })
 
   await context.test('brief changes mark concepts stale and prevent tour saves until reviewed',async()=>{
@@ -136,6 +173,7 @@ test('spatial workspace enforces authenticated ownership, immutable real-D1 revi
     assert.equal(failed.code,'spatial_source_stale')
     const ai=await expect(await worker.fetch(request(path+'/tour-intent',user,{expectedInputRevision:2,expectedSpatialRevision:spatialRevision,acceptedAiTerms:true,intent:{roomIds:['living'],duration:30}}),env),409)
     assert.equal(ai.code,'spatial_source_stale')
+    await expect(await worker.fetch(request(path+'/viewpoints',user,{expectedInputRevision:2,expectedSpatialRevision:spatialRevision,expectedCameraRevision:cameraRevision,viewpoints:[]}),env),409)
   })
 
   await context.test('archived projects remain readable but cannot accept spatial writes',async()=>{
@@ -144,5 +182,8 @@ test('spatial workspace enforces authenticated ownership, immutable real-D1 revi
     const before=await count('spatial_revisions')
     await expect(await worker.fetch(request(path+'/preview',user,{expectedInputRevision:2,expectedSpatialRevision:2,model:savedModel}),env),409)
     assert.equal(await count('spatial_revisions'),before)
+    await expect(await worker.fetch(request(path+'/viewpoints',user,{expectedInputRevision:2,expectedSpatialRevision:spatialRevision,expectedCameraRevision:cameraRevision,viewpoints:[]}),env),409)
+    assert.equal((await worker.fetch(request(`/api/projects/${user.project.id}`,user,undefined,{method:'DELETE'}),env)).status,204)
+    assert.equal(await count('spatial_camera_revisions'),0)
   })
 })

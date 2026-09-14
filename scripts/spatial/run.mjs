@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 /** Local-only Blender job runner. No shell, uploaded code, or cloud credentials. */
-import { access, mkdir, open, readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import { access, mkdir, open, readFile, readdir, stat, writeFile, rename } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,9 +14,9 @@ const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(scriptDirectory, '../..');
 const MAX_INPUT_BYTES = 2 * 1024 * 1024;
 
-export async function readSceneInput(inputPath) {
+export async function readSceneInput(inputPath, { noFollow = false } = {}) {
   // NONBLOCK lets us reject a FIFO by descriptor without waiting for a writer.
-  const handle = await open(inputPath, constants.O_RDONLY | constants.O_NONBLOCK);
+  const handle = await open(inputPath, constants.O_RDONLY | constants.O_NONBLOCK | (noFollow ? constants.O_NOFOLLOW : 0));
   try {
     const metadata = await handle.stat();
     if (!metadata.isFile()) throw new Error('Input must be a regular file');
@@ -73,7 +74,7 @@ export function serializeScene(model, duration = 24, suppliedTour) {
     if (!sample || ![...sample.position, ...sample.target].every(Number.isFinite)) throw new Error('Invalid camera sample');
     return sample;
   });
-  return { schemaVersion: 1, sourceRevision: model.revision, primitives, rooms: model.rooms, fps, cameraSamples, tour };
+  return { schemaVersion: 1, sourceRevision: model.revision, primitives, rooms: model.rooms, floors: model.floors, fps, cameraSamples, tour };
 }
 
 export function verifyGltfCoordinates(buffer, payload) {
@@ -87,7 +88,7 @@ export function verifyGltfCoordinates(buffer, payload) {
   let maxPositionErrorMm = 0;
   for (const primitive of payload.primitives) {
     const node = nodes.get(primitive.id);
-    if (!node || node.matrix || node.extras.roomId !== primitive.roomId) throw new Error(`GLB node contract failed for ${primitive.id}`);
+    if (!node || node.matrix || ['roomId', 'floorId', 'stairId', 'wallId', 'openingId'].some(key => (node.extras[key] ?? null) !== (primitive[key] ?? null))) throw new Error(`GLB node contract failed for ${primitive.id}`);
     maxPositionErrorMm = Math.max(maxPositionErrorMm, distance(node.translation || [0, 0, 0], toGltf(primitive.position)) * 1000);
   }
   const cameraNode = nodes.get('tour-camera');
@@ -125,12 +126,15 @@ export async function findExecutable(name, explicit) {
   throw new Error(`${name} executable unavailable. ${name === 'blender' ? 'Install Blender or pass --blender /absolute/path/to/Blender.' : 'Install ffmpeg to encode the rendered film frames.'}`);
 }
 
-export async function runProcess(executable, args, { timeoutMs, onLine = () => {}, cwd = root } = {}) {
+export async function runProcess(executable, args, { timeoutMs, onLine = () => {}, cwd = root, signal } = {}) {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) { const error = new Error('Render cancelled'); error.name = 'AbortError'; reject(error); return; }
     const child = spawn(executable, args, { cwd, shell: false, stdio: ['ignore', 'pipe', 'pipe'] });
     let tail = '';
     let pending = '';
     let timedOut = false;
+    const abort = () => child.kill('SIGKILL');
+    signal?.addEventListener('abort', abort, { once: true });
     const timer = setTimeout(() => { timedOut = true; child.kill('SIGKILL'); }, timeoutMs ?? 1800000);
     const receive = (chunk) => {
       const value = chunk.toString();
@@ -142,17 +146,38 @@ export async function runProcess(executable, args, { timeoutMs, onLine = () => {
     };
     child.stdout.on('data', receive);
     child.stderr.on('data', receive);
-    child.on('error', (error) => { clearTimeout(timer); reject(error); });
+    child.on('error', (error) => { clearTimeout(timer); signal?.removeEventListener('abort', abort); reject(error); });
     child.on('close', (code) => {
       clearTimeout(timer);
-      if (timedOut) reject(new Error('Local render reached its timeout. Partial artifacts remain in its job directory.'));
+      signal?.removeEventListener('abort', abort);
+      if (signal?.aborted) { const error = new Error('Render cancelled. Complete frames can be resumed.'); error.name = 'AbortError'; reject(error); }
+      else if (timedOut) reject(new Error('Local render reached its timeout. Partial artifacts remain in its job directory.'));
       else if (code !== 0) reject(new Error(`Local process failed (${code}): ${tail}`));
       else resolve({ code, tail });
     });
   });
 }
 
+export async function verifyFrameSequence(output, count) {
+  if (!Number.isInteger(count) || count < 1 || count > 3600) throw new Error('Invalid native frame count');
+  for (let frame = 1; frame <= count; frame++) {
+    const filename = path.join(output, 'frames', `frame-${String(frame).padStart(4, '0')}.png`);
+    const handle = await open(filename, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      const info = await handle.stat();
+      if (!info.isFile() || info.size < 45 || info.size > 32 * 1024 * 1024) throw new Error(`Frame ${frame} is not a bounded PNG`);
+      const header = Buffer.alloc(24), tail = Buffer.alloc(12);
+      const start = await handle.read(header, 0, 24, 0), end = await handle.read(tail, 0, 12, info.size - 12);
+      if (start.bytesRead !== 24 || end.bytesRead !== 12 || !header.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex')) ||
+          header.readUInt32BE(8) !== 13 || header.toString('ascii', 12, 16) !== 'IHDR' || header.readUInt32BE(16) !== 1920 || header.readUInt32BE(20) !== 1080 ||
+          !tail.equals(Buffer.from('0000000049454e44ae426082', 'hex'))) throw new Error(`Frame ${frame} is incomplete or is not native 1920×1080`);
+    } finally { await handle.close(); }
+  }
+  return { count, width: 1920, height: 1080 };
+}
+
 export async function runJob(options) {
+  if (options.resume) return resumeJob(options);
   // Validate before creating outputs or executing Blender.
   let model = createDemoBuilding();
   let suppliedTour;
@@ -174,8 +199,14 @@ export async function runJob(options) {
   await writeFile(dataFile, JSON.stringify(payload), { flag: 'wx' });
   await writeFile(path.join(output, 'building.json'), JSON.stringify(model, null, 2), { flag: 'wx' });
   await writeFile(jobFile, JSON.stringify(job, null, 2), { flag: 'wx' });
+  await writeFile(path.join(output, 'render-config.json'), JSON.stringify({ mode: options.mode, engine: options.engine,
+    device: options.device, samples: options.samples, timeout: options.timeout,
+    sourceSha256: createHash('sha256').update(JSON.stringify(payload)).digest('hex') }), { flag: 'wx' });
   let lastFrameMessage = 0;
   const onLine = (line) => {
+    if (line.startsWith('GRIHAGRID_PROGRESS ')) {
+      try { options.onProgress?.(JSON.parse(line.slice('GRIHAGRID_PROGRESS '.length))); } catch { /* Ignore malformed subprocess telemetry. */ }
+    }
     if (line.startsWith('GRIHAGRID_PROGRESS ')) process.stdout.write(`${line}\n`);
     else if (line.startsWith('Saved:') && Date.now() - lastFrameMessage > 10000) {
       lastFrameMessage = Date.now();
@@ -186,7 +217,7 @@ export async function runJob(options) {
     await runProcess(blender, ['--background', '--factory-startup', '--disable-autoexec', '--threads', '4',
       '--python-exit-code', '1', '--python', path.join(scriptDirectory, 'render.py'), '--',
       '--scene-data', dataFile, '--output', output, '--mode', options.mode, '--samples', String(options.samples), '--device', options.device, '--engine', options.engine],
-    { timeoutMs: options.timeout * 1000, onLine });
+    { timeoutMs: options.timeout * 1000, onLine, signal: options.signal });
     const browserCoordinates = verifyGltfCoordinates(await readFile(path.join(output, 'house.glb')), payload);
     const manifestPath = path.join(output, 'manifest.json');
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
@@ -194,9 +225,12 @@ export async function runJob(options) {
     await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
     if (ffmpeg) {
       process.stdout.write('GRIHAGRID_PROGRESS {"stage":"encoding"}\n');
+      options.onProgress?.({ stage: 'encoding', frame: payload.cameraSamples.length, total: payload.cameraSamples.length });
+      manifest.nativeFrameHeaders = await verifyFrameSequence(output, payload.cameraSamples.length);
       await runProcess(ffmpeg, ['-nostdin', '-v', 'error', '-xerror', '-framerate', String(payload.fps), '-start_number', '1',
-        '-i', path.join(output, 'frames', 'frame-%04d.png'), '-c:v', 'libx264', '-threads', '2', '-pix_fmt', 'yuv420p',
-        '-crf', '20', '-movflags', '+faststart', path.join(output, 'tour.mp4')], { timeoutMs: 300000 });
+        '-i', path.join(output, 'frames', 'frame-%04d.png'), '-frames:v', String(payload.cameraSamples.length), '-c:v', 'libx264', '-threads', '2', '-pix_fmt', 'yuv420p',
+        '-crf', '20', '-movflags', '+faststart', path.join(output, 'tour.mp4')], { timeoutMs: 300000, signal: options.signal });
+      await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
     }
     job.status = 'complete';
     job.completedAt = new Date().toISOString();
@@ -204,11 +238,70 @@ export async function runJob(options) {
     process.stdout.write(`Local spatial artifacts: ${output}\n`);
     return { output, job };
   } catch (error) {
-    job.status = 'failed';
+    job.status = error.name === 'AbortError' ? 'cancelled' : 'failed';
     job.error = error.message;
     job.completedAt = new Date().toISOString();
     await writeFile(jobFile, JSON.stringify(job, null, 2));
     throw error;
+  }
+}
+
+export async function inspectResume(output) {
+  const [configBytes, sourceBytes, proof, metadata] = await Promise.all([
+    readFile(path.join(output, 'render-config.json')), readFile(path.join(output, 'scene-data.json')),
+    readSceneInput(path.join(output, 'build-proof.json')), readSceneInput(path.join(output, 'job.json')),
+  ]);
+  const hash = bytes => createHash('sha256').update(bytes).digest('hex');
+  const config = JSON.parse(configBytes);
+  if (hash(configBytes) !== proof.recipeSha256 || hash(sourceBytes) !== proof.sourceSha256 ||
+      hash(sourceBytes) !== config.sourceSha256 || hash(await readFile(path.join(output, 'house.blend'))) !== proof.blendSha256) {
+    throw new Error('The original render files changed; create a new job instead of resuming.');
+  }
+  const payload = JSON.parse(sourceBytes);
+  if (!['preview', 'film', 'scene'].includes(config.mode) || !['cycles', 'eevee'].includes(config.engine) ||
+      !['auto', 'cpu'].includes(config.device) || !Number.isInteger(config.samples) || config.samples < 1 || config.samples > 128 ||
+      !Number.isInteger(config.timeout) || config.timeout < 30 || config.timeout > 7200 || payload.fps !== 30 ||
+      !Array.isArray(payload.cameraSamples) || payload.cameraSamples.length < 1 || payload.cameraSamples.length > 3600) throw new Error('Invalid original render configuration');
+  if (proof.exportSha256) {
+    const glb = await readFile(path.join(output, 'house.glb'));
+    if (hash(glb) !== proof.exportSha256) throw new Error('The original GLB changed; create a new job.');
+    await readSceneInput(path.join(output, 'manifest.json'));
+    verifyGltfCoordinates(glb, payload);
+  }
+  return { config, payload, metadata };
+}
+
+export async function resumeJob(options) {
+  const output = path.resolve(options.output);
+  const { config, payload, metadata: job } = await inspectResume(output);
+  if (!['failed', 'cancelled', 'running', 'interrupted'].includes(job.status)) throw new Error('Only interrupted or cancelled jobs can resume');
+  const blender = await findExecutable('blender', options.blender);
+  job.status = 'running'; job.resumedAt = new Date().toISOString();
+  await writeFile(path.join(output, 'job.json'), JSON.stringify(job, null, 2));
+  try {
+    await runProcess(blender, ['--background', '--factory-startup', '--disable-autoexec', path.join(output, 'house.blend'), '--threads', '4', '--python-exit-code', '1', '--python', path.join(scriptDirectory, 'resume.py'), '--', '--output', output], {
+      timeoutMs: Math.min(7200, config.timeout) * 1000, signal: options.signal,
+      onLine(line) { if (line.startsWith('GRIHAGRID_PROGRESS ')) { try { options.onProgress?.(JSON.parse(line.slice(19))); } catch { /* Invalid telemetry is not progress. */ } } },
+    });
+    const manifestPath = path.join(output, 'manifest.json');
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+    manifest.browserCoordinates = verifyGltfCoordinates(await readFile(path.join(output, 'house.glb')), payload);
+    if (config.mode === 'film') {
+      options.onProgress?.({ stage: 'encoding', frame: payload.cameraSamples.length, total: payload.cameraSamples.length });
+      manifest.nativeFrameHeaders = await verifyFrameSequence(output, payload.cameraSamples.length);
+      const ffmpeg = await findExecutable('ffmpeg');
+      const partial = path.join(output, `encoding-${Date.now()}.mp4`);
+      await runProcess(ffmpeg, ['-nostdin', '-v', 'error', '-xerror', '-framerate', String(payload.fps), '-i', path.join(output, 'frames', 'frame-%04d.png'), '-frames:v', String(payload.cameraSamples.length), '-c:v', 'libx264', '-threads', '2', '-pix_fmt', 'yuv420p', '-crf', '20', '-movflags', '+faststart', partial], { timeoutMs: 300000, signal: options.signal });
+      await rename(partial, path.join(output, 'tour.mp4'));
+    }
+    manifest.render = { engine: config.engine === 'cycles' ? 'Cycles' : 'Eevee', samples: config.samples, mode: config.mode, resumed: true, durationSeconds: payload.cameraSamples.length / payload.fps, width: 1920, height: 1080, fps: payload.fps };
+    await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+    job.status = 'complete'; job.completedAt = new Date().toISOString(); delete job.error;
+    await writeFile(path.join(output, 'job.json'), JSON.stringify(job, null, 2));
+    return { output, job };
+  } catch (error) {
+    job.status = error.name === 'AbortError' ? 'cancelled' : 'failed'; job.error = error.message;
+    await writeFile(path.join(output, 'job.json'), JSON.stringify(job, null, 2)); throw error;
   }
 }
 

@@ -5,6 +5,8 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { Miniflare } from "miniflare";
 import worker from "../worker/index.js";
+import { createDemoBuilding } from "../src/spatial/model.js";
+import { generateTour } from "../src/spatial/tours.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const migrationsDirectory = path.join(root, "migrations");
@@ -205,6 +207,30 @@ test("account verification, recovery, export, and deletion are private and lifec
   assert.equal(newLogin.response.status, 200, JSON.stringify(newLogin.payload));
   auth = authFrom(newLogin);
 
+  // The export must include spatial history while keeping another account's
+  // layout and internal persistence keys out of the artifact.
+  const projectInput = { width: 30, length: 50, floors: "G+1", city: "Pune", quality: "Signature", style: "Courtyard" };
+  const ownProject = await call(env, "/api/projects", { method: "POST", auth, body: { name: "Lifecycle spatial home", input: projectInput } });
+  assert.equal(ownProject.response.status, 201, JSON.stringify(ownProject.payload));
+  const otherRegistration = await call(env, "/api/auth/register", { method: "POST", ip: "203.0.113.51", body: { email: "other-spatial-owner@example.test", password: INITIAL_PASSWORD } });
+  assert.equal(otherRegistration.response.status, 201);
+  const otherAuth = authFrom(otherRegistration);
+  const otherProject = await call(env, "/api/projects", { method: "POST", auth: otherAuth, body: { name: "FOREIGN-SPATIAL-HOME", input: projectInput } });
+  assert.equal(otherProject.response.status, 201);
+  const ownId = ownProject.payload.project.id, otherId = otherProject.payload.project.id;
+  const model = createDemoBuilding(), tour = generateTour(model, { duration: 10 });
+  const viewpoint = { id: "export-view", name: "Saved family room view", buildingId: model.id, sourceRevision: 1, position: [2500,3000,1650], target: [2500,2000,1000], fov: 60 };
+  for (const [projectId, marker] of [[ownId, "OWN-SPATIAL"], [otherId, "FOREIGN-SPATIAL"]]) {
+    await DB.prepare("INSERT INTO spatial_revisions (project_id,revision,input_revision,model_json,request_key,request_hash) VALUES (?,1,1,?,?,?)")
+      .bind(projectId, JSON.stringify({ ...model, name: marker }), "PRIVATE-SPATIAL-REQUEST-KEY", "PRIVATE-SPATIAL-REQUEST-HASH").run();
+    await DB.prepare("INSERT INTO spatial_tour_revisions (project_id,revision,spatial_revision,input_revision,tour_json,request_key,request_hash) VALUES (?,1,1,1,?,?,?)")
+      .bind(projectId, JSON.stringify({ ...tour, name: marker + " tour" }), "PRIVATE-TOUR-REQUEST-KEY", "PRIVATE-TOUR-REQUEST-HASH").run();
+    await DB.prepare("INSERT INTO spatial_camera_revisions (project_id,revision,spatial_revision,input_revision,viewpoints_json,request_key,request_hash) VALUES (?,1,1,1,?,?,?)")
+      .bind(projectId, JSON.stringify([{ ...viewpoint, name: marker + " camera" }]), "PRIVATE-CAMERA-REQUEST-KEY", "PRIVATE-CAMERA-REQUEST-HASH").run();
+  }
+  await DB.prepare("INSERT INTO spatial_revisions (project_id,revision,input_revision,model_json,request_key,request_hash) VALUES (?,2,1,?,?,?)")
+    .bind(ownId, JSON.stringify({ ...model, revision: 2, name: "OWN-SPATIAL revised" }), "PRIVATE-SECOND-REQUEST-KEY", "PRIVATE-SECOND-REQUEST-HASH").run();
+
   const exported = await call(env, "/api/account/export", { auth });
   assert.equal(exported.response.status, 200, JSON.stringify(exported.payload));
   assert.match(exported.response.headers.get("content-disposition"), /grihagrid-account-export\.json/u);
@@ -212,6 +238,14 @@ test("account verification, recovery, export, and deletion are private and lifec
   assert.equal(exported.payload.profile.emailVerifiedAt !== null, true);
   assert.equal(JSON.stringify(exported.payload).includes("password_hash"), false);
   assert.equal(JSON.stringify(exported.payload).includes("token_hash"), false);
+  assert.equal(exported.payload.exportVersion, 1);
+  assert.deepEqual(exported.payload.spatialLayouts.map(row => row.revision), [1, 2]);
+  assert.equal(exported.payload.spatialLayouts[0].model.rooms.length, model.rooms.length);
+  assert.equal(exported.payload.spatialTours[0].tour.shots.length, tour.shots.length);
+  assert.equal(exported.payload.spatialCameras[0].viewpoints[0].name, "OWN-SPATIAL camera");
+  assert.ok([exported.payload.spatialLayouts, exported.payload.spatialTours, exported.payload.spatialCameras].every(rows => rows.length && rows.every(row => row.projectId === ownId && row.inputRevision === 1)));
+  for (const secret of ["FOREIGN-SPATIAL", otherId, "PRIVATE-SPATIAL", "PRIVATE-TOUR", "PRIVATE-CAMERA", "PRIVATE-SECOND", "request_hash", "request_key"])
+    assert.equal(JSON.stringify(exported.payload).includes(secret), false, `Export contains ${secret}`);
 
   const deleted = await call(env, "/api/account", {
     method: "DELETE",
@@ -221,8 +255,13 @@ test("account verification, recovery, export, and deletion are private and lifec
   });
   assert.equal(deleted.response.status, 204, JSON.stringify(deleted.payload));
   assert.equal((await call(env, "/api/auth/me", { auth })).response.status, 401);
-  assert.equal((await DB.prepare("SELECT COUNT(*) AS count FROM users").first()).count, 0);
-  assert.equal((await DB.prepare("SELECT COUNT(*) AS count FROM sessions").first()).count, 0);
+  assert.equal((await DB.prepare("SELECT COUNT(*) AS count FROM users WHERE email=?").bind(EMAIL).first()).count, 0);
+  assert.equal((await DB.prepare("SELECT COUNT(*) AS count FROM users WHERE email=?").bind("other-spatial-owner@example.test").first()).count, 1);
+  for (const table of ["spatial_revisions", "spatial_tour_revisions", "spatial_camera_revisions"]) {
+    assert.equal((await DB.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE project_id=?`).bind(ownId).first()).count, 0);
+    assert.equal((await DB.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE project_id=?`).bind(otherId).first()).count, 1);
+  }
+  assert.equal((await call(env, "/api/auth/me", { auth: otherAuth })).response.status, 200);
   assert.equal((await DB.prepare("SELECT COUNT(*) AS count FROM account_deletion_receipts").first()).count, 1);
   const deliveryEvidence = (await DB.prepare(
     "SELECT user_id,purpose,outcome FROM transactional_email_events ORDER BY created_at,id",

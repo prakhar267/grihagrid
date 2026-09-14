@@ -1,157 +1,224 @@
-# Local Blender scenes and camera films
+# Local render studio
 
-The spatial renderer is a local job, separate from the Cloudflare Worker.
-It consumes the same validated millimetre geometry and camera route as the
-browser workspace. No provider call or account credential is needed.
+The app can submit a validated house and camera tour to a paired renderer on
+this computer, show job progress and preview images, cancel or resume work,
+and play/download the finished MP4, GLB and editable Blender scene. Blender
+and FFmpeg run locally; the Cloudflare Worker does not run either program.
+No provider account, paid rendering service, R2 bucket or upload is involved.
 
-## Run a job
+## Start and pair once
 
-Install Blender 4.5 LTS and, for MP4 encoding, FFmpeg. The runner searches
-`BLENDER_BIN`, the standard macOS application locations, its optional user
-cache location, and `PATH`. An explicit `--blender` path takes precedence.
-It does not download software itself.
+Install Blender 4.5 LTS and FFmpeg. From the project checkout, start:
 
 ```sh
-# Complete synthetic furnished demo, including six Cycles preview frames.
-node scripts/spatial/run.mjs --mode preview --samples 16
-
-# A plain building JSON or the workspace's downloaded {model, tour} bundle.
-node scripts/spatial/run.mjs --input /absolute/path/grihagrid-scene.json --mode preview
-
-# Export an editable scene and an optimized binary glTF without rendering.
-node scripts/spatial/run.mjs --input /absolute/path/grihagrid-scene.json --mode scene
-
-# 24 seconds, 30 fps, 1920×1080. Inspect the preview before this longer job.
-node scripts/spatial/run.mjs --mode film --duration 24 --samples 16 --timeout 7200
-
-# Faster draft film: real-time Eevee shading, explicitly recorded in manifest.
-node scripts/spatial/run.mjs --mode film --engine eevee --duration 20 --samples 4 --timeout 1800
+npm run spatial:service
 ```
 
-An embedded tour keeps its own duration; `--duration` controls generation
-when there is no supplied tour. Each run creates a new `output/spatial-*`
-directory. Explicit `--output` directories must be empty. Failed jobs keep
-their partial artifacts and a failed `job.json`; successful jobs mark it
-complete only after Blender and any FFmpeg encoding have succeeded.
+The service listens only at `http://127.0.0.1:43127`. Its terminal prints the
+path of a private pairing-code file, never the code itself. Open that file
+and enter its code in the app's Local render studio. Keep the service running.
+Then use **Render previews** or **Render 1080p film** in the app; subsequent
+renders do not require individual terminal commands.
 
-Outputs are `building.json`, `scene-data.json`, `house.blend`, `house.glb`,
-`manifest.json`, `job.json`, preview PNGs, and (film mode) PNG frames and
-`tour.mp4`. Inputs and outputs stay local and may contain project data.
-Do not put job directories in a public assets directory.
+The default app origins are explicit loopback origins on ports 5277, 5173
+and 4173. An operator can set `GRIHAGRID_RENDER_ORIGINS` to a comma-separated
+list of exact HTTPS or loopback origins before starting the service. This
+is an origin allowlist, not a wildcard. The app CSP must independently allow
+`http://127.0.0.1:43127` in `connect-src` and fetched blob media in `img-src`
+and `media-src`. Some browsers require their local-network permission too.
 
-## Shared coordinates and camera contracts
+The default data directory is `~/.local/share/grihagrid/render-service`.
+Directories are mode 0700; pairing, immutable input and job metadata files
+are mode 0600. Pairing creates an origin-bound, eight-hour bearer session.
+The app keeps it only in memory, sends it in an Authorization header, and
+fetches media into blob URLs. No credential is placed in a URL, cookie,
+localStorage, public asset directory, repository file or service log.
+Restarting the service rotates the pairing code and invalidates browser
+sessions; rendering recovery itself does not require the browser to pair again.
+A paired browser controls this computer's local render jobs. This local
+capability is separate from cloud project ownership or billing entitlements.
 
-Canonical geometry uses millimetres, X right, Y forward, and Z up. Blender
-uses the same axes in metres. glTF/browser coordinates are
-`[x / 1000, z / 1000, -y / 1000]`. The glTF exporter performs that axis
-conversion; the Python builder must not apply it a second time.
+## Rendering and recovery
 
-`src/spatial/model.js` owns scene validation and primitive generation.
-`src/spatial/tours.js` owns routing, clearance validation, and camera
-sampling. The local Node runner imports those modules directly.
-`scene.py` creates meshes/materials/lights; `cameras.py` applies the camera
-samples; `render.py` assembles, exports, checks, and renders.
+App jobs always use Cycles, with 4/8/16/32/64 permitted samples (the UI offers
+8/16/32/64), Metal when available, denoising, and a native 1920×1080, 30 fps
+film. Tour length is bounded to 60 seconds. The UI displays the actual engine
+and samples; higher samples cost more local time. Six small preview frames
+are produced before a film. The film button still creates a full native
+resolution frame sequence, not an upscaled preview.
 
-Every camera sample uses vertical field of view in degrees. Blender uses
-a 24 mm vertical sensor and `lens = 12 / tan(verticalFov / 2)`. Frames are
-sampled at 30 Hz and keyed directly with linear interpolation so Blender
-does not introduce Bezier overshoot between route points. Cuts defined
-by the source tour remain cuts. A keyed black compositor overlay matches
-the source tour's deliberate fade transitions.
+One job runs at a time; at most four jobs may be active/queued and twenty
+records retained. Remove completed or cancelled jobs from the panel when
+finished with their local artifacts. Removal is limited to that generated
+job directory. Fresh submissions and both manual/automatic recovery apply the same dependency
+and disk admission checks. Disk admission reserves queued work and accounts for uncompressed frame size plus
+512 MiB headroom. Each Blender subprocess has a two-hour limit, four CPU
+threads and a 512 MiB Node controller; FFmpeg has two threads and five minutes.
+Blender GPU memory itself is constrained by the validated scene budget and
+available hardware, not a claimed operating-system GPU-memory quota.
 
-Exports preserve object ID, room ID, category, and source revision as glTF
-extras. After export, the same Blender process imports the GLB into an
-empty scene and checks every mesh identifier, room association, world
-bounds (1 mm tolerance), and camera position and direction. It records
-results in `manifest.json` and fails the job if a check fails. The Node
-runner additionally reads the exported glTF JSON and independently checks
-each object's browser-axis translation, camera orientation, and vertical
-field of view. This catches a consistent but incorrect exporter/importer
-axis convention that a Blender-only round trip could conceal.
+Each request gets a UUID directory and immutable request JSON. Every new
+construction attempt has a separate `attempt-N` directory. Initial scene,
+config and job writes are exclusive, so racing jobs cannot replace each
+other's inputs. The saved blend, serialized scene and render recipe have
+SHA-256 provenance recorded before rendering. Resume refuses changed source,
+scene or settings. It loads only the generated saved scene, checks frame PNG
+dimensions, every chunk checksum and complete termination, preserves complete frames and renders missing/partial
+frames before re-encoding the video. A cancelled job stays cancelled until
+**Resume render** is selected.
 
-## Resource and presentation boundaries
+On service restart, previously running and queued jobs recover automatically
+in creation order. A graceful service shutdown also records this recovery
+intent. Saved frames use the same verified scene, camera keys and engine.
+If construction stopped before a verifiable saved scene existed, recovery
+creates a separate attempt, with at most three automatic construction attempts.
+Previously failed jobs and explicitly cancelled/cancelling jobs do not
+restart automatically. Tampered provenance stops recovery and asks for a new
+job. The UI identifies automatic recovery and reports connection loss as a
+last-known status; it does not claim a disconnected render has stopped.
 
-The runner reads JSON through one open regular-file descriptor with a hard
-2 MiB byte limit and exclusive creation of initial job records. It accepts at
-most 5,000 generated primitives, 1–128 samples, and tours up to 120 seconds. Child processes use
-argument arrays with no shell. Blender runs factory startup with automatic
-script execution disabled and four CPU threads. On compatible Macs the
-default `--device auto` uses Metal; `--device cpu` forces the bounded CPU
-path. The initial Metal kernel compilation can take about a minute.
-Render timeouts are
-30–7,200 seconds; encoding has a separate five-minute bound. The trusted
-Python entrypoint is fixed in the repository; JSON never supplies code.
+The service launches a fixed Node worker and repository Python entrypoints
+with argument arrays and no shell. Blender auto-execution is disabled.
+Browser JSON cannot select an executable, script, filesystem path or engine.
+Worker IPC disconnection aborts its child renderer, preventing orphan work
+when the service exits. Progress is available through authenticated job reads
+and authenticated SSE; the panel polls while connected. Revoking a session
+also closes its progress streams.
 
-The default renderer uses Cycles with denoising, four bounce depth, and
-procedural solid materials. It deliberately does not download furniture
-or texture packs. Existing demo assets are authored in source. A 16-sample
-preview is useful for checking composition; it is not a photoreal quality
-guarantee. Raising samples increases local runtime. `--engine eevee`
-offers a faster draft-film option with different shading; every artifact
-manifest records the actual engine and sample count.
+## HTTP and input boundaries
 
-The browser uses real-time lighting and presentation cutaways. Blender
-renders full architecture, physical lighting and glass transmission.
-Those lighting/shader results are not pixel-identical. Both share the
-geometry, stable IDs, dimensions, and camera path. Room assignment on a
-shared wall uses the canonical primitive's assigned room.
+All requests require an exact loopback Host and allowed Origin. Jobs,
+artifacts, cancellation and removal also require the matching bearer session.
+Pairing attempts, sessions, progress streams, connections and submissions are
+bounded. Unsupported fields and query parameters are rejected. Content must
+be strict UTF-8 JSON with a two-MiB body limit and valid shared model/tour
+references. CLI inputs use one opened regular-file descriptor, a bounded
+MAX+1 read loop, and a `finally` close, avoiding a path-stat/read race.
 
-This is a local development/render workflow, not an authenticated cloud
-render queue. The Worker cannot run Blender. Production scheduling,
-private artifact storage, quotas and job-owner isolation require separate
-infrastructure; R2 and private uploads remain disabled.
+Artifact endpoints accept only fixed generated filenames, never arbitrary
+paths. Static symlinked job, attempt and preview directories are rejected. They open a regular file without following a final symlink, bound the
+stream to its opened size, enforce a 256 MiB download limit, and disable
+caching. Preview images may be viewed while rendering; final artifacts are
+served only after the whole job completes. Private job records use serialized,
+atomic replacement. A second process that cannot bind the service port cannot
+rotate the live pairing code or mutate the running service's job records.
 
-## Local evidence, 14 September 2026
+## Shared geometry and camera architecture
 
-Verified official Blender 4.5.9 LTS ARM64 on the available MacBook Air M4,
-16 GB memory. Its downloaded DMG matched Blender's published SHA-256
+`src/spatial/model.js` validates the building and generates the primitives used
+by the 2D plan, Three.js viewer and Blender renderer. Schema v2 supports multiple
+floors, simple irregular room polygons and stair apertures. Polygon slabs are
+triangulated once in shared JavaScript; Python consumes the actual local
+vertices and triangle indices, including holes. Stairs and railings use the
+same generated boxes/cylinders as the browser. Python does not reconstruct
+rooms from bounding rectangles or invent a separate floor plan.
+
+Canonical coordinates are millimetres, X right, Y forward, Z up. Blender uses
+the same axes in metres. glTF/browser coordinates are
+`[x / 1000, z / 1000, -y / 1000]`; the exporter performs that conversion once.
+Stable object, room, floor, stair, wall and opening identifiers, category and source revision
+are carried into the GLB extras and manifest.
+
+`src/spatial/tours.js` owns collision-aware routes, timing and sampled camera
+poses. The runner imports it directly. `scene.py` builds geometry/materials and
+floor-aware lights. `cameras.py` keys the sampled camera and fade transitions.
+`render.py` builds, exports, verifies and renders; `resume.py` renders only
+missing frames of the unchanged saved scene. Vertical FOV is preserved through
+Blender's vertical sensor convention. Linear per-frame keys avoid additional
+Bezier overshoot; source cuts remain cuts and deliberate fades use a keyed
+black compositor overlay.
+
+After export, Blender reimports the GLB into an empty scene and checks mesh IDs,
+room associations, world bounds within 1 mm, camera position and direction.
+Node independently checks GLB room/floor/stair/wall/opening associations, browser-axis
+translations, camera direction and vertical FOV. These results are written to
+`manifest.json`; a failed check fails the job. Before film encoding, every expected frame must have complete native-1080p PNG headers and termination; FFmpeg then decodes the sequence with errors treated as fatal.
+
+Cycles uses persistent scene data, GPU denoising where supported, bounded bounce
+depth, physical light sources, subtle bevels, procedural wood/fabric/stone grain,
+metal and glass materials. Authored furniture remains procedural concept
+geometry; no external asset pack is silently downloaded. The editable blend
+retains the procedural materials. GLB exports matching solid base colors and
+material properties instead of pretending Blender's procedural node graphs are
+portable browser shaders. Full roofs and physical lighting also differ from
+browser presentation cutaways. Shared geometry and camera motion do not imply
+pixel-identical shading or a photorealistic result.
+
+## Optional CLI
+
+The CLI remains useful for batch export or development:
+
+```sh
+npm run spatial:render -- --input /absolute/path/grihagrid-scene.json --mode preview
+node scripts/spatial/run.mjs --mode scene --output output/spatial-new-scene
+node scripts/spatial/run.mjs --mode film --duration 20 --samples 8 --timeout 7200
+```
+
+Inputs may be a plain building or the app's `{model,tour}` export. An embedded
+tour keeps its own duration. Explicit output directories must be empty; an
+omitted path creates a new `output/spatial-*` directory. Blender is found through
+`BLENDER_BIN`, standard macOS locations, the optional user cache, or PATH; an
+explicit CLI `--blender` path takes precedence. The CLI additionally supports
+`--device cpu`, bounded durations up to 120 seconds and `--engine eevee` for
+explicitly labeled drafts. App rendering does not expose the Eevee option.
+
+Outputs include building/scene/config JSON, `house.blend`, `house.glb`,
+`manifest.json`, `build-proof.json`, `job.json`, previews, and film PNGs/MP4.
+No output belongs in a public web assets folder.
+
+## Local verification, 14 September 2026
+
+The official Blender 4.5.9 LTS ARM64 build was verified on this MacBook Air M4
+with 16 GB RAM. The downloaded DMG SHA-256 matched
 `e3a3d7aac381fb4e4d05197f99cd8899484d7e8bc4497c134066e6733f372238`.
-The optional local cache app is outside the repository.
+Blender lives in the optional cache outside the repository.
 
-The furnished demonstration exported 315 mesh primitives, a 1.5 MB GLB,
-and a 4.6 MB editable Blender scene. The Blender round trip checked all
-315 identifiers and room associations, with maximum bounds error
-0.000954 mm and camera direction error 0.000000215. Six Cycles preview
-frames (8 samples, 633×356) rendered in a 15.51-second complete job and
-were visually inspected: exterior, living room, gallery, bedroom and
-garden views showed coherent surfaces, openings and furniture.
+The furnished v1 house exports 315 meshes. Earlier independent Blender and
+Three.js checks preserved all IDs and room associations, with maximum bounds
+error below 0.001 mm. The refined Cycles preview job completed in 11.7 seconds
+at eight samples; six frames were inspected for coherent exterior, living,
+gallery, bedroom and garden composition. Warm native-1080p Metal benchmarks
+measured about 1.95 seconds at four samples and 3.15 seconds at eight samples;
+full-film times vary with view complexity, thermal behavior and concurrent work.
 
-A native 1920×1080 Cycles still also rendered successfully. The first
-Metal run spent about 78 seconds compiling kernels, followed by roughly
-nine seconds rendering/denoising one frame at four samples. That measured
-cost makes a full Cycles film a longer offline job on this machine.
-The fast demonstration film uses Eevee and must not be represented as
-a Cycles film or a photoreal render.
+The actual schema-v2 two-floor scene exported 148 meshes in
+`output/spatial-v2-export-verified`. Blender round-trip maximum bounds error was
+0.000477 mm; camera direction error was 0.000000246. All room/floor/stair GLB
+associations passed. Three.js GLTFLoader then loaded all 148 meshes and 38
+stair-associated components. A raycast hit the solid upper slab and returned
+zero hits through its stair opening, confirming the exported aperture is real
+geometry. That proof is recorded in `three-loader-proof.json` beside the GLB.
 
-A separate scene-only job consumed the workspace-compatible `{model,tour}`
-bundle, preserved its supplied tour, and passed both Blender and direct
-glTF-coordinate checks. The direct check observed maximum object-position
-error 0.001224 mm and vertical field-of-view error 0.00000208 degrees.
-The focused Node suite covers resource bounds, rejected overwrites,
-literal process arguments, process timeout, shared geometry serialization,
-and incorrect glTF axis/lens conventions.
+A further actual export in `output/spatial-v2-door-irregular-proof` contains
+156 meshes, an L-shaped upper floor, the stair opening and an outward-opening
+end-hinged door. It completed in 3.37 seconds, with maximum bounds error
+0.000477 mm. Three.js raycasts confirmed the L-shaped missing corner and stair
+aperture are empty. The exported door leaf has the intended 90-degree pose and
+retains its floor, wall and opening IDs.
 
-The actual GLB also loaded successfully through Three.js `GLTFLoader` in
-a separate smoke check: all 315 mesh/room associations survived, world
-bounds differed by at most 0.000538 mm, and its camera loaded with a
-47.999998-degree vertical field of view matching the 48-degree source.
+The paired service's full Cycles demonstration was submitted through its real
+HTTP job API, using a 20-second tour, 600 native frames, 30 fps and eight samples.
+Its private job ID is `3d52bc1d-156f-4de0-b290-e2e2f9afe56b`; current durable status
+is in the local service record. Completion, encoded-frame verification and
+visual inspection must be recorded after the actual job finishes; the earlier
+Eevee artifact is not evidence of a completed Cycles film.
 
-The completed fast film contains **600 native 1920×1080 frames, 30 fps,
-20.000 seconds, H.264**, and is 10,163,242 bytes. All PNG frames passed
-completion checks and FFmpeg encoded them with decode errors treated as
-fatal. FFprobe subsequently counted all 600 encoded frames. A contact
-sheet sampled every second across the complete tour was visually
-inspected, including the final garden view. It is a furnished concept
-scene with procedural assets; its low-sample Eevee shading has visible
-grain and is not photorealistic.
+The earlier `output/spatial-demo-film/tour.mp4` remains intact: Eevee, H.264,
+1920×1080, 600 frames, 30 fps, 20.000 seconds, 10,163,242 bytes. Its every-second
+contact sheet was inspected. Its measured 758-second timeout/recovery run is
+separate historical evidence, not the current Cycles film.
 
-The first deliberately bounded film attempt stopped at 600 seconds with
-476 complete frames and a partial frame 477. An exact-job recovery used
-the unchanged saved scene (SHA-256
-`19a7b9abddc5b38018bd128834160fe14708dd4b9dda1fe4fa2017742aeeb9b9`)
-to render frames 477–600 with the same engine and sample count, preserving
-every completed frame. Total wall time including that recovery and
-encoding was 758 seconds. `job.json` records the earlier timeout and final
-completion. This was a supervised synthetic recovery, not an automatic
-retry feature of the shipping CLI; normal film jobs should use the
-documented 1,800-second or greater appropriate timeout.
+Focused tests cover byte/input limits, exclusive writes, literal subprocess
+arguments, timeout, shared geometry, incorrect GLB axes/lenses, Host/Origin/auth
+rejection, unsupported operations, bounded queue admission, cancellation,
+provenance tampering, automatic recovery with unchanged saved frames, preserved
+explicit cancellation, authenticated artifact access, symlink rejection,
+revoked SSE sessions and duplicate startup protection. Run with:
+
+```sh
+node --test --test-concurrency=1 tests/spatial-blender.test.mjs tests/spatial-service.test.mjs tests/spatial-service-recovery.test.mjs
+```
+
+This is a functional paired local queue. Hosted render scheduling, multi-tenant
+cloud artifact storage and GPU fleet operations are separate infrastructure.
+R2, private uploads and paid checkout remain disabled.

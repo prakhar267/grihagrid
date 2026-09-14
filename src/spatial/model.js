@@ -1,3 +1,5 @@
+import {validateV2Building,buildV2Primitives,resizeV2Building} from './model-v2.js'
+export {toV2,createMultiFloorDemo,floorApertures,stairPolygon} from './model-v2.js'
 // Canonical geometry: millimetres, XY ground plane, Z up. Every primitive is centre-based.
 export const toBrowser = ([x, y, z = 0]) => [x / 1000, z / 1000, -y / 1000]
 export const fromBrowser = ([x, y, z]) => [x * 1000, -z * 1000, y * 1000]
@@ -79,6 +81,7 @@ export function pointInPolygon([x, y], polygon) {
 }
 
 export function validateBuilding(scene) {
+  if(scene?.schemaVersion===2)return validateV2Building(scene)
   const errors = []
   const finite = (value) => Number.isFinite(value)
   const point = (value, length = 2) => Array.isArray(value) && value.length === length && value.every(v=>finite(v)&&Math.abs(v)<=100000)
@@ -152,6 +155,7 @@ export function validateBuilding(scene) {
 }
 
 export function resizeBuilding(scene, { width, depth } = {}) {
+  if(scene.schemaVersion===2)return resizeV2Building(scene,{width,depth})
   const copy = structuredClone(scene)
   const inside = scene.rooms.filter(r => !r.exterior).flatMap(r=>r.polygon)
   const oldW = Math.max(...inside.map(p=>p[0])), oldD = Math.max(...inside.map(p=>p[1]))
@@ -173,6 +177,7 @@ export function resizeBuilding(scene, { width, depth } = {}) {
 }
 
 export function buildPrimitives(scene) {
+  if(scene.schemaVersion===2)return buildV2Primitives(scene,buildPrimitives)
   const out=[]
   const add=(id,roomId,kind,position,size,color,category='furniture',rotation=0,material='matte',collidable=false)=>out.push({id,roomId,kind,position,size,color,category,rotation,rotationZ:rotation,material,collidable})
   const box=(...args)=>add(args[0],args[1],'box',...args.slice(2))
