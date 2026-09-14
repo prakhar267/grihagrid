@@ -20,38 +20,54 @@ def material_for(primitive, materials):
     material.use_nodes = True
     bsdf = material.node_tree.nodes.get('Principled BSDF')
     bsdf.inputs['Base Color'].default_value = material.diffuse_color
-    bsdf.inputs['Roughness'].default_value = .42 if 'wood' in name else .72
+    bsdf.inputs['Roughness'].default_value = .48 if 'wood' in name else .72
     if name == 'metal':
         bsdf.inputs['Metallic'].default_value = .8
-        bsdf.inputs['Roughness'].default_value = .28
-    if name in ('wood', 'fabric', 'matte', 'stone'):
+        bsdf.inputs['Roughness'].default_value = .32
+    if name in ('wood', 'fabric', 'matte', 'stone', 'plaster'):
         nodes = material.node_tree.nodes
         links = material.node_tree.links
         noise = nodes.new('ShaderNodeTexNoise')
-        noise.inputs['Scale'].default_value = 5 if name == 'wood' else 95
-        noise.inputs['Detail'].default_value = 2
+        noise.inputs['Scale'].default_value = {'wood': 18, 'fabric': 240, 'stone': 4, 'matte': 120, 'plaster': 90}[name]
+        noise.inputs['Detail'].default_value = 3
         mapping = nodes.new('ShaderNodeVectorMath')
         mapping.operation = 'MULTIPLY'
-        mapping.inputs[1].default_value = (2, 38, 3) if name == 'wood' else (1, 1, 1)
+        mapping.inputs[1].default_value = (1, 18, 4) if name == 'wood' else (1, 1, 1)
         tex = nodes.new('ShaderNodeTexCoord')
-        links.new(tex.outputs['Generated'], mapping.inputs[0])
+        # Applied mesh scales make Object coordinates metres, so a long floor
+        # and a small cabinet share grain size instead of stretching one tile.
+        links.new(tex.outputs['Object'], mapping.inputs[0])
         links.new(mapping.outputs['Vector'], noise.inputs['Vector'])
         ramp = nodes.new('ShaderNodeValToRGB')
         rgb = linear_rgb(color)
-        ramp.color_ramp.elements[0].color = (*[c * .82 for c in rgb], 1)
-        ramp.color_ramp.elements[1].color = (*[min(1, c * 1.08) for c in rgb], 1)
+        variation = .16 if name == 'wood' else .09 if name == 'stone' else .035
+        ramp.color_ramp.elements[0].color = (*[c * (1 - variation) for c in rgb], 1)
+        ramp.color_ramp.elements[1].color = (*[min(1, c * (1 + variation)) for c in rgb], 1)
         links.new(noise.outputs['Fac'], ramp.inputs['Fac'])
         links.new(ramp.outputs['Color'], bsdf.inputs['Base Color'])
         bump = nodes.new('ShaderNodeBump')
-        bump.inputs['Strength'].default_value = .14 if name == 'fabric' else .08
-        bump.inputs['Distance'].default_value = .002 if name == 'fabric' else .001
-        links.new(noise.outputs['Fac'], bump.inputs['Height'])
+        bump.inputs['Strength'].default_value = .22 if name == 'fabric' else .12
+        bump.inputs['Distance'].default_value = .0012 if name == 'fabric' else .0006
+        relief = noise
+        if name == 'stone':
+            # Mineral colour varies broadly; its surface remains finely honed.
+            relief = nodes.new('ShaderNodeTexNoise')
+            relief.inputs['Scale'].default_value = 180
+            links.new(tex.outputs['Object'], relief.inputs['Vector'])
+        links.new(relief.outputs['Fac'], bump.inputs['Height'])
         links.new(bump.outputs['Normal'], bsdf.inputs['Normal'])
+        roughness = nodes.new('ShaderNodeMapRange')
+        roughness.inputs['To Min'].default_value = {'wood': .38, 'stone': .42, 'fabric': .78}.get(name, .68)
+        roughness.inputs['To Max'].default_value = {'wood': .55, 'stone': .58, 'fabric': .92}.get(name, .82)
+        links.new(relief.outputs['Fac'], roughness.inputs['Value'])
+        links.new(roughness.outputs['Result'], bsdf.inputs['Roughness'])
         if name == 'fabric':
-            bsdf.inputs['Sheen Weight'].default_value = .18
+            bsdf.inputs['Sheen Weight'].default_value = .3
+            bsdf.inputs['Sheen Roughness'].default_value = .65
     if 'glass' in name:
         bsdf.inputs['Transmission Weight'].default_value = .8
         bsdf.inputs['Roughness'].default_value = .08
+        bsdf.inputs['IOR'].default_value = 1.45
         material.diffuse_color = (*linear_rgb(color), .35)
     materials[key] = material
     return material
@@ -89,6 +105,7 @@ def build_scene(payload):
         if kind != 'mesh':
             obj.dimensions = Vector(item['size']) / 1000
         obj.rotation_euler.z = item.get('rotation', 0)
+        bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
         obj.data.materials.append(material_for(item, materials))
         for key in ('id', 'roomId', 'floorId', 'stairId', 'wallId', 'openingId', 'category', 'collidable'):
             if item.get(key) is not None:
@@ -98,7 +115,6 @@ def build_scene(payload):
             for polygon in obj.data.polygons:
                 polygon.use_smooth = True
         if kind == 'box' and min(item['size']) >= 60:
-            bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)
             bevel = obj.modifiers.new('Subtle edge highlight', 'BEVEL')
             bevel.width = .008
             bevel.segments = 2
@@ -107,14 +123,15 @@ def build_scene(payload):
     world = bpy.data.worlds.new('GrihaGrid afternoon')
     world.use_nodes = True
     world.node_tree.nodes['Background'].inputs['Color'].default_value = (.70, .79, 1, 1)
-    world.node_tree.nodes['Background'].inputs['Strength'].default_value = .45
+    world.node_tree.nodes['Background'].inputs['Strength'].default_value = .38
     scene.world = world
     bpy.ops.object.light_add(type='SUN', location=(0, 0, 12))
     sun = bpy.context.object
     sun.name = 'Afternoon sun'
     sun.rotation_euler = (math.radians(28), math.radians(-22), math.radians(-25))
-    sun.data.energy = 2.5
-    sun.data.angle = math.radians(10)
+    sun.data.energy = 2.1
+    sun.data.color = (1, .88, .73)
+    sun.data.angle = math.radians(3)
     for room in payload.get('rooms', []):
         if room.get('exterior'):
             continue
@@ -124,7 +141,7 @@ def build_scene(payload):
         bpy.ops.object.light_add(type='AREA', location=(*center, (floor['elevation'] + floor['height'] - 250) / 1000))
         light = bpy.context.object
         light.name = f"{room['id']}:ceiling-light"
-        light.data.energy = 120
+        light.data.energy = 70
         light.data.shape = 'DISK'
         light.data.size = 1.8
         light.data.color = (1, .83, .65)

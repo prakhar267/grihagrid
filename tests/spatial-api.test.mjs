@@ -5,6 +5,8 @@ import {Miniflare} from 'miniflare'
 import worker from '../worker/index.js'
 import {createDemoBuilding,resizeBuilding} from '../src/spatial/model.js'
 import {generateTour,retimeTour} from '../src/spatial/tours.js'
+import {runSpatialReleaseCanary} from '../scripts/spatial-release-canary.mjs'
+import {runAuthenticatedSmoke} from '../scripts/authenticated-smoke.mjs'
 
 const ORIGIN='https://app.example.test'
 class MemoryKv {constructor(){this.data=new Map()}async get(k){return this.data.get(k)||null}async put(k,v){this.data.set(k,v)}}
@@ -39,6 +41,44 @@ test('spatial workspace enforces authenticated ownership, immutable real-D1 revi
   const count=async table=>(await db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).first()).n
   let savedModel,savedTour,savedCamera,cameraRevision=0,spatialRevision=0,tourRevision=0
   const base=()=>({expectedInputRevision:1,expectedSpatialRevision:spatialRevision})
+
+  await context.test('candidate release canary persists model, tour and viewpoints with archive fences and exact cleanup',async()=>{
+    const created=await expect(await worker.fetch(request('/api/projects',user,{name:'Exact spatial release canary',input:{width:30,length:50,floors:'G+1',city:'Pune',quality:'Signature'}}),env),201)
+    const id=created.project.id
+    const call=async(route,init={},statuses=[200])=>{
+      const response=await worker.fetch(request(route,user,init.body===undefined?undefined:JSON.parse(init.body),{method:init.method||'GET',key:init.headers?.['idempotency-key']}),env)
+      const payload=response.status===204?null:await response.json();assert.ok(statuses.includes(response.status),`${route}: ${response.status} ${JSON.stringify(payload)}`);return payload
+    }
+    try{
+      const result=await runSpatialReleaseCanary(call,id,created.project.inputRevision)
+      assert.equal(result.persistenceVerified,true);assert.equal(result.archiveFenceVerified,true);assert.equal(result.staleRevisionRejected,true)
+      for(const table of ['spatial_revisions','spatial_tour_revisions','spatial_camera_revisions'])assert.equal((await db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE project_id=?`).bind(id).first()).n,1)
+    }finally{
+      assert.equal((await worker.fetch(request(`/api/projects/${id}`,user,undefined,{method:'DELETE'}),env)).status,204)
+    }
+    for(const table of ['spatial_revisions','spatial_tour_revisions','spatial_camera_revisions'])assert.equal((await db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE project_id=?`).bind(id).first()).n,0)
+    assert.equal((await expect(await worker.fetch(request(`/api/projects/${user.project.id}`,user),env),200)).project.id,user.project.id)
+  })
+
+  await context.test('full authenticated candidate canary requires spatial persistence and cleans only its synthetic project',async()=>{
+    const originalFetch=globalThis.fetch
+    const before=(await db.prepare('SELECT id FROM projects ORDER BY id').all()).results
+    env.APP_ORIGIN=ORIGIN
+    env.REPORT_SHARE_ABUSE_HMAC_KEY='ab'.repeat(32)
+    await db.prepare("UPDATE report_handoff_controls SET enabled=1 WHERE control_key='report_handoff'").run()
+    globalThis.fetch=async(input,init)=>{assert.equal(new URL(input).origin,ORIGIN);return worker.fetch(new Request(input,init),env)}
+    try{
+      const result=await runAuthenticatedSmoke(ORIGIN,{email:'spatial-owner@example.test',password:'correct horse battery staple'},{expectSpatial:true})
+      assert.equal(result.spatialExpected,true);assert.equal(result.spatial.persistenceVerified,true);assert.equal(result.spatial.archiveFenceVerified,true)
+      assert.equal(result.projectDeleted,true);assert.equal(result.sessionRevocationVerified,true)
+      assert.equal(result.canaryProjectIds.length,1);assert.notEqual(result.canaryProjectIds[0],user.project.id)
+      assert.deepEqual((await db.prepare('SELECT id FROM projects ORDER BY id').all()).results,before)
+      for(const table of ['spatial_revisions','spatial_tour_revisions','spatial_camera_revisions'])assert.equal(await count(table),0)
+    }finally{
+      globalThis.fetch=originalFetch;delete env.REPORT_SHARE_ABUSE_HMAC_KEY;delete env.APP_ORIGIN
+      await db.prepare("UPDATE report_handoff_controls SET enabled=0 WHERE control_key='report_handoff'").run()
+    }
+  })
 
   await context.test('empty GET never creates a concept and origin, CSRF and ownership fail closed',async()=>{
     await expect(await worker.fetch(request(path),env),401)

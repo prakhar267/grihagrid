@@ -4,6 +4,11 @@ import './render-panel.css'
 const SERVICE = 'http://127.0.0.1:43127'
 let pairedSession = null // Memory only; never put pairing/session credentials in URLs or browser storage.
 
+// An exact origin keeps hosted pairing usable without trusting arbitrary sites.
+// Single quotes are shell-escaped because users can copy this setup command.
+const serviceCommand = typeof window === 'undefined' ? 'npm run spatial:service'
+  : `GRIHAGRID_RENDER_ORIGINS='${window.location.origin.replaceAll("'", "'\\''")}' npm run spatial:service`
+
 function useMountedState(initial, mounted) {
   const [value, setValue] = useState(initial)
   const update = useCallback(next => { if (mounted.current) setValue(next) }, [mounted])
@@ -111,7 +116,7 @@ export default function RenderPanel({ model, tour, viewpoints = [], disabled = f
     <div className="render-panel-heading"><div><p className="render-eyebrow">LOCAL RENDER STUDIO</p><h3>A film of your home.</h3></div><span className="render-connection">{session && status === 'connected' ? 'Connected to your computer' : status === 'checking' ? 'Checking local renderer…' : 'Local setup'}</span></div>
     <p>Blender Cycles creates the film on your computer. The house and tour stay local. One job renders at a time; interrupted jobs recover when the service restarts, and completed frames survive cancellation.</p>
     {!session ? <>
-      <details open={status === 'offline'}><summary>Set up the local renderer once</summary><p>Start the local render service in your GrihaGrid checkout:</p><code>npm run spatial:service</code><p>Open the private pairing-code file named by the service, then paste its code below. Keep the service running while rendering.</p></details>
+      <details open={status === 'offline'}><summary>Set up the local renderer once</summary><p>Start the local render service in your GrihaGrid checkout. This command allows this app address to connect:</p><code>{serviceCommand}</code><p>Open the private pairing-code file named by the service, then paste its code below. Keep the service running while rendering. If your browser asks, allow this site to connect to devices on your local network.</p></details>
       <form className="render-pairing" onSubmit={pair}><label>Pairing code<input type="password" autoComplete="off" value={pairCode} onChange={event => setPairCode(event.target.value)} placeholder="Private code from your computer" required /></label><button type="submit" disabled={busy || !pairCode.trim()}>Connect renderer</button></form>
     </> : <>
       <div className="render-settings"><label>Cycles quality<select value={quality} onChange={event => setQuality(Number(event.target.value))}><option value={8}>Quick preview · 8 samples</option><option value={16}>Balanced · 16 samples</option><option value={32}>Detailed · 32 samples</option><option value={64}>High quality · 64 samples</option></select></label><button onClick={() => submit('preview')} disabled={busy || disabled || !tour}>Render previews</button><button onClick={() => submit('film')} disabled={busy || disabled || !tour}>Render 1080p film</button><button className="render-subtle" onClick={disconnect}>Disconnect</button></div>

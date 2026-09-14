@@ -14,10 +14,18 @@ extend({ RoundedBoxGeometry })
 const isSoftBox = primitive => primitive.kind === 'box' && primitive.material === 'fabric' && !primitive.id.includes('rug')
 
 const MATERIALS = {
-  glass: { color: '#b7d9d8', transparent: true, opacity: 0.25, roughness: 0.15, metalness: 0.12, depthWrite: false },
-  metal: { roughness: 0.32, metalness: 0.72 },
-  brass: { color: '#b38c4d', roughness: 0.35, metalness: 0.65 },
-  water: { color: '#76a9a4', transparent: true, opacity: 0.8, roughness: 0.18, metalness: 0.25 },
+  plaster: { roughness: 0.96, metalness: 0, bumpScale: 0.0004 },
+  wood: { roughness: 0.58, metalness: 0, bumpScale: 0.0015 },
+  fabric: { roughness: 0.94, metalness: 0, bumpScale: 0.0012, sheen: 0.45, sheenRoughness: 0.9, sheenColor: '#eee7d9' },
+  stone: { roughness: 0.66, metalness: 0, bumpScale: 0.0007 },
+  ceramic: { roughness: 0.24, metalness: 0, bumpScale: 0.00015 },
+  clay: { roughness: 0.9, metalness: 0, bumpScale: 0.0008 },
+  grass: { roughness: 1, metalness: 0, bumpScale: 0.003 },
+  leaves: { roughness: 0.84, metalness: 0 },
+  glass: { color: '#b7d9d8', transparent: true, opacity: 0.18, roughness: 0.12, metalness: 0.08, depthWrite: false },
+  metal: { roughness: 0.3, metalness: 0.72 },
+  brass: { color: '#b38c4d', roughness: 0.32, metalness: 0.65 },
+  water: { color: '#76a9a4', transparent: true, opacity: 0.72, roughness: 0.12, metalness: 0.18 },
 }
 const vector = value => new THREE.Vector3(...toBrowser(value))
 
@@ -31,25 +39,30 @@ function makeTexture(kind) {
   const random = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647 }
   ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, 128, 128)
   if (kind === 'wood') {
-    for (let i = 0; i < 160; i++) {
-      ctx.strokeStyle = `rgba(73, 43, 18, ${0.015 + random() * 0.07})`
-      ctx.lineWidth = 0.4 + random() * 1.8
+    // Fine grain, not broad colour stripes stretched over an entire cabinet.
+    for (let i = 0; i < 220; i++) {
+      ctx.strokeStyle = `rgba(69, 48, 29, ${0.012 + random() * 0.04})`
+      ctx.lineWidth = 0.2 + random() * 0.65
       const x = random() * 128
-      ctx.beginPath(); ctx.moveTo(x, 0); ctx.bezierCurveTo(x + 4, 40, x - 3, 80, x + 2, 128); ctx.stroke()
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.bezierCurveTo(x + 1.5, 40, x - 1.5, 80, x, 128); ctx.stroke()
+    }
+  } else if (kind === 'fabric') {
+    for (let i = 0; i < 128; i += 2) {
+      ctx.strokeStyle = `rgba(68, 58, 45, ${0.045 + random() * 0.025})`; ctx.lineWidth = 0.55
+      ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, 128); ctx.stroke()
+      ctx.strokeStyle = `rgba(68, 58, 45, ${0.025 + random() * 0.025})`
+      ctx.beginPath(); ctx.moveTo(0, i); ctx.lineTo(128, i); ctx.stroke()
     }
   } else {
-    for (let i = 0; i < 2800; i++) {
-      ctx.fillStyle = `rgba(60,48,33,${random() * (kind === 'fabric' ? 0.17 : 0.10)})`
-      ctx.fillRect(random() * 128, random() * 128, 1, kind === 'fabric' ? 2 : 1)
-    }
-    if (kind === 'tile') {
-      ctx.strokeStyle = 'rgba(70,60,45,.17)'; ctx.lineWidth = 1
-      ctx.strokeRect(0, 0, 128, 128)
+    // Seamless mineral grain is suitable for slabs, ceramics and plaster.
+    for (let i = 0; i < 3800; i++) {
+      ctx.fillStyle = `rgba(70,61,50,${random() * 0.055})`
+      ctx.fillRect(random() * 128, random() * 128, 0.5 + random(), 0.5 + random())
     }
   }
   const texture = new THREE.CanvasTexture(canvas)
   texture.wrapS = texture.wrapT = THREE.RepeatWrapping
-  texture.repeat.set(kind === 'wood' ? 2 : 3, kind === 'wood' ? 2 : 3)
+  texture.repeat.set(1, 1)
   texture.colorSpace = THREE.SRGBColorSpace
   texture.anisotropy = 4
   return texture
@@ -59,7 +72,7 @@ function textureType(primitive) {
   const name = String(primitive.material || '').toLowerCase()
   if (/wood|oak|walnut|timber|teak/.test(name)) return 'wood'
   if (/fabric|linen|cotton|upholst|rug|carpet/.test(name)) return 'fabric'
-  if (/tile|stone|marble|terrazzo|floor/.test(name) || primitive.category === 'floor') return 'tile'
+  if (/tile|stone|marble|terrazzo|floor|plaster|ceramic|clay|grass/.test(name) || primitive.category === 'floor') return 'tile'
   return null
 }
 
@@ -72,30 +85,54 @@ function meshGeometry(primitive) {
   return flat
 }
 
-function Primitive({ primitive, textures, cutaway, elevation = 0, object, selected, onObjectSelect, onRoomHover, onRoomSelect }) {
-  const geometry = useMemo(() => primitive.kind === 'mesh' ? meshGeometry(primitive) : null, [primitive])
-  useEffect(() => () => geometry?.dispose(), [geometry])
-  let position = [...primitive.position]
-  let size = [...primitive.size]
-  if (cutaway && primitive.category === 'roof') return null
-  if (cutaway && ['wall', 'opening'].includes(primitive.category)) {
-    const base = position[2] - size[2] / 2
-    const cap = elevation + 950
-    if (base >= cap) return null
-    const top = Math.min(cap, position[2] + size[2] / 2)
-    size[2] = top - base
-    position[2] = base + size[2] / 2
+function surfaceGeometry(primitive, dimensions) {
+  const kind = primitive.kind || 'box', material = String(primitive.material || '').toLowerCase()
+  let geometry
+  if (kind === 'mesh') geometry = meshGeometry(primitive)
+  else if (kind === 'cylinder') geometry = new THREE.CylinderGeometry(0.5, 0.5, 1, 16).scale(...dimensions)
+  else if (kind === 'sphere') geometry = new THREE.SphereGeometry(0.5, 12, 8).scale(...dimensions)
+  else if (isSoftBox(primitive)) geometry = new RoundedBoxGeometry(...dimensions, 2, Math.min(0.04, Math.min(...dimensions) * 0.28))
+  else if (primitive.category === 'furniture' && ['wood', 'stone', 'ceramic'].includes(material) && Math.min(...dimensions) > 0.045) geometry = new RoundedBoxGeometry(...dimensions, 1, Math.min(0.008, Math.min(...dimensions) * 0.12))
+  else geometry = new THREE.BoxGeometry(...dimensions)
+  const texture = textureType(primitive)
+  if (texture) {
+    // Per-face local metre coordinates retain material scale after resizing.
+    // Geometry already has real dimensions, so a large floor cannot stretch UVs.
+    const spacing = texture === 'wood' ? 0.45 : texture === 'fabric' ? 0.12 : 0.6
+    const position = geometry.attributes.position, normal = geometry.attributes.normal, uv = geometry.attributes.uv
+    for (let i = 0; i < position.count; i++) {
+      const x = position.getX(i), y = position.getY(i), z = position.getZ(i)
+      const nx = Math.abs(normal.getX(i)), ny = Math.abs(normal.getY(i)), nz = Math.abs(normal.getZ(i))
+      const axes = ny >= nx && ny >= nz ? [x, z] : nx >= nz ? [z, y] : [x, y]
+      uv.setXY(i, axes[0] / spacing, axes[1] / spacing)
+    }
+    uv.needsUpdate = true
   }
-  const dimensions = [size[0] / 1000, size[2] / 1000, size[1] / 1000]
-  const kind = primitive.kind || 'box'
+  return geometry
+}
+
+function Primitive({ primitive, textures, cutaway, elevation = 0, object, selected, onObjectSelect, onRoomHover, onRoomSelect }) {
+  const shape = useMemo(() => {
+    const position = [...primitive.position], size = [...primitive.size]
+    if (cutaway && primitive.category === 'roof') return null
+    if (cutaway && ['wall', 'opening'].includes(primitive.category)) {
+      const base = position[2] - size[2] / 2, cap = elevation + 950
+      if (base >= cap) return null
+      size[2] = Math.min(cap, position[2] + size[2] / 2) - base
+      position[2] = base + size[2] / 2
+    }
+    return { position, geometry: surfaceGeometry(primitive, [size[0] / 1000, size[2] / 1000, size[1] / 1000]) }
+  }, [primitive, cutaway, elevation])
+  useEffect(() => () => shape?.geometry.dispose(), [shape])
+  if (!shape) return null
   const material = String(primitive.material || '').toLowerCase()
   const config = MATERIALS[material] || {}
   const texture = textures[textureType(primitive)] || null
+  const SurfaceMaterial = material === 'fabric' ? 'meshPhysicalMaterial' : 'meshStandardMaterial'
   return <mesh
     name={primitive.id}
-    position={toBrowser(position)}
+    position={toBrowser(shape.position)}
     rotation={[0, primitive.rotation || primitive.rotationZ || 0, 0]}
-    scale={kind === 'mesh' ? [1, 1, 1] : dimensions}
     castShadow={!['glass', 'water'].includes(material) && primitive.category !== 'floor'}
     receiveShadow
     onPointerOver={event => { if (primitive.roomId) { event.stopPropagation(); onRoomHover?.(primitive.roomId) } }}
@@ -103,8 +140,8 @@ function Primitive({ primitive, textures, cutaway, elevation = 0, object, select
     onClick={event => { if (event.delta > 4) return; event.stopPropagation(); if (object) onObjectSelect?.(object); else if (primitive.roomId) onRoomSelect?.(primitive.roomId) }}
     userData={{ id: primitive.id, objectId: object?.id || null, roomId: primitive.roomId || null, floorId: primitive.floorId || null, category: primitive.category, canonicalUnits: 'mm' }}
   >
-    {kind === 'mesh' ? <primitive object={geometry} attach="geometry" /> : kind === 'cylinder' ? <cylinderGeometry args={[0.5, 0.5, 1, 16]} /> : kind === 'sphere' ? <sphereGeometry args={[0.5, 12, 8]} /> : isSoftBox(primitive) ? <roundedBoxGeometry args={[1, 1, 1, 2, 0.08]} /> : <boxGeometry args={[1, 1, 1]} />}
-    <meshStandardMaterial color={primitive.color || '#ddd2bd'} roughness={0.86} metalness={0} map={texture} {...config} emissive={selected ? '#a85729' : '#000000'} emissiveIntensity={selected ? 0.22 : 0} />
+    <primitive object={shape.geometry} attach="geometry" />
+    <SurfaceMaterial color={primitive.color || '#ddd2bd'} roughness={0.86} metalness={0} map={texture} bumpMap={config.bumpScale ? texture : null} {...config} emissive={selected ? '#a85729' : '#000000'} emissiveIntensity={selected ? 0.22 : 0} />
   </mesh>
 }
 
@@ -139,6 +176,9 @@ function RoomSurface({ room, active, hovered, visible, onHover, onSelect, elevat
 
 function Environment({ model, mode, selectedRoomId, hoveredRoomId, onRoomHover, onRoomSelect, sceneRef, quality, activeFloorId, isolateFloor, selectedObjectId, onObjectSelect }) {
   const primitives = useMemo(() => buildPrimitives(model), [model])
+  // The sample site's top is -80mm. A backdrop at that same height depth-fights
+  // with it (especially in Firefox). Keep this decorative plane below all slabs.
+  const backdropElevation = useMemo(() => Math.min(-80, ...primitives.filter(p => ['floor', 'exterior'].includes(p.category)).map(p => p.position[2] - p.size[2] / 2)) / 1000 - 0.025, [primitives])
   const textures = useMemo(() => Object.fromEntries(['wood', 'fabric', 'tile'].map(kind => [kind, makeTexture(kind)])), [])
   useEffect(() => () => Object.values(textures).forEach(texture => texture?.dispose()), [textures])
   const cutaway = mode === 'overview'
@@ -152,14 +192,14 @@ function Environment({ model, mode, selectedRoomId, hoveredRoomId, onRoomHover, 
   return <>
     <color attach="background" args={['#e7e0d3']} />
     <fog attach="fog" args={['#e7e0d3', 42, 95]} />
-    <ambientLight intensity={0.6} />
-    <hemisphereLight args={['#fff9ef', '#adab89', 1.75]} />
-    <directionalLight position={[-8, 17, 8]} intensity={3.2} color="#fff0d4" castShadow={quality !== 'low'}
+    <ambientLight intensity={0.3} />
+    <hemisphereLight args={['#f6f4ed', '#a99c87', 1.1]} />
+    <directionalLight position={[-8, 17, 8]} intensity={3.4} color="#fff0d9" castShadow={quality !== 'low'}
       shadow-mapSize-width={quality === 'high' ? 2048 : 1024} shadow-mapSize-height={quality === 'high' ? 2048 : 1024}
       shadow-camera-left={-24} shadow-camera-right={24} shadow-camera-top={24} shadow-camera-bottom={-24}
-      shadow-camera-near={0.5} shadow-camera-far={65} shadow-bias={-0.00015} shadow-normalBias={0.025} />
-    <directionalLight position={[13, 8, -14]} intensity={0.8} color="#e0ebff" />
-    <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.08, 0]} receiveShadow>
+      shadow-camera-near={0.5} shadow-camera-far={65} shadow-bias={-0.00015} shadow-normalBias={0.025} shadow-radius={2.2} />
+    <directionalLight position={[13, 8, -14]} intensity={0.65} color="#dce8f5" />
+    <mesh name="Presentation_Backdrop" rotation={[-Math.PI / 2, 0, 0]} position={[0, backdropElevation, 0]} receiveShadow>
       <planeGeometry args={[200, 200]} /><meshStandardMaterial color="#ded8c6" roughness={1} />
     </mesh>
     <group ref={sceneRef} name="GrihaGrid_Building" userData={{ schemaVersion: model.schemaVersion, revision: model.revision, sourceUnits: 'mm', exportedUnits: 'm' }}>

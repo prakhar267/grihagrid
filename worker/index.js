@@ -1,4 +1,5 @@
 import { handleSpatialRequest } from "./spatial.js";
+import { SPATIAL_SCHEMA } from "./spatial-schema.js";
 import { buildArchitecturalHandoff, publicArchitecturalProgramme } from "../src/architect-report.js";
 
 const JSON_HEADERS = {
@@ -913,6 +914,7 @@ const READINESS_REQUIRED_TABLES = Object.freeze([
 ]);
 
 const READINESS_MANIFESTS = Object.freeze({
+  spatial: readinessManifest(SPATIAL_SCHEMA),
   revision: readinessManifest({
     tables: ["project_revisions", "project_revision_requests", "project_revision_reports"],
     indexes: [
@@ -1276,6 +1278,7 @@ async function readinessDatabaseState(db) {
   const accountLifecycleSchema = current(READINESS_MANIFESTS.accountLifecycle);
   const privateUploadSchema = current(READINESS_MANIFESTS.privateUploads);
   const professionalReviewSchema = current(READINESS_MANIFESTS.professionalReview);
+  const spatialSchema = current(READINESS_MANIFESTS.spatial);
   const familyAlignmentSchema = current(READINESS_MANIFESTS.familyAlignment);
   const archiveSafetySchema = current(READINESS_MANIFESTS.archiveSafety);
   const decisionSchema = current(READINESS_MANIFESTS.decision);
@@ -1300,7 +1303,7 @@ async function readinessDatabaseState(db) {
     && reportFeedbackSchema === "current" && reportShareSchema === "current"
     && projectCreationSchema === "current" && authSchema === "current"
     && accountLifecycleSchema === "current" && privateUploadSchema === "current"
-    && professionalReviewSchema === "current"
+    && professionalReviewSchema === "current" && spatialSchema === "current"
     ? "current"
     : "outdated";
 
@@ -1322,6 +1325,7 @@ async function readinessDatabaseState(db) {
     accountLifecycleSchema,
     privateUploadSchema,
     professionalReviewSchema,
+    spatialSchema,
   };
 }
 
@@ -9091,6 +9095,7 @@ async function api(request, env, ctx, url) {
       let accountLifecycleSchema = "unknown";
       let privateUploadSchema = "unknown";
       let professionalReviewSchema = "unknown";
+      let spatialSchema = "unknown";
       if (env.DB) {
         try {
           ({
@@ -9111,6 +9116,7 @@ async function api(request, env, ctx, url) {
             accountLifecycleSchema,
             privateUploadSchema,
             professionalReviewSchema,
+            spatialSchema,
           } = await readinessDatabaseState(env.DB));
         } catch {
           database = "error";
@@ -9168,6 +9174,7 @@ async function api(request, env, ctx, url) {
           accountLifecycleSchema,
           privateUploadSchema,
           professionalReviewSchema,
+          spatialSchema,
           transactionalEmail,
           ai: geminiConfigured ? "configured" : "unavailable",
           privateStorage: env.FILES && privateUploadSchema === "current" ? "configured" : "unavailable",
@@ -9190,6 +9197,7 @@ async function api(request, env, ctx, url) {
           emailVerification: freeReady && accountLifecycleSchema === "current" && transactionalEmail === "configured",
           passwordRecovery: freeReady && accountLifecycleSchema === "current" && transactionalEmail === "configured",
           professionalReview: freeReady && professionalReviewSchema === "current",
+          spatialStudio: freeReady && spatialSchema === "current",
         },
         time: new Date().toISOString(),
       }, freeReady ? 200 : 503);

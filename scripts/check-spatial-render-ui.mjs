@@ -9,12 +9,14 @@ const browser=await chromium.launch({channel:'chrome',headless:true}),page=await
 page.setDefaultTimeout(30000);page.setDefaultNavigationTimeout(60000);
 const stage=message=>console.log(new Date().toISOString(),message);
 const bounded=async(promise,label)=>{let timer;try{return await Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error(label+' exceeded 20 seconds')),20000)})])}finally{clearTimeout(timer)}};
-page.on('pageerror',error=>errors.push(error.message));let id;
+page.on('pageerror',()=>errors.push('Browser page error'));let id,phase='opening app';
 try{
   stage('Opening render studio');
   await page.goto(origin+'/explore');await page.getByRole('button',{name:'Render / Export',exact:true}).click();
+  phase='pairing';
   await page.getByLabel('Pairing code').fill((await readFile(pairFile,'utf8')).trim());await page.getByRole('button',{name:'Connect renderer',exact:true}).click();
   await page.getByRole('button',{name:'Render previews',exact:true}).waitFor();
+  phase='verifying render actions';
   const primaryStyle=await page.getByRole('button',{name:'Render previews',exact:true}).evaluate(el=>{const style=getComputedStyle(el);return {background:style.backgroundColor,color:style.color}});
   assert.notEqual(primaryStyle.background,'rgba(0, 0, 0, 0)','Render actions must retain a visible background beneath their light text');
   stage('Paired; submitting preview job');
@@ -30,4 +32,9 @@ try{
   const result={jobId:id,checks:['Actual app pairing, visible render actions, preview POST, exact-job cancellation, resume, and final cancellation'],primaryStyle,finalStatus:'cancelled',errors};
   assert.deepEqual(errors,[]);await writeFile(new URL('verification.json',output),JSON.stringify(result,null,2));console.log(JSON.stringify(result,null,2));
   await page.getByRole('button',{name:'Disconnect',exact:true}).click();
-}catch(error){await page.screenshot({path:new URL('failure.png',output).pathname,fullPage:true}).catch(()=>{});console.error('Render UI verification failed:',error.message);throw error;}finally{await browser.close();if(id)console.log('UI-created job identifier:',id);}
+}catch(error){
+  // Playwright fill errors can contain the private pairing code in call logs.
+  if(phase!=='pairing')await page.screenshot({path:new URL('failure.png',output).pathname,fullPage:true}).catch(()=>{});
+  const errorType=['AssertionError','TimeoutError'].includes(error?.name)?error.name:'Error';
+  throw new Error(`Render UI verification failed during ${phase} (${errorType}); private diagnostics withheld.`);
+}finally{await browser.close();if(id)console.log('UI-created job identifier:',id);}

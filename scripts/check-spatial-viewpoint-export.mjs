@@ -16,7 +16,7 @@ const browser = await chromium.launch({ channel: 'chrome', headless: true });
 const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
 page.setDefaultTimeout(30000);
 const errors = [], checks = [];
-page.on('pageerror', error => errors.push(error.message));
+page.on('pageerror', () => errors.push('Browser page error'));
 const download = async (label, name) => {
   const event = page.waitForEvent('download');
   await page.getByRole('button', { name: label, exact: true }).click();
@@ -25,7 +25,7 @@ const download = async (label, name) => {
   await file.saveAs(filename);
   return readFile(filename);
 };
-let createdJobId;
+let createdJobId, stage = 'verifying browser exports';
 try {
   await page.goto(origin + '/explore');
   await page.locator('canvas[aria-label]').waitFor();
@@ -109,8 +109,11 @@ try {
   const pairFile = process.env.SPATIAL_PAIR_FILE;
   let render = { verified: false, reason: 'No pairing file supplied; browser export checks only.' };
   if (pairFile) {
+    stage = 'pairing';
     await page.getByLabel('Pairing code', { exact: true }).fill((await readFile(pairFile, 'utf8')).trim());
     await page.getByRole('button', { name: 'Connect renderer', exact: true }).click();
+    await page.getByRole('button', { name: 'Render previews', exact: true }).waitFor();
+    stage = 'verifying native export';
     const responseEvent = page.waitForResponse(response => response.url() === 'http://127.0.0.1:43127/jobs' && response.request().method() === 'POST');
     await page.getByRole('button', { name: 'Render previews', exact: true }).click();
     const response = await responseEvent;
@@ -147,8 +150,10 @@ try {
   await writeFile(new URL('verification.json', output), JSON.stringify(report, null, 2));
   console.log(JSON.stringify({ passed: true, checks: checks.length, renderVerified: render.verified, errors: errors.length, createdJobId }));
 } catch (error) {
-  await page.screenshot({ path: new URL('failure.png', output).pathname, fullPage: true }).catch(() => {});
-  throw error;
+  // Playwright fill errors can contain the private pairing code in call logs.
+  if (stage !== 'pairing') await page.screenshot({ path: new URL('failure.png', output).pathname, fullPage: true }).catch(() => {});
+  const errorType = ['AssertionError', 'TimeoutError'].includes(error?.name) ? error.name : 'Error';
+  throw new Error(`Viewpoint export verification failed during ${stage} (${errorType}); private diagnostics withheld.`);
 } finally {
   await browser.close();
 }

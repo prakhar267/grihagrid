@@ -24,13 +24,26 @@ this task.
 
 1. `DrawingImport.jsx` decodes PNG/JPEG/WebP/SVG or a selected PDF page locally.
    SVG active/external content is removed before rasterization. PDF.js renders
-   without evaluation or XFA. Files are bounded to 25 MB and raster analysis to
-   1,100 pixels along the longest edge.
-2. `drawing-recognition.js` detects orthogonal ink strokes, plausible doorway
-   gaps and enclosed polygons. This is real pixel analysis; blank images do not
-   return the demonstration house. Confidence represents pixel support, not
-   architectural accuracy. Diagonal/ambiguous strokes need correction or
-   explicit manual tracing. Recognition does not promise survey accuracy.
+   without evaluation or XFA. Files are bounded to 25 MB and the decoded review
+   image to 1,100 pixels along the longest edge.
+2. `drawing-recognition.js` and `drawing-geometry.js` fit observed wall strokes
+   at arbitrary angles and find enclosed faces of their planar graph. Rotated,
+   skewed, chamfered and simple concave outlines retain their visible shape;
+   small freehand wobble is fitted to straight centerlines. Clearly orthogonal
+   plans use the established text-resistant scan; rotated orthogonal plans are
+   temporarily deskewed and mapped back without changing their visible angle.
+   Collinear gaps are
+   proposed as doors only within the selected gap limit. Angle fitting is bounded to
+   a 640-pixel longest edge, 32 thinning iterations, 24,000 skeleton points and
+   100 retained wall lines,
+   then mapped back to the source image for calibration. Blank, unfinished,
+   filled-dark and disconnected nested contours do not produce substitute
+   geometry. An unfinished thinning result is rejected rather than interpreting
+   a filled interior as wall centerlines. Confidence represents pixel support,
+   not architectural accuracy.
+   Curves, overlapping outlines, heavy annotation and strong photographic
+   perspective need correction or explicit manual tracing. Recognition does
+   not rectify a photograph or promise survey accuracy.
 3. Optional Tesseract OCR runs in a browser worker using same-origin, pinned
    English language data. It proposes room labels and dimension candidates.
    The user chooses two reference points, supplies a known distance and reviews

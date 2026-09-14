@@ -86,7 +86,8 @@ Other limits and costs:
   total 192 KiB; a complete mip chain is approximately 256 KiB, excluding driver
   allocations and CPU copies. Texture anisotropy is capped at 4 in source.
 - Cylinders use 16 radial segments; spheres use 12 × 8 segments. Rounded fabric
-  boxes use two bevel segments. Each primitive currently has its own mesh and
+  boxes use two bevel segments; eligible hard furniture uses one segment and an
+  8 mm maximum bevel. Each primitive currently has its own mesh and
   material; the renderer does not implement instancing.
 - Overview uses demand rendering and a roof/wall cutaway. Room, walking and
   tour modes render continuously, including a paused tour. Pausing a tour freezes
@@ -112,9 +113,10 @@ or CI timing gates. Physical-device results cannot be inferred from them.
 
 ## Final measured results
 
-Measured on the final production Worker build from 00:38–00:40 IST on
-15 September 2026 (19:08–19:10 UTC on 14 September), after the full suite,
-cross-browser tests and native render preview finished. Chrome was
+Measured on the production visual-polish build from 01:25–01:27 IST on
+15 September 2026 (19:55–19:57 UTC on 14 September), with other browser and
+native-render jobs stopped. Focused release database tests were running on the
+host; no frame degradation was observed. Chrome was
 152.0.7977.84 on the MacBook Air M4 host described below. All six contexts used
 the real Apple M4 Metal WebGL2 renderer.
 
@@ -125,12 +127,12 @@ inventory only; its performance was not measured in this matrix.
 
 | Profile / quality | Draw-frame FPS | p95 frame interval | p95 calls / frame | p95 triangles / frame | Drawing buffer |
 | --- | ---: | ---: | ---: | ---: | --- |
-| Desktop / Balanced | 59.98 | 16.7 ms | 628 | 36,686 | 1624 × 927 |
-| Desktop / Light | 59.98 | 16.7 ms | 332 | 18,474 | 1082 × 618 |
-| Desktop / High | 59.97 | 16.8 ms | 628 | 36,686 | 2165 × 1236 |
-| 390px emulation / Balanced | 59.46 | 16.8 ms | 620 | 35,642 | 523 × 642 |
-| 390px emulation / Light | 59.97 | 16.7 ms | 324 | 17,430 | 349 × 428 |
-| 390px emulation / High | 59.98 | 16.7 ms | 620 | 35,642 | 698 × 856 |
+| Desktop / Balanced | 59.97 | 16.7 ms | 628 | 50,702 | 1624 × 927 |
+| Desktop / Light | 59.98 | 16.7 ms | 332 | 25,482 | 1082 × 618 |
+| Desktop / High | 59.99 | 16.7 ms | 628 | 50,702 | 2165 × 1236 |
+| 390px emulation / Balanced | 59.98 | 16.8 ms | 620 | 49,566 | 523 × 642 |
+| 390px emulation / Light | 59.97 | 16.7 ms | 324 | 24,346 | 349 × 428 |
+| 390px emulation / High | 59.99 | 16.7 ms | 620 | 49,566 | 698 × 856 |
 
 The desktop canvas occupied approximately 1083 × 618 CSS pixels within the
 1440 × 1080 page; the 390 × 844 emulated page's canvas was 349 × 428 CSS pixels.
@@ -138,19 +140,18 @@ The actual context reported antialias disabled in Light and enabled in
 Balanced/High, both immediately after selecting quality and after a fresh mount.
 
 All six initial and reset overview samples submitted **zero draws**. Paused tours
-continued at 59.84–59.93 draw-frame FPS. Every active-tour HUD sample read 60 FPS,
-within 0.54 FPS of the longer measured sample; the prior systematic 61 FPS
-reading is gone. The 390px Balanced sample included an 83.3 ms maximum frame
-interval, although its p95 was 16.8 ms; other samples' maxima were 16.8 ms.
-No Long Tasks were observed during active samples. Sample-end JavaScript heaps
-were 26.6–58.8 MiB, and main-thread task duration was 0.71–1.18 seconds per
+continued at 59.93–59.96 draw-frame FPS. Every active-tour HUD sample read 60 FPS,
+within 0.03 FPS of the longer measured sample; the prior systematic 61 FPS
+reading is gone. Every profile's maximum frame interval was 16.8 ms. No Long
+Tasks were observed during active samples. Sample-end JavaScript heaps were
+42.0–63.8 MiB, and main-thread task duration was 0.77–1.27 seconds per
 eight-second active sample. No page errors, failed requests or HTTP errors were
 recorded in any profile.
 
-Each workflow decoded 2,778,855 resource bytes (2.65 MiB); CDP recorded
-901,895–901,902 transferred bytes. Local navigation duration was 88.5–239.2 ms,
+Each workflow decoded 2,784,076 resource bytes (2.66 MiB); CDP recorded
+903,928–903,936 transferred bytes. Local navigation duration was 93.7–148.2 ms,
 which is not time-to-first-3D-frame or an internet loading claim. The entire
-build inventory was 19,875,845 bytes (18.96 MiB), including optional OCR/PDF
+build inventory was 19,881,066 bytes (18.96 MiB), including optional OCR/PDF
 runtimes, fonts and other site imagery. The spatial engine bundle itself was
 960,591 uncompressed bytes. The default journey fetched no drawing, remote model
 or HDR environment.
@@ -164,11 +165,18 @@ behavior, maximum-scene performance, or unused GPU headroom.
 The final report is `qa-artifacts/spatial-performance/verification.json`; desktop
 and emulated-mobile screenshots were inspected and show the furnished overview
 and responsive controls. Its build HTML SHA-256 is
-`30df0b3284bab02f15eac2f6e522302844455159e7bf8e2982343f523552c5d1`;
+`d240b58b43e2db3c09d1361e5581cbdeda43869d64c1602ddee0a0b5e7c2e44d`;
 the measured `WorldCanvas.jsx` SHA-256 is
-`f280a7af98d2982a0b7fb591d0c59d018277b400a2d3b1d839c3372348fc65a6`.
+`b8d922141b728d36ac9bd731ba6e40b86bc06707c4e588f23efe68789be18b75`.
 The report retains hashes for every spatial source file and the harness, so the
 tested contents remain identifiable across the subsequent integration commit.
+The prior production measurements are preserved under
+`qa-artifacts/spatial-performance/before-visual-polish/`. Bevels increased the
+reference desktop p95 submitted triangle count from 36,686 to 50,702 while draw
+calls stayed at 628 and measured production FPS remained about 60. A preliminary
+Vite run measured 55–58 FPS with substantially more main-thread work; it is
+retained under `visual-polish-vite/` and is not substituted for production data.
+The final production matrix is also preserved under `visual-polish-production/`.
 
 ## Historical measurement and fixes
 
@@ -196,8 +204,8 @@ evidence, not the final-source benchmark.
 
 ## Final production lifecycle checks
 
-After the complete 549-test suite passed, the production Worker build passed the
-Chrome quality-transition regression. Orbit-adjusted overview, room view,
+The production Worker build passed the Chrome quality-transition regression
+again after the material and geometry polish. Orbit-adjusted overview, room view,
 walking look direction and paused-tour camera coordinates/FOV were preserved
 across Light/Balanced transitions; paused timeline values stayed fixed and a
 playing tour continued. Semantic pointer picking worked through the stable
@@ -211,13 +219,13 @@ calls after old-context disposal, preserved paused-tour time, play/takeover/resu
 keyboard focus, numeric edits, 390px and 720px reflow, and reduced motion. Both
 reported zero page errors, console errors and failed requests. These are
 headless engine checks; they do not replace physical-device testing.
-The retained Firefox desktop screenshot shows faint ground/shadow banding
-outside the house before any quality switch. Chrome and WebKit screenshots do
-not show that artifact; visual output is not claimed to be identical across
-engines.
+The later visual-polish checkpoint resolved the Firefox ground banding by
+separating two coplanar ground surfaces. An isolated ground-only correction and
+final Chrome/Firefox/WebKit images are retained in `qa-artifacts/spatial-visual/`;
+see [the cause and before/after evidence](spatial-visual-polish.md).
 
 Evidence is retained in
-`qa-artifacts/spatial-performance/quality-transitions-production/verification.json`
+`qa-artifacts/spatial-performance/visual-polish-lifecycle/verification.json`
 and `qa-artifacts/spatial-cross-browser/report.json` with settled screenshots.
-The numeric run follows both that verification and the completed native render
-preview so those jobs do not compete with it for CPU/GPU time.
+The numeric run was isolated from browser verification and native render jobs;
+these behavior checks ran separately so they did not compete with the timing samples.

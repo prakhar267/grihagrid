@@ -36,7 +36,7 @@ export default function DrawingImport({ model, onChange, onStatus, onCancel }) {
   function loadCanvas(canvas, name) {
     const context = canvas.getContext('2d', { willReadFrequently: true }), pixels = context.getImageData(0, 0, canvas.width, canvas.height), nextSource = { name, width: canvas.width, height: canvas.height, pixels, url: canvas.toDataURL('image/png') }
     const initialGap = Math.round(Math.min(canvas.width, canvas.height) * 0.105)
-    setGap(initialGap); setSource(nextSource); setResult(recognizeRaster(pixels, { threshold, maxGap: initialGap })); setScalePoints([]); setMmPerPixel(null); setReviewed(false); setManualEdits(0); setOcr(null); setSelected(null); setTrace([]); setTool('scale'); setError('')
+    setGap(initialGap); setSource(nextSource); setResult(recognizeRaster(pixels, { threshold: Number(threshold), maxGap: initialGap })); setScalePoints([]); setMmPerPixel(null); setReviewed(false); setManualEdits(0); setOcr(null); setSelected(null); setTrace([]); setTool('scale'); setError('')
     notify('Drawing decoded and analyzed in this browser. Calibrate one known dimension, then review the detected geometry.')
   }
   async function loadPdfPage(pdfDocument, pageNumber, name) {
@@ -139,7 +139,7 @@ export default function DrawingImport({ model, onChange, onStatus, onCancel }) {
   const selectedWall = result?.walls.find(wall => selected?.type === 'wall' && wall.id === selected.id), selectedRoom = result?.rooms.find(room => selected?.type === 'room' && room.id === selected.id), selectedOpening = result?.openings.find(opening => selected?.type === 'opening' && opening.id === selected.id)
   function openingLine(opening) { const wall = result.walls.find(w => w.id === opening.wallId); if (!wall) return null; const dx = wall.end[0] - wall.start[0], dy = wall.end[1] - wall.start[1], length = Math.hypot(dx, dy); return { wall, start: [wall.start[0] + dx * opening.offset / length, wall.start[1] + dy * opening.offset / length], end: [wall.start[0] + dx * (opening.offset + opening.width) / length, wall.start[1] + dy * (opening.offset + opening.width) / length] } }
   return <section className="le-drawing" aria-label="Import and review a drawing">
-    <div className="le-heading"><div><span className="sp-eyebrow">FROM YOUR DRAWING</span><h2>Read it. Check it. Build it.</h2><p>Your image stays in this browser. Recognition finds orthogonal wall strokes and enclosed rooms; ambiguous geometry needs your review.</p></div>{onCancel && <button type="button" onClick={onCancel}>Close import</button>}</div>
+    <div className="le-heading"><div><span className="sp-eyebrow">FROM YOUR DRAWING</span><h2>Read it. Check it. Build it.</h2><p>Your image stays in this browser. Recognition follows straight and slightly uneven walls at any angle, including simple irregular rooms. Curves, overlapping outlines and strong perspective distortion need manual correction.</p></div>{onCancel && <button type="button" onClick={onCancel}>Close import</button>}</div>
     <div className="le-import-file"><label>Choose a drawing <input aria-label="Choose drawing file" type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml,application/pdf,.svg,.pdf" disabled={Boolean(busy)} onChange={event => upload(event.target.files?.[0])}/></label><small>PNG, JPEG, WebP, SVG or PDF · up to 25 MB · no upload or provider call</small></div>
     {busy && <p className="le-status" role="status">{busy}{progress ? ` · ${progress}` : '…'}</p>}
     {source && result && <>

@@ -4,7 +4,9 @@ import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promise
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { SPATIAL_SCHEMA } from '../worker/spatial-schema.js';
 import { fileURLToPath } from "node:url";
+import { pathToFileURL } from 'node:url';
 import {
   AUTHENTICATED_SMOKE_LOGIN_TIMEOUT_MS,
   AUTHENTICATED_SMOKE_REQUEST_TIMEOUT_MS,
@@ -37,6 +39,32 @@ function workflowStep(source, name) {
   const next = source.indexOf("\n      - name:", start + marker.length);
   return next === -1 ? source.slice(start) : source.slice(start, next);
 }
+
+test('privileged release canaries import and execute without repository dependencies', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'grihagrid-canary-no-dependencies-'));
+  try {
+    await mkdir(join(directory, 'fixtures'));
+    for (const name of ['authenticated-smoke.mjs', 'spatial-release-canary.mjs', 'fixtures/spatial-release.json']) {
+      await writeFile(join(directory, name), await readFile(new URL('../scripts/' + name, import.meta.url)));
+    }
+    const result = spawnSync(process.execPath, ['--input-type=module', '-'], { cwd: directory, encoding: 'utf8',
+      env: { PATH: process.env.PATH, NODE_PATH: '' }, input: `
+        import assert from 'node:assert/strict';
+        import { runAuthenticatedSmoke } from ${JSON.stringify(pathToFileURL(join(directory, 'authenticated-smoke.mjs')).href)};
+        import { runSpatialReleaseCanary } from ${JSON.stringify(pathToFileURL(join(directory, 'spatial-release-canary.mjs')).href)};
+        globalThis.fetch = async () => Response.json({}, {status:503});
+        for (const options of [{legacyWorker:true}, {expectSpatial:true}]) {
+          await assert.rejects(runAuthenticatedSmoke('https://canary.example.test', {email:'synthetic@example.test',password:'synthetic'}, options), error => error.message.includes('auth/login returned 503'));
+        }
+        let calls=0;
+        await assert.rejects(runSpatialReleaseCanary(async()=>{calls++;throw new Error('isolated request reached')}, '11111111-1111-4111-8111-111111111111', 1), /isolated request reached/);
+        assert.equal(calls,1);
+        console.log('standalone canaries ready');
+      ` });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout.trim(), 'standalone canaries ready');
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
 
 function pullEvidenceParser(source) {
   const marker = 'pull_request="$(node --input-type=module - "$RELEASE_SHA" "$GITHUB_REPOSITORY" "$pull_evidence_file" <<\'NODE\'\n';
@@ -657,6 +685,11 @@ test("exact-version latency gates block canaries and enter every rollback path",
 
     const canary = workflowStep(workflow, `Run ${environment} authenticated canary under bounded handoff activation`);
     assert.match(canary, /steps\.propagation\.outcome == 'success' && steps\.readiness_latency\.outcome == 'success'/u);
+    assert.match(canary, /EXPECT_SPATIAL:\s*"true"/u);
+    const rollbackCanary = workflowStep(workflow, `Rehearse rollback Worker against migrated ${environment} schema`);
+    assert.doesNotMatch(rollbackCanary, /EXPECT_SPATIAL/u);
+    const migration = workflowStep(workflow, `Apply and verify ${environment} migrations`);
+    for (const table of SPATIAL_SCHEMA.tables) assert.ok(migration.includes(`('${table}')`));
     const failClosed = workflowStep(workflow, `Fail closed ${environment} report handoff before regression handling`);
     assert.match(failClosed, /steps\.readiness_latency\.outcome != 'success'/u);
     const rollback = workflowStep(workflow, `Roll back a confirmed compatible ${environment} regression`);
@@ -798,6 +831,8 @@ test("release database evidence hard-gates legacy safety and proves migration da
   );
 
   const schemaNames = [
+    ...SPATIAL_SCHEMA.tables.map(name => `table:${name}`),
+    ...SPATIAL_SCHEMA.triggers.map(name => `trigger:${name}`),
     "table:users", "table:projects", "table:orders", "table:project_revisions",
     "index:idx_project_revisions_owner_created", "trigger:project_revisions_immutable_update",
     "trigger:archived_project_revision_insert_guard", "trigger:purchased_report_snapshots_immutable_update",
@@ -839,6 +874,7 @@ test("release database evidence hard-gates legacy safety and proves migration da
     return { type: entry.slice(0, separator), name: entry.slice(separator + 1) };
   });
   const columns = [
+    ...Object.entries(SPATIAL_SCHEMA.columns).flatMap(([table, names]) => names.map(name => `${table}:${name}`)),
     "users:id", "users:email", "users:password_hash", "users:password_salt", "users:password_iterations", "users:password_algorithm",
     "users:auth_generation", "users:auth_revision_id", "users:password_changed_at",
     "users:email_verified_at", "users:deletion_requested_at", "users:account_role",
@@ -929,6 +965,12 @@ test("release database evidence hard-gates legacy safety and proves migration da
     loginAttemptFenceMigrationPending: true,
   };
   const post = verifyPostMigrationEvidence(postInput);
+  for (const key of [...SPATIAL_SCHEMA.tables.map(name => `table:${name}`), ...SPATIAL_SCHEMA.triggers.map(name => `trigger:${name}`)]) {
+    assert.throws(() => verifyPostMigrationEvidence({ ...postInput, schemaPayload: d1(schemaNames.filter(row => `${row.type}:${row.name}` !== key)) }), /required schema object is missing/u);
+  }
+  for (const [table, names] of Object.entries(SPATIAL_SCHEMA.columns)) for (const name of names) {
+    assert.throws(() => verifyPostMigrationEvidence({ ...postInput, columnsPayload: d1(columns.filter(row => row.table_name !== table || row.name !== name)) }), /required schema column is missing/u);
+  }
   assert.equal(post.coreDataUnchanged, true);
   assert.equal(post.credentialsAndSessionsUnchanged, true);
   assert.equal(post.reportFeedbackRows, 0);
@@ -945,10 +987,15 @@ test("release database evidence hard-gates legacy safety and proves migration da
   const residue = verifyCanaryResidueEvidence({
     environment: "staging",
     canaryProjectIds: ["11111111-1111-4111-8111-111111111111"],
-    residuePayload: d1([{ projects: 0, project_revisions: 0, reports: 0, revision_reports: 0, feedback: 0, report_shares: 0 }]),
+    residuePayload: d1([{ projects: 0, project_revisions: 0, reports: 0, revision_reports: 0, feedback: 0, report_shares: 0, spatial_revisions: 0, spatial_tour_revisions: 0, spatial_camera_revisions: 0 }]),
   });
   assert.equal(residue.canaryResidue, 0);
   assert.equal(residue.canaryProjectCount, 1);
+  for (const table of SPATIAL_SCHEMA.tables) {
+    assert.ok(buildCanaryResidueSql(['11111111-1111-4111-8111-111111111111']).includes(`FROM ${table} WHERE project_id IN ('11111111-1111-4111-8111-111111111111')`));
+    for (const value of [1, undefined]) assert.throws(() => verifyCanaryResidueEvidence({ environment: 'staging',
+      canaryProjectIds: ['11111111-1111-4111-8111-111111111111'], residuePayload: d1([{ ...residue.residue, [table]: value }]) }), /residue/u);
+  }
   assert.match(residue.projectIdsSha256, /^[a-f0-9]{64}$/u);
   assert.match(
     buildCanaryResidueSql(["11111111-1111-4111-8111-111111111111"]),
@@ -1723,6 +1770,22 @@ test("authenticated smoke proves current and rollback-compatible Worker paths fa
     assert.equal(result.reportHandoffVerified, true);
     assert.deepEqual(result.canaryProjectIds, [projectId]);
     assert.equal(deleted, true);
+
+    loggedOut = false;
+    await assert.rejects(runAuthenticatedSmoke(
+      'https://worker.example.test', { email: 'release@example.test', password: 'a-secure-canary-password' },
+      { expectedReleaseId: releaseId, expectSpatial: true },
+    ), error => {
+      assert.match(error.message, /candidate spatial schema/u);
+      assert.equal(error.releaseEvidence.spatialExpected, true);
+      assert.equal(error.releaseEvidence.spatial, null);
+      assert.deepEqual(error.releaseEvidence.canaryProjectIds, []);
+      return true;
+    });
+    await assert.rejects(runAuthenticatedSmoke(
+      'https://worker.example.test', { email: 'release@example.test', password: 'a-secure-canary-password' },
+      { legacyWorker: true, expectSpatial: true },
+    ), /Legacy rollback/u);
 
     marker = "";
     deleted = false;

@@ -28,6 +28,19 @@ is an origin allowlist, not a wildcard. The app CSP must independently allow
 `http://127.0.0.1:43127` in `connect-src` and fetched blob media in `img-src`
 and `media-src`. Some browsers require their local-network permission too.
 
+The app's setup panel includes its current exact origin in the service command,
+so the deployed HTTPS studio can pair as well as the local development app.
+When using several app addresses, list each exact origin, separated by commas,
+in the same environment variable before starting the renderer. Changing the
+address or restarting the service requires pairing again.
+
+Browser and native scenes use restrained oak, seamless mineral stone, linen
+and warm plaster. Blender procedural textures use metre-based object coordinates
+with subtle relief and roughness variation; mesh scale is applied before shading
+so texture detail stays consistent across different furniture and room sizes.
+Warm directional daylight, cooler ambient light and subdued ceiling fill retain
+depth. These are concept materials, not measured specifications or scanned assets.
+
 The default data directory is `~/.local/share/grihagrid/render-service`.
 Directories are mode 0700; pairing, immutable input and job metadata files
 are mode 0600. Pairing creates an origin-bound, eight-hour bearer session.

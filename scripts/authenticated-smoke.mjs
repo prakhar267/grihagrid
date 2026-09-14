@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
 import { pathToFileURL } from "node:url";
+import { runSpatialReleaseCanary } from './spatial-release-canary.mjs';
 
 export const AUTHENTICATED_SMOKE_REQUEST_TIMEOUT_MS = 15_000;
 export const AUTHENTICATED_SMOKE_LOGIN_TIMEOUT_MS = 30_000;
@@ -110,10 +111,14 @@ export async function runAuthenticatedSmoke(rawOrigin, credentials, options = {}
   let publicEstimateVerified = false;
   let projectCreateReplayVerified = false;
   let reportHandoffVerified = false;
+  let spatial = null;
   const cleanupIds = new Set();
   const deletedIds = new Set();
   let primaryError = null;
   const legacyWorker = options.legacyWorker === true;
+  assert.ok(options.expectSpatial === undefined || typeof options.expectSpatial === 'boolean', 'expectSpatial must be an explicit boolean');
+  const expectSpatial = options.expectSpatial === true;
+  assert.ok(!legacyWorker || !expectSpatial, 'Legacy rollback canaries cannot require candidate spatial routes');
   const marker = `Release canary ${crypto.randomUUID()}`;
 
   function safeRoute(path) {
@@ -168,6 +173,10 @@ export async function runAuthenticatedSmoke(rawOrigin, credentials, options = {}
     const readiness = await call("/api/readiness");
     releaseId = String(readiness?.releaseId || "");
     if (options.expectedReleaseId) assert.equal(releaseId, options.expectedReleaseId, "authenticated canary reached the wrong Worker version");
+    if (expectSpatial) {
+      assert.equal(readiness?.checks?.spatialSchema, 'current', 'candidate spatial schema must be current');
+      assert.equal(readiness?.capabilities?.spatialStudio, true, 'candidate spatial studio must be ready');
+    }
     assert.equal(readiness?.capabilities?.paidCheckout, false, "authenticated canary requires checkout to remain closed");
     assert.equal(readiness?.capabilities?.paidFulfillment, false, "authenticated canary requires fulfillment to remain closed");
     assert.equal(readiness?.capabilities?.privateUploads, false, "authenticated canary requires uploads to remain closed");
@@ -346,6 +355,7 @@ export async function runAuthenticatedSmoke(rawOrigin, credentials, options = {}
       body: "%PDF-1.4\n%%EOF\n",
     }, [503]);
     assert.equal(closedUpload?.code, "storage_unavailable", "private upload did not fail closed");
+    if (expectSpatial) spatial = await runSpatialReleaseCanary(call, projectId, Number(project.project.inputRevision));
   } catch (error) {
     primaryError = error;
   } finally {
@@ -403,6 +413,8 @@ export async function runAuthenticatedSmoke(rawOrigin, credentials, options = {}
     publicEstimateVerified,
     projectCreateReplayVerified,
     reportHandoffVerified,
+    spatialExpected: expectSpatial,
+    spatial,
     projectCreated: cleanupIds.size > 0,
     projectDeleted: cleanupIds.size > 0 && deletedIds.size === cleanupIds.size,
     canaryProjectIds: [...cleanupIds].sort(),
@@ -422,12 +434,14 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const origin = process.argv[2] || process.env.GRIHAGRID_CANARY_ORIGIN;
   assert.ok(origin, "usage: node scripts/authenticated-smoke.mjs https://worker.example");
   try {
+    assert.ok(process.env.EXPECT_SPATIAL === undefined || ['true', 'false'].includes(process.env.EXPECT_SPATIAL), 'EXPECT_SPATIAL must be true or false');
     const result = await runAuthenticatedSmoke(origin, {
       email: process.env.GRIHAGRID_CANARY_EMAIL,
       password: process.env.GRIHAGRID_CANARY_PASSWORD,
     }, {
       expectedReleaseId: process.env.EXPECT_RELEASE_ID,
       legacyWorker: process.env.LEGACY_WORKER_COMPAT === "true",
+      expectSpatial: process.env.EXPECT_SPATIAL === "true",
     });
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   } catch (error) {

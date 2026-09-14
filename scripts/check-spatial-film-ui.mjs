@@ -10,13 +10,17 @@ assert.match(jobId||'',/^[0-9a-f-]{36}$/,'Provide the exact completed synthetic 
 const output=new URL('../qa-artifacts/spatial-film-ui/',import.meta.url);await mkdir(output,{recursive:true});
 const browser=await chromium.launch({channel:'chrome',headless:true});
 const page=await browser.newPage({viewport:{width:1440,height:1000}}),errors=[];
-page.setDefaultTimeout(30000);page.on('pageerror',error=>errors.push(error.message));
+page.setDefaultTimeout(30000);page.on('pageerror',()=>errors.push('Browser page error'));
+let stage='opening app';
 try{
   await page.goto(origin+'/explore');
   await page.getByRole('button',{name:'Render / Export',exact:true}).click();
+  stage='pairing';
   await page.getByLabel('Pairing code').fill((await readFile(pairFile,'utf8')).trim());
   await page.getByRole('button',{name:'Connect renderer',exact:true}).click();
   const job=page.locator(`[data-render-job-id="${jobId}"]`);
+  await job.waitFor();
+  stage='verifying film playback';
   await job.getByRole('button',{name:'View film',exact:true}).click();
   const video=page.locator('.render-media video');await video.waitFor();
   await page.waitForFunction(()=>document.querySelector('.render-media video')?.readyState>=2);
@@ -36,6 +40,10 @@ try{
   assert.deepEqual(errors,[]);
   const result={jobId,metadata,playback,inspectedTimes,errors};
   await writeFile(new URL('verification.json',output),JSON.stringify(result,null,2));console.log(JSON.stringify(result,null,2));
+}catch(error){
+  // Never expose Playwright's credential-bearing fill call log or stack.
+  const errorType=['AssertionError','TimeoutError'].includes(error?.name)?error.name:'Error';
+  throw new Error(`Film UI verification failed during ${stage} (${errorType}); private diagnostics withheld.`);
 }finally{
   await page.getByRole('button',{name:'Disconnect',exact:true}).click({timeout:2000}).catch(()=>{});
   await browser.close();

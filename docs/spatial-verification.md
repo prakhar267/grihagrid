@@ -1,8 +1,10 @@
 # Spatial studio verification — updated 15 September 2026
 
-This report covers the expanded local implementation on `agent/spatial-camera-tours`.
-No deployment, remote migration, payment activation or paid infrastructure was performed.
-Completed local checks and remaining external verification limits are recorded below.
+This report covers the expanded implementation on `agent/spatial-camera-tours`.
+The user authorized drawing/visual polish and production release on 15 September
+2026. Local acceptance evidence and protected release preparation are recorded
+below; actual deployment, migration and monitoring results belong to the exact
+merged-SHA release workflow. Payments, fulfillment and private uploads stay closed.
 
 On 15 September the user explicitly deferred physical iPhone and spoken
 VoiceOver testing and requested completion of all remaining work. Those two
@@ -46,7 +48,7 @@ fixtures are synthetic and cleanup targets only their exact identifiers.
 | Film in the app | The paired UI opened the exact completed job as a blob video, reported 1920×1080 and 20 seconds, and played to the end: 600 decoded frames, one dropped frame, no media error. Seeks at 0.5, 5, 10, 15 and 19.5 seconds were captured; the complete app view and the 10-second kitchen frame were inspected. |
 | Native cancellation/restart | A real Blender preview job was manually cancelled with its completed frame retained, resumed, then interrupted by stopping the local service. After service restart it recovered automatically and completed all six previews. The first frame's hash and modification time were unchanged; GLB/camera comparison also passed. This proves native preview-job recovery, rather than a second full-film recovery run. |
 | Packaging/security | The isolated packaged Worker imports without checkout `node_modules`. Final same-origin OCR/PDF and DOMPurify import checks passed with zero page errors, external requests or CSP violations; one expected loopback renderer health request occurred. The malicious-SVG check removed active/external content, rejected entities/non-SVG input, preserved a normal drawing pixel and observed no script execution or external request. |
-| Repository validation | The final local implementation passed all 549 tests, zero failed, skipped or cancelled; test duration 320,433.0 ms. `check:ops`, locked install, production build, 23 fresh migrations, both Worker dry runs and zero-vulnerability audit passed. Final exact-head CI/CodeQL results are reported on draft PR #76 and retained in `qa-artifacts/spatial-final/completion-checks.json`. Earlier 540/542/546-test results remain historical checkpoints. |
+| Repository baseline | The pre-polish implementation at `e6fad7d` passed all 549 tests, zero failed, skipped or cancelled; test duration 320,433.0 ms. `check:ops`, locked install, production build, 23 fresh migrations, both Worker dry runs and zero-vulnerability audit passed. Its exact-head CI/CodeQL results are retained in `qa-artifacts/spatial-final/completion-checks.json`. The release follow-up runs the full gates again on its final source; earlier 540/542/546-test results remain historical checkpoints. |
 | Migration/audit/build | Locked `npm ci`, production build, fresh 23-migration chain, production and staging Worker dry runs, and zero-vulnerability audit passed. After the print-only CSS adjustment, the production build and both Worker dry runs passed again. |
 
 Browser evidence and screenshots are in ignored local directories:
@@ -164,9 +166,104 @@ neither is claimed as passed. Chrome viewport emulation, headless WebKit,
 native Safari UI inspection and accessibility-tree inspection are not substitutes
 for physical phone or spoken screen-reader testing.
 
-Recognition currently targets legible orthogonal plan strokes, with dimensions
-calibrated and all geometry reviewed by the user. Ambiguous/freehand/diagonal
-plans may need explicit tracing and vertex correction. Schema v2 supports up to
+Recognition follows legible straight and slightly uneven plan strokes at any
+angle, with dimensions calibrated and all geometry reviewed by the user.
+Rotated, skewed and simple concave outlines retain their visible shape; this
+does not rectify photographic perspective. Curved walls, overlapping outlines,
+heavy annotation and strong distortion still need explicit tracing or vertex
+correction. Schema v2 supports up to
 four floors, 48 simple polygon rooms and eight stair connections. Authored assets
 are procedural concept geometry with improved materials and lighting. These are
 bounded capabilities, not a claim of unrestricted reconstruction or photorealism.
+
+### Bounded recognition acceptance — 2026-09-15
+
+The 18 focused recognition tests pass on actual generated RGBA raster inputs.
+They cover rotations of 5°, 17°, 37°, 73° and −23°, a skewed quadrilateral,
+chamfered and triangular rooms, a rotated concave L outline, uneven stroke
+thickness with 2.5-pixel wobble, and a shared diagonal wall with a doorway. The
+accepted single-room fixtures require the expected corner count, corners within
+5–6 source pixels, area error below 4%, and a valid shared v2 model after
+calibration. A retained SVG-rendered PNG with actual room labels and dimension
+text preserves two rooms, five walls and one door at 0°, 17° and 37°. A tightly
+cropped one-pixel boundary also remains a valid observed room. The 1,400 × 1,000 input permits a 9-pixel corner tolerance after
+bounded downsampling. Separate cases reject blank, unfinished, excessive-gap,
+filled-dark (including smaller 120/200-pixel solid squares), nested,
+small-annotation, circular, deterministic sparse-noise and
+open jagged inputs. These fixture bounds describe the checks performed, not an
+accuracy guarantee for arbitrary drawings.
+
+`tests/drawing-recognition-angles.test.mjs` and its deterministic raster fixture
+module retain the acceptance cases. `scripts/check-spatial-recognition.mjs`
+writes source hashes, PNG fixtures and the before/after comparison to
+`qa-artifacts/spatial-recognition/`. Against the previous recognizer at `e6fad7d`,
+five rotated/skewed/concave/uneven examples improve from zero detected rooms to
+their expected one or two rooms; blank and unfinished examples remain rejected.
+The reusable browser journey additionally checks calibration, mandatory review,
+review invalidation on rerun, model creation and accepted JSON export. Its
+browser result is recorded separately in `verification.json` when run.
+
+The final production bundle passed both nine-group browser journeys on port
+8790. New PNG checks cover rotated/shared-door/skewed/concave/uneven acceptance,
+blank/solid-fill/unclosed rejection, calibration plus mandatory review,
+approval reset after rerunning recognition, a changed threshold followed by a
+second upload, and a valid accepted JSON export. The original nine groups
+retain SVG/PNG/PDF import, genuine local Tesseract OCR and independent editor
+operations. Both runs had zero page errors or external requests; the original
+also recorded zero CSP violations. `final-freeze.json` records their source
+hashes and completion. A stale Vite dependency failure is preserved as an earlier
+checkpoint and superseded by these fresh production-bundle checks.
+
+### Visual polish and release acceptance — 2026-09-15
+
+The customer journey remains drawing import, calibration and explicit review,
+shared 2D/3D editing, room/tour navigation, saved viewpoints and a paired local
+Blender preview. Acceptance requires the supported drawing fixtures above to
+retain their observed corners, ambiguous fixtures to remain blocked, and the
+viewer to preserve camera state within its existing graphics budgets.
+
+The polished browser passed Chrome/Firefox/WebKit visual checks, the complete
+camera/quality lifecycle and nine behavior checks each in Firefox and WebKit.
+Six Chrome production profiles measured 59.97–59.99 rendered FPS with zero idle
+overview draws. The decorative ground overlap was removed; canonical geometry
+did not change. See [spatial-visual-polish.md](spatial-visual-polish.md) and
+[spatial-performance.md](spatial-performance.md) for retained screenshots,
+source hashes and measurement scope.
+
+The updated Blender material recipe produced six real Cycles/Metal previews at
+16 samples in 37.95 seconds. All 315 mesh IDs/bounds and the tour camera survived
+GLB export/reimport and reopened `.blend` verification; maximum bounds error was
+0.000954 mm. Two separately rendered 32-sample native 1920×1080 stills passed
+visual inspection. Their settings and SHA-256 hashes are retained in
+`output/spatial-polish-20260915/detail-verification.json`. The earlier 20-second
+film remains evidence for the previous material recipe, not a rerender claim.
+
+The actual local app also paired and completed a new native preview with a
+saved overview camera in its downloaded GLB: job
+`e11b66bf-1220-438c-bd64-63fda30a4000`. Its preview decoded at 633×356, with no
+page or failed-request errors. The setup panel now supplies the current exact
+app origin, so HTTPS deployment origins can be explicitly allowed by the local
+renderer. `scripts/check-spatial-hosted-render.mjs` checks the configured hosted
+app against an exact release ID and its real CSP, browser local-network
+permission, origin-bound pairing, completed preview and camera-bearing GLB.
+Its failure diagnostics withhold private Playwright call logs; a real disabled
+pairing-input timeout with a synthetic sentinel confirmed no disclosure or
+pairing screenshot. That check read no real pairing credential.
+
+Release readiness and post-migration evidence now require all three spatial
+tables, 23 columns and six immutable/archive guards from migrations 0022/0023.
+The existing candidate canary saves/reloads a model, tour and camera library,
+rejects a stale revision and four archived writes, then proves exact synthetic
+project cleanup including all three spatial tables. The existing rollback
+canary retains compatibility with the previous Worker. All 42 focused release,
+readiness and real-D1 API checks passed. A separate isolated subprocess proved
+both canary entry points load without project dependencies; the privileged
+runner uses a reviewed synthetic JSON fixture. Worker packaging includes the
+shared readiness manifest.
+
+The authorized release uses the existing protected workflow: exact-head CI and
+CodeQL, reviewed squash merge, exact-main validation, verified protected D1
+exports and Time Travel bookmarks before migrations, staging canaries before
+production, and at least 30 minutes of monitoring against the exact production
+version. iPhone and spoken VoiceOver remain deferred. No paid launch or upload
+activation is included.
