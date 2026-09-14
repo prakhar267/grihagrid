@@ -104,6 +104,13 @@ Three.js `GLTFLoader` load also passed. Maximum observed coordinate error across
 these checks was below 0.002 mm. Browser and Blender lighting differ, while
 geometry, IDs, scale and camera paths share the same source.
 
+After the CLI input hardening, the actual browser-downloaded bundle from the
+accepted 13 m-wide revision was built again as
+`output/spatial-edited-roundtrip-final/`. Blender completed scene construction,
+GLB export and all 315 round-trip checks in 2.21 seconds, preserving revision 2
+and its supplied edited tour. This confirms the complete edit/download/local
+build path with the final file-reading code.
+
 The film hit its initial ten-minute bound and finished through a supervised
 resume from frame 477 using the unchanged saved scene. The job record preserves
 both the timeout and completion; total wall time was 758 seconds. Automatic
