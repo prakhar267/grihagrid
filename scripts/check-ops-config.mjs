@@ -367,7 +367,7 @@ export async function checkOpsConfig() {
       `canary residue proof must query exact IDs in ${table}`,
     );
   }
-  assert.match(releaseDbEvidence, /\["projects", "project_revisions", "reports", "revision_reports", "feedback", "report_shares"\]/u, "canary residue verification must fail closed on every project-owned report and revision table");
+  assert.match(releaseDbEvidence, /\["projects", "project_revisions", "reports", "revision_reports", "feedback", "report_shares", \.\.\.SPATIAL_SCHEMA\.tables\]/u, "canary residue verification must fail closed on every project-owned report, revision and spatial table");
   for (const object of [
     "table:report_shares",
     "table:report_share_read_counters",
@@ -425,9 +425,9 @@ export async function checkOpsConfig() {
     "protected-count evidence must not exceed D1's compound SELECT term limit",
   );
   assert.equal(
-    (deployWorkflow.match(/WITH target_tables\(table_name\) AS \(VALUES \('users'\),\('sessions'\),\('password_change_attempt_counters'\),\('login_attempt_fences'\),\('report_share_read_counters'\),\('report_share_create_counters'\),\('report_handoff_controls'\),\('projects'\),\('orders'\),\('project_revisions'\),\('report_feedback'\),\('report_shares'\),\('project_files'\),\('email_verification_tokens'\),\('password_reset_tokens'\),\('transactional_email_events'\),\('account_deletion_requests'\),\('account_deletion_receipts'\),\('professional_profiles'\),\('professional_review_requests'\),\('professional_review_messages'\),\('professional_review_events'\)\) SELECT target_tables\.table_name,columns\.name FROM target_tables JOIN pragma_table_info\(target_tables\.table_name\) AS columns/gu) || []).length,
+    (deployWorkflow.match(/WITH target_tables\(table_name\) AS \(VALUES \('users'\),\('sessions'\),\('password_change_attempt_counters'\),\('login_attempt_fences'\),\('report_share_read_counters'\),\('report_share_create_counters'\),\('report_handoff_controls'\),\('projects'\),\('orders'\),\('project_revisions'\),\('report_feedback'\),\('report_shares'\),\('project_files'\),\('email_verification_tokens'\),\('password_reset_tokens'\),\('transactional_email_events'\),\('account_deletion_requests'\),\('account_deletion_receipts'\),\('professional_profiles'\),\('professional_review_requests'\),\('professional_review_messages'\),\('professional_review_events'\),\('spatial_revisions'\),\('spatial_tour_revisions'\),\('spatial_camera_revisions'\)\) SELECT target_tables\.table_name,columns\.name FROM target_tables JOIN pragma_table_info\(target_tables\.table_name\) AS columns/gu) || []).length,
     2,
-    "both schema-column inventories must use one D1-compatible SELECT",
+    "both schema-column inventories must include all spatial tables in one D1-compatible SELECT",
   );
   assert.doesNotMatch(
     deployWorkflow,
