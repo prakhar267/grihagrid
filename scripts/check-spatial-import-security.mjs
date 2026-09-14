@@ -17,7 +17,7 @@ try{
     const hostile=plain.replace('<rect','<script>window.__drawingExecuted=true</script><foreignObject><iframe src="https://blocked.example.test/frame"/></foreignObject><image href="https://blocked.example.test/pixel"/><use href="https://blocked.example.test/use"/><style>@import "https://blocked.example.test/style";</style><rect onload="window.__drawingExecuted=true" style="fill:url(https://blocked.example.test/fill)"');
     const safe= sanitizedSvg(hostile),doc=new DOMParser().parseFromString(safe,'image/svg+xml');
     const forbidden=doc.querySelectorAll('script,foreignObject,iframe,image,use,style,object,embed').length;
-    const activeAttributes=[...doc.querySelectorAll('*')].flatMap(node=>[...node.attributes]).filter(a=>/^on|href|src|style/i.test(a.name)||a.value.includes('blocked.example.test')).length;
+    const activeAttributes=[...doc.querySelectorAll('*')].flatMap(node=>[...node.attributes]).filter(a=>/^on/i.test(a.name)||/href|src|style/i.test(a.name)||a.value.includes('blocked.example.test')).length;
     const rasterize=async text=>{const url=URL.createObjectURL(new Blob([text],{type:'image/svg+xml'}));try{const img=new Image();await new Promise((resolve,reject)=>{img.onload=resolve;img.onerror=reject;img.src=url});const canvas=document.createElement('canvas');canvas.width=400;canvas.height=300;const ctx=canvas.getContext('2d');ctx.drawImage(img,0,0);return [...ctx.getImageData(20,50,1,1).data]}finally{URL.revokeObjectURL(url)}};
     const normalPixel=await rasterize(sanitizedSvg('<?xml version="1.0" encoding="UTF-8"?>'+plain)),sanitizedPixel=await rasterize(safe);
     let rejectedEntities=false,rejectedNonSvg=false;
