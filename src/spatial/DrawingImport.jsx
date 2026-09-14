@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
+import { spatialUUID } from './ids.js'
 import { sanitizedSvg } from './drawing-svg.js'
 import { recognizeRaster, recognitionToBuilding, roomsFromWalls, calibrateScale, dimensionCandidates } from './drawing-recognition.js'
 import { validateBuilding, pointInPolygon } from './model.js'
 import './layout-editor.css'
 
-const uid = prefix => `${prefix}-${crypto.randomUUID().slice(0, 8)}`
+const uid = prefix => `${prefix}-${spatialUUID().slice(0, 8)}`
 const middle = polygon => polygon.reduce((sum, p) => [sum[0] + p[0] / polygon.length, sum[1] + p[1] / polygon.length], [0, 0])
 
 async function imageCanvas(file) {
@@ -72,20 +73,31 @@ export default function DrawingImport({ model, onChange, onStatus, onCancel }) {
     return { ...current, rooms: nextRooms.map((room, index) => ({ ...room, name: current.rooms[index]?.name || room.name })) }
   }
   function finishTrace() {
-    if (trace.length < 3) { setError('Mark at least three corners before closing the room.'); return }
-    const room = { id: uid('traced-room'), name: `Traced room ${result.rooms.length + 1}`, polygon: trace, confidence: 1 }
-    const walls = trace.map((start, i) => ({ id: uid('traced-wall'), start, end: trace[(i + 1) % trace.length], thickness: 5, confidence: 1 }))
-    edit(current => ({ ...current, rooms: [...current.rooms, room], walls: [...current.walls, ...walls] })); setTrace([]); setTool('select'); setSelected({ type: 'room', id: room.id })
+    try {
+      if (trace.length < 3) { setError('Mark at least three corners before closing the room.'); return }
+      const room = { id: uid('traced-room'), name: `Traced room ${result.rooms.length + 1}`, polygon: trace, confidence: 1 }
+      const walls = trace.map((start, i) => ({ id: uid('traced-wall'), start, end: trace[(i + 1) % trace.length], thickness: 5, confidence: 1 }))
+      edit(current => ({ ...current, rooms: [...current.rooms, room], walls: [...current.walls, ...walls] })); setTrace([]); setTool('select'); setSelected({ type: 'room', id: room.id })
+    } catch (e) { setError(e.message) }
+  }
+  function addDoor() {
+    try {
+      const length = Math.hypot(selectedWall.end[0] - selectedWall.start[0], selectedWall.end[1] - selectedWall.start[1])
+      const opening = { id: uid('manual-opening'), wallId: selectedWall.id, offset: length * 0.35, width: mmPerPixel ? 900 / mmPerPixel : length * 0.2, kind: 'door', confidence: 1 }
+      edit(current => ({ ...current, openings: [...current.openings, opening] }))
+    } catch (e) { setError(e.message) }
   }
   function clickCanvas(event) {
-    if (drag.current?.moved) return
-    const point = pixel(event)
-    if (tool === 'scale') { setScalePoints(points => points.length >= 2 ? [point] : [...points, point]); setMmPerPixel(null); setReviewed(false) }
-    if (tool === 'trace') setTrace(points => [...points, point])
-    if (tool === 'wall') {
-      if (!trace.length) setTrace([point])
-      else { const wall = { id: uid('manual-wall'), start: trace[0], end: point, thickness: 5, confidence: 1 }; edit(current => rebuildRooms({ ...current, walls: [...current.walls, wall] })); setTrace([]) }
-    }
+    try {
+      if (drag.current?.moved) return
+      const point = pixel(event)
+      if (tool === 'scale') { setScalePoints(points => points.length >= 2 ? [point] : [...points, point]); setMmPerPixel(null); setReviewed(false) }
+      if (tool === 'trace') setTrace(points => [...points, point])
+      if (tool === 'wall') {
+        if (!trace.length) setTrace([point])
+        else { const wall = { id: uid('manual-wall'), start: trace[0], end: point, thickness: 5, confidence: 1 }; edit(current => rebuildRooms({ ...current, walls: [...current.walls, wall] })); setTrace([]) }
+      }
+    } catch (e) { setError(e.message) }
   }
   function setCalibrationPoint(index, axis, value) {
     const number = Number(value)
@@ -150,7 +162,7 @@ export default function DrawingImport({ model, onChange, onStatus, onCancel }) {
         <h3>Scale & construction</h3><div className="le-calibration-points"><h4>Reference points (pixels)</h4><p>Click both ends in the drawing, or enter their pixel coordinates here.</p>{[0, 1].map(index => <div className="le-vertex-row" key={index}><span>{index + 1}</span>{[0, 1].map(axis => <label key={axis}>Point {index + 1} {axis ? 'Y' : 'X'}<input aria-label={`Calibration point ${index + 1} ${axis ? 'Y' : 'X'}`} type="number" min="0" max={axis ? source.height : source.width} step="1" value={scalePoints[index] ? Number(scalePoints[index][axis].toFixed(2)) : ''} onChange={event => setCalibrationPoint(index, axis, event.target.value)}/></label>)}</div>)}</div><label>Known distance (m)<input aria-label="Known drawing distance in metres" type="number" min=".1" step=".1" value={distance} onChange={event => { setDistance(event.target.value); setMmPerPixel(null); setReviewed(false) }}/></label><button type="button" disabled={scalePoints.length !== 2} onClick={calibrate}>Set calibrated scale</button><p>{mmPerPixel ? `${mmPerPixel.toFixed(2)} mm / pixel · calibrated by you` : `${scalePoints.length} of 2 scale points selected`}</p><label>Wall height (m)<input type="number" min="2.2" max="6" step=".1" value={height} onChange={event => { setHeight(event.target.value); setReviewed(false) }}/></label><label>Wall thickness (m)<input type="number" min=".08" max=".6" step=".01" value={thickness} onChange={event => { setThickness(event.target.value); setReviewed(false) }}/></label>
         <h3>Recognition settings</h3><label>Ink threshold <input aria-label="Drawing ink threshold" type="range" min="40" max="240" value={threshold} onChange={event => setThreshold(event.target.value)}/></label><label>Largest door gap (pixels)<input aria-label="Maximum detected door gap" type="number" min="3" max="220" value={gap} onChange={event => setGap(event.target.value)}/></label><button type="button" onClick={recognize} disabled={Boolean(busy)}>Run pixel recognition again</button><small>Rerunning replaces correction geometry. Calibration stays attached to this image.</small>
         {selectedRoom && <><h3>Selected room</h3><label>Room name<input value={selectedRoom.name} maxLength="80" onChange={event => edit(current => ({ ...current, rooms: current.rooms.map(room => room.id === selectedRoom.id ? { ...room, name: event.target.value } : room) }))}/></label></>}
-        {selectedWall && <><h3>Selected wall</h3><p>Pixel support: {Math.round(selectedWall.confidence * 100)}% · review required</p><button type="button" onClick={() => { const length = Math.hypot(selectedWall.end[0] - selectedWall.start[0], selectedWall.end[1] - selectedWall.start[1]); edit(current => ({ ...current, openings: [...current.openings, { id: uid('manual-opening'), wallId: selectedWall.id, offset: length * 0.35, width: mmPerPixel ? 900 / mmPerPixel : length * 0.2, kind: 'door', confidence: 1 }] })) }}>Add door to wall</button></>}
+        {selectedWall && <><h3>Selected wall</h3><p>Pixel support: {Math.round(selectedWall.confidence * 100)}% · review required</p><button type="button" onClick={addDoor}>Add door to wall</button></>}
         {selectedOpening && <><h3>Selected opening</h3><label>Type<select value={selectedOpening.kind} onChange={event => edit(current => ({ ...current, openings: current.openings.map(o => o.id === selectedOpening.id ? { ...o, kind: event.target.value } : o) }))}><option value="door">Door</option><option value="window">Window</option></select></label><label>Offset ({mmPerPixel ? 'm' : 'pixels'})<input type="number" step={mmPerPixel ? '.05' : '1'} value={Number((selectedOpening.offset * (mmPerPixel ? mmPerPixel / 1000 : 1)).toFixed(3))} onChange={event => edit(current => ({ ...current, openings: current.openings.map(o => o.id === selectedOpening.id ? { ...o, offset: Number(event.target.value) / (mmPerPixel ? mmPerPixel / 1000 : 1) } : o) }))}/></label><label>Width ({mmPerPixel ? 'm' : 'pixels'})<input type="number" step={mmPerPixel ? '.05' : '1'} value={Number((selectedOpening.width * (mmPerPixel ? mmPerPixel / 1000 : 1)).toFixed(3))} onChange={event => edit(current => ({ ...current, openings: current.openings.map(o => o.id === selectedOpening.id ? { ...o, width: Number(event.target.value) / (mmPerPixel ? mmPerPixel / 1000 : 1) } : o) }))}/></label></>}
       </aside></div>
       <div className="le-recognition-review"><div><h3>{result.rooms.length} rooms · {result.walls.length} walls · {result.openings.length} proposed openings</h3><ul>{result.issues.filter(issue => issue.id !== 'scale' || !mmPerPixel).map(issue => <li key={issue.id}>{issue.text}</li>)}</ul><p>{manualEdits ? `${manualEdits} correction actions included. Traced shapes are manual input.` : 'All current geometry was detected from this image; none was loaded from the demonstration house.'}</p></div><div><button type="button" disabled={Boolean(busy)} onClick={readText}>Read labels & dimensions on this device</button><p>Optional OCR downloads the app’s local language model, then processes the image in your browser. No image or extracted text is sent to an AI provider.</p>{ocr && <><p>OCR confidence {Math.round(ocr.confidence)}% · verify against your drawing.</p>{ocr.dimensions.length > 0 && <label>Candidate dimension<select defaultValue="" onChange={event => { setDistance(String(Number(event.target.value) / 1000)); setMmPerPixel(null); setReviewed(false); setTool('scale') }}><option value="" disabled>Choose a dimension to calibrate…</option>{ocr.dimensions.map((candidate, i) => <option key={i} value={candidate.distanceMm}>{candidate.text} · unverified</option>)}</select></label>}<details><summary>Recognized text</summary><pre>{ocr.text}</pre></details></>}</div></div>

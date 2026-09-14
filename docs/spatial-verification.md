@@ -50,6 +50,8 @@ Browser evidence and screenshots are in ignored local directories:
 - `qa-artifacts/spatial-render-ui/`: actual create/cancel/resume and render action styles.
 - `qa-artifacts/spatial-film-ui/`: completed-job metadata, whole-video playback counters and five sought frames.
 - `qa-artifacts/spatial-live-gemini/`: real provider/app result, anonymous-request and source-fence checks, successful UI screenshot, and the preserved first failed attempt.
+- `qa-artifacts/spatial-ids/`: UUID fallback unit and browser checks, including actionable errors when secure entropy is unavailable.
+- `qa-artifacts/spatial-phone-static/lan-edit-verification.json`: real LAN HTTP browser environment, edited scene, screenshot and exact source/served-asset hashes. This is desktop Chrome with a mobile viewport, not a physical phone.
 - `qa-artifacts/spatial-final/native-accessibility-resume.json`: actual VoiceOver runtime, native spoken-text probe, restored settings and the physical iPhone authentication limit.
 
 The strict-CSP import checkpoint verified the build from `2026-09-14T12:04:02.957Z`
@@ -110,6 +112,20 @@ No raw provider body, secret or original freeform instruction was logged. The
 UI screenshot and exported tour validation establish the completed direction
 journey; they do not claim a separate Blender film of that exact AI-generated
 tour. The local parser continues to label its own output separately.
+
+Preparing the phone preview exposed a real compatibility issue: browsers can
+omit `crypto.randomUUID` on LAN HTTP while still providing
+`crypto.getRandomValues`. Spatial object, viewpoint and request IDs now use
+native UUIDs when available and otherwise construct UUIDv4 from 16 secure random
+bytes. If neither API works, the editor reports an error before creating an
+object. Request IDs retain the existing exact-body retry behavior. Four focused
+unit tests passed, along with browser checks for drawing corrections and absent
+entropy. A separate Chrome journey against actual LAN HTTP confirmed the native
+insecure-context environment without injecting or replacing crypto. It saved a
+viewpoint and created a floor, room, perimeter walls, chair, door and window,
+then accepted the concept and exported a valid model with unique IDs. There were
+no uncaught page errors or horizontal overflow at 390 pixels. This establishes
+the LAN browser path; physical-device testing remains separate.
 
 VoiceOver was started without its tutorial and its real runtime was observed.
 Native Safari navigation and copy-last-spoken commands did not yield verifiable

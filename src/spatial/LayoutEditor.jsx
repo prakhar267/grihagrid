@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { spatialUUID } from './ids.js'
 import { pointInPolygon, validateBuilding } from './model.js'
 import { toV2, stairPolygon, doorLeafPrimitive } from './model-v2.js'
 import { applySceneEdit } from './editor-ops.js'
 import './layout-editor.css'
 
-const id = prefix => `${prefix}-${crypto.randomUUID().slice(0, 8)}`
+const id = prefix => `${prefix}-${spatialUUID().slice(0, 8)}`
 const metres = value => Number((value / 1000).toFixed(3))
 const middle = polygon => polygon.reduce((sum, p) => [sum[0] + p[0] / polygon.length, sum[1] + p[1] / polygon.length], [0, 0])
 const kinds = ['chair', 'sofa', 'bed', 'table', 'desk', 'coffee-table', 'counter', 'island', 'stool', 'wardrobe', 'shelf', 'nightstand', 'console', 'rug', 'plant', 'tree', 'lamp', 'bathtub', 'toilet']
@@ -71,41 +72,45 @@ export default function LayoutEditor({ model, onChange, onStatus, selectedRoomId
     return candidates[0]?.distance < Math.max(450, box[2] / 35) ? candidates[0] : null
   }
   function finishRoom() {
-    if (points.length < 3) { setError('Mark three or more corners before closing the room.'); return }
-    const room = { id: id('room'), name: `Room ${scene.rooms.length + 1}`, floorId, polygon: points, color: '#d4c5ae', exterior: false }
-    if (commit({ type: 'addRoom', room, withWalls: true })) { setPoints([]); setTool('select'); select('room', room.id) }
+    try {
+      if (points.length < 3) { setError('Mark three or more corners before closing the room.'); return }
+      const room = { id: id('room'), name: `Room ${scene.rooms.length + 1}`, floorId, polygon: points, color: '#d4c5ae', exterior: false }
+      if (commit({ type: 'addRoom', room, withWalls: true })) { setPoints([]); setTool('select'); select('room', room.id) }
+    } catch (e) { setError(e.message) }
   }
   function click(event) {
-    if (disabled) return
-    if (drag.current?.moved) return
-    const p = point(event)
-    if (tool === 'room') { setPoints(items => [...items, p]); return }
-    if (tool === 'wall') {
-      if (!points.length) setPoints([p])
-      else { const wall = { id: id('wall'), floorId, start: points[0], end: p, height: floor.height, thickness: 180, roomIds: roomAt(p) ? [roomAt(p).id] : [], openings: [] }; if (commit({ type: 'addWall', wall })) { setPoints([]); select('wall', wall.id) } }
-    }
-    if (tool === 'door' || tool === 'window') {
-      const target = nearestWall(p)
-      if (!target) { setError('Click close to a wall to place an opening.'); return }
-      const width = tool === 'door' ? 900 : 1500, opening = { id: id(tool), kind: tool, offset: Math.max(0, Math.min(target.length - width, target.along - width / 2)), width, sill: tool === 'door' ? 0 : 900, height: tool === 'door' ? 2200 : 1400, open: tool === 'door' }
-      if (commit({ type: 'upsertOpening', wallId: target.wall.id, opening })) select('opening', opening.id, { wallId: target.wall.id })
-    }
-    if (tool === 'furniture') {
-      const room = roomAt(p)
-      if (!room) { setError('Place furniture inside a room on this floor.'); return }
-      const furniture = { id: id(furnitureKind), roomId: room.id, floorId, kind: furnitureKind, position: [...p, 0], size: sizes[furnitureKind], rotation: 0, color: ['plant', 'tree'].includes(furnitureKind) ? '#687b51' : '#b99c79' }
-      if (commit({ type: 'upsertFurniture', furniture })) { setTool('select'); select('furniture', furniture.id) }
-    }
-    if (tool === 'stairs') {
-      if (!points.length) setPoints([p])
-      else {
-        const targetFloor = scene.floors.find(f => f.id === stairTarget && f.elevation > floor.elevation) || scene.floors.find(f => f.elevation > floor.elevation), lower = roomAt(points[0]), upper = targetFloor && roomAt(p, targetFloor.id)
-        if (!targetFloor || !lower || !upper) { setError('A staircase needs rooms on both floors. Its complete run must fit within both room footprints.'); return }
-        const stair = { id: id('stair'), name: 'New staircase', fromFloorId: floorId, toFloorId: targetFloor.id, start: points[0], end: p, width: 1200, steps: Math.ceil((targetFloor.elevation - floor.elevation) / 190), roomIds: [lower.id, upper.id] }
-        if (commit({ type: 'upsertStair', stair })) { setPoints([]); setTool('select'); select('stair', stair.id) }
+    try {
+      if (disabled) return
+      if (drag.current?.moved) return
+      const p = point(event)
+      if (tool === 'room') { setPoints(items => [...items, p]); return }
+      if (tool === 'wall') {
+        if (!points.length) setPoints([p])
+        else { const wall = { id: id('wall'), floorId, start: points[0], end: p, height: floor.height, thickness: 180, roomIds: roomAt(p) ? [roomAt(p).id] : [], openings: [] }; if (commit({ type: 'addWall', wall })) { setPoints([]); select('wall', wall.id) } }
       }
-    }
-    if (tool === 'select') setSelection(null)
+      if (tool === 'door' || tool === 'window') {
+        const target = nearestWall(p)
+        if (!target) { setError('Click close to a wall to place an opening.'); return }
+        const width = tool === 'door' ? 900 : 1500, opening = { id: id(tool), kind: tool, offset: Math.max(0, Math.min(target.length - width, target.along - width / 2)), width, sill: tool === 'door' ? 0 : 900, height: tool === 'door' ? 2200 : 1400, open: tool === 'door' }
+        if (commit({ type: 'upsertOpening', wallId: target.wall.id, opening })) select('opening', opening.id, { wallId: target.wall.id })
+      }
+      if (tool === 'furniture') {
+        const room = roomAt(p)
+        if (!room) { setError('Place furniture inside a room on this floor.'); return }
+        const furniture = { id: id(furnitureKind), roomId: room.id, floorId, kind: furnitureKind, position: [...p, 0], size: sizes[furnitureKind], rotation: 0, color: ['plant', 'tree'].includes(furnitureKind) ? '#687b51' : '#b99c79' }
+        if (commit({ type: 'upsertFurniture', furniture })) { setTool('select'); select('furniture', furniture.id) }
+      }
+      if (tool === 'stairs') {
+        if (!points.length) setPoints([p])
+        else {
+          const targetFloor = scene.floors.find(f => f.id === stairTarget && f.elevation > floor.elevation) || scene.floors.find(f => f.elevation > floor.elevation), lower = roomAt(points[0]), upper = targetFloor && roomAt(p, targetFloor.id)
+          if (!targetFloor || !lower || !upper) { setError('A staircase needs rooms on both floors. Its complete run must fit within both room footprints.'); return }
+          const stair = { id: id('stair'), name: 'New staircase', fromFloorId: floorId, toFloorId: targetFloor.id, start: points[0], end: p, width: 1200, steps: Math.ceil((targetFloor.elevation - floor.elevation) / 190), roomIds: [lower.id, upper.id] }
+          if (commit({ type: 'upsertStair', stair })) { setPoints([]); setTool('select'); select('stair', stair.id) }
+        }
+      }
+      if (tool === 'select') setSelection(null)
+    } catch (e) { setError(e.message) }
   }
   function beginDrag(event, descriptor) {
     if (disabled) return
@@ -165,8 +170,10 @@ export default function LayoutEditor({ model, onChange, onStatus, selectedRoomId
     if (directions[event.key] && selection) { event.preventDefault(); nudge(...directions[event.key].map(v => v * (event.shiftKey ? 500 : Number(snap) || 100))) }
   }
   function addFloor() {
-    const last = [...scene.floors].sort((a, b) => b.elevation - a.elevation)[0], next = { id: id('floor'), name: `Floor ${scene.floors.length + 1}`, elevation: last.elevation + last.height + 200, height: 3000 }
-    if (commit({ type: 'addFloor', floor: next })) chooseFloor(next.id)
+    try {
+      const last = [...scene.floors].sort((a, b) => b.elevation - a.elevation)[0], next = { id: id('floor'), name: `Floor ${scene.floors.length + 1}`, elevation: last.elevation + last.height + 200, height: 3000 }
+      if (commit({ type: 'addFloor', floor: next })) chooseFloor(next.id)
+    } catch (e) { setError(e.message) }
   }
   function removeFloor() {
     const roomIds = scene.rooms.filter(r => r.floorId === floorId).map(r => r.id), stairIds = scene.stairs.filter(s => [s.fromFloorId, s.toFloorId].includes(floorId)).map(s => s.id)

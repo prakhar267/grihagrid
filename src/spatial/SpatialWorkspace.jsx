@@ -1,4 +1,5 @@
 import { Component, Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { spatialUUID } from './ids.js'
 import { ArrowLeft, ArrowRight, ArrowsOut, Blueprint, Buildings, Camera, Check, Compass, DownloadSimple, Eye, FloppyDisk, House, List, Pause, Play, Plus, ArrowClockwise, Sparkle, Trash, WarningCircle, X } from '@phosphor-icons/react';
 import { api } from '../api.js';
 import { createDemoBuilding, createMultiFloorDemo, validateBuilding, resizeBuilding } from './model.js';
@@ -140,15 +141,16 @@ export default function SpatialWorkspace({ projectId, onNavigate }) {
     setBusy('study');setError('');try { if(projectId){setStudy(await api(`/api/projects/${projectId}/spatial/preview`,{method:'POST',body:{...base(),model}}));} else setStudy({model:structuredClone(model),changeStudy:{summary:'Accept this layout as a new concept revision. Existing camera tours will need to be rebuilt.',estimateUnchanged:true}}); }catch(e){setError(e.message);}finally{setBusy('');}
   }
   async function acceptStudy() {
-    setBusy('save');setError('');try { if(projectId){requestKey.current ||= crypto.randomUUID(); const result=await api(`/api/projects/${projectId}/spatial`,{method:'POST',headers:{'idempotency-key':requestKey.current},body:{...base(),model:study.model,acceptedImpact:true}});applyRemote(result);requestKey.current=null;}else{setModel(study.model);setAccepted(study.model);setDirty(false);setStudy(null);setHistory(current=>[{revision:study.model.revision,createdAt:new Date().toISOString()},...current]);}setMessage('Concept revision accepted. Rebuild the tour to use the updated layout.');}catch(e){setError(e.message);}finally{setBusy('');}
+    setBusy('save');setError('');try { if(projectId){requestKey.current ||= spatialUUID(); const result=await api(`/api/projects/${projectId}/spatial`,{method:'POST',headers:{'idempotency-key':requestKey.current},body:{...base(),model:study.model,acceptedImpact:true}});applyRemote(result);requestKey.current=null;}else{setModel(study.model);setAccepted(study.model);setDirty(false);setStudy(null);setHistory(current=>[{revision:study.model.revision,createdAt:new Date().toISOString()},...current]);}setMessage('Concept revision accepted. Rebuild the tour to use the updated layout.');}catch(e){setError(e.message);}finally{setBusy('');}
   }
   async function saveTour() {
     if(!projectId){setMessage('Demo tour is held in this open tab. Export the scene to keep a copy.');return;}
     if(tourConflict){setError('Review the latest tour revision before saving this draft.');return;}
     const serialized=JSON.stringify({...base(),expectedTourRevision:remote?.tourRevision||0,tour});
-    if(tourRequest.current?.body!==serialized)tourRequest.current={body:serialized,key:crypto.randomUUID()};
-    const request=tourRequest.current;
-    setBusy('tour-save');setError('');setMessage('');try {const result=await api(`/api/projects/${projectId}/spatial/tour`,{method:'POST',headers:{'idempotency-key':request.key},body:JSON.parse(request.body)});tourRequest.current=null;applyRemote(result);setMessage('A separate camera-tour revision has been saved.');}catch(e){if(e.status===409)setTourConflict({draft:tour,baseRevision:remote?.tourRevision||0});setError(e.message);}finally{setBusy('');}
+    setBusy('tour-save');setError('');setMessage('');try {
+      if(tourRequest.current?.body!==serialized)tourRequest.current={body:serialized,key:spatialUUID()};
+      const request=tourRequest.current;
+      const result=await api(`/api/projects/${projectId}/spatial/tour`,{method:'POST',headers:{'idempotency-key':request.key},body:JSON.parse(request.body)});tourRequest.current=null;applyRemote(result);setMessage('A separate camera-tour revision has been saved.');}catch(e){if(e.status===409)setTourConflict({draft:tour,baseRevision:remote?.tourRevision||0});setError(e.message);}finally{setBusy('');}
   }
   const compatibleSource=latest=>latest.project.inputRevision===remote.project.inputRevision&&latest.spatialRevision===remote.spatialRevision&&latest.model?.id===accepted.id&&latest.model?.revision===accepted.revision&&latest.project.status!=='archived'&&!latest.stale;
   async function reviewTourConflict(){
@@ -181,9 +183,10 @@ export default function SpatialWorkspace({ projectId, onNavigate }) {
     if(cameraConflict){setError('Review the latest camera library before saving this draft.');return;}
     if(dirty||!remote?.spatialRevision||remote.stale){setError('Accept the current concept before saving viewpoints.');return;}
     const body={...base(),expectedCameraRevision:remote.cameraRevision||0,viewpoints:next},serialized=JSON.stringify(body);
-    if(cameraRequest.current?.body!==serialized)cameraRequest.current={body:serialized,key:crypto.randomUUID()};
     setBusy('camera-save');setError('');setMessage('');
-    try{const data=await api(`/api/projects/${projectId}/spatial/viewpoints`,{method:'POST',headers:{'idempotency-key':cameraRequest.current.key},body});setViews(data.viewpoints);setViewsDirty(false);viewsDirtyRef.current=false;setRemote(current=>({...current,cameraRevision:data.cameraRevision,viewpoints:data.viewpoints}));cameraRequest.current=null;setMessage('Camera library saved privately. It is available when you reopen this project on another device.');}catch(e){setViews(next);setViewsDirty(true);viewsDirtyRef.current=true;if(e.status===409)setCameraConflict({draft:next,base:remote.viewpoints||[],baseRevision:remote.cameraRevision||0,choices:{}});setError(e.message);}finally{setBusy('');}
+    try{
+      if(cameraRequest.current?.body!==serialized)cameraRequest.current={body:serialized,key:spatialUUID()};
+      const data=await api(`/api/projects/${projectId}/spatial/viewpoints`,{method:'POST',headers:{'idempotency-key':cameraRequest.current.key},body});setViews(data.viewpoints);setViewsDirty(false);viewsDirtyRef.current=false;setRemote(current=>({...current,cameraRevision:data.cameraRevision,viewpoints:data.viewpoints}));cameraRequest.current=null;setMessage('Camera library saved privately. It is available when you reopen this project on another device.');}catch(e){setViews(next);setViewsDirty(true);viewsDirtyRef.current=true;if(e.status===409)setCameraConflict({draft:next,base:remote.viewpoints||[],baseRevision:remote.cameraRevision||0,choices:{}});setError(e.message);}finally{setBusy('');}
   }
   async function reviewCameraConflict(){
     if(!cameraConflict)return;
@@ -207,8 +210,10 @@ export default function SpatialWorkspace({ projectId, onNavigate }) {
   function saveView(){
     if(views.length>=40){setError('The camera library supports up to 40 viewpoints. Remove one before adding another.');return;}
     const view=viewer.current?.getView();if(!view){setError('Let the 3D scene finish loading before saving a viewpoint.');return;}
-    const next=[...views,{id:crypto.randomUUID(),name:`View ${views.length+1}`,buildingId:model.id,sourceRevision:model.revision,floorId:activeFloor.id,position:view.position,target:view.target,fov:view.fov}];
-    void persistViews(next);
+    try {
+      const next=[...views,{id:spatialUUID(),name:`View ${views.length+1}`,buildingId:model.id,sourceRevision:model.revision,floorId:activeFloor.id,position:view.position,target:view.target,fov:view.fov}];
+      void persistViews(next);
+    } catch(e) { setError(e.message); }
   }
   function changeViews(next){setViews(next);setViewsDirty(true);viewsDirtyRef.current=true;cameraRequest.current=null;}
 
