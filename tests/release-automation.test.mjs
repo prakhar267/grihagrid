@@ -40,6 +40,22 @@ function workflowStep(source, name) {
   return next === -1 ? source.slice(start) : source.slice(start, next);
 }
 
+async function observationSources() {
+  const [workflow, controller, attempt] = await Promise.all([
+    "../.github/workflows/deploy.yml",
+    "../scripts/observe-release.mjs",
+    "../scripts/observe-release-attempt.sh",
+  ].map(path => readFile(new URL(path, import.meta.url), "utf8")));
+  const step = workflowStep(workflow, "Observe the exact production version for 30 minutes");
+  assert.match(step, /node scripts\/observe-release\.mjs "\$ORIGIN" "\$GRIHAGRID_RELEASE_ID" release-evidence\/production/u);
+  assert.match(controller, /const ATTEMPT_SCRIPT = fileURLToPath\(new URL\("\.\/observe-release-attempt\.sh", import\.meta\.url\)\);/u);
+  assert.match(controller, /spawn\("bash", \[ATTEMPT_SCRIPT, origin, releaseId, directory, String\(attempt\)\], \{/u);
+  assert.match(controller, /const runAttempt = options\.runAttempt \|\| runObservationAttempt;/u);
+  assert.match(controller, /await observeRelease\(process\.argv\[2\], process\.argv\[3\], process\.argv\[4\], \{ signal: abort\.signal \}\)/u);
+  assert.match(attempt, /node scripts\/monitor-release\.mjs "\$ORIGIN" "\$GRIHAGRID_RELEASE_ID"/u);
+  return { workflow, step, controller, attempt };
+}
+
 test('privileged release canaries import and execute without repository dependencies', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'grihagrid-canary-no-dependencies-'));
   try {
@@ -1342,8 +1358,7 @@ test("release monitor distinguishes lost tail coverage from an application regre
 });
 
 test("release tails suppress the Wrangler banner while preserving warnings and errors", async () => {
-  const workflow = await readFile(new URL("../.github/workflows/deploy.yml", import.meta.url), "utf8");
-  const observe = workflowStep(workflow, "Observe the exact production version for 30 minutes");
+  const { attempt: observe } = await observationSources();
   assert.equal(
     (observe.match(/WRANGLER_LOG=warn WRANGLER_HIDE_BANNER=true WRANGLER_WRITE_LOGS=false/gu) || []).length,
     2,
@@ -1356,10 +1371,11 @@ test("release tails suppress the Wrangler banner while preserving warnings and e
   assert.match(observe, /\|\| serverStderr\.unexpected/u);
   assert.match(observe, /process\.env\.TAILS_ALIVE !== "true"/u);
   assert.match(observe, /invocation\.eventCount > 0 \|\| server\.eventCount > 0/u);
-  const waitsFinished = observe.indexOf('wait "$server_pid"');
   const invocationStderrMeasured = observe.indexOf('invocation_stderr_summary="$(node scripts/classify-tail-stderr.mjs "$invocation_stderr")"');
+  const waitsFinished = observe.lastIndexOf("\nstop_tail_groups\n", invocationStderrMeasured);
   const serverStderrMeasured = observe.indexOf('server_stderr_summary="$(node scripts/classify-tail-stderr.mjs "$server_stderr")"');
-  const stderrRemoved = observe.indexOf('rm -f -- "$invocation_stderr" "$server_stderr"');
+  const stderrRemoved = observe.indexOf('rm -f -- "$invocation_stderr" "$server_stderr" "$monitor_stderr"');
+  assert.match(observe, /stop_tail_groups\(\) \{[\s\S]*?wait "\$invocation_pid"[\s\S]*?wait "\$server_pid"[\s\S]*?\n\}/u);
   assert.ok(
     waitsFinished >= 0
       && invocationStderrMeasured > waitsFinished
@@ -1421,8 +1437,7 @@ test("release tails suppress the Wrangler banner while preserving warnings and e
 });
 
 test("release tail processes fail closed unless both finish by operator SIGTERM", async () => {
-  const workflow = await readFile(new URL("../.github/workflows/deploy.yml", import.meta.url), "utf8");
-  const observe = workflowStep(workflow, "Observe the exact production version for 30 minutes");
+  const { attempt: observe } = await observationSources();
   assert.match(
     observe,
     /const tailsStoppedByOperator = invocationStatus === 143 && serverStatus === 143;/u,
@@ -1476,6 +1491,41 @@ test("release tail processes fail closed unless both finish by operator SIGTERM"
     false,
     "the exact known proxy notice must not hide a healthy monitored release",
   );
+});
+
+test("each extracted observation attempt preserves isolated tails, credential removal and aggregate finalization", async () => {
+  const { attempt } = await observationSources();
+  assert.match(attempt, /umask 077/u);
+  assert.match(attempt, /private_directory="\$\(mktemp -d /u);
+  assert.match(attempt, /trap cleanup EXIT/u);
+  assert.match(attempt, /trap 'exit 143' TERM/u);
+  assert.match(attempt, /for cleanup_tick in \$\(seq 1 20\)/u);
+  assert.match(attempt, /if \[ "\$invocation_forced" = true \]; then invocation_status=137; fi/u);
+  assert.match(attempt, /if \[ "\$server_forced" = true \]; then server_status=137; fi/u);
+  assert.equal((attempt.match(/setsid bash -c/gu) || []).length, 2);
+  assert.equal((attempt.match(/set -o pipefail/gu) || []).length, 2);
+  assert.equal((attempt.match(/timeout --signal=INT --kill-after=10s 2100s/gu) || []).length, 2);
+  assert.equal((attempt.match(/--version-id "\$GRIHAGRID_RELEASE_ID"/gu) || []).length, 2);
+  assert.equal((attempt.match(/env -u CF_DEPLOY_TOKEN -u CF_DEPLOY_ACCOUNT -u CLOUDFLARE_API_TOKEN -u CLOUDFLARE_ACCOUNT_ID/gu) || []).length, 2);
+  assert.equal((attempt.match(/TAIL_STOP_ON_EVENT=true TAIL_PROCESS_GROUP="\$\$"/gu) || []).length, 2);
+  assert.match(attempt, /unset CF_DEPLOY_TOKEN CF_DEPLOY_ACCOUNT/u);
+  assert.match(attempt, /GRIHAGRID_MONITOR_WATCH_PIDS="\$invocation_pid,\$server_pid"/u);
+  assert.match(attempt, /GRIHAGRID_MONITOR_WATCH_STDERR="\$watch_stderr"/u);
+  assert.match(attempt, /for attempt in \$\(seq 1 50\)/u);
+  assert.match(attempt, /sleep 0\.1/u);
+  assert.match(attempt, /echo "public_regression=\$public_regression"/u);
+  assert.match(attempt, /echo "tail_regression=\$tail_regression"/u);
+  assert.match(attempt, /completedFullDuration: !stoppedEarly && monitor\.completedFullDuration === true/u);
+  assert.match(attempt, /finalFencePassed: monitor\.finalFencePassed/u);
+  assert.match(attempt, /finalFenceReleaseId: monitor\.finalFenceReleaseId/u);
+  assert.match(attempt, /invocationStderr: normalizeDiagnostics\(invocationStderr\)/u);
+  assert.match(attempt, /serverStderr: normalizeDiagnostics\(serverStderr\)/u);
+  assert.match(attempt, /2> "\$monitor_stderr"/u);
+  assert.match(attempt, /before\.size <= 256/u);
+  assert.match(attempt, /bytes\.subarray\(0, length\)\.equals\(Buffer\.from\(expected\[process\.argv\[3\]\]\)\)/u);
+  assert.match(attempt, /if \[ "\$monitor_stderr_valid" != true \]; then exit 3; fi/u);
+  assert.match(attempt, /if \(regression \|\| infrastructureFailure\) process\.exit\(1\)/u);
+  assert.doesNotMatch(attempt, /(?:invocation|server)-errors\.ndjson/u);
 });
 
 test("release rollback polling propagates legacy Worker compatibility to every smoke sample", async () => {

@@ -19,15 +19,17 @@ async function timedFetch(url, init = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
   const startedAt = performance.now();
   let lastError;
   for (let attempt = 1; attempt <= MAX_TRANSIENT_ATTEMPTS; attempt += 1) {
+    init.signal?.throwIfAborted();
     try {
       const response = await fetch(url, {
         ...init,
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: init.signal ? AbortSignal.any([init.signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
         redirect: "error",
         headers: { "user-agent": "grihagrid-read-only-synthetic/1.0", ...(init.headers || {}) },
       });
       return { response, latencyMs: Math.round(performance.now() - startedAt), attempts: attempt };
     } catch (error) {
+      if (init.signal?.aborted && (error === init.signal.reason || error?.name === "AbortError")) throw init.signal.reason;
       lastError = error;
       const transient = error?.name === "TimeoutError" || error?.name === "AbortError" || error instanceof TypeError;
       if (!transient || attempt === MAX_TRANSIENT_ATTEMPTS) {
@@ -55,8 +57,8 @@ function assertFreshTime(value, label) {
   assert.ok(Math.abs(Date.now() - timestamp) < 5 * 60 * 1000, `${label} timestamp must be fresh`);
 }
 
-async function jsonCheck(origin, path, init, validate) {
-  const { response, latencyMs, attempts } = await timedFetch(new URL(path, origin), init);
+async function jsonCheck(origin, path, init, validate, signal) {
+  const { response, latencyMs, attempts } = await timedFetch(new URL(path, origin), { ...init, signal });
   assert.equal(response.status, 200, `${path} returned ${response.status}`);
   assertSecurityHeaders(response, path);
   assert.match(response.headers.get("content-type") || "", /^application\/json\b/u, `${path} must return JSON`);
@@ -66,10 +68,10 @@ async function jsonCheck(origin, path, init, validate) {
   return { path, status: response.status, latencyMs, attempts };
 }
 
-async function reportShareDocumentCheck(origin, method) {
+async function reportShareDocumentCheck(origin, method, signal) {
   const path="/share/report";
   const {response,latencyMs,attempts}=await timedFetch(new URL(path,origin),{
-    method,
+    method, signal,
     headers:{accept:"text/html"},
   });
   assert.equal(response.status,200,`${method} ${path} returned ${response.status}`);
@@ -82,10 +84,10 @@ async function reportShareDocumentCheck(origin, method) {
   return {path,method,status:response.status,latencyMs,attempts};
 }
 
-async function familyAlignmentDocumentCheck(origin, method) {
+async function familyAlignmentDocumentCheck(origin, method, signal) {
   const path="/align";
   const {response,latencyMs,attempts}=await timedFetch(new URL(path,origin),{
-    method,
+    method, signal,
     headers:{accept:"text/html"},
   });
   assert.equal(response.status,200,`${method} ${path} returned ${response.status}`);
@@ -98,10 +100,10 @@ async function familyAlignmentDocumentCheck(origin, method) {
   return {path,method,status:response.status,latencyMs,attempts};
 }
 
-async function sharedEstimateDocumentCheck(origin, method) {
+async function sharedEstimateDocumentCheck(origin, method, signal) {
   const path="/estimate?v=1&width=30&length=50&city=Pune&floors=G%2B1&quality=Signature";
   const {response,latencyMs,attempts}=await timedFetch(new URL(path,origin),{
-    method,
+    method, signal,
     headers:{accept:"text/html"},
   });
   assert.equal(response.status,200,`${method} /estimate returned ${response.status}`);
@@ -134,7 +136,7 @@ export async function runSmoke(rawOrigin, options = {}) {
   const readinessInit = releaseProbe ? { headers: { "cache-control": "no-cache" } } : {};
   const checks = [];
 
-  const home = await timedFetch(origin);
+  const home = await timedFetch(origin, { signal: options.signal });
   assert.equal(home.response.status, 200, `homepage returned ${home.response.status}`);
   assertSecurityHeaders(home.response, "/");
   assert.match(home.response.headers.get("content-type") || "", /^text\/html\b/u, "homepage must return HTML");
@@ -143,19 +145,19 @@ export async function runSmoke(rawOrigin, options = {}) {
   checks.push({ path: "/", status: 200, latencyMs: home.latencyMs, attempts: home.attempts });
 
   if (!legacyWorker) {
-    checks.push(await reportShareDocumentCheck(origin,"GET"));
-    checks.push(await reportShareDocumentCheck(origin,"HEAD"));
-    checks.push(await familyAlignmentDocumentCheck(origin,"GET"));
-    checks.push(await familyAlignmentDocumentCheck(origin,"HEAD"));
-    checks.push(await sharedEstimateDocumentCheck(origin,"GET"));
-    checks.push(await sharedEstimateDocumentCheck(origin,"HEAD"));
+    checks.push(await reportShareDocumentCheck(origin,"GET",options.signal));
+    checks.push(await reportShareDocumentCheck(origin,"HEAD",options.signal));
+    checks.push(await familyAlignmentDocumentCheck(origin,"GET",options.signal));
+    checks.push(await familyAlignmentDocumentCheck(origin,"HEAD",options.signal));
+    checks.push(await sharedEstimateDocumentCheck(origin,"GET",options.signal));
+    checks.push(await sharedEstimateDocumentCheck(origin,"HEAD",options.signal));
   }
 
   checks.push(await jsonCheck(origin, "/api/health", {}, (body) => {
     assert.equal(body.status, "ok");
     assert.equal(body.service, "grihagrid");
     assertFreshTime(body.time, "health");
-  }));
+  }, options.signal));
 
   checks.push(await jsonCheck(origin, "/api/estimate", {
     method: "POST",
@@ -179,7 +181,7 @@ export async function runSmoke(rawOrigin, options = {}) {
     assert.equal(body.basis?.cityFactor, 1);
     assert.equal(body.basis?.taxesAndStatutoryFees, "excluded");
     assert.ok(Array.isArray(body.basis?.exclusions) && body.basis.exclusions.length >= 1);
-  }));
+  }, options.signal));
 
   checks.push(await jsonCheck(origin, "/api/commerce/catalog", {}, (body) => {
     assert.ok(Array.isArray(body.plans), "commerce catalog plans must be an array");
@@ -194,7 +196,7 @@ export async function runSmoke(rawOrigin, options = {}) {
       assert.equal(accepting[0].amountPaise, 99_900);
       assert.equal(accepting[0].currency, "INR");
     }
-  }));
+  }, options.signal));
 
   // Keep the exact-version assertion last so post-readiness endpoint latency
   // can never be counted toward the sustained propagation window.
@@ -256,7 +258,7 @@ export async function runSmoke(rawOrigin, options = {}) {
     }
     assertFreshTime(body.time, "readiness");
     assert.ok(!JSON.stringify(body).match(/(?:secret|api[_-]?key|authorization|cookie)/iu), "readiness may not expose secret-shaped fields");
-  }));
+  }, options.signal));
 
   return {
     origin: origin.origin,
