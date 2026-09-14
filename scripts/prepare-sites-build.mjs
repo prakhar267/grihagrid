@@ -20,6 +20,11 @@ mkdirSync(path.join(dist, "src"), { recursive: true });
 mkdirSync(path.join(dist, ".openai"), { recursive: true });
 copyFileSync(worker, path.join(dist, "server", "index.js"));
 copyFileSync(architectReport, path.join(dist, "src", "architect-report.js"));
+copyFileSync(path.join(root, "worker", "spatial.js"), path.join(dist, "server", "spatial.js"));
+mkdirSync(path.join(dist, "src", "spatial"), { recursive: true });
+for (const file of ["model.js", "navigation.js", "tours.js"]) {
+  copyFileSync(path.join(root, "src", "spatial", file), path.join(dist, "src", "spatial", file));
+}
 copyFileSync(hosting, path.join(dist, ".openai", "hosting.json"));
 
 const packagedMigrations = path.join(dist, ".openai", "drizzle");

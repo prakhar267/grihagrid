@@ -1,3 +1,4 @@
+import { handleSpatialRequest } from "./spatial.js";
 import { buildArchitecturalHandoff, publicArchitecturalProgramme } from "../src/architect-report.js";
 
 const JSON_HEADERS = {
@@ -9367,6 +9368,13 @@ async function api(request, env, ctx, url) {
       if (request.method === "POST") return await createReportShare(request, env, projectId);
       return methodNotAllowed(["GET", "POST"]);
     }
+    const spatialMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/spatial(?:\/(preview|tour|tour-intent))?$/u);
+    if (spatialMatch) return await handleSpatialRequest(request, env, decodeProjectPathSegment(spatialMatch[1]), spatialMatch[2] || '', {
+      HttpError, json, requireDatabase, getSession, ownedProject, requireActiveProject,
+      requireTrustedOrigin, requireCsrf, readJson, digestHex, normalizeIdempotencyKey,
+      requireAbuseControl, rateLimit, methodNotAllowed, requireGeminiConfig,
+      acquireAiGenerationAdmission, releaseAiGenerationLease, extractGeminiText,
+    });
     const aiBriefMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/ai-brief$/u);
     if (aiBriefMatch) {
       const projectId = decodeProjectPathSegment(aiBriefMatch[1]);
@@ -9547,7 +9555,7 @@ function isApiRoute(pathname) {
     || /^\/api\/orders\/[^/]+(?:\/(?:fulfillment|artifact|progress))?$/u.test(pathname)
     || /^\/api\/shared\/decision-compare\/[^/]+$/u.test(pathname)
     || /^\/api\/family-alignment\/[^/]+(?:\/response)?$/u.test(pathname)
-    || /^\/api\/projects\/[^/]+(?:\/home|\/report|\/report-shares(?:\/[^/]+)?|\/ai-brief|\/orders|\/revisions(?:\/preview|\/\d+(?:\/report|\/reports\/\d+\/feedback)?)?|\/family-alignment(?:\/[^/]+)?|\/decision-compare(?:\/choice|\/shares(?:\/[^/]+)?)?|\/professional-reviews(?:\/[^/]+(?:\/messages)?)?|\/files(?:\/[^/]+)?)?$/u.test(pathname)
+    || /^\/api\/projects\/[^/]+(?:\/spatial(?:\/(?:preview|tour|tour-intent))?|\/home|\/report|\/report-shares(?:\/[^/]+)?|\/ai-brief|\/orders|\/revisions(?:\/preview|\/\d+(?:\/report|\/reports\/\d+\/feedback)?)?|\/family-alignment(?:\/[^/]+)?|\/decision-compare(?:\/choice|\/shares(?:\/[^/]+)?)?|\/professional-reviews(?:\/[^/]+(?:\/messages)?)?|\/files(?:\/[^/]+)?)?$/u.test(pathname)
     || /^\/api\/professional-reviews(?:\/[^/]+(?:\/(?:claim|messages))?)?$/u.test(pathname);
 }
 

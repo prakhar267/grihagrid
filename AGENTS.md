@@ -14,6 +14,8 @@ The product name is **GrihaGrid**. The core promise is: “Know what fits. Know 
 
 Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts/prepare-sites-build.mjs`, and `tests/sites-worker.test.mjs` intact so the same local prototype can be handed to Sites. Before a Sites handoff, run `npm run build` and `npm run test:sites`; the build must leave `dist/client/index.html`, `dist/server/index.js`, and `dist/.openai/hosting.json`.
 
+The spatial studio should provide a complete explorable house and directed camera tours: shared millimetre geometry for 2D, browser 3D and Blender, accessible room selection, collision-aware walking, and honest local/AI/render states. Keep the Architectural Monograph direction in this workspace.
+
 ## Product and platform invariants
 
 Treat `README.md`, `package.json`, `wrangler.toml`, `worker/index.js`, `src/App.jsx`, `src/styles.css`, and the relevant files in `docs/` as the canonical implementation and operating context. Before architectural changes, inspect the architecture, backend API, launch-readiness, operations, feature, and test-plan documentation. Inspect the configured live product and existing styles before material UI changes; evolve the current system rather than redesigning it.

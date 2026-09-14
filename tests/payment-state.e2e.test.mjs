@@ -126,6 +126,9 @@ async function webhook(origin, eventId, payload) {
   const response = await fetch(`${origin}/api/payments/razorpay/webhook`, {
     method: "POST",
     headers: {
+      // Synchronous D1 subprocess queries block Node between requests. Do not
+      // reuse a socket whose peer may have closed while that loop was blocked.
+      connection: "close",
       "content-type": "application/json",
       "x-razorpay-event-id": eventId,
       "x-razorpay-signature": signature,

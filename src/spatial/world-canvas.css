@@ -1,0 +1,19 @@
+.world-canvas-shell { position: relative; width: 100%; height: 100%; min-height: 400px; overflow: hidden; background: #e7e0d3; isolation: isolate; }
+.world-canvas-shell canvas { display: block; touch-action: none; outline-offset: -4px; }
+.world-room-label { display: block; white-space: nowrap; color: #4d4437; font: 500 10px/1.4 var(--sans, sans-serif); letter-spacing: .035em; padding: 3px 6px; background: rgba(248,245,237,.86); border: 1px solid rgba(55,40,25,.1); box-shadow: 0 2px 8px #3124160c; }
+.world-room-label.is-active { color: #843f24; border-color: #a7532f66; background: #f9f0e5; }
+.world-camera-fade { pointer-events: none; position: absolute; z-index: 15; inset: 0; background: #ded6c8; opacity: 0; transition: opacity 140ms linear; }
+.world-mode-tour .world-camera-fade { transition: none; }
+.world-walk-reticle { position: absolute; pointer-events: none; top: 50%; left: 50%; transform: translate(-50%,-50%); color: #fdfbf2; text-shadow: 0 1px 4px #2f221b; font: 300 18px/1 sans-serif; opacity: .65; }
+.world-walk-help { position: absolute; bottom: 17px; left: 18px; color: #f8f4e9; background: #27251ee6; padding: 8px 10px; font: 400 10px/1.4 var(--sans,sans-serif); }
+.world-walk-pad { position: absolute; bottom: 110px; right: 16px; display: grid; grid-template-columns: repeat(3, 42px); grid-template-rows: repeat(2, 42px); gap: 4px; touch-action: none; }
+.world-walk-pad button { border: 1px solid #756b5666; background: #faf5eae8; border-radius: 3px; color: #292419; padding: 0; font-size: 22px; touch-action: none; user-select: none; }
+.world-walk-pad button:active { background: #c4a48a; }
+.world-walk-forward { grid-column: 2; grid-row: 1; }
+.world-walk-left { grid-column: 1; grid-row: 2; }
+.world-walk-backward { grid-column: 2; grid-row: 2; }
+.world-walk-right { grid-column: 3; grid-row: 2; }
+.world-fallback { min-height: 400px; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; text-align: center; padding: 32px; color: #5b5144; font: 400 14px/1.6 var(--sans, sans-serif); }
+.world-fallback strong { font-weight: 500; color: #201c16; }
+@media(max-width: 600px) { .world-canvas-shell { min-height: 340px; } .world-walk-help { max-width: calc(100% - 178px); bottom: 16px; left: 12px; font-size: 9px; } .world-room-label { font-size: 8px; padding: 2px 4px; } }
+@media(prefers-reduced-motion:reduce) { .world-camera-fade { transition: none; } }

@@ -8,6 +8,7 @@ export default defineConfig({
       output: {
         manualChunks(id) {
           if (!id.includes("/node_modules/")) return undefined;
+          if (id.includes("/three/") || id.includes("/@react-three/") || id.includes("/three-stdlib/")) return "spatial-engine";
           if (id.includes("/@phosphor-icons/")) return "icons";
           if (id.includes("/react/") || id.includes("/react-dom/") || id.includes("/scheduler/")) return "react";
           return "vendor";
