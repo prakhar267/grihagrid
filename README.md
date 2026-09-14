@@ -344,3 +344,16 @@ two-region monitoring, and a governed remote restore drill.
 Those approvals must not be inferred from automated checks. Paid checkout,
 fulfillment, private uploads, transactional email, and custom-domain activation
 remain separately gated and visibly unavailable.
+
+## Spatial studio (local implementation)
+
+The spatial workspace adds a furnished demonstration at `/explore` and an
+owner-scoped studio at `/projects/:id/spatial`: browser-local drawing
+recognition and OCR, a complete 2D layout editor, shared polygon/multi-floor
+3D geometry with stairs, room exploration and camera tours, private camera
+libraries, and a paired local Blender render service. Spatial Change Study
+and immutable revisions protect accepted work. Gemini direction is optional; local tour creation works without it.
+This implementation has not been deployed. Existing launch controls remain
+unchanged. See [spatial architecture and scope](docs/spatial-workspace.md),
+[Blender rendering](docs/spatial-blender.md), and
+[verification evidence](docs/spatial-verification.md).

@@ -1,0 +1,410 @@
+{
+  "schemaVersion": 2,
+  "id": "gallery-house",
+  "name": "The Gallery House",
+  "revision": 1,
+  "seed": 1847,
+  "units": "mm",
+  "axes": "XY-ground-Z-up",
+  "bounds": {
+    "min": [
+      0,
+      0,
+      0
+    ],
+    "max": [
+      12000,
+      9000,
+      6200
+    ]
+  },
+  "floors": [
+    {
+      "id": "ground",
+      "name": "Ground floor",
+      "elevation": 0,
+      "height": 3000
+    },
+    {
+      "id": "upper",
+      "name": "Upper floor",
+      "elevation": 3200,
+      "height": 3000
+    }
+  ],
+  "rooms": [
+    {
+      "id": "ground-gallery",
+      "name": "Living gallery",
+      "floorId": "ground",
+      "polygon": [
+        [
+          0,
+          0
+        ],
+        [
+          12000,
+          0
+        ],
+        [
+          12000,
+          9000
+        ],
+        [
+          0,
+          9000
+        ]
+      ],
+      "color": "#d6c4a9",
+      "exterior": false
+    },
+    {
+      "id": "upper-gallery",
+      "name": "Upper reading gallery",
+      "floorId": "upper",
+      "polygon": [
+        [
+          0,
+          0
+        ],
+        [
+          12000,
+          0
+        ],
+        [
+          12000,
+          9000
+        ],
+        [
+          0,
+          9000
+        ]
+      ],
+      "color": "#cfc3ab",
+      "exterior": false
+    }
+  ],
+  "walls": [
+    {
+      "id": "ground-wall-0",
+      "floorId": "ground",
+      "start": [
+        0,
+        0
+      ],
+      "end": [
+        12000,
+        0
+      ],
+      "height": 3000,
+      "thickness": 180,
+      "roomIds": [
+        "ground-gallery"
+      ],
+      "openings": [
+        {
+          "id": "ground-window-0",
+          "kind": "window",
+          "offset": 2000,
+          "width": 2400,
+          "sill": 900,
+          "height": 1500
+        }
+      ]
+    },
+    {
+      "id": "ground-wall-1",
+      "floorId": "ground",
+      "start": [
+        12000,
+        0
+      ],
+      "end": [
+        12000,
+        9000
+      ],
+      "height": 3000,
+      "thickness": 180,
+      "roomIds": [
+        "ground-gallery"
+      ],
+      "openings": [
+        {
+          "id": "ground-window-1",
+          "kind": "window",
+          "offset": 2000,
+          "width": 2400,
+          "sill": 900,
+          "height": 1500
+        }
+      ]
+    },
+    {
+      "id": "ground-wall-2",
+      "floorId": "ground",
+      "start": [
+        12000,
+        9000
+      ],
+      "end": [
+        0,
+        9000
+      ],
+      "height": 3000,
+      "thickness": 180,
+      "roomIds": [
+        "ground-gallery"
+      ],
+      "openings": [
+        {
+          "id": "ground-window-2",
+          "kind": "window",
+          "offset": 2000,
+          "width": 2400,
+          "sill": 900,
+          "height": 1500
+        }
+      ]
+    },
+    {
+      "id": "ground-wall-3",
+      "floorId": "ground",
+      "start": [
+        0,
+        9000
+      ],
+      "end": [
+        0,
+        0
+      ],
+      "height": 3000,
+      "thickness": 180,
+      "roomIds": [
+        "ground-gallery"
+      ],
+      "openings": [
+        {
+          "id": "ground-window-3",
+          "kind": "window",
+          "offset": 2000,
+          "width": 2400,
+          "sill": 900,
+          "height": 1500
+        }
+      ]
+    },
+    {
+      "id": "upper-wall-0",
+      "floorId": "upper",
+      "start": [
+        0,
+        0
+      ],
+      "end": [
+        12000,
+        0
+      ],
+      "height": 3000,
+      "thickness": 180,
+      "roomIds": [
+        "upper-gallery"
+      ],
+      "openings": [
+        {
+          "id": "upper-window-0",
+          "kind": "window",
+          "offset": 2000,
+          "width": 2400,
+          "sill": 900,
+          "height": 1500
+        }
+      ]
+    },
+    {
+      "id": "upper-wall-1",
+      "floorId": "upper",
+      "start": [
+        12000,
+        0
+      ],
+      "end": [
+        12000,
+        9000
+      ],
+      "height": 3000,
+      "thickness": 180,
+      "roomIds": [
+        "upper-gallery"
+      ],
+      "openings": [
+        {
+          "id": "upper-window-1",
+          "kind": "window",
+          "offset": 2000,
+          "width": 2400,
+          "sill": 900,
+          "height": 1500
+        }
+      ]
+    },
+    {
+      "id": "upper-wall-2",
+      "floorId": "upper",
+      "start": [
+        12000,
+        9000
+      ],
+      "end": [
+        0,
+        9000
+      ],
+      "height": 3000,
+      "thickness": 180,
+      "roomIds": [
+        "upper-gallery"
+      ],
+      "openings": [
+        {
+          "id": "upper-window-2",
+          "kind": "window",
+          "offset": 2000,
+          "width": 2400,
+          "sill": 900,
+          "height": 1500
+        }
+      ]
+    },
+    {
+      "id": "upper-wall-3",
+      "floorId": "upper",
+      "start": [
+        0,
+        9000
+      ],
+      "end": [
+        0,
+        0
+      ],
+      "height": 3000,
+      "thickness": 180,
+      "roomIds": [
+        "upper-gallery"
+      ],
+      "openings": [
+        {
+          "id": "upper-window-3",
+          "kind": "window",
+          "offset": 2000,
+          "width": 2400,
+          "sill": 900,
+          "height": 1500
+        }
+      ]
+    }
+  ],
+  "furniture": [
+    {
+      "id": "gallery-sofa",
+      "floorId": "ground",
+      "roomId": "ground-gallery",
+      "kind": "sofa",
+      "position": [
+        3000,
+        7000,
+        0
+      ],
+      "size": [
+        2600,
+        1000,
+        850
+      ],
+      "rotation": 0,
+      "color": "#d4c4aa"
+    },
+    {
+      "id": "gallery-table",
+      "floorId": "ground",
+      "roomId": "ground-gallery",
+      "kind": "coffee-table",
+      "position": [
+        3000,
+        5200,
+        0
+      ],
+      "size": [
+        1300,
+        700,
+        430
+      ],
+      "rotation": 0,
+      "color": "#94704e"
+    },
+    {
+      "id": "reading-desk",
+      "floorId": "upper",
+      "roomId": "upper-gallery",
+      "kind": "desk",
+      "position": [
+        3100,
+        7000,
+        0
+      ],
+      "size": [
+        2000,
+        700,
+        750
+      ],
+      "rotation": 0,
+      "color": "#a78a63"
+    },
+    {
+      "id": "reading-chair",
+      "floorId": "upper",
+      "roomId": "upper-gallery",
+      "kind": "chair",
+      "position": [
+        3000,
+        5800,
+        0
+      ],
+      "size": [
+        700,
+        700,
+        850
+      ],
+      "rotation": 3.141592653589793,
+      "color": "#a6ad93"
+    }
+  ],
+  "stairs": [
+    {
+      "id": "gallery-stair",
+      "name": "Gallery staircase",
+      "fromFloorId": "ground",
+      "toFloorId": "upper",
+      "start": [
+        8000,
+        1800
+      ],
+      "end": [
+        8000,
+        7200
+      ],
+      "width": 1400,
+      "steps": 18,
+      "roomIds": [
+        "ground-gallery",
+        "upper-gallery"
+      ]
+    }
+  ],
+  "exterior": {
+    "groundColor": "#b5bc9e",
+    "skyColor": "#e7e5da",
+    "sun": [
+      8000,
+      -7000,
+      14000
+    ]
+  }
+}

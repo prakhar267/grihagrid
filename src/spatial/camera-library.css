@@ -1,0 +1,17 @@
+.sp-camera-review{margin:20px 4%;padding:22px;border:1px solid var(--copper);background:var(--paper-pale);max-width:100%;overflow-wrap:anywhere}
+.sp-camera-review h2{font-family:var(--serif);font-size:30px;font-weight:500;margin:0 0 12px}
+.sp-camera-review p,.sp-camera-review li{font-size:12px;line-height:1.65}
+.sp-camera-review ul{list-style:none;padding:0;display:grid;gap:10px}
+.sp-camera-review li{border-bottom:1px solid var(--rule);padding:9px 0}
+.sp-camera-review li small{color:var(--muted)}
+.sp-camera-review fieldset{margin:0;border:0;padding:0;min-width:0;display:flex;flex-wrap:wrap;gap:10px 24px}
+.sp-camera-review legend{margin-bottom:8px;font-weight:600}
+.sp-camera-review label{display:flex;gap:7px;align-items:center}
+.sp-camera-review input{accent-color:var(--copper)}
+.sp-camera-review-actions{display:flex;flex-wrap:wrap;gap:12px;margin-top:15px}
+.sp-tour-review-versions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px}
+.sp-tour-review-versions h3{font-family:var(--serif);font-size:24px;font-weight:500;margin:12px 0 6px}
+.sp-tour-review-versions details{font-size:12px}.sp-tour-review-versions ol{padding-left:20px}
+@media(max-width:760px){.sp-camera-review{margin:16px 5%;padding:15px}.sp-camera-review h2{font-size:25px}.sp-camera-review>button{max-width:100%;white-space:normal;text-align:left}}
+@media print{.sp-camera-review{display:none!important}}
+@media(max-width:760px){.sp-tour-review-versions{grid-template-columns:1fr;gap:5px}}

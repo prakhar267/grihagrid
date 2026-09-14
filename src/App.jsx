@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useId, useMemo, useRef, useState } from "react";
 import {
   ArrowClockwise, ArrowLeft, ArrowRight, ArrowSquareOut, ArrowsLeftRight, Blueprint, Buildings,
   Check, CheckCircle, Compass, Copy, CurrencyInr, DownloadSimple, Eye, FileText, FloppyDisk,
@@ -60,6 +60,8 @@ import {
   validProjectCreationKey,
   validateEstimatorScenario,
 } from "./public-estimator.js";
+
+const SpatialWorkspace = lazy(() => import("./spatial/SpatialWorkspace.jsx"));
 
 const cityFactors = { Pune: 1, Bengaluru: 1.08, Mumbai: 1.18, Delhi: 1.1, Hyderabad: .98, Chennai: 1.02, Jaipur: .88, Other: .95 };
 const qualityRates = { Essential: 1750, Signature: 2200, Premium: 2850, Luxury: 3900 };
@@ -261,7 +263,7 @@ function isFamilyAlignmentPath(pathname) {
 }
 
 function isAuthenticationFreePath(pathname) {
-  return isPublicReportSharePath(pathname)||isFamilyAlignmentPath(pathname)||pathname==="/estimate";
+  return isPublicReportSharePath(pathname)||isFamilyAlignmentPath(pathname)||pathname==="/estimate"||pathname==="/explore";
 }
 
 function familyAlignmentCapabilityToken(location=window.location) {
@@ -502,6 +504,7 @@ function Header({ user }) {
     <nav id="primary-navigation" className={`main-nav ${open ? "main-nav--open" : ""}`} aria-label="Primary navigation">
       <button onClick={() => { route("/#how"); setOpen(false); }}>How it works</button>
       <button onClick={() => { route("/plans"); setOpen(false); }}>Sample plan</button>
+      <button onClick={() => { route("/explore"); setOpen(false); }}>Explore a home</button>
       <button onClick={() => { route("/pricing"); setOpen(false); }}>Pricing</button>
       <button onClick={() => { route("/about"); setOpen(false); }}>About</button>
       <div className="main-nav-mobile-actions">
@@ -1795,6 +1798,7 @@ function ProjectHomePage({ projectId }) {
       <div><span className="kicker">Private project · decision home</span><h1 id="project-home-title">{project.name||"My family home"}</h1><p>{stageCopy[0]} <span>{stageCopy[1]}</span></p><div className="project-home__brief-action"><button className="outline-button" onClick={()=>route(`/projects/${encodeURIComponent(projectId)}/brief`)}>{archived?<><Stack/> Review brief history</>:<><PencilSimple/> Strengthen this brief</>}</button><small>{revisionCount} recorded revision{revisionCount===1?'':'s'} · current revision {project.inputRevision||1}</small></div></div>
       <div className="project-home__folio" aria-hidden="true"><span>Project record</span><strong>{String(project.inputRevision||1).padStart(2,"0")}</strong><small>Current input revision</small></div>
     </section>
+    <div className="project-home__brief-action" style={{padding:"0 5% 24px"}}><button className="copper-button" onClick={()=>route(`/projects/${encodeURIComponent(projectId)}/spatial`)}><Buildings/> Open spatial studio <ArrowRight/></button></div>
     <section className="project-home__facts" aria-label="Current project facts">
       <div><span>Measured plot</span><strong>{input.width||"—"} × {input.length||"—"} ft</strong><small>{input.facing?`${input.facing}-facing`:"Facing to confirm"}</small></div>
       <div><span>Context</span><strong>{input.city||"India"}</strong><small>{input.floors||"Floor count to confirm"} · {input.quality||"Finish to confirm"}</small></div>
@@ -3814,7 +3818,7 @@ export function App() {
     window.addEventListener('focus',revalidate);window.addEventListener('pageshow',revalidate);document.addEventListener('visibilitychange',onVisibility);
     return()=>{window.removeEventListener('focus',revalidate);window.removeEventListener('pageshow',revalidate);document.removeEventListener('visibilitychange',onVisibility)};
   },[]);
-  useEffect(()=>{const titles={'/':'GrihaGrid — Know what fits. Know what it costs.','/estimate':'Shared estimate — GrihaGrid','/pricing':'Pricing — GrihaGrid','/about':'About — GrihaGrid','/plans':'Sample plan — GrihaGrid','/compare/sample':'Sample Decision Compare — GrihaGrid','/start':'Plan my home — GrihaGrid','/login':'Log in — GrihaGrid','/register':'Create account — GrihaGrid','/forgot-password':'Recover account — GrihaGrid','/reset-password':'Reset password — GrihaGrid','/verify-email':'Verify email — GrihaGrid','/dashboard':'My projects — GrihaGrid','/security':'Account security — GrihaGrid','/review-workbench':'Professional review workbench — GrihaGrid','/orders':'Orders — GrihaGrid','/privacy':'Privacy — GrihaGrid','/terms':'Terms — GrihaGrid','/refund':'Refunds — GrihaGrid'};document.title=path.startsWith('/report/')?'Decision book — GrihaGrid':path.startsWith('/projects/')&&path.endsWith('/brief')?'Brief Check — GrihaGrid':path.startsWith('/projects/')&&path.endsWith('/compare')?'Decision Compare — GrihaGrid':path.startsWith('/projects/')?'Project home — GrihaGrid':path.startsWith('/orders/')?'Purchased artifact — GrihaGrid':path==='/share/report'?'Professional handoff — GrihaGrid':path.startsWith('/share/decision/')?'Shared decision — GrihaGrid':isFamilyAlignmentPath(path)?'Family review — GrihaGrid':(titles[path]||'Page not found — GrihaGrid')},[path]);
+  useEffect(()=>{const titles={'/explore':'Spatial studio — GrihaGrid','/':'GrihaGrid — Know what fits. Know what it costs.','/estimate':'Shared estimate — GrihaGrid','/pricing':'Pricing — GrihaGrid','/about':'About — GrihaGrid','/plans':'Sample plan — GrihaGrid','/compare/sample':'Sample Decision Compare — GrihaGrid','/start':'Plan my home — GrihaGrid','/login':'Log in — GrihaGrid','/register':'Create account — GrihaGrid','/forgot-password':'Recover account — GrihaGrid','/reset-password':'Reset password — GrihaGrid','/verify-email':'Verify email — GrihaGrid','/dashboard':'My projects — GrihaGrid','/security':'Account security — GrihaGrid','/review-workbench':'Professional review workbench — GrihaGrid','/orders':'Orders — GrihaGrid','/privacy':'Privacy — GrihaGrid','/terms':'Terms — GrihaGrid','/refund':'Refunds — GrihaGrid'};document.title=path.startsWith('/projects/')&&path.endsWith('/spatial')?'Spatial studio — GrihaGrid':path.startsWith('/report/')?'Decision book — GrihaGrid':path.startsWith('/projects/')&&path.endsWith('/brief')?'Brief Check — GrihaGrid':path.startsWith('/projects/')&&path.endsWith('/compare')?'Decision Compare — GrihaGrid':path.startsWith('/projects/')?'Project home — GrihaGrid':path.startsWith('/orders/')?'Purchased artifact — GrihaGrid':path==='/share/report'?'Professional handoff — GrihaGrid':path.startsWith('/share/decision/')?'Shared decision — GrihaGrid':isFamilyAlignmentPath(path)?'Family review — GrihaGrid':(titles[path]||'Page not found — GrihaGrid')},[path]);
   useEffect(()=>{
     if(focusedPath.current===path)return undefined;
     focusedPath.current=path;
@@ -3868,6 +3872,8 @@ export function App() {
   const artifactMatch=path.match(/^\/orders\/([^/]+)\/artifact$/);
   const shareMatch=path.match(/^\/share\/decision\/([^/]+)$/);
   const checkoutOrder=path==='/checkout/return'?new URLSearchParams(window.location.search).get('order'):null;
+  const spatialMatch=path.match(/^\/projects\/([^/]+)\/spatial$/);
+  if(path==='/explore'||spatialMatch)return <Suspense fallback={<main className="error-page"><h1>Opening the spatial studio…</h1></main>}><SpatialWorkspace key={spatialMatch?.[1]||'demo'} projectId={spatialMatch?safeDecodePathSegment(spatialMatch[1]):null} onNavigate={route}/></Suspense>;
   if(path==='/estimate')return <SharedEstimatorPage/>;
   if(path==='/start')return <StartPage user={user} draftAccess={draftAccess} onSessionEnded={()=>{authRevision.current+=1;authenticatedSession.current=false;setUser(null)}}/>;
   if(path==='/login'||path==='/register')return <AuthPage key={path} mode={path.slice(1)} user={user} draftAccess={draftAccess} onAuthenticated={authenticated=>{authRevision.current+=1;authenticatedSession.current=Boolean(authenticated);setUser(authenticated)}}/>;

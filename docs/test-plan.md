@@ -719,3 +719,24 @@ Attach to the release record, without secrets or customer data:
 
 An unavailable third party, untested manual procedure, or unchecked box is a
 failed gate—not an assumed pass.
+
+## Spatial studio acceptance
+
+| Journey | Required evidence |
+| --- | --- |
+| Drawing to corrected model | Real raster/SVG/PDF decode, detected geometry and OCR text; calibration and explicit review; blank-image rejection; no outbound drawing/text transfer |
+| Independent layout edits | Shared room vertices, wall/opening sizes, door hinge/swing, furniture movement/rotation, undo/redo and invalid-edit feedback reflected in 3D |
+| Multiple floors | Irregular polygon slabs, real upper-floor/lower-ceiling apertures, stairs and supported ascent/descent; no walk through walls, glass or furniture |
+| Camera direction | Local named-subject reveal/orbit/hold, timing and eye height; checked complete paths; manual takeover and explicit resume; stale per-shot source handling |
+| AI boundary | Real D1 endpoint tests for aliases, consent, source races, invalid subject references and changed requested intent; separately label live-provider verification |
+| Private cameras | Save, rename, delete, reload in a separate authenticated browser context; stale pose protection; unsaved draft preservation; CAS race, immutable history, tenant and CSRF fences |
+| Local rendering | App pairs with actual service, starts job, shows real progress; cancel retains verified frames; restart resumes automatically; native Cycles MP4 inspected and decoded |
+| Device/accessibility | Actual browser/version and GPU, 390px emulation, keyboard, fallback, zoom/reflow and print; identify physical phone and screen reader separately |
+| Packaging | Isolated build artifact resolves without checkout dependencies; worker-enforced CSP permits same-origin OCR/PDF and exact paired loopback service |
+
+The scripts `check-spatial-ui.mjs`, `check-spatial-library-ui.mjs` and
+`check-spatial-import-editor.mjs` record local ignored artifacts. Synthetic
+private tests reject non-loopback origins and clean up only their exact test
+project IDs. A mocked provider, stub renderer, desktop mobile viewport or
+accessibility tree alone must not be described as a live Gemini response,
+completed film, physical-device test or actual screen-reader session.

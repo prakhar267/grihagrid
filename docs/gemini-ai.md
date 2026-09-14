@@ -2,8 +2,9 @@
 
 ## Purpose and boundary
 
-GrihaGrid uses Google Gemini only for an optional, owner-triggered second reading
-of an explicitly generated, current deterministic planning report (schema v2).
+GrihaGrid uses Google Gemini for an optional, owner-triggered second reading
+of an explicitly generated, current deterministic planning report (schema v2),
+and through a separate bounded interface for spatial camera-tour direction.
 Gemini does not calculate the
 server-side estimate, decide whether a plot is compliant, create a construction
 drawing, authorize a payment, or replace a licensed professional.
@@ -11,6 +12,30 @@ drawing, authorize a payment, or replace a licensed professional.
 The integration is deliberately fail-closed. The deterministic report remains
 available when Gemini is missing, rate-limited, blocked, times out, or returns an
 invalid response.
+
+## Separate spatial camera direction
+
+`POST /api/projects/:id/spatial/tour-intent` requires an active owned project,
+accepted spatial model, exact input/model revisions, same origin, CSRF and the
+explicit AI acknowledgement. The browser first interprets room and object names
+locally. The Worker maps those references to anonymous `room-N` / `subject-N`
+aliases, permits only known object kinds and sends floor ordinals, exterior
+flags, ordering, total duration and supported shot preferences. It sends no
+drawing, original instruction, custom room/object name, coordinate or address.
+
+The provider may suggest reveal/orbit/hold/walk shots and pace for unspecified
+stops. Explicit room order, total duration, subjects and preferences must be
+preserved. The Worker validates every returned reference and value, rejects
+unknown fields, checks that the source remains current, and releases the shared
+generation lease. Existing quota admission and server-side configuration apply.
+No generated program or provider coordinate is executed; shared geometry code
+calculates and collision-checks the actual camera routes.
+
+Manual editing and the explicitly labelled local parser work independently of
+Gemini. Spatial directions are returned for review; saving the resulting tour
+uses the separate immutable tour-revision endpoint. Live provider verification
+is recorded separately from mocked API tests in
+[the spatial verification report](spatial-verification.md).
 
 ## Data flow
 

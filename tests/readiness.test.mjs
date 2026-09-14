@@ -6,6 +6,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { Miniflare } from "miniflare";
 import worker, { __test } from "../worker/index.js";
+import { SPATIAL_SCHEMA } from '../worker/spatial-schema.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const migrationsDirectory = path.join(root, "migrations");
@@ -135,14 +136,14 @@ function querySources(sql) {
   return [...sql.matchAll(/\b(?:FROM|JOIN)\s+([a-z_][a-z0-9_]*)/giu)].map((match) => match[1].toLowerCase());
 }
 
-test("readiness manifests stay pinned to the reviewed 414-key lifecycle, upload, and professional-review contract", () => {
+test("readiness manifests stay pinned to the reviewed 446-key lifecycle and spatial-storage contract", () => {
   const keys = __test.readinessInventoryRowsForTest()
     .map(({ kind, scope, name }) => `${kind}:${scope}:${name}`)
     .sort();
-  assert.equal(keys.length, 414);
+  assert.equal(keys.length, 446);
   assert.equal(
     createHash("sha256").update(JSON.stringify(keys)).digest("hex"),
-    "568af54b3711f03b599ba9484a22ac437cdc50a1b298a9606034e12f3969209b",
+    "0af6c97218fd2ee59ec9775c3c6ac90616e6afd3624b1de28f55b58b81d2f2a8",
     "a readiness schema key changed without an explicit contract review",
   );
   for (const key of [
@@ -171,6 +172,26 @@ test("readiness snapshots metadata and the live handoff control in one read and 
   const current = await readiness(healthy.db);
   assert.equal(current.response.status, 200, JSON.stringify(current.payload));
   assert.equal(current.payload.status, "ready");
+  assert.equal(current.payload.checks.spatialSchema, 'current');
+  assert.equal(current.payload.capabilities.spatialStudio, true);
+  const spatialKeys = [
+    ...SPATIAL_SCHEMA.tables.map(name => `object:table:${name}`),
+    ...SPATIAL_SCHEMA.triggers.map(name => `object:trigger:${name}`),
+    ...Object.entries(SPATIAL_SCHEMA.columns).flatMap(([table, names]) => names.map(name => `column:${table}:${name}`)),
+  ];
+  for (const missing of spatialKeys) {
+    const partial = observedDatabase(sourceDb, { transformInventory(result) {
+      const results = result.results.filter(row => `${row.kind}:${row.scope}:${row.name}` !== missing);
+      assert.equal(results.length, result.results.length - 1);
+      return { ...result, results };
+    } });
+    const invalid = await readiness(partial.db);
+    assert.equal(invalid.response.status, 503, missing);
+    assert.equal(invalid.payload.checks.spatialSchema, 'outdated', missing);
+    assert.equal(invalid.payload.capabilities.spatialStudio, false, missing);
+    assert.deepEqual(partial.executions.map(item => item.method), ['all']);
+    assertSelectOnly(partial.executions);
+  }
   assert.deepEqual({
     database: current.payload.checks.database,
     schema: current.payload.checks.schema,

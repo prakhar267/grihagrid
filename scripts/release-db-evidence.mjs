@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createHash, pbkdf2Sync, randomBytes } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import { SPATIAL_SCHEMA } from '../worker/spatial-schema.js';
 
 const COUNTED_ENTITIES = Object.freeze([
   "users",
@@ -122,6 +123,7 @@ const REQUIRED_BASELINE_OBJECTS = Object.freeze([
 ]);
 
 const REQUIRED_COLUMNS = Object.freeze([
+  ...Object.entries(SPATIAL_SCHEMA.columns).flatMap(([table, columns]) => columns.map(column => `${table}:${column}`)),
   "users:id", "users:email", "users:password_hash", "users:password_salt", "users:password_iterations", "users:password_algorithm",
   "users:auth_generation", "users:auth_revision_id", "users:password_changed_at",
   "users:email_verified_at", "users:deletion_requested_at", "users:account_role",
@@ -178,6 +180,8 @@ const REQUIRED_COLUMNS = Object.freeze([
 ]);
 
 const REQUIRED_SCHEMA_OBJECTS = Object.freeze([
+  ...SPATIAL_SCHEMA.tables.map(name => `table:${name}`),
+  ...SPATIAL_SCHEMA.triggers.map(name => `trigger:${name}`),
   ...REQUIRED_BASELINE_OBJECTS,
   ...REQUIRED_0013_OBJECTS,
   ...REQUIRED_0014_OBJECTS,
@@ -508,7 +512,7 @@ export function verifyCanaryResidueEvidence({
   const rows = d1Rows(residuePayload, "canary residue");
   assert.equal(rows.length, 1, "canary residue query must return one row");
   const residue = Object.fromEntries(
-    ["projects", "project_revisions", "reports", "revision_reports", "feedback", "report_shares"].map((key) => [key, Number(rows[0][key])]),
+    ["projects", "project_revisions", "reports", "revision_reports", "feedback", "report_shares", ...SPATIAL_SCHEMA.tables].map((key) => [key, Number(rows[0][key])]),
   );
   for (const [entity, count] of Object.entries(residue)) {
     assert.ok(Number.isSafeInteger(count) && count >= 0, `invalid ${entity} residue count`);
@@ -539,7 +543,8 @@ export function buildCanaryResidueSql(canaryProjectIds) {
     `  (SELECT COUNT(*) FROM reports WHERE project_id IN (${ids})) AS reports,`,
     `  (SELECT COUNT(*) FROM project_revision_reports WHERE project_id IN (${ids})) AS revision_reports,`,
     `  (SELECT COUNT(*) FROM report_feedback WHERE project_id IN (${ids})) AS feedback,`,
-    `  (SELECT COUNT(*) FROM report_shares WHERE project_id IN (${ids})) AS report_shares;`,
+    `  (SELECT COUNT(*) FROM report_shares WHERE project_id IN (${ids})) AS report_shares,`,
+    ...SPATIAL_SCHEMA.tables.map((table, index) => `  (SELECT COUNT(*) FROM ${table} WHERE project_id IN (${ids})) AS ${table}${index === SPATIAL_SCHEMA.tables.length - 1 ? ';' : ','}`),
     "",
   ].join("\n");
 }

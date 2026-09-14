@@ -484,10 +484,10 @@ test("Brief Check revisions are truthful, immutable, owner-scoped, and race safe
   let server = null;
   const capturedLogs = [];
   try {
-    requireD1Success(d1(stateDirectory, "migrate"), "fresh 0001-0021 migration chain failed");
+    requireD1Success(d1(stateDirectory, "migrate"), "fresh 0001-0023 migration chain failed");
     const applied = rowsFor(stateDirectory, "SELECT name FROM d1_migrations ORDER BY id", "migration ledger query failed");
-    assert.equal(applied.length, 21, JSON.stringify(applied));
-    assert.equal(applied.at(-1)?.name, "0021_professional_review_owner_listing.sql");
+    assert.equal(applied.length, 23, JSON.stringify(applied));
+    assert.equal(applied.at(-1)?.name, "0023_spatial_camera_library.sql");
 
     server = await startWorker(stateDirectory, assetsDirectory, port);
     const readiness = await call(server.origin, "/api/readiness");
@@ -498,14 +498,14 @@ test("Brief Check revisions are truthful, immutable, owner-scoped, and race safe
       readiness.payload.checks,
       [
         "database", "schema", "rateLimit", "aiSchema", "aiAbuseControl", "decisionSchema",
-        "paymentSchema", "familyAlignmentSchema", "archiveSafetySchema", "revisionSchema", "reportFeedbackSchema", "reportShareSchema", "reportHandoffControl", "reportShareAbuseHashing", "projectCreationSchema", "authSchema", "accountLifecycleSchema", "privateUploadSchema", "professionalReviewSchema", "transactionalEmail", "ai",
+        "paymentSchema", "familyAlignmentSchema", "archiveSafetySchema", "revisionSchema", "reportFeedbackSchema", "reportShareSchema", "reportHandoffControl", "reportShareAbuseHashing", "projectCreationSchema", "authSchema", "accountLifecycleSchema", "privateUploadSchema", "professionalReviewSchema", "spatialSchema", "transactionalEmail", "ai",
         "privateStorage", "acceptingPaidPlans",
       ],
       "readiness.checks",
     );
     assertExactKeys(
       readiness.payload.capabilities,
-      ["freePlanning", "privateUploads", "paidCheckout", "paidFulfillment", "aiPlanningBrief", "decisionCompare", "familyAlignment", "briefCheck", "reportFeedback", "reportHandoff", "accountSecurity", "accountLifecycle", "emailVerification", "passwordRecovery", "professionalReview"],
+      ["freePlanning", "privateUploads", "paidCheckout", "paidFulfillment", "aiPlanningBrief", "decisionCompare", "familyAlignment", "briefCheck", "reportFeedback", "reportHandoff", "accountSecurity", "accountLifecycle", "emailVerification", "passwordRecovery", "professionalReview", "spatialStudio"],
       "readiness.capabilities",
     );
     assert.equal(readiness.payload.checks.revisionSchema, "current");
@@ -518,6 +518,7 @@ test("Brief Check revisions are truthful, immutable, owner-scoped, and race safe
     assert.equal(readiness.payload.checks.accountLifecycleSchema, "current");
     assert.equal(readiness.payload.checks.privateUploadSchema, "current");
     assert.equal(readiness.payload.checks.professionalReviewSchema, "current");
+    assert.equal(readiness.payload.checks.spatialSchema, "current");
     assert.equal(readiness.payload.checks.transactionalEmail, "unavailable");
     assert.equal(readiness.payload.capabilities.briefCheck, true);
     assert.equal(readiness.payload.capabilities.reportFeedback, true);
@@ -527,6 +528,7 @@ test("Brief Check revisions are truthful, immutable, owner-scoped, and race safe
     assert.equal(readiness.payload.capabilities.emailVerification, false);
     assert.equal(readiness.payload.capabilities.passwordRecovery, false);
     assert.equal(readiness.payload.capabilities.professionalReview, true);
+    assert.equal(readiness.payload.capabilities.spatialStudio, true);
     assert.equal(readiness.payload.capabilities.paidCheckout, false);
     assert.equal(readiness.payload.capabilities.paidFulfillment, false);
     assert.equal(readiness.payload.capabilities.privateUploads, false);

@@ -431,10 +431,10 @@ test("report feedback is exact, private, immutable-report-safe, and observable o
 
     const feedbackMigration = migrationFile(13);
     assert.equal(path.basename(feedbackMigration), "0013_report_feedback_and_intake_hardening.sql");
-    requireD1Success(d1(stateDirectory, "migrate"), "migrations 0013 through 0021 failed");
+    requireD1Success(d1(stateDirectory, "migrate"), "migrations 0013 through 0023 failed");
     const migrationLedger = query(stateDirectory, "SELECT id,name FROM d1_migrations ORDER BY id", "migration ledger query failed");
-    assert.equal(migrationLedger.length, 21);
-    assert.equal(migrationLedger.at(-1)?.name, "0021_professional_review_owner_listing.sql");
+    assert.equal(migrationLedger.length, 23);
+    assert.equal(migrationLedger.at(-1)?.name, "0023_spatial_camera_library.sql");
     const schemaObjects = query(
       stateDirectory,
       `SELECT type,name FROM sqlite_master WHERE name IN (

@@ -177,3 +177,20 @@ follow-up.
 ## Scale path
 
 At higher volume, add Queues for generation, Durable Objects for per-project orchestration, Analytics Engine for product events, Turnstile for abuse prevention, and regional provider fallbacks. Keep the public Worker stateless and preserve D1 as the entitlement ledger until write volume requires a dedicated relational database.
+
+## Spatial studio extension
+
+The studio has one versioned millimetre model for SVG editing, Three.js
+exploration and Blender output. Browser-local raster recognition, PDF.js and
+Tesseract create a reviewed draft without activating private server uploads.
+V2 supports polygon rooms, independently edited openings/furniture, multiple
+floors and physical stairs. Collision and camera routes are deterministic and
+validated outside AI; Gemini receives anonymous structured shot preferences.
+
+D1 migrations 0022–0023 add separate immutable model, tour and camera-library
+revisions with existing ownership, origin, CSRF and optimistic-concurrency
+controls. The paired render service binds only `127.0.0.1:43127`, runs Blender
+outside the Worker, and keeps cancellable/recoverable jobs and artifacts in
+private local storage. Runtime/model assets are bundled from locked packages.
+See [spatial architecture and contracts](spatial-workspace.md) and
+[renderer operation](spatial-blender.md) for schema and boundary details.

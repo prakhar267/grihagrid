@@ -14,6 +14,12 @@ The product name is **GrihaGrid**. The core promise is: “Know what fits. Know 
 
 Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts/prepare-sites-build.mjs`, and `tests/sites-worker.test.mjs` intact so the same local prototype can be handed to Sites. Before a Sites handoff, run `npm run build` and `npm run test:sites`; the build must leave `dist/client/index.html`, `dist/server/index.js`, and `dist/.openai/hosting.json`.
 
+The spatial studio should provide a complete explorable house and directed camera tours: shared millimetre geometry for 2D, browser 3D and Blender, accessible room selection, collision-aware walking, and honest local/AI/render states. Keep the Architectural Monograph direction in this workspace. The full requested scope includes reviewed browser-local drawing import/OCR, independent layout edits, multiple floors and stairs, subject-aware camera direction, a persisted camera library, and a paired local render service. Do not call the goal complete merely because sample-house exploration works; distinguish actual provider/device verification from simulations.
+
+For this spatial-studio delivery, the user explicitly deferred physical iPhone and spoken VoiceOver testing on 15 September 2026. Record both as deferred, not passed, and complete the remaining implementation and verification without using those two checks as completion gates. Preserve the existing accessibility controls and browser/keyboard checks. Deployment remains outside the original task scope.
+
+On 15 September 2026 the user subsequently authorized the remaining drawing/visual polish and production release, including review, merge, deployment and production migrations. This supersedes the original deployment exclusion for this follow-up. Follow the existing protected staging-first release, backup and monitoring procedures; keep payments and private uploads closed, and keep iPhone/VoiceOver testing deferred.
+
 ## Product and platform invariants
 
 Treat `README.md`, `package.json`, `wrangler.toml`, `worker/index.js`, `src/App.jsx`, `src/styles.css`, and the relevant files in `docs/` as the canonical implementation and operating context. Before architectural changes, inspect the architecture, backend API, launch-readiness, operations, feature, and test-plan documentation. Inspect the configured live product and existing styles before material UI changes; evolve the current system rather than redesigning it.
