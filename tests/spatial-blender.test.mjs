@@ -4,7 +4,43 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createDemoBuilding, buildPrimitives } from '../src/spatial/model.js';
-import { parseArgs, serializeScene, runJob, runProcess, verifyGltfCoordinates } from '../scripts/spatial/run.mjs';
+import { parseArgs, serializeScene, runJob, runProcess, verifyGltfCoordinates, readSceneInput } from '../scripts/spatial/run.mjs';
+
+test('scene input preserves a UTF-8 model/tour bundle at the exact byte limit', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'grihagrid-spatial-input-'));
+  try {
+    const model = createDemoBuilding();
+    const bundle = { model, tour: { ...serializeScene(model, 24).tour, name: 'Kitchen → courtyard' } };
+    const inputPath = path.join(directory, 'scene.json');
+    const buffer = Buffer.alloc(2 * 1024 * 1024, 0x20);
+    Buffer.from(JSON.stringify(bundle)).copy(buffer);
+    await writeFile(inputPath, buffer);
+    assert.deepEqual(await readSceneInput(inputPath), bundle);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('scene input rejects even one byte over the limit before starting Blender', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'grihagrid-spatial-input-'));
+  try {
+    const inputPath = path.join(directory, 'large.json');
+    const buffer = Buffer.alloc(2 * 1024 * 1024 + 1, 0x20);
+    buffer.write('{}');
+    await writeFile(inputPath, buffer);
+    await assert.rejects(readSceneInput(inputPath), /exceeds 2 MiB/);
+    await assert.rejects(runJob({ ...parseArgs(['--mode', 'scene']), input: inputPath, blender: '/unavailable/blender' }), /exceeds 2 MiB/);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('scene input rejects nonregular files and malformed UTF-8', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'grihagrid-spatial-input-'));
+  try {
+    await assert.rejects(readSceneInput(directory), /regular file|EISDIR/);
+    if (process.platform !== 'win32') await assert.rejects(readSceneInput('/dev/null'), /regular file/);
+    const inputPath = path.join(directory, 'malformed.json');
+    await writeFile(inputPath, Buffer.from([0x22, 0xff, 0x22]));
+    await assert.rejects(readSceneInput(inputPath), /encoded data|encoding/i);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
 
 test('local rendering bounds duration, samples, timeout and accepted operations', () => {
   assert.equal(parseArgs(['--mode', 'film', '--samples', '4']).mode, 'film');
@@ -31,6 +67,25 @@ test('local job refuses to overwrite an existing output directory', async () => 
     await writeFile(path.join(directory, 'keep.txt'), 'untouched');
     await assert.rejects(runJob({ ...parseArgs(['--mode', 'scene']), output: directory, blender: process.execPath }), /must be empty/);
     assert.equal(await readFile(path.join(directory, 'keep.txt'), 'utf8'), 'untouched');
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('concurrent local jobs cannot overwrite each other’s initial scene records', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'grihagrid-spatial-race-'));
+  try {
+    const models = [createDemoBuilding(), { ...createDemoBuilding(), revision: 2 }];
+    const inputs = models.map((_, index) => path.join(directory, `input-${index}.json`));
+    await Promise.all(inputs.map((input, index) => writeFile(input, JSON.stringify(models[index]))));
+    const output = path.join(directory, 'job');
+    const results = await Promise.allSettled(inputs.map(input => runJob({ ...parseArgs(['--mode', 'scene']), input, output, blender: process.execPath })));
+    // Node is intentionally used as an invalid Blender binary: only the winning
+    // job may reach it, and no real Blender process is needed for this race.
+    assert.equal(results.filter(result => result.status === 'rejected' && /must be empty|EEXIST/.test(result.reason.message)).length, 1);
+    assert.equal(results.filter(result => result.status === 'rejected' && /Local process failed/.test(result.reason.message)).length, 1);
+    const [model, scene, job] = await Promise.all(['building.json', 'scene-data.json', 'job.json'].map(async name => JSON.parse(await readFile(path.join(output, name), 'utf8'))));
+    assert.equal(model.revision, scene.sourceRevision);
+    assert.equal(model.revision, job.sourceRevision);
+    assert.deepEqual(model, models[model.revision - 1]);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 

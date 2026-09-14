@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /** Local-only Blender job runner. No shell, uploaded code, or cloud credentials. */
-import { access, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import { access, mkdir, open, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { homedir } from 'node:os';
@@ -12,6 +12,28 @@ import { generateTour, sampleTour, validateTour } from '../../src/spatial/tours.
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(scriptDirectory, '../..');
 const MAX_INPUT_BYTES = 2 * 1024 * 1024;
+
+export async function readSceneInput(inputPath) {
+  // NONBLOCK lets us reject a FIFO by descriptor without waiting for a writer.
+  const handle = await open(inputPath, constants.O_RDONLY | constants.O_NONBLOCK);
+  try {
+    const metadata = await handle.stat();
+    if (!metadata.isFile()) throw new Error('Input must be a regular file');
+    if (metadata.size > MAX_INPUT_BYTES) throw new Error('Input exceeds 2 MiB');
+    // The extra byte detects growth after fstat without ever reading unbounded data.
+    const buffer = Buffer.alloc(MAX_INPUT_BYTES + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, length, buffer.length - length, null);
+      if (bytesRead === 0) break;
+      length += bytesRead;
+    }
+    if (length > MAX_INPUT_BYTES) throw new Error('Input exceeds 2 MiB');
+    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(buffer.subarray(0, length)));
+  } finally {
+    await handle.close();
+  }
+}
 
 export function parseArgs(argv) {
   const options = { mode: 'preview', samples: 16, duration: 24, timeout: 1800, device: 'auto', engine: 'cycles' };
@@ -136,8 +158,7 @@ export async function runJob(options) {
   let suppliedTour;
   if (options.input) {
     const input = path.resolve(options.input);
-    if ((await stat(input)).size > MAX_INPUT_BYTES) throw new Error('Input exceeds 2 MiB');
-    const inputData = JSON.parse(await readFile(input, 'utf8'));
+    const inputData = await readSceneInput(input);
     model = inputData.model || inputData;
     suppliedTour = inputData.model ? inputData.tour : undefined;
   }
@@ -150,9 +171,9 @@ export async function runJob(options) {
   const dataFile = path.join(output, 'scene-data.json');
   const jobFile = path.join(output, 'job.json');
   const job = { schemaVersion: 1, status: 'running', mode: options.mode, startedAt: new Date().toISOString(), sourceRevision: model.revision };
-  await writeFile(dataFile, JSON.stringify(payload));
-  await writeFile(path.join(output, 'building.json'), JSON.stringify(model, null, 2));
-  await writeFile(jobFile, JSON.stringify(job, null, 2));
+  await writeFile(dataFile, JSON.stringify(payload), { flag: 'wx' });
+  await writeFile(path.join(output, 'building.json'), JSON.stringify(model, null, 2), { flag: 'wx' });
+  await writeFile(jobFile, JSON.stringify(job, null, 2), { flag: 'wx' });
   let lastFrameMessage = 0;
   const onLine = (line) => {
     if (line.startsWith('GRIHAGRID_PROGRESS ')) process.stdout.write(`${line}\n`);

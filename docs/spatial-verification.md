@@ -15,14 +15,14 @@ Blender 4.5.9 LTS ARM64 and FFmpeg. The app ran at
 | Check | Result |
 | --- | --- |
 | Locked install, `npm ci` | Passed |
-| Full `npm run check` | Passed: 487 tests, zero failures/skips; operations check passed |
+| Full `npm run check` | Passed: 487 tests at integration checkpoint; four additional CLI safety checks passed separately |
 | Fresh D1 migrations | Passed all 22 forward migrations |
 | Production and staging Worker dry-run builds | Passed; no deployment |
 | `npm audit --audit-level=high` | Passed, zero reported vulnerabilities |
 | `git diff --check` | Passed |
 | Spatial core | 12 focused tests passed |
 | Spatial API with real D1 | 8 tests, including parent, passed |
-| Blender pipeline | 5 focused tests passed |
+| Blender pipeline | 9 focused tests passed |
 | `SPATIAL_UI_PRIVATE=1 npm run check:spatial:ui` | Passed all eight browser check groups, zero captured page errors |
 
 The final full suite completed in 224.39 seconds. Earlier checks exposed two
@@ -30,6 +30,12 @@ legacy migration-count assertions and a payment-test pooled-socket reset. The
 assertions now expect the added migration; the webhook fixture uses fresh HTTP
 connections across synchronous D1 subprocess calls. All payment assertions and
 product payment behavior are unchanged, and the complete rerun passed.
+
+Subsequent CodeQL review found a file-stat/read race in the local CLI input
+loader. It now checks and reads through one open descriptor with a hard byte
+limit, and initial job files use exclusive creation. Four added behavioral
+checks cover exact-limit UTF-8 input, oversize/nonregular input and concurrent
+job isolation; all nine pipeline tests passed. PR checks cover the final head.
 
 The API checks exercise ownership, origin and CSRF rejection, read-only empty
 loads, Change Study acceptance, immutable revisions, idempotency, concurrent

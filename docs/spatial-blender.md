@@ -71,7 +71,8 @@ axis convention that a Blender-only round trip could conceal.
 
 ## Resource and presentation boundaries
 
-The runner accepts a bounded JSON file (2 MiB), at most 5,000 generated
+The runner reads JSON through one open regular-file descriptor with a hard
+2 MiB byte limit and exclusive creation of initial job records. It accepts, at most 5,000 generated
 primitives, 1–128 samples, and tours up to 120 seconds. Child processes use
 argument arrays with no shell. Blender runs factory startup with automatic
 script execution disabled and four CPU threads. On compatible Macs the
