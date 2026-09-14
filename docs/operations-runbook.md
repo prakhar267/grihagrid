@@ -670,11 +670,43 @@ observation on the first matching event, and never enter release artifacts.
 The pinned Wrangler tail processes run at `WRANGLER_LOG=warn` with
 `WRANGLER_HIDE_BANNER=true`, so the routine startup and available-update banner
 does not masquerade as an infrastructure failure. Wrangler warnings—including
-tail keep-alive loss and reconnect attempts—and errors still reach stderr. Any
-non-empty stderr, dead tail process, exit other than the operator-requested
-SIGTERM status `143`, missing or malformed aggregate, public regression, or
-matching error event fails the release closed. Wrangler disk logs are disabled
+tail keep-alive loss and reconnect attempts—and errors still reach stderr. Apart
+from the existing exact proxy-environment notice, stderr invalidates that
+observation attempt. Dead tail processes, exits other than the operator-requested
+SIGTERM status `143`, missing or malformed evidence, public regressions and
+matching error events also invalidate the attempt. Wrangler disk logs are disabled
 on those runners so no provider-side diagnostic copy survives the job.
+Wrangler's JSON mode emits no explicit initial WebSocket handshake confirmation:
+live supervised processes and their warning streams are the coverage-health
+proxy, not proof that the initial socket is ready.
+
+The workflow calls `scripts/observe-release.mjs`, which supervises fresh
+`scripts/observe-release-attempt.sh` processes. Every attempt creates its own two
+version-scoped tails, private stderr files and artifact directory. The HTTP
+monitor watches both process liveness and classified stderr so a lost connection
+ends the incomplete window promptly. Tail payloads are reduced to aggregates;
+only finite diagnostic classes and counts survive stderr classification. Input is
+decoded strictly and read within a fixed byte bound. Unknown text, invalid UTF-8,
+oversized content and mixed warnings remain failures; raw stderr and credentials
+are never copied into release evidence.
+
+The controller permits at most **three attempts within a 70-minute total budget**.
+Only an explicitly recognized Wrangler keep-alive timeout or reconnect warning
+may qualify for another attempt, with valid evidence and no public, version,
+application, handled-server-error or other sticky regression. Recognition does
+not make a warning acceptable: it stays `unexpected=true`, its entire observation
+window is discarded, and both tails are replaced before another full window
+starts. Unknown diagnostics, authentication/data errors, malformed evidence and
+exhausted limits stop the release. Historical failures that retain only stderr
+byte counts cannot be retrospectively classified or used to qualify for retries.
+
+Success requires one final **complete, continuous 30-minute window** for the exact
+Worker version, clean tail coverage and stderr, followed by an exact-version smoke
+check. Durations and successful requests from discarded attempts are never added
+together to meet that requirement. Every attempt's bounded evidence and the
+controller decision are retained; a later clean attempt cannot erase an earlier
+application regression. If no acceptable window completes, the existing workflow
+closes report handoff and fails the release.
 Automation may roll the Worker back after a confirmed application regression
 when no migration ran. When a migration did run, rollback is eligible only if
 the pre-deploy old-Worker rehearsal completed against the expanded schema and

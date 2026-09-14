@@ -26,6 +26,8 @@ const files = Object.freeze({
   releaseScope: new URL("./release-scope.mjs", import.meta.url),
   smoke: new URL("./smoke.mjs", import.meta.url),
   waitForRelease: new URL("./wait-for-release.mjs", import.meta.url),
+  observeRelease: new URL("./observe-release.mjs", import.meta.url),
+  observeAttempt: new URL("./observe-release-attempt.sh", import.meta.url),
   readinessLatency: new URL("./readiness-latency.mjs", import.meta.url),
   authenticatedSmoke: new URL("./authenticated-smoke.mjs", import.meta.url),
   canarySessionFence: new URL("./canary-session-fence.mjs", import.meta.url),
@@ -63,7 +65,7 @@ function workflowStep(source, name) {
 }
 
 export async function checkOpsConfig() {
-  const [wrangler, packageText, gitignore, devVars, ci, smokeWorkflow, productionBackup, deployWorkflow, releaseScope, smoke, waitForRelease, readinessLatency, authenticatedSmoke, canarySessionFence, runCanarySessionFence, releaseDbEvidence, worker] = await Promise.all(
+  const [wrangler, packageText, gitignore, devVars, ci, smokeWorkflow, productionBackup, deployWorkflow, releaseScope, smoke, waitForRelease, observeRelease, observeAttempt, readinessLatency, authenticatedSmoke, canarySessionFence, runCanarySessionFence, releaseDbEvidence, worker] = await Promise.all(
     Object.values(files).map((file) => readFile(file, "utf8")),
   );
   const packageJson = JSON.parse(packageText);
@@ -335,7 +337,7 @@ export async function checkOpsConfig() {
   assert.match(smoke, /const legacyWorker = options\.legacyWorker === true/u, "public smoke must support previous-Worker compatibility mode");
   assert.match(smoke, /const expectReportHandoff = options\.expectReportHandoff !== false/u, "public smoke must support exact-version checks while handoff is closed");
   assert.match(smoke, /expectReportHandoff \? "enabled" : "disabled"/u, "public smoke must verify the requested report-handoff control state");
-  assert.match(smoke, /if \(!legacyWorker\) \{[\s\S]*?reportShareDocumentCheck\(origin,"GET"\)[\s\S]*?reportShareDocumentCheck\(origin,"HEAD"\)/u, "legacy smoke must skip the handoff-only document route");
+  assert.match(smoke, /if \(!legacyWorker\) \{[\s\S]*?reportShareDocumentCheck\(origin,"GET",options\.signal\)[\s\S]*?reportShareDocumentCheck\(origin,"HEAD",options\.signal\)/u, "legacy smoke must skip the handoff-only document route and both document checks must propagate cancellation");
   assert.match(smoke, /if \(!legacyWorker\) \{[\s\S]*?reportHandoffControl[\s\S]*?reportShareAbuseHashing/u, "legacy smoke must skip current-only handoff readiness checks");
   assert.match(waitForRelease, /releaseProbe,\s*\}\)/u, "release polling must pass a unique routing probe to every smoke sample");
   assert.match(waitForRelease, /LEGACY_WORKER_COMPAT === "true"/u, "release polling CLI must expose legacy compatibility mode");
@@ -516,14 +518,26 @@ export async function checkOpsConfig() {
   assert.doesNotMatch(deployWorkflow, /git show[^\n]*authenticated-smoke\.mjs/u, "rollback rehearsal must not execute the previous commit's harness");
   assert.match(deployWorkflow, /wait-for-release\.mjs/u, "releases must wait for consecutive exact-version smoke samples");
   assert.match(deployWorkflow, /Reconfirm the exact staging version/u, "production must reject staging drift after its hold");
-  assert.match(deployWorkflow, /monitor-release\.mjs/u, "production must run exact-version monitoring");
-  assert.match(deployWorkflow, /GRIHAGRID_MONITOR_WATCH_PIDS/u, "the public monitor must watch both exact-version tails");
-  assert.match(deployWorkflow, /TAIL_PROCESS_GROUP="\$\$"/u, "a first tail event must terminate its supervised process group immediately");
-  assert.match(deployWorkflow, /public_regression=/u, "public regression state must survive tail finalization errors");
-  assert.match(deployWorkflow, /--version-id/u, "production error tail must be scoped to the deployed Worker version");
-  assert.match(deployWorkflow, /tail-aggregate\.mjs/u, "tail payloads must be reduced to bounded aggregates");
-  assert.match(deployWorkflow, /classify-tail-stderr\.mjs/u, "tail stderr must be classified without entering release artifacts");
-  assert.doesNotMatch(deployWorkflow, /(?:invocation|server)-errors\.ndjson/u, "raw Worker tail payloads must never enter artifacts");
+  const observeStep = workflowStep(deployWorkflow, "Observe the exact production version for 30 minutes");
+  assert.match(observeStep, /node scripts\/observe-release\.mjs "\$ORIGIN" "\$GRIHAGRID_RELEASE_ID" release-evidence\/production/u, "the protected workflow must invoke the reviewed observation controller with the exact version");
+  assert.match(observeRelease, /const ATTEMPT_SCRIPT = fileURLToPath\(new URL\("\.\/observe-release-attempt\.sh", import\.meta\.url\)\);/u, "the controller must resolve only the reviewed per-attempt runner");
+  assert.match(observeRelease, /spawn\("bash", \[ATTEMPT_SCRIPT, origin, releaseId, directory, String\(attempt\)\], \{/u, "the controller must spawn the trusted runner with structured arguments");
+  assert.match(observeRelease, /const runAttempt = options\.runAttempt \|\| runObservationAttempt;/u, "the production controller must default to the real protected runner");
+  assert.match(observeRelease, /await observeRelease\(process\.argv\[2\], process\.argv\[3\], process\.argv\[4\], \{ signal: abort\.signal \}\)/u, "the production CLI must not expose a substitute runner");
+  assert.match(observeRelease, /GRIHAGRID_MONITOR_DURATION_MS: String\(OBSERVATION_DURATION_MS\)/u, "the protected runner must override inherited duration settings with the full required window");
+  assert.match(observeAttempt, /node scripts\/monitor-release\.mjs "\$ORIGIN" "\$GRIHAGRID_RELEASE_ID"/u, "every attempt must run exact-version monitoring");
+  assert.match(observeAttempt, /GRIHAGRID_MONITOR_WATCH_PIDS/u, "the public monitor must watch both exact-version tails");
+  assert.match(observeAttempt, /GRIHAGRID_MONITOR_WATCH_STDERR/u, "the public monitor must stop after classified transport coverage loss");
+  assert.match(observeAttempt, /TAIL_PROCESS_GROUP="\$\$"/u, "a first tail event must terminate its supervised process group immediately");
+  assert.match(observeAttempt, /public_regression=/u, "public regression state must survive tail finalization errors");
+  assert.equal((observeAttempt.match(/--version-id "\$GRIHAGRID_RELEASE_ID"/gu) || []).length, 2, "both error tails must be scoped to the deployed Worker version");
+  assert.equal((observeAttempt.match(/setsid bash -c/gu) || []).length, 2, "each attempt must create fresh supervised tail process groups");
+  assert.equal((observeAttempt.match(/timeout --signal=INT --kill-after=10s 2100s/gu) || []).length, 2, "both tail process groups must have a hard runtime bound");
+  assert.equal((observeAttempt.match(/env -u CF_DEPLOY_TOKEN -u CF_DEPLOY_ACCOUNT -u CLOUDFLARE_API_TOKEN -u CLOUDFLARE_ACCOUNT_ID/gu) || []).length, 2, "both aggregate processes must receive no Cloudflare credentials");
+  assert.match(observeAttempt, /umask 077/u, "each attempt must create private diagnostic files");
+  assert.match(observeAttempt, /tail-aggregate\.mjs/u, "tail payloads must be reduced to bounded aggregates");
+  assert.match(observeAttempt, /classify-tail-stderr\.mjs/u, "tail stderr must be classified without entering release artifacts");
+  assert.doesNotMatch(`${deployWorkflow}\n${observeRelease}\n${observeAttempt}`, /(?:invocation|server)-errors\.ndjson/u, "raw Worker tail payloads must never enter artifacts");
   assert.equal(
     (deployWorkflow.match(/\(needs\.authorize\.outputs\.migrations == 'false' \|\|\s*\(steps\.rollback_compat\.outcome == 'success' && steps\.rollback_residue\.outcome == 'success'\)\)/gu) || []).length,
     6,
