@@ -1,7 +1,7 @@
 import { validateBuilding } from '../src/spatial/model.js';
 import { validateConnectivity } from '../src/spatial/navigation.js';
 import { validateTour } from '../src/spatial/tours.js';
-import {validateSpatialIntent,providerIntentContext,tourIntentResponseSchema,preservesRequestedDirection} from './spatial-intent.js';
+import {validateSpatialIntent,providerIntentContext,tourIntentResponseSchema,preservesRequestedDirection,spatialIntentPrompt} from './spatial-intent.js';
 import {saveViewpoints} from './spatial-viewpoints.js';
 export {validateSpatialIntent} from './spatial-intent.js';
 
@@ -89,9 +89,9 @@ export async function handleSpatialRequest(request, env, projectId, action, h) {
       try { response = await provider('https://generativelanguage.googleapis.com/v1/interactions', {
         method: 'POST', headers: { 'content-type': 'application/json', 'x-goog-api-key': config.apiKey },
         body: JSON.stringify({ model: config.model, store: false,
-          input: 'Direct a coherent architectural camera tour. Return JSON using roomIds, duration, optional eyeHeight and shotPreferences. Each preference has roomId, optional subjectId, kind (reveal/orbit/hold/walk), pace (slow/normal/fast), optional duration seconds. Preserve requested room order and total duration; honor explicit subject, kind and pace requests. Choose complementary restrained shots where unspecified. Only use supplied anonymized IDs and subjects belonging to their rooms. Do not invent coordinates, names, code or design changes. Geometry and collision paths are calculated by our application. Data: ' + JSON.stringify(sanitized),
+          input: spatialIntentPrompt + JSON.stringify(sanitized),
           generation_config: { max_output_tokens: 2400, thinking_level: 'low' },
-          response_format: { type: 'text', mime_type: 'application/json', schema:tourIntentResponseSchema },
+          response_format: { type: 'text', mime_type: 'application/json', schema:tourIntentResponseSchema(sanitized) },
         }), signal: AbortSignal.timeout(25000),
       }); } catch { throw new HttpError(503, 'AI direction is temporarily unavailable. Manual tours remain available.', 'tour_ai_unavailable'); }
       if (!response.ok) throw new HttpError(503, 'AI direction is temporarily unavailable. Manual tours remain available.', 'tour_ai_unavailable');

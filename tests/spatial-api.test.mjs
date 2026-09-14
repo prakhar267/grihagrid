@@ -122,11 +122,27 @@ test('spatial workspace enforces authenticated ownership, immutable real-D1 revi
     assert.equal(JSON.parse(providerBody).store,false)
     const subject=savedModel.furniture.find(f=>f.roomId==='kitchen')
     const rich={...body,intent:{roomIds:['kitchen'],duration:30,eyeHeight:1700,shotPreferences:[{roomId:'kitchen',subjectId:subject.id,kind:'reveal',pace:'slow',duration:8}]}}
-    env.GEMINI_FETCH=async(_url,init)=>{const data=JSON.parse(JSON.parse(init.body).input.split('Data: ')[1]);return providerResponse(data.requested)}
+    env.GEMINI_FETCH=async(_url,init)=>{
+      const outgoing=JSON.parse(init.body),data=JSON.parse(outgoing.input.split('Data: ')[1]),schema=outgoing.response_format.schema
+      assert.ok(schema.required.includes('eyeHeight'));assert.ok(schema.required.includes('shotPreferences'))
+      assert.deepEqual(schema.properties.eyeHeight.enum,[1700]);assert.deepEqual(schema.properties.duration.enum,[30])
+      assert.deepEqual(schema.properties.shotPreferences.prefixItems[0].properties.duration.enum,[8])
+      return providerResponse(data.requested)
+    }
     const directed=await expect(await worker.fetch(request(path+'/tour-intent',user,rich),env),200)
     assert.deepEqual(directed.intent,rich.intent)
     env.GEMINI_FETCH=async()=>providerResponse({roomIds:['room-2'],duration:30})
     await expect(await worker.fetch(request(path+'/tour-intent',user,rich),env),502)
+    // Keep the real six-per-user admission limit in force. Use the other
+    // synthetic tenant for additional malformed-provider regressions.
+    const regressionPath=`/api/projects/${other.project.id}/spatial`
+    await expect(await worker.fetch(request(regressionPath,other,{expectedInputRevision:1,expectedSpatialRevision:0,model:savedModel,acceptedImpact:true}),env),201)
+    for(const mutate of [intent=>{delete intent.eyeHeight},intent=>{delete intent.shotPreferences[0].subjectId},intent=>{intent.shotPreferences[0].duration=30}]){
+      env.GEMINI_FETCH=async(_url,init)=>{const data=JSON.parse(JSON.parse(init.body).input.split('Data: ')[1]);mutate(data.requested);return providerResponse(data.requested)}
+      const rejected=await expect(await worker.fetch(request(regressionPath+'/tour-intent',other,rich),env),502)
+      assert.equal(rejected.code,'invalid_tour_intent')
+    }
+    assert.equal((await worker.fetch(request(`/api/projects/${other.project.id}`,other,undefined,{method:'DELETE'}),env)).status,204)
     env.GEMINI_FETCH=async()=>{throw new Error('upstream private detail')}
     const failed=await expect(await worker.fetch(request(path+'/tour-intent',user,body),env),503)
     assert.equal(failed.code,'tour_ai_unavailable');assert.ok(!JSON.stringify(failed).includes('private detail'))

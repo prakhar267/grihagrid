@@ -28,6 +28,7 @@ fixtures are synthetic and cleanup targets only their exact identifiers.
 | Archived browser project | A real archived Worker project with concept, tour and camera revision 1 stayed readable. Drawing/import, floor, viewpoint, tour-editing, AI and new paired-render mutation controls were disabled. No mutation request occurred and saved revisions stayed unchanged. The exact synthetic project and account were cleaned up successfully. |
 | Firefox and WebKit | Each engine passed eight checks: actual WebGL rendering; tour play, exact pause, pointer takeover and resume; keyboard room focus; numeric room/furniture edits and undo/redo; 390px editor/viewer reflow; 720px reflow; and reduced motion. Both reported zero page errors, console errors or failed requests. Settled screenshots were retaken after the camera fade completed. These are headless engines, not physical devices or the native Safari application. |
 | Native Safari | Actual Safari 26.5.2 rendered the furnished scene. Native UI/accessibility-tree inspection found an incorrectly exposed WebGL fallback message; the embedded fallback was hidden from accessibility when the real scene is available. This inspection does not establish VoiceOver spoken navigation. |
+| Live Gemini direction | Actual Google and application HTTP 200 for a slow kitchen-island reveal followed by the main bedroom: 40 seconds, four valid camera shots, requested order/subjects/height preserved. Provider time was 3,526 ms; application time was 3,996 ms. The source-revision mismatch returned 409 without a second provider call. Anonymous request validation passed and the exact synthetic account/project were removed. |
 | App render controls | A real UI-created job received HTTP 201, then cancellation, resume and final cancellation each received 200. Render action acknowledgement bodies are consumed before refresh. |
 | Local service and Blender pipeline | All 16 service/recovery tests and 12 Blender pipeline tests passed in the full suite. Coverage includes queue admission, rejected-resume state preservation, dependency/disk rechecks, private directory/file symlinks, child termination after IPC disconnect, frame-integrity checks and a cancellation fence that takes effect before persistence yields. Both cancellation/completion race regressions passed. |
 | Native multi-floor export | Two-floor GLB: 148 meshes. A separate L-shaped upper floor with stairs and outward-swinging door: 156 meshes. Actual Three.js loads/raycasts confirmed solid slabs, missing L-corner and stair aperture. Maximum bounds error 0.000477 mm. |
@@ -35,7 +36,7 @@ fixtures are synthetic and cleanup targets only their exact identifiers.
 | Film in the app | The paired UI opened the exact completed job as a blob video, reported 1920×1080 and 20 seconds, and played to the end: 600 decoded frames, one dropped frame, no media error. Seeks at 0.5, 5, 10, 15 and 19.5 seconds were captured; the complete app view and the 10-second kitchen frame were inspected. |
 | Native cancellation/restart | A real Blender preview job was manually cancelled with its completed frame retained, resumed, then interrupted by stopping the local service. After service restart it recovered automatically and completed all six previews. The first frame's hash and modification time were unchanged; GLB/camera comparison also passed. This proves native preview-job recovery, rather than a second full-film recovery run. |
 | Packaging/security | The isolated packaged Worker imports without checkout `node_modules`. Final same-origin OCR/PDF and DOMPurify import checks passed with zero page errors, external requests or CSP violations; one expected loopback renderer health request occurred. The malicious-SVG check removed active/external content, rejected entities/non-SVG input, preserved a normal drawing pixel and observed no script execution or external request. |
-| Repository validation | Final `npm run check` exited 0: 540 tests passed, zero failed, skipped or cancelled; test duration 414,830.6 ms. `check:ops` also reported valid operational configuration. |
+| Repository validation | The pre-live-Gemini checkpoint's `npm run check` exited 0: 540 tests passed, zero failed, skipped or cancelled; test duration 414,830.6 ms. `check:ops` also reported valid operational configuration. The later live integration fix passed 15 focused intent/API checks; its final full-suite/CI results are recorded on the draft PR. |
 | Migration/audit/build | Locked `npm ci`, production build, fresh 23-migration chain, production and staging Worker dry runs, and zero-vulnerability audit passed. After the print-only CSS adjustment, the production build and both Worker dry runs passed again. |
 
 Browser evidence and screenshots are in ignored local directories:
@@ -48,6 +49,8 @@ Browser evidence and screenshots are in ignored local directories:
 - `qa-artifacts/spatial-cross-browser/`: eight checks per Firefox/WebKit engine, engine versions, zero-error reports and settled desktop/editor/mobile screenshots.
 - `qa-artifacts/spatial-render-ui/`: actual create/cancel/resume and render action styles.
 - `qa-artifacts/spatial-film-ui/`: completed-job metadata, whole-video playback counters and five sought frames.
+- `qa-artifacts/spatial-live-gemini/`: real provider/app result, anonymous-request and source-fence checks, successful UI screenshot, and the preserved first failed attempt.
+- `qa-artifacts/spatial-final/native-accessibility-resume.json`: actual VoiceOver runtime, native spoken-text probe, restored settings and the physical iPhone authentication limit.
 
 The strict-CSP import checkpoint verified the build from `2026-09-14T12:04:02.957Z`
 at `2026-09-14T12:07:16.916Z`. Its manifest includes every spatial JS/JSX/CSS
@@ -87,14 +90,33 @@ Exact-head CI and CodeQL results are attached to
 and must be green for this verification checkpoint. Local test evidence does
 not establish a deployment or replace those remote checks.
 
-Gemini API tests use a mock provider response to verify anonymous subject/room
-aliases, strict output validation, quota and source-revision fencing. The actual
-local `GEMINI_API_KEY` is unavailable, so no live Gemini success is claimed.
-The UI's local parser labels its own output honestly and does not make an AI call.
+The existing Gemini credential was configured in the ignored local secret file
+with owner-only permissions. No credential was created, rotated or disclosed;
+no billing or remote deployment was enabled. The first real request reached
+Google successfully but the application correctly rejected its direction.
+The response schema had made explicitly requested camera height and shot
+preferences optional, and its prompt did not reserve travel time. The schema
+now requires the requested values and lets the geometry engine allocate timing
+unless a shot duration was explicitly requested. Independent validation remains
+strict. Fifteen focused intent/API checks passed, including malformed output
+rejections against real local D1.
 
-VoiceOver was enabled in macOS settings, but spoken navigation and runtime
-behavior could not be verified. Its original off setting was restored. No
-VoiceOver pass is claimed. iPhone Mirroring remains explicitly locked at a Mac
+A subsequent real `gemini-3.6-flash` request passed end to end at
+`2026-09-14T14:31:03.069Z`. A separate local observer around the packaged Worker
+delegated the original request to Google and returned the original response;
+it recorded only bounded status/count/timing/model/validation metadata. It
+observed exactly one provider request, including after the stale-revision test.
+No raw provider body, secret or original freeform instruction was logged. The
+UI screenshot and exported tour validation establish the completed direction
+journey; they do not claim a separate Blender film of that exact AI-generated
+tour. The local parser continues to label its own output separately.
+
+VoiceOver was started without its tutorial and its real runtime was observed.
+Native Safari navigation and copy-last-spoken commands did not yield verifiable
+spoken output in the temporary native TextEdit probe. Its original off setting
+and disabled caption panel were restored, and the temporary document was
+discarded. No VoiceOver navigation pass is claimed. iPhone Mirroring remains
+explicitly locked at a Mac
 login/unlock prompt; the user has not unlocked it, so physical iPhone traversal
 is unverified. Chrome viewport emulation, headless WebKit, native Safari UI
 inspection and accessibility-tree inspection are not substitutes for physical

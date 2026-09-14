@@ -51,10 +51,53 @@ export function providerIntentContext(model,intent){
   };
 }
 
-export const tourIntentResponseSchema={type:'object',properties:{
-  roomIds:{type:'array',items:{type:'string'}},duration:{type:'number'},eyeHeight:{type:'number'},
-  shotPreferences:{type:'array',items:{type:'object',properties:{roomId:{type:'string'},subjectId:{type:'string'},kind:{type:'string',enum:[...KINDS]},pace:{type:'string',enum:[...PACES]},duration:{type:'number'}},required:['roomId','kind','pace'],additionalProperties:false}},
-},required:['roomIds','duration'],additionalProperties:false};
+export function tourIntentResponseSchema(context){
+  const requested=context.requested,preferences=requested.shotPreferences||[];
+  const roomIds=[...new Set(requested.roomIds)];
+  const fixed=(type,value)=>({type,enum:[value]});
+  const shotSchema=(roomId,requestedShot)=>{
+    const subjects=context.subjects.filter(subject=>subject.roomId===roomId).map(subject=>subject.id);
+    const properties={roomId:fixed('string',roomId),kind:requestedShot?fixed('string',requestedShot.kind):{type:'string',enum:[...KINDS]},pace:requestedShot?fixed('string',requestedShot.pace):{type:'string',enum:[...PACES]}};
+    const required=['roomId','kind','pace'];
+    if(requestedShot?.subjectId!==undefined){properties.subjectId=fixed('string',requestedShot.subjectId);required.push('subjectId');}
+    else if(subjects.length)properties.subjectId={type:'string',enum:subjects};
+    // Timing is allocated by the geometry engine. Only explicitly fixed shot
+    // durations belong in provider output; invented totals can erase travel.
+    if(requestedShot?.duration!==undefined){properties.duration=fixed('number',requestedShot.duration);required.push('duration');}
+    return {type:'object',properties,required,additionalProperties:false};
+  };
+  const shotPreferences={type:'array',minItems:preferences.length,maxItems:roomIds.length};
+  if(preferences.length)shotPreferences.prefixItems=preferences.map(shot=>shotSchema(shot.roomId,shot));
+  // Keep items compatible with the fixed prefix too. The provider documents
+  // prefixItems and items separately; this avoids contradictory item schemas.
+  shotPreferences.items={anyOf:roomIds.map(roomId=>shotSchema(roomId,preferences.find(shot=>shot.roomId===roomId)))};
+  const properties={
+    roomIds:{type:'array',prefixItems:requested.roomIds.map(id=>fixed('string',id)),minItems:requested.roomIds.length,maxItems:requested.roomIds.length},
+    duration:fixed('number',requested.duration),shotPreferences,
+  },required=['roomIds','duration','shotPreferences'];
+  if(requested.eyeHeight!==undefined){properties.eyeHeight=fixed('number',requested.eyeHeight);required.push('eyeHeight');}
+  return {type:'object',properties,required,additionalProperties:false};
+}
+
+export const spatialIntentPrompt='Direct a coherent architectural camera tour using only the supplied anonymous room and subject references. Return JSON matching the response schema. Copy requested.roomIds exactly, in the same order, including repeated stops. Copy requested.duration exactly as the TOTAL tour duration. If requested.eyeHeight is present, return that exact value in millimetres; never omit or change it. Begin shotPreferences with every requested preference in its given order, preserving every explicit subjectId, kind, pace and duration. You may add one complementary preference for a selected room that has none, using only a subject belonging to that room. Never repeat a room in shotPreferences or add an unselected room. Do not invent fixed shot durations: include duration only when that requested preference already contains it, with the exact same value. The application allocates all remaining time among movement and shots, and fixed durations must leave time for travel. Do not return coordinates, names, code, notes or design changes. Data: ';
+
+/** Fixed diagnostic categories only; never return provider text, names or values. */
+export function spatialIntentMismatchReasons(result,requested,model){
+  const reasons=[];
+  if(!result||typeof result!=='object'||Array.isArray(result))return ['invalid_intent_shape'];
+  if(JSON.stringify(result.roomIds)!==JSON.stringify(requested.roomIds))reasons.push('room_order_changed');
+  if(result.duration!==requested.duration)reasons.push('total_duration_changed');
+  if(requested.eyeHeight!==undefined&&result.eyeHeight!==requested.eyeHeight)reasons.push('eye_height_missing_or_changed');
+  const preferences=Array.isArray(result.shotPreferences)?result.shotPreferences:[];
+  for(const shot of requested.shotPreferences||[]){
+    const candidate=preferences.find(item=>item?.roomId===shot.roomId);
+    if(!candidate){reasons.push('requested_preference_missing');continue;}
+    for(const [key,code] of [['subjectId','subject_missing_or_changed'],['kind','shot_kind_changed'],['pace','pace_changed'],['duration','fixed_duration_missing_or_changed']])if(shot[key]!==undefined&&candidate[key]!==shot[key])reasons.push(code);
+  }
+  if(Array.isArray(result.roomIds)&&preferences.reduce((sum,shot)=>sum+(Number.isFinite(shot?.duration)?shot.duration:0)*result.roomIds.filter(id=>id===shot?.roomId).length,0)>=result.duration-.5)reasons.push('travel_budget_exhausted');
+  if(!validateSpatialIntent(result,model))reasons.push('invalid_intent_constraints');
+  return [...new Set(reasons)];
+}
 
 export function preservesRequestedDirection(result,requested){
   return JSON.stringify(result.roomIds)===JSON.stringify(requested.roomIds)&&result.duration===requested.duration
