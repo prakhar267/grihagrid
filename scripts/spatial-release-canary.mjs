@@ -15,6 +15,15 @@ export async function runSpatialReleaseCanary(call, projectId, inputRevision) {
   assert.equal(empty.cameraRevision, 0);
   // Privileged deploy runners have Node and Wrangler, not project dependencies.
   // The reviewed fixture is validated by the real server before persistence.
+  // Exercise the full edited-model format before retaining the legacy persistence
+  // journey below. A preview must validate geometry without creating a revision.
+  const v2Preview = await post(`${path}/preview`, {
+    expectedInputRevision: inputRevision, expectedSpatialRevision: 0, model: structuredClone(fixture.v2Model),
+  }, [200]);
+  assert.equal(v2Preview.model.schemaVersion, 2);
+  assert.equal(v2Preview.proposedRevision, 1);
+  assert.deepEqual(v2Preview.model, { ...fixture.v2Model, revision: 1 });
+  assert.deepEqual(await call(path), empty);
   const initial = { expectedInputRevision: inputRevision, expectedSpatialRevision: 0, model: structuredClone(fixture.model) };
   const preview = await post(`${path}/preview`, initial, [200]);
   assert.equal(preview.proposedRevision, 1);
@@ -50,6 +59,6 @@ export async function runSpatialReleaseCanary(call, projectId, inputRevision) {
     assert.equal(rejected.code, 'project_archived');
   }
   assert.deepEqual(preserved(await call(path)), preserved(loaded));
-  return { persistenceVerified: true, archiveFenceVerified: true, staleRevisionRejected: true,
+  return { v2PreviewVerified: true, persistenceVerified: true, archiveFenceVerified: true, staleRevisionRejected: true,
     spatialRevision: 1, tourRevision: 1, cameraRevision: 1 };
 }

@@ -1306,5 +1306,1210 @@
       1100
     ],
     "fov": 60
+  },
+  "v2Model": {
+    "schemaVersion": 2,
+    "id": "courtyard-house",
+    "name": "The Courtyard House",
+    "revision": 1,
+    "seed": 1847,
+    "units": "mm",
+    "axes": "XY-ground-Z-up",
+    "bounds": {
+      "min": [
+        0,
+        -4000,
+        0
+      ],
+      "max": [
+        12000,
+        10000,
+        3000
+      ]
+    },
+    "floors": [
+      {
+        "id": "ground",
+        "name": "Ground floor",
+        "elevation": 0,
+        "height": 3000
+      }
+    ],
+    "rooms": [
+      {
+        "id": "living",
+        "name": "Living room",
+        "floorId": "ground",
+        "polygon": [
+          [
+            0,
+            0
+          ],
+          [
+            5000,
+            0
+          ],
+          [
+            5000,
+            4000
+          ],
+          [
+            0,
+            4000
+          ]
+        ],
+        "color": "#d6c4a9",
+        "exterior": false
+      },
+      {
+        "id": "kitchen",
+        "name": "Kitchen & dining",
+        "floorId": "ground",
+        "polygon": [
+          [
+            5000,
+            0
+          ],
+          [
+            8500,
+            0
+          ],
+          [
+            8500,
+            4000
+          ],
+          [
+            5000,
+            4000
+          ]
+        ],
+        "color": "#c8baa3",
+        "exterior": false
+      },
+      {
+        "id": "bathroom",
+        "name": "Bathroom",
+        "floorId": "ground",
+        "polygon": [
+          [
+            8500,
+            0
+          ],
+          [
+            12000,
+            0
+          ],
+          [
+            12000,
+            4000
+          ],
+          [
+            8500,
+            4000
+          ]
+        ],
+        "color": "#bdc1b5",
+        "exterior": false
+      },
+      {
+        "id": "hallway",
+        "name": "Gallery",
+        "floorId": "ground",
+        "polygon": [
+          [
+            0,
+            4000
+          ],
+          [
+            12000,
+            4000
+          ],
+          [
+            12000,
+            6000
+          ],
+          [
+            0,
+            6000
+          ]
+        ],
+        "color": "#e0d5bf",
+        "exterior": false
+      },
+      {
+        "id": "main-bedroom",
+        "name": "Main bedroom",
+        "floorId": "ground",
+        "polygon": [
+          [
+            0,
+            6000
+          ],
+          [
+            5000,
+            6000
+          ],
+          [
+            5000,
+            10000
+          ],
+          [
+            0,
+            10000
+          ]
+        ],
+        "color": "#d0c3ad",
+        "exterior": false
+      },
+      {
+        "id": "bedroom-two",
+        "name": "Bedroom two",
+        "floorId": "ground",
+        "polygon": [
+          [
+            5000,
+            6000
+          ],
+          [
+            9000,
+            6000
+          ],
+          [
+            9000,
+            10000
+          ],
+          [
+            5000,
+            10000
+          ]
+        ],
+        "color": "#bbc1b0",
+        "exterior": false
+      },
+      {
+        "id": "study",
+        "name": "Study",
+        "floorId": "ground",
+        "polygon": [
+          [
+            9000,
+            6000
+          ],
+          [
+            12000,
+            6000
+          ],
+          [
+            12000,
+            10000
+          ],
+          [
+            9000,
+            10000
+          ]
+        ],
+        "color": "#cfc4ae",
+        "exterior": false
+      },
+      {
+        "id": "garden",
+        "name": "Garden terrace",
+        "floorId": "ground",
+        "polygon": [
+          [
+            0,
+            -4000
+          ],
+          [
+            12000,
+            -4000
+          ],
+          [
+            12000,
+            0
+          ],
+          [
+            0,
+            0
+          ]
+        ],
+        "color": "#bcc49e",
+        "exterior": true
+      }
+    ],
+    "walls": [
+      {
+        "id": "south",
+        "start": [
+          0,
+          0
+        ],
+        "end": [
+          12000,
+          0
+        ],
+        "roomIds": [
+          "living",
+          "kitchen",
+          "bathroom",
+          "garden"
+        ],
+        "openings": [
+          {
+            "id": "living-window",
+            "kind": "window",
+            "offset": 300,
+            "width": 1250,
+            "sill": 900,
+            "height": 1550
+          },
+          {
+            "id": "entrance",
+            "kind": "door",
+            "offset": 1850,
+            "width": 1400,
+            "sill": 0,
+            "height": 2350,
+            "open": true
+          },
+          {
+            "id": "kitchen-window",
+            "kind": "window",
+            "offset": 5600,
+            "width": 2400,
+            "sill": 900,
+            "height": 1550
+          },
+          {
+            "id": "bath-window",
+            "kind": "window",
+            "offset": 9300,
+            "width": 1800,
+            "sill": 900,
+            "height": 1550
+          }
+        ],
+        "height": 3000,
+        "thickness": 180,
+        "floorId": "ground"
+      },
+      {
+        "id": "north",
+        "start": [
+          0,
+          10000
+        ],
+        "end": [
+          12000,
+          10000
+        ],
+        "roomIds": [
+          "main-bedroom",
+          "bedroom-two",
+          "study"
+        ],
+        "openings": [
+          {
+            "id": "main-window",
+            "kind": "window",
+            "offset": 1200,
+            "width": 2700,
+            "sill": 900,
+            "height": 1550
+          },
+          {
+            "id": "guest-window",
+            "kind": "window",
+            "offset": 5600,
+            "width": 2600,
+            "sill": 900,
+            "height": 1550
+          },
+          {
+            "id": "study-window",
+            "kind": "window",
+            "offset": 9650,
+            "width": 1700,
+            "sill": 900,
+            "height": 1550
+          }
+        ],
+        "height": 3000,
+        "thickness": 180,
+        "floorId": "ground"
+      },
+      {
+        "id": "west",
+        "start": [
+          0,
+          0
+        ],
+        "end": [
+          0,
+          10000
+        ],
+        "roomIds": [
+          "living",
+          "hallway",
+          "main-bedroom"
+        ],
+        "openings": [
+          {
+            "id": "west-living",
+            "kind": "window",
+            "offset": 1800,
+            "width": 1500,
+            "sill": 900,
+            "height": 1550
+          },
+          {
+            "id": "west-bedroom",
+            "kind": "window",
+            "offset": 7000,
+            "width": 1900,
+            "sill": 900,
+            "height": 1550
+          }
+        ],
+        "height": 3000,
+        "thickness": 180,
+        "floorId": "ground"
+      },
+      {
+        "id": "east",
+        "start": [
+          12000,
+          0
+        ],
+        "end": [
+          12000,
+          10000
+        ],
+        "roomIds": [
+          "bathroom",
+          "hallway",
+          "study"
+        ],
+        "openings": [
+          {
+            "id": "east-gallery",
+            "kind": "window",
+            "offset": 4300,
+            "width": 1400,
+            "sill": 900,
+            "height": 1550
+          },
+          {
+            "id": "east-study",
+            "kind": "window",
+            "offset": 7500,
+            "width": 1600,
+            "sill": 900,
+            "height": 1550
+          }
+        ],
+        "height": 3000,
+        "thickness": 180,
+        "floorId": "ground"
+      },
+      {
+        "id": "gallery-south",
+        "start": [
+          0,
+          4000
+        ],
+        "end": [
+          12000,
+          4000
+        ],
+        "roomIds": [
+          "living",
+          "kitchen",
+          "bathroom",
+          "hallway"
+        ],
+        "openings": [
+          {
+            "id": "living-door",
+            "kind": "door",
+            "offset": 1850,
+            "width": 1400,
+            "sill": 0,
+            "height": 2350,
+            "open": true
+          },
+          {
+            "id": "kitchen-door",
+            "kind": "door",
+            "offset": 6000,
+            "width": 1400,
+            "sill": 0,
+            "height": 2350,
+            "open": true
+          },
+          {
+            "id": "bath-door",
+            "kind": "door",
+            "offset": 9700,
+            "width": 1100,
+            "sill": 0,
+            "height": 2350,
+            "open": true
+          }
+        ],
+        "height": 3000,
+        "thickness": 180,
+        "floorId": "ground"
+      },
+      {
+        "id": "gallery-north",
+        "start": [
+          0,
+          6000
+        ],
+        "end": [
+          12000,
+          6000
+        ],
+        "roomIds": [
+          "main-bedroom",
+          "bedroom-two",
+          "study",
+          "hallway"
+        ],
+        "openings": [
+          {
+            "id": "main-door",
+            "kind": "door",
+            "offset": 1850,
+            "width": 1400,
+            "sill": 0,
+            "height": 2350,
+            "open": true
+          },
+          {
+            "id": "guest-door",
+            "kind": "door",
+            "offset": 6000,
+            "width": 1400,
+            "sill": 0,
+            "height": 2350,
+            "open": true
+          },
+          {
+            "id": "study-door",
+            "kind": "door",
+            "offset": 9700,
+            "width": 1200,
+            "sill": 0,
+            "height": 2350,
+            "open": true
+          }
+        ],
+        "height": 3000,
+        "thickness": 180,
+        "floorId": "ground"
+      },
+      {
+        "id": "living-kitchen",
+        "start": [
+          5000,
+          0
+        ],
+        "end": [
+          5000,
+          4000
+        ],
+        "roomIds": [
+          "living",
+          "kitchen"
+        ],
+        "openings": [],
+        "height": 3000,
+        "thickness": 180,
+        "floorId": "ground"
+      },
+      {
+        "id": "kitchen-bath",
+        "start": [
+          8500,
+          0
+        ],
+        "end": [
+          8500,
+          4000
+        ],
+        "roomIds": [
+          "kitchen",
+          "bathroom"
+        ],
+        "openings": [],
+        "height": 3000,
+        "thickness": 180,
+        "floorId": "ground"
+      },
+      {
+        "id": "bedrooms",
+        "start": [
+          5000,
+          6000
+        ],
+        "end": [
+          5000,
+          10000
+        ],
+        "roomIds": [
+          "main-bedroom",
+          "bedroom-two"
+        ],
+        "openings": [],
+        "height": 3000,
+        "thickness": 180,
+        "floorId": "ground"
+      },
+      {
+        "id": "guest-study",
+        "start": [
+          9000,
+          6000
+        ],
+        "end": [
+          9000,
+          10000
+        ],
+        "roomIds": [
+          "bedroom-two",
+          "study"
+        ],
+        "openings": [],
+        "height": 3000,
+        "thickness": 180,
+        "floorId": "ground"
+      }
+    ],
+    "furniture": [
+      {
+        "id": "living-rug",
+        "roomId": "living",
+        "kind": "rug",
+        "position": [
+          2350,
+          2250,
+          0
+        ],
+        "size": [
+          3200,
+          2000,
+          18
+        ],
+        "rotation": 0,
+        "color": "#bcae92",
+        "floorId": "ground"
+      },
+      {
+        "id": "living-sofa",
+        "roomId": "living",
+        "kind": "sofa",
+        "position": [
+          800,
+          2400,
+          0
+        ],
+        "size": [
+          2650,
+          950,
+          850
+        ],
+        "rotation": 1.5707963267948966,
+        "color": "#dbccb5",
+        "floorId": "ground"
+      },
+      {
+        "id": "living-table",
+        "roomId": "living",
+        "kind": "coffee-table",
+        "position": [
+          2100,
+          2100,
+          0
+        ],
+        "size": [
+          1000,
+          650,
+          400
+        ],
+        "rotation": 0,
+        "color": "#765540",
+        "floorId": "ground"
+      },
+      {
+        "id": "living-chair",
+        "roomId": "living",
+        "kind": "chair",
+        "position": [
+          3950,
+          1550,
+          0
+        ],
+        "size": [
+          750,
+          750,
+          780
+        ],
+        "rotation": -0.25,
+        "color": "#a65f40",
+        "floorId": "ground"
+      },
+      {
+        "id": "living-console",
+        "roomId": "living",
+        "kind": "console",
+        "position": [
+          4700,
+          2400,
+          0
+        ],
+        "size": [
+          360,
+          1800,
+          550
+        ],
+        "rotation": 0,
+        "color": "#765540",
+        "floorId": "ground"
+      },
+      {
+        "id": "living-plant",
+        "roomId": "living",
+        "kind": "plant",
+        "position": [
+          500,
+          500,
+          0
+        ],
+        "size": [
+          500,
+          500,
+          1600
+        ],
+        "rotation": 0,
+        "color": "#55724c",
+        "floorId": "ground"
+      },
+      {
+        "id": "living-lamp",
+        "roomId": "living",
+        "kind": "lamp",
+        "position": [
+          700,
+          3500,
+          0
+        ],
+        "size": [
+          360,
+          360,
+          1850
+        ],
+        "rotation": 0,
+        "color": "#c3a47f",
+        "floorId": "ground"
+      },
+      {
+        "id": "kitchen-run",
+        "roomId": "kitchen",
+        "kind": "counter",
+        "position": [
+          6750,
+          400,
+          0
+        ],
+        "size": [
+          2900,
+          600,
+          900
+        ],
+        "rotation": 0,
+        "color": "#cfbfa6",
+        "floorId": "ground"
+      },
+      {
+        "id": "kitchen-side",
+        "roomId": "kitchen",
+        "kind": "counter",
+        "position": [
+          8075,
+          1550,
+          0
+        ],
+        "size": [
+          550,
+          1700,
+          900
+        ],
+        "rotation": 0,
+        "color": "#cfbfa6",
+        "floorId": "ground"
+      },
+      {
+        "id": "kitchen-island",
+        "roomId": "kitchen",
+        "kind": "island",
+        "position": [
+          6850,
+          1900,
+          0
+        ],
+        "size": [
+          1450,
+          750,
+          900
+        ],
+        "rotation": 0,
+        "color": "#927052",
+        "floorId": "ground"
+      },
+      {
+        "id": "kitchen-stool-1",
+        "roomId": "kitchen",
+        "kind": "stool",
+        "position": [
+          6400,
+          2750,
+          0
+        ],
+        "size": [
+          370,
+          370,
+          620
+        ],
+        "rotation": 0,
+        "color": "#977553",
+        "floorId": "ground"
+      },
+      {
+        "id": "kitchen-stool-2",
+        "roomId": "kitchen",
+        "kind": "stool",
+        "position": [
+          7300,
+          2750,
+          0
+        ],
+        "size": [
+          370,
+          370,
+          620
+        ],
+        "rotation": 0,
+        "color": "#977553",
+        "floorId": "ground"
+      },
+      {
+        "id": "bath-vanity",
+        "roomId": "bathroom",
+        "kind": "counter",
+        "position": [
+          11450,
+          2100,
+          0
+        ],
+        "size": [
+          650,
+          1400,
+          850
+        ],
+        "rotation": 0,
+        "color": "#a89d88",
+        "floorId": "ground"
+      },
+      {
+        "id": "bath-tub",
+        "roomId": "bathroom",
+        "kind": "bathtub",
+        "position": [
+          10200,
+          700,
+          0
+        ],
+        "size": [
+          1650,
+          750,
+          580
+        ],
+        "rotation": 0,
+        "color": "#ede9e1",
+        "floorId": "ground"
+      },
+      {
+        "id": "bath-toilet",
+        "roomId": "bathroom",
+        "kind": "toilet",
+        "position": [
+          9150,
+          1400,
+          0
+        ],
+        "size": [
+          500,
+          700,
+          750
+        ],
+        "rotation": 0,
+        "color": "#f1eee7",
+        "floorId": "ground"
+      },
+      {
+        "id": "main-rug",
+        "roomId": "main-bedroom",
+        "kind": "rug",
+        "position": [
+          2400,
+          8350,
+          0
+        ],
+        "size": [
+          3300,
+          2700,
+          15
+        ],
+        "rotation": 0,
+        "color": "#d4c9b3",
+        "floorId": "ground"
+      },
+      {
+        "id": "main-bed",
+        "roomId": "main-bedroom",
+        "kind": "bed",
+        "position": [
+          2500,
+          8550,
+          0
+        ],
+        "size": [
+          1900,
+          2200,
+          650
+        ],
+        "rotation": 0,
+        "color": "#ded4bf",
+        "floorId": "ground"
+      },
+      {
+        "id": "main-nightstand-1",
+        "roomId": "main-bedroom",
+        "kind": "nightstand",
+        "position": [
+          1120,
+          9250,
+          0
+        ],
+        "size": [
+          520,
+          500,
+          500
+        ],
+        "rotation": 0,
+        "color": "#806348",
+        "floorId": "ground"
+      },
+      {
+        "id": "main-nightstand-2",
+        "roomId": "main-bedroom",
+        "kind": "nightstand",
+        "position": [
+          3880,
+          9250,
+          0
+        ],
+        "size": [
+          520,
+          500,
+          500
+        ],
+        "rotation": 0,
+        "color": "#806348",
+        "floorId": "ground"
+      },
+      {
+        "id": "main-wardrobe",
+        "roomId": "main-bedroom",
+        "kind": "wardrobe",
+        "position": [
+          4600,
+          8100,
+          0
+        ],
+        "size": [
+          500,
+          2000,
+          2500
+        ],
+        "rotation": 0,
+        "color": "#b69c7a",
+        "floorId": "ground"
+      },
+      {
+        "id": "main-plant",
+        "roomId": "main-bedroom",
+        "kind": "plant",
+        "position": [
+          500,
+          9450,
+          0
+        ],
+        "size": [
+          450,
+          450,
+          1350
+        ],
+        "rotation": 0,
+        "color": "#55724c",
+        "floorId": "ground"
+      },
+      {
+        "id": "guest-bed",
+        "roomId": "bedroom-two",
+        "kind": "bed",
+        "position": [
+          7200,
+          8550,
+          0
+        ],
+        "size": [
+          1600,
+          2150,
+          620
+        ],
+        "rotation": 0,
+        "color": "#b7bba9",
+        "floorId": "ground"
+      },
+      {
+        "id": "guest-nightstand",
+        "roomId": "bedroom-two",
+        "kind": "nightstand",
+        "position": [
+          6000,
+          9275,
+          0
+        ],
+        "size": [
+          450,
+          450,
+          480
+        ],
+        "rotation": 0,
+        "color": "#806348",
+        "floorId": "ground"
+      },
+      {
+        "id": "guest-desk",
+        "roomId": "bedroom-two",
+        "kind": "desk",
+        "position": [
+          8500,
+          7450,
+          0
+        ],
+        "size": [
+          650,
+          1450,
+          750
+        ],
+        "rotation": 0,
+        "color": "#aa8b63",
+        "floorId": "ground"
+      },
+      {
+        "id": "study-desk",
+        "roomId": "study",
+        "kind": "desk",
+        "position": [
+          10600,
+          9425,
+          0
+        ],
+        "size": [
+          1900,
+          650,
+          750
+        ],
+        "rotation": 0,
+        "color": "#a1845c",
+        "floorId": "ground"
+      },
+      {
+        "id": "study-chair",
+        "roomId": "study",
+        "kind": "chair",
+        "position": [
+          10600,
+          8550,
+          0
+        ],
+        "size": [
+          600,
+          600,
+          850
+        ],
+        "rotation": 3.141592653589793,
+        "color": "#8e9d86",
+        "floorId": "ground"
+      },
+      {
+        "id": "study-shelf",
+        "roomId": "study",
+        "kind": "shelf",
+        "position": [
+          11600,
+          7600,
+          0
+        ],
+        "size": [
+          400,
+          1800,
+          2200
+        ],
+        "rotation": 0,
+        "color": "#967855",
+        "floorId": "ground"
+      },
+      {
+        "id": "hall-console",
+        "roomId": "hallway",
+        "kind": "console",
+        "position": [
+          11400,
+          5000,
+          0
+        ],
+        "size": [
+          650,
+          800,
+          850
+        ],
+        "rotation": 0,
+        "color": "#977553",
+        "floorId": "ground"
+      },
+      {
+        "id": "hall-plant",
+        "roomId": "hallway",
+        "kind": "plant",
+        "position": [
+          500,
+          5000,
+          0
+        ],
+        "size": [
+          400,
+          400,
+          1450
+        ],
+        "rotation": 0,
+        "color": "#55724c",
+        "floorId": "ground"
+      },
+      {
+        "id": "garden-table",
+        "roomId": "garden",
+        "kind": "table",
+        "position": [
+          8500,
+          -2300,
+          0
+        ],
+        "size": [
+          1800,
+          900,
+          760
+        ],
+        "rotation": 0,
+        "color": "#8d7252",
+        "floorId": "ground"
+      },
+      {
+        "id": "garden-chair-1",
+        "roomId": "garden",
+        "kind": "chair",
+        "position": [
+          8500,
+          -3250,
+          0
+        ],
+        "size": [
+          650,
+          650,
+          800
+        ],
+        "rotation": 0,
+        "color": "#987d59",
+        "floorId": "ground"
+      },
+      {
+        "id": "garden-chair-2",
+        "roomId": "garden",
+        "kind": "chair",
+        "position": [
+          8500,
+          -1350,
+          0
+        ],
+        "size": [
+          650,
+          650,
+          800
+        ],
+        "rotation": 3.141592653589793,
+        "color": "#987d59",
+        "floorId": "ground"
+      },
+      {
+        "id": "garden-tree-1",
+        "roomId": "garden",
+        "kind": "tree",
+        "position": [
+          800,
+          -2800,
+          0
+        ],
+        "size": [
+          1800,
+          1800,
+          3700
+        ],
+        "rotation": 0,
+        "color": "#546b42",
+        "floorId": "ground"
+      },
+      {
+        "id": "garden-tree-2",
+        "roomId": "garden",
+        "kind": "tree",
+        "position": [
+          11300,
+          -2800,
+          0
+        ],
+        "size": [
+          1700,
+          1700,
+          3300
+        ],
+        "rotation": 0,
+        "color": "#65784b",
+        "floorId": "ground"
+      }
+    ],
+    "exterior": {
+      "groundColor": "#b5bc9e",
+      "skyColor": "#e7e5da",
+      "sun": [
+        8000,
+        -7000,
+        14000
+      ]
+    },
+    "stairs": []
   }
 }

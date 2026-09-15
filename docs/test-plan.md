@@ -740,3 +740,13 @@ private tests reject non-loopback origins and clean up only their exact test
 project IDs. A mocked provider, stub renderer, desktop mobile viewport or
 accessibility tree alone must not be described as a live Gemini response,
 completed film, physical-device test or actual screen-reader session.
+
+The protected release canary also previews the full V2 Courtyard House fixture
+and requires the spatial GET to remain unchanged before continuing its existing
+V1 model/tour/viewpoint persistence and archive checks. This runs on staging
+before production promotion and again on production. The real-D1 spatial API
+test separately accepts and reloads the complete V2 geometry and rejects a
+stale source revision. Continuous collision regression tests cover rotated and
+thin obstacles, tangency, zero-length movement, mutable cached geometry, and
+20,000 seeded comparisons against independent rectangle-distance geometry.
+Performance measurements remain diagnostic evidence, not timing-based CI gates.
