@@ -750,3 +750,10 @@ stale source revision. Continuous collision regression tests cover rotated and
 thin obstacles, tangency, zero-length movement, mutable cached geometry, and
 20,000 seeded comparisons against independent rectangle-distance geometry.
 Performance measurements remain diagnostic evidence, not timing-based CI gates.
+
+V2 connectivity validation reuses prepared geometry, walkability results and
+directed grid-edge checks only within one synchronous validation. Regression
+coverage must preserve camera paths, detect obstacle edits on the next call,
+restore normal behavior after exceptions, and retain exact checks when the
+shared memo budget is exhausted. No cached validation state may survive into
+an unrelated request or ordinary camera navigation.
