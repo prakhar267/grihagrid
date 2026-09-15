@@ -4,6 +4,8 @@ export {findRoute,isRouteClear,getSurfaceHeight,floorAtPosition} from './navigat
 
 const obstacleCache = new WeakMap()
 const obstacleBoundsCache = new WeakMap()
+const CONNECTIVITY_MEMO_LIMIT = 16384
+let connectivityScope = null
 const distance = (a,b) => Math.hypot(a[0]-b[0],a[1]-b[1])
 
 export function getObstacles(scene) {
@@ -30,16 +32,71 @@ export function getObstacles(scene) {
 function nearBox(p,box,radius) {
   const dx=p[0]-box.position[0],dy=p[1]-box.position[1],c=Math.cos(box.rotation),s=Math.sin(box.rotation)
   const x=Math.abs(dx*c+dy*s)-box.size[0]/2,y=Math.abs(-dx*s+dy*c)-box.size[1]/2
-  return Math.hypot(Math.max(0,x),Math.max(0,y)) < radius || (x<=0&&y<=0)
+  if(x<=0&&y<=0)return true
+  if(x>radius||y>radius)return false
+  return Math.hypot(Math.max(0,x),Math.max(0,y)) < radius
 }
 
-export function isWalkable(scene, position, clearance=220) {
+function connectivityGeometry(scene) {
+  let geometry=connectivityScope.geometry.get(scene)
+  if(!geometry) {
+    // This snapshot lives only for one synchronous connectivity validation.
+    // Later edits, including changes to exposed obstacles, prepare it again.
+    geometry={
+      rooms:scene.rooms.map(room=>{
+        const xs=room.polygon.map(point=>point[0]),ys=room.polygon.map(point=>point[1])
+        return {
+          polygon:room.polygon,
+          minX:Math.min(...xs)-1e-6,maxX:Math.max(...xs)+1e-6,
+          minY:Math.min(...ys)-1e-6,maxY:Math.max(...ys)+1e-6,
+        }
+      }),
+      obstacles:getObstacles(scene).map(box=>({
+        x:box.position[0],y:box.position[1],
+        halfWidth:box.size[0]/2,halfHeight:box.size[1]/2,
+        c:Math.cos(box.rotation),s:Math.sin(box.rotation),
+      })),
+    }
+    connectivityScope.geometry.set(scene,geometry)
+  }
+  return geometry
+}
+
+function preparedWalkability(scene,position,clearance) {
+  const geometry=connectivityGeometry(scene)
+  for(const [dx,dy] of [[0,0],[clearance,0],[-clearance,0],[0,clearance],[0,-clearance]]) {
+    const x=position[0]+dx,y=position[1]+dy
+    if(!geometry.rooms.some(room=>x>=room.minX&&x<=room.maxX&&y>=room.minY&&y<=room.maxY&&pointInPolygon([x,y],room.polygon)))return false
+  }
+  return !geometry.obstacles.some(box=>{
+    const dx=position[0]-box.x,dy=position[1]-box.y
+    const x=Math.abs(dx*box.c+dy*box.s)-box.halfWidth,y=Math.abs(-dx*box.s+dy*box.c)-box.halfHeight
+    if(x<=0&&y<=0)return true
+    if(x>clearance||y>clearance)return false
+    return Math.hypot(Math.max(0,x),Math.max(0,y))<clearance
+  })
+}
+
+function uncachedWalkability(scene, position, clearance=220) {
   if(scene.schemaVersion===2)return isWalkableV2(scene,position,clearance)
   if(!Array.isArray(position)||!Number.isFinite(position[0])||!Number.isFinite(position[1]))return false
+  if(connectivityScope)return preparedWalkability(scene,position,clearance)
   for(const [dx,dy] of [[0,0],[clearance,0],[-clearance,0],[0,clearance],[0,-clearance]]) {
     if(!scene.rooms.some(room=>pointInPolygon([position[0]+dx,position[1]+dy],room.polygon)))return false
   }
   return !getObstacles(scene).some(box=>nearBox(position,box,clearance))
+}
+
+export function isWalkable(scene,position,clearance=220) {
+  const scope=connectivityScope
+  if(!scope||!Array.isArray(position))return uncachedWalkability(scene,position,clearance)
+  let cache=scope.walk.get(scene)
+  if(!cache){cache=new Map();scope.walk.set(scene,cache)}
+  const key=`${position[0]}:${position[1]}:${position[2]}:${clearance}`
+  if(cache.has(key))return cache.get(key)
+  const result=uncachedWalkability(scene,position,clearance)
+  if(scope.entries<CONNECTIVITY_MEMO_LIMIT){cache.set(key,result);scope.entries++}
+  return result
 }
 
 function segmentOutsideBoxBounds(start,end,box,radius) {
@@ -197,6 +254,9 @@ export function findPath(scene,start,end,{clearance=220,step=200,smooth=true}={}
   if(!isWalkable(scene,start,clearance)||!isWalkable(scene,end,clearance))return []
   if(isSegmentClear(scene,start,end,clearance))return [start.slice(0,2),end.slice(0,2)]
   const grid=gridFor(scene,clearance,step),{cells,point,width,height,minX,minY}=grid
+  const scope=connectivityScope
+  let edgeCache=scope?.edges.get(grid)
+  if(scope&&!edgeCache){edgeCache=new Map();scope.edges.set(grid,edgeCache)}
   const closest=p=>{
     const gx=Math.round((p[0]-minX)/step),gy=Math.round((p[1]-minY)/step),options=[]
     for(let dy=-3;dy<=3;dy++)for(let dx=-3;dx<=3;dx++){const x=gx+dx,y=gy+dy,i=y*width+x;if(x>=0&&x<width&&y>=0&&y<height&&cells[i])options.push({i,d:distance(p,point(i))})}
@@ -212,7 +272,17 @@ export function findPath(scene,start,end,{clearance=220,step=200,smooth=true}={}
     for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++) {
       if(!dx&&!dy)continue
       const nx=x+dx,ny=y+dy,j=ny*width+nx;if(nx<0||nx>=width||ny<0||ny>=height||!cells[j]||closed[j])continue
-      if(!isSegmentClear(scene,point(i),point(j),clearance))continue
+      let clear
+      if(edgeCache) {
+        // Keep direction: reversing a sweep can round sample coordinates differently.
+        const key=i*cells.length+j
+        clear=edgeCache.get(key)
+        if(clear===undefined) {
+          clear=isSegmentClear(scene,point(i),point(j),clearance)
+          if(scope.entries<CONNECTIVITY_MEMO_LIMIT){edgeCache.set(key,clear);scope.entries++}
+        }
+      } else clear=isSegmentClear(scene,point(i),point(j),clearance)
+      if(!clear)continue
       const cost=costs[i]+step*Math.hypot(dx,dy)
       if(cost<costs[j]){costs[j]=cost;parents[j]=i;heap.push({i:j,score:cost+distance(point(j),point(last))})}
     }
@@ -220,9 +290,22 @@ export function findPath(scene,start,end,{clearance=220,step=200,smooth=true}={}
   return scene.exactClearance?cornerPath(scene,start,end,clearance,smooth):[]
 }
 
-export function validateConnectivity(scene,{clearance=220}={}) {
+function uncachedConnectivity(scene,{clearance=220}={}) {
   if(scene.schemaVersion===2)return validateConnectivityV2(scene,{clearance})
   const rooms=scene.rooms,root=getRoomAnchor(scene,'hallway',clearance)||getRoomAnchor(scene,rooms.find(r=>!r.exterior)?.id||rooms[0]?.id,clearance),errors=[]
   for(const room of rooms){const anchor=getRoomAnchor(scene,room.id,clearance);if(!root||!anchor||!findPath(scene,root,anchor,{clearance}).length)errors.push(`No traversable route to ${room.name}.`)}
   return {valid:errors.length===0,errors}
+}
+
+export function validateConnectivity(scene,options={}) {
+  const previous=connectivityScope
+  // Repeated room routes share work only within this synchronous operation.
+  // The shared budget bounds both point and edge memo entries; reaching it
+  // falls back to the same exact checks. Default camera routes keep no memo.
+  connectivityScope={walk:new WeakMap(),geometry:new WeakMap(),edges:new WeakMap(),entries:0}
+  try {
+    return uncachedConnectivity(scene,options)
+  } finally {
+    connectivityScope=previous
+  }
 }
