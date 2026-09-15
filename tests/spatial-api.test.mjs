@@ -3,7 +3,7 @@ import {readFile,readdir} from 'node:fs/promises'
 import test from 'node:test'
 import {Miniflare} from 'miniflare'
 import worker from '../worker/index.js'
-import {createDemoBuilding,resizeBuilding} from '../src/spatial/model.js'
+import {createDemoBuilding,resizeBuilding,toV2} from '../src/spatial/model.js'
 import {generateTour,retimeTour} from '../src/spatial/tours.js'
 import {runSpatialReleaseCanary} from '../scripts/spatial-release-canary.mjs'
 import {runAuthenticatedSmoke} from '../scripts/authenticated-smoke.mjs'
@@ -51,6 +51,7 @@ test('spatial workspace enforces authenticated ownership, immutable real-D1 revi
     }
     try{
       const result=await runSpatialReleaseCanary(call,id,created.project.inputRevision)
+      assert.equal(result.v2PreviewVerified,true)
       assert.equal(result.persistenceVerified,true);assert.equal(result.archiveFenceVerified,true);assert.equal(result.staleRevisionRejected,true)
       for(const table of ['spatial_revisions','spatial_tour_revisions','spatial_camera_revisions'])assert.equal((await db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE project_id=?`).bind(id).first()).n,1)
     }finally{
@@ -70,6 +71,7 @@ test('spatial workspace enforces authenticated ownership, immutable real-D1 revi
     try{
       const result=await runAuthenticatedSmoke(ORIGIN,{email:'spatial-owner@example.test',password:'correct horse battery staple'},{expectSpatial:true})
       assert.equal(result.spatialExpected,true);assert.equal(result.spatial.persistenceVerified,true);assert.equal(result.spatial.archiveFenceVerified,true)
+      assert.equal(result.spatial.v2PreviewVerified,true)
       assert.equal(result.projectDeleted,true);assert.equal(result.sessionRevocationVerified,true)
       assert.equal(result.canaryProjectIds.length,1);assert.notEqual(result.canaryProjectIds[0],user.project.id)
       assert.deepEqual((await db.prepare('SELECT id FROM projects ORDER BY id').all()).results,before)
@@ -78,6 +80,30 @@ test('spatial workspace enforces authenticated ownership, immutable real-D1 revi
       globalThis.fetch=originalFetch;delete env.REPORT_SHARE_ABUSE_HMAC_KEY;delete env.APP_ORIGIN
       await db.prepare("UPDATE report_handoff_controls SET enabled=0 WHERE control_key='report_handoff'").run()
     }
+  })
+
+  await context.test('full V2 Change Study stays read-only and accepted geometry saves and reloads exactly',async()=>{
+    const created=await expect(await worker.fetch(request('/api/projects',user,{name:'V2 preview regression',input:{width:30,length:50,floors:'G+1',city:'Pune',quality:'Signature'}}),env),201)
+    const id=created.project.id,v2Path=`/api/projects/${id}/spatial`,model=toV2(createDemoBuilding())
+    const input={expectedInputRevision:created.project.inputRevision,expectedSpatialRevision:0,model}
+    const revisionCount=async()=>(await db.prepare('SELECT COUNT(*) AS n FROM spatial_revisions WHERE project_id=?').bind(id).first()).n
+    try{
+      const before=await expect(await worker.fetch(request(v2Path,user),env),200)
+      const preview=await expect(await worker.fetch(request(v2Path+'/preview',user,input),env),200)
+      assert.deepEqual(preview.model,{...model,revision:1});assert.equal(preview.proposedRevision,1)
+      assert.equal(await revisionCount(),0)
+      assert.deepEqual(await expect(await worker.fetch(request(v2Path,user),env),200),before)
+      const accepted=await expect(await worker.fetch(request(v2Path,user,{...input,model:preview.model,acceptedImpact:true}),env),201)
+      assert.equal(accepted.spatialRevision,1);assert.deepEqual(accepted.model,preview.model)
+      const loaded=await expect(await worker.fetch(request(v2Path,user),env),200)
+      assert.equal(loaded.spatialRevision,1);assert.deepEqual(loaded.model,preview.model)
+      assert.equal(await revisionCount(),1)
+      await expect(await worker.fetch(request(v2Path+'/preview',user,input),env),409)
+      assert.equal(await revisionCount(),1)
+    }finally{
+      assert.equal((await worker.fetch(request(`/api/projects/${id}`,user,undefined,{method:'DELETE'}),env)).status,204)
+    }
+    assert.equal(await revisionCount(),0)
   })
 
   await context.test('empty GET never creates a concept and origin, CSRF and ownership fail closed',async()=>{

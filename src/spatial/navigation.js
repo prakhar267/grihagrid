@@ -3,6 +3,7 @@ import {isWalkableV2,findPathV2,getRoomAnchorV2,resolveCollisionV2,validateConne
 export {findRoute,isRouteClear,getSurfaceHeight,floorAtPosition} from './navigation-v2.js'
 
 const obstacleCache = new WeakMap()
+const obstacleBoundsCache = new WeakMap()
 const distance = (a,b) => Math.hypot(a[0]-b[0],a[1]-b[1])
 
 export function getObstacles(scene) {
@@ -41,7 +42,26 @@ export function isWalkable(scene, position, clearance=220) {
   return !getObstacles(scene).some(box=>nearBox(position,box,clearance))
 }
 
+function segmentOutsideBoxBounds(start,end,box,radius) {
+  const [x,y]=box.position,[width,height]=box.size,rotation=box.rotation
+  let bounds=obstacleBoundsCache.get(box)
+  // Scenes are versioned, but getObstacles() also exposes mutable objects.
+  // Refresh scalar geometry changes instead of requiring a new cache contract.
+  if(!bounds||bounds.x!==x||bounds.y!==y||bounds.width!==width||bounds.height!==height||bounds.rotation!==rotation) {
+    const c=Math.abs(Math.cos(rotation)),s=Math.abs(Math.sin(rotation)),halfWidth=Math.abs(width)/2,halfHeight=Math.abs(height)/2
+    const extentX=c*halfWidth+s*halfHeight,extentY=s*halfWidth+c*halfHeight
+    bounds={x,y,width,height,rotation,minX:x-extentX,maxX:x+extentX,minY:y-extentY,maxY:y+extentY}
+    obstacleBoundsCache.set(box,bounds)
+  }
+  // Reject only strictly separated bounds. Padding covers rounded corners and
+  // floating-point error; near/tangent cases retain the exact test below.
+  const margin=Math.max(1e-6,Number.EPSILON*16*Math.max(Math.abs(x),Math.abs(y),Math.abs(width),Math.abs(height),Math.abs(radius),Math.abs(start[0]),Math.abs(start[1]),Math.abs(end[0]),Math.abs(end[1])))
+  const padding=Math.max(0,radius)+margin
+  return Math.min(start[0],end[0])>bounds.maxX+padding||Math.max(start[0],end[0])<bounds.minX-padding||Math.min(start[1],end[1])>bounds.maxY+padding||Math.max(start[1],end[1])<bounds.minY-padding
+}
+
 function segmentNearBox(start,end,box,radius){
+  if(segmentOutsideBoxBounds(start,end,box,radius))return false
   const c=Math.cos(box.rotation),s=Math.sin(box.rotation),local=p=>{const x=p[0]-box.position[0],y=p[1]-box.position[1];return [x*c+y*s,-x*s+y*c]},a=local(start),b=local(end),x=box.size[0]/2,y=box.size[1]/2,corners=[[-x,-y],[x,-y],[x,y],[-x,y]]
   const pointDistance=(p,u,v)=>{const dx=v[0]-u[0],dy=v[1]-u[1],length=dx*dx+dy*dy,t=length?Math.max(0,Math.min(1,((p[0]-u[0])*dx+(p[1]-u[1])*dy)/length)):0;return Math.hypot(p[0]-u[0]-t*dx,p[1]-u[1]-t*dy)}
   const cross=(u,v,p)=>(v[0]-u[0])*(p[1]-u[1])-(v[1]-u[1])*(p[0]-u[0])
