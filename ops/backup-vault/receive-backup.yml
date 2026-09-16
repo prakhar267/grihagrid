@@ -1,0 +1,42 @@
+name: Receive verified encrypted GrihaGrid backup
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: receive-production-backup
+  cancel-in-progress: false
+
+jobs:
+  receive:
+    if: github.repository == 'prakhar267/grihagrid-backups' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Check out the private receiver
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify trusted source and copy ciphertext
+        id: receive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 ops/backup-vault/receive_backup.py "$RUNNER_TEMP/grihagrid-backup-vault"
+
+      - name: Store a private encrypted copy within the source expiry
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: verified-production-d1-${{ steps.receive.outputs.source_run_id }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/grihagrid-backup-vault/
+          retention-days: ${{ steps.receive.outputs.retention_days }}
+          compression-level: 0
+          if-no-files-found: error
+
+      - name: Remove the encrypted runner copy
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/grihagrid-backup-vault"

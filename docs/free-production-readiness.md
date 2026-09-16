@@ -99,3 +99,11 @@ evidence. The corresponding
 [backup runs](https://github.com/prakhar267/grihagrid/actions/workflows/production-backup.yml)
 must include successful integrity, foreign-key and required-schema verification.
 Release sign-off records those exact run IDs and versions after completion.
+
+
+## Subsequent operations follow-up
+
+The [17 September operations record](production-operations.md) tracks independent
+monitor activation, private backup storage and the non-destructive remote drill.
+It distinguishes tested recovery tools and source-artifact verification from
+service activation, account capacity and private-runner execution.
