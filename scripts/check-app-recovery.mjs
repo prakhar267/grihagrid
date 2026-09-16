@@ -188,7 +188,7 @@ try {
     checks.push('Back from auth-free demo waits for a fresh session, retains the private URL on transport failure, and retries without a false sign-out');
     await context.close();
   }
-  for (const publicPath of ['/estimate', '/explore']) {
+  for (const publicPath of ['/estimate', '/explore', '/share/report']) {
     const { context, page, calls } = await isolated();
     await page.goto(origin + publicPath);
     await page.locator('main h1').waitFor();
