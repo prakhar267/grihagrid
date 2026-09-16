@@ -67,6 +67,8 @@ test("read-only smoke verifies private documents, health, readiness, estimate an
   let readinessAttempts = 0;
   let legacyReadiness = false;
   let handoffEnabled = true;
+  let spatialSchema = "current";
+  let spatialStudio = true;
   const securityHeaders = {
     "strict-transport-security": "max-age=31536000; includeSubDomains",
     "x-content-type-options": "nosniff",
@@ -141,6 +143,7 @@ test("read-only smoke verifies private documents, health, readiness, estimate an
             reportShareSchema: "current",
             reportHandoffControl: handoffEnabled ? "enabled" : "disabled",
             reportShareAbuseHashing: "configured",
+            spatialSchema,
           }),
           projectCreationSchema: "current",
           authSchema: "current",
@@ -159,7 +162,7 @@ test("read-only smoke verifies private documents, health, readiness, estimate an
           familyAlignment: true,
           briefCheck: true,
           reportFeedback: true,
-          ...(legacyReadiness ? {} : { reportHandoff: handoffEnabled }),
+          ...(legacyReadiness ? {} : { reportHandoff: handoffEnabled, spatialStudio }),
           accountSecurity: true,
           accountLifecycle: true,
           emailVerification: false,
@@ -250,6 +253,25 @@ test("read-only smoke verifies private documents, health, readiness, estimate an
       () => runSmoke("https://worker.example.test", { expectAiPlanningBrief: false }),
       /AI readiness does not match the environment contract/u,
     );
+
+    for (const failure of [
+      { schema: undefined, studio: true, error: /spatial schema is not current/u },
+      { schema: "missing", studio: true, error: /spatial schema is not current/u },
+      { schema: "current", studio: undefined, error: /spatial studio is unavailable/u },
+      { schema: "current", studio: false, error: /spatial studio is unavailable/u },
+      { schema: "current", studio: "true", error: /spatial studio is unavailable/u },
+    ]) {
+      spatialSchema = failure.schema;
+      spatialStudio = failure.studio;
+      // A successful HTTP response with a broken contract must fail directly,
+      // without treating schema/capability loss as a transient network error.
+      readinessAttempts = 1;
+      await assert.rejects(() => runSmoke("https://worker.example.test"), failure.error);
+      assert.equal(readinessAttempts, 2);
+      assert.deepEqual(requested.at(-1), { path: "/api/readiness", method: "GET" });
+    }
+    spatialSchema = "current";
+    spatialStudio = true;
 
     requested.length = 0;
     readinessAttempts = 0;

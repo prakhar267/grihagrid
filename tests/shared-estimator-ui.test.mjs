@@ -26,7 +26,12 @@ test("the shared estimator route is authentication-free and never bootstraps or 
   assert.match(authenticationFree, /isPublicReportSharePath\(pathname\)\|\|isFamilyAlignmentPath\(pathname\)\|\|pathname==="\/estimate"/u);
   assert.match(appComponent, /useState\(\(\)=>isAuthenticationFreePath\(window\.location\.pathname\)\?null:undefined\)/u);
   assert.match(appComponent, /if\(isAuthenticationFreePath\(path\)\)\{[\s\S]*?authenticatedSession\.current=false;setUser\(null\);return\}[\s\S]*?api\('\/api\/auth\/me'\)/u);
-  assert.match(appComponent, /if\(isAuthenticationFreePath\(pathname\)\)\{authenticatedSession\.current=false;setUser\(null\);return\}[\s\S]*?if\(checking\|\|!shouldRevalidateSession/u);
+  assert.match(appComponent, /const renderedPath=useRef\(path\);renderedPath\.current=path/u);
+  assert.match(appComponent, /const privateScreenIsOpen=\(\)=>isPrivateAccountPath\(window\.location\.pathname\)\|\|isPrivateAccountPath\(renderedPath\.current\)/u);
+  assert.match(appComponent, /const privatePath=privateScreenIsOpen\(\)/u);
+  // A genuinely rendered public route remains auth-free. A temporarily public
+  // URL during cancelled Back must not skip invalidation of the private screen.
+  assert.match(appComponent, /if\(isAuthenticationFreePath\(pathname\)&&!privatePath\)\{authenticatedSession\.current=false;setUser\(null\);return\}[\s\S]*?if\(checking\|\|!shouldRevalidateSession/u);
   assert.match(appComponent, /'\/estimate':'Shared estimate — GrihaGrid'/u);
   assert.match(appComponent, /if\(path==='\/estimate'\)return <SharedEstimatorPage\/>/u);
   assert.doesNotMatch(sharedPage, /\/api\/auth|csrf|document\.cookie|sessionStorage|localStorage/iu);

@@ -8,10 +8,13 @@ import "@fontsource/cormorant-garamond/latin-500.css";
 import "@fontsource/cormorant-garamond/latin-600.css";
 import "@fontsource/cormorant-garamond/latin-600-italic.css";
 import { App } from "./App.jsx";
+import { AppErrorBoundary } from "./AppRecovery.jsx";
+import { installNavigationGuard } from "./navigation-guard.js";
 import "./styles.css";
 
+installNavigationGuard();
 createRoot(document.getElementById("root")).render(
   <React.StrictMode>
-    <App />
+    <AppErrorBoundary><App /></AppErrorBoundary>
   </React.StrictMode>,
 );

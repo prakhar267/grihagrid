@@ -10,6 +10,23 @@ interleaved within their own real-D1 fixtures.
 
 ## Critical paths
 
+Free-production recovery regression: build, then run
+`APP_RECOVERY_BUILT=1 node scripts/check-app-recovery.mjs`
+against the compiled local app. Its isolated browser replaces API responses,
+mocks the anonymous homepage calculation and blocks remote traffic and
+unexpected writes. Check initial session-network failures,
+exact application 401 handling, sibling-tab logout versus late responses,
+failed spatial chunks and explicit recovery, dashboard retry, and unsaved
+spatial navigation/unload. Pause cancelled history restoration while logout or
+session expiry arrives; require private UI to disappear before restoration and
+remain absent afterward. Preserve keyboard focus and 390/720 px reflow.
+
+`tests/account-lifecycle.test.mjs` exercises destructive account races against
+real local D1, including unique authorization claims, reset/revoke/logout
+winners, expiry after the claim, prior stale claims, rollback and private-file
+offboarding. `tests/backup-restore-schema.test.mjs` rejects missing required
+tables, columns, indexes and triggers even when SQLite integrity is `ok`.
+
 1. Home → adjust width, length, city, floors, and finish → receive an exact
    calculation-checked range and published rule basis → use those details → complete four
    steps → create the project → require the stored recalculation to match →

@@ -957,6 +957,103 @@ test("Gemini failures are safely mapped, retry only transient statuses, and neve
   });
 });
 
+test("Gemini streaming accepts exactly 512 KiB and decodes split UTF-8 characters", async () => {
+  const content = { ...validContent, headline: `${validContent.headline} — घर` };
+  const payload = await geminiResponse(content).text();
+  const bytes = new TextEncoder().encode(payload + " ".repeat(512 * 1024 - new TextEncoder().encode(payload).byteLength));
+  const split = bytes.indexOf(0xe2) + 1;
+  assert.ok(split > 1);
+  let offset = 0;
+  const body = new ReadableStream({
+    pull(controller) {
+      if (offset === bytes.length) return controller.close();
+      const end = offset === 0 ? split : Math.min(offset + 16_384, bytes.length);
+      controller.enqueue(bytes.slice(offset, end));
+      offset = end;
+    },
+  }, { highWaterMark: 0 });
+  const result = await __test.callGemini({ GEMINI_FETCH: async () => new Response(body) },
+    "grounded prompt", { apiKey: API_KEY, model: "gemini-3.6-flash" });
+  assert.equal(offset, 512 * 1024);
+  assert.equal(result.content.headline, __test.validateAiBriefContent(content).headline);
+  assert.equal(body.locked, false);
+});
+
+test("Gemini caps streamed bytes despite absent or false lengths and promptly cancels oversized bodies", async () => {
+  for (const declaredLength of [null, "1", String(512 * 1024 + 1)]) {
+    let pulls = 0, cancellations = 0, providerCalls = 0;
+    const body = new ReadableStream({
+      pull(controller) {
+        pulls += 1;
+        controller.enqueue(new Uint8Array(65_536).fill(32));
+      },
+      cancel() { cancellations += 1; },
+    }, { highWaterMark: 0 });
+    await assert.rejects(() => __test.callGemini({
+      GEMINI_FETCH: async () => {
+        providerCalls += 1;
+        return new Response(body, { headers: declaredLength === null ? {} : { "content-length": declaredLength } });
+      },
+    }, "grounded prompt", { apiKey: API_KEY, model: "gemini-3.6-flash" }), error => {
+      assert.equal(error.status, 502);
+      assert.equal(error.code, "ai_provider_error");
+      return true;
+    });
+    assert.equal(pulls, Number(declaredLength) > 512 * 1024 ? 0 : 9);
+    assert.equal(cancellations, 1);
+    assert.equal(providerCalls, 1, "A failed body read must not start a second billed request.");
+    assert.equal(body.locked, false);
+  }
+});
+
+test("Gemini read and abort errors are redacted provider failures and release the generation lease", async () => {
+  for (const failure of [new Error("private provider details"), new DOMException("private abort details", "AbortError")]) {
+    const DB = new MemoryD1();
+    let calls = 0, body;
+    const env = {
+      ASSETS: assets, DB, GRIHAGRID_CACHE: new MemoryKv(), GEMINI_API_KEY: API_KEY,
+      GEMINI_FETCH: async () => {
+        calls += 1;
+        body = new ReadableStream({ pull(controller) { controller.error(failure); } }, { highWaterMark: 0 });
+        return new Response(body);
+      },
+    };
+    const owner = await registerAndCreateProject(env);
+    const path = `/api/projects/${owner.project.id}/ai-brief`;
+    const result = await worker.fetch(authenticatedPost(path, owner, { acceptedAiTerms: true }), env);
+    assert.equal(result.status, 502);
+    const payload = await result.json();
+    assert.equal(payload.code, "ai_provider_error");
+    assert.equal(JSON.stringify(payload).includes("private"), false);
+    assert.equal(calls, 1);
+    assert.equal(body.locked, false);
+    assert.equal(DB.leases.length, 0);
+    assert.equal(DB.briefs.length, 0);
+    env.GEMINI_FETCH = async () => geminiResponse();
+    assert.equal((await worker.fetch(authenticatedPost(path, owner, { acceptedAiTerms: true }), env)).status, 201);
+  }
+});
+
+test("Gemini discards error streams before retry and preserves final capacity mapping", async () => {
+  let cancellations = 0, reads = 0, attempts = 0;
+  await assert.rejects(() => __test.callGemini({
+    GEMINI_FETCH: async () => {
+      attempts += 1;
+      return new Response(new ReadableStream({
+        pull() { reads += 1; throw new Error("error bodies must not be read"); },
+        cancel() { cancellations += 1; },
+      }, { highWaterMark: 0 }), { status: 429 });
+    },
+  }, "grounded prompt", { apiKey: API_KEY, model: "gemini-3.6-flash" }), error => {
+    assert.equal(error.status, 503);
+    assert.equal(error.code, "ai_capacity_unavailable");
+    return true;
+  });
+  assert.equal(attempts, 2);
+  assert.equal(cancellations, 2);
+  assert.equal(reads, 0);
+});
+
 test("AI provider configuration fails closed while model fallback is stable", async () => {
   assert.equal(__test.aiModel({}), "gemini-3.6-flash");
   assert.equal(__test.aiModel({ GEMINI_MODEL: "gemini-3.6-flash" }), "gemini-3.6-flash");

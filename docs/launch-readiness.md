@@ -2,6 +2,13 @@
 
 ## Current decision
 
+The current production-hardening cut and its free-product acceptance criteria
+are recorded in [Free-production readiness — 16 September 2026](free-production-readiness.md).
+It excludes custom-domain and payment activation, preserves the previous
+iPhone/VoiceOver deferrals, and separates live engineering evidence from
+unconfigured external services and human approvals. The historical release
+records below remain unchanged; use the new record for this cut's status.
+
 **The free public demonstration is live and engineering-ready for controlled
 noncommercial use. Paid checkout and fulfillment remain closed: NO-GO for
 accepting public money or issuing paid Decision Compare artifacts.**

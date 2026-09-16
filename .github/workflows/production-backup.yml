@@ -104,21 +104,25 @@ jobs:
           import assert from "node:assert/strict";
           import { writeFileSync } from "node:fs";
           import { DatabaseSync } from "node:sqlite";
+          import { verifyBackupRestoreSchema } from "./scripts/verify-backup-restore.mjs";
           const database = new DatabaseSync(process.env.RESTORED_DATABASE, { readOnly: true });
+          let schemaEvidence;
           try {
             const integrityRows = database.prepare("PRAGMA integrity_check;").all();
             const foreignKeyRows = database.prepare("PRAGMA foreign_key_check;").all();
             assert.equal(integrityRows.length, 1);
             assert.equal(integrityRows[0].integrity_check, "ok");
             assert.equal(foreignKeyRows.length, 0);
+            schemaEvidence = verifyBackupRestoreSchema(database);
           } finally {
             database.close();
           }
-          writeFileSync(process.argv[2], '{"integrity":"ok","foreignKeyViolations":0}\n', { mode: 0o600 });
+          writeFileSync(process.argv[2], `${JSON.stringify({ integrity: "ok", foreignKeyViolations: 0, ...schemaEvidence })}\n`, { mode: 0o600 });
           NODE
 
           ENCRYPTED_SHA256="$encrypted_sha256" node --input-type=module - "$BACKUP_DIRECTORY/manifest.json" <<'NODE'
-          import { writeFileSync } from "node:fs";
+          import { readFileSync, writeFileSync } from "node:fs";
+          const restoreEvidence = JSON.parse(readFileSync(`${process.env.RESTORE_DIRECTORY}/verification.json`, "utf8"));
           const manifest = {
             environment: "production",
             database: "grihagrid-db",
@@ -129,10 +133,7 @@ jobs:
             rawSha256: process.env.RAW_SHA256,
             encryptedSha256: process.env.ENCRYPTED_SHA256,
             timeTravelBookmark: process.env.TIME_TRAVEL_BOOKMARK,
-            isolatedRestore: {
-              integrity: "ok",
-              foreignKeyViolations: 0,
-            },
+            isolatedRestore: restoreEvidence,
           };
           writeFileSync(process.argv[2], `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
           NODE

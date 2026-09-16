@@ -7,6 +7,7 @@ import {
   WarningCircle, X, XCircle,
 } from "@phosphor-icons/react";
 import { api, apiResponse, ApiError, copyText, formatDate, formatDateTime, formatLakh, idempotencyKey, publicApi, trackEvent } from "./api.js";
+import { SessionBootstrapRecovery } from "./AppRecovery.jsx";
 import {
   LOGOUT_CHANNEL_NAME, LOGOUT_FAILURE_MESSAGE, broadcastLogout, clearLocalLogoutState, confirmLogout,
   isApplicationUnauthenticated, isCurrentSessionRevalidationTarget, isLogoutBroadcast,
@@ -1542,8 +1543,17 @@ function AccountSecurityPage({ user, onAuthenticated, onDeleted }) {
 
 function Dashboard({ user, onLogout }) {
   const [projects,setProjects]=useState([]);const [loading,setLoading]=useState(true);const [error,setError]=useState("");
-  useEffect(()=>{api('/api/projects').then(x=>setProjects(x.projects||[])).catch(e=>{if(e instanceof ApiError&&e.status===401)route('/login');else setError(e.message)}).finally(()=>setLoading(false));},[]);
-  return <main className="workspace"><aside><Brand/><nav><button className="active"><Blueprint/> Projects</button><button onClick={()=>route('/orders')}><Receipt/> Orders</button><button onClick={()=>route('/start')}><Plus/> New brief</button><button onClick={()=>route('/plans')}><FileText/> Sample plan</button></nav><WorkspaceAccount user={user} onLogout={onLogout}/></aside><section className="workspace-main"><header><div><span className="kicker">Your private workspace</span><h1>Home plans, in one place.</h1></div><button className="copper-button" onClick={()=>route('/start')}><Plus/> New project</button></header>{loading&&<p className="loading-line" role="status">Loading your projects…</p>}{error&&<p className="form-error" role="alert">{error}</p>}{!loading&&!error&&projects.length===0&&<div className="empty-state"><Blueprint/><h2>Your first plot is still blank paper.</h2><p>Create a Brief Check and planning range before commissioning drawings.</p><button className="copper-button" onClick={()=>route('/start')}>Plan my home <ArrowRight/></button></div>}<div className="project-list">{projects.map((project,i)=><article key={project.id}><span className="project-number">{String(i+1).padStart(2,'0')}</span><div><small>{project.status?.replaceAll('_',' ')}</small><h2>{project.name}</h2><p>{project.input?.width||project.width||30} × {project.input?.length||project.length||50} ft · {project.input?.city||project.city||'India'} · {project.input?.floors||project.floors||'G+1'}</p></div><div><span>Planning range</span><strong>{formatLakh(project.estimate?.lowInr||project.low_inr)} – {formatLakh(project.estimate?.highInr||project.high_inr)}</strong></div><div className="project-actions"><button onClick={()=>route(`/projects/${project.id}`)}>{project.status==='archived'?'Open project':'Resume'} <ArrowRight/></button></div></article>)}</div></section></main>;
+  const [loadAttempt,setLoadAttempt]=useState(0);
+  useEffect(()=>{
+    const controller=new AbortController();setLoading(true);setError("");
+    api('/api/projects',{signal:controller.signal}).then(result=>{if(!controller.signal.aborted)setProjects(result.projects||[])}).catch(failure=>{
+      if(controller.signal.aborted)return;
+      if(isApplicationUnauthenticated(failure))route('/login');
+      else setError('Your projects could not be loaded. Check your connection and try again.');
+    }).finally(()=>{if(!controller.signal.aborted)setLoading(false)});
+    return()=>controller.abort();
+  },[loadAttempt]);
+  return <main className="workspace"><aside><Brand/><nav><button className="active"><Blueprint/> Projects</button><button onClick={()=>route('/orders')}><Receipt/> Orders</button><button onClick={()=>route('/start')}><Plus/> New brief</button><button onClick={()=>route('/plans')}><FileText/> Sample plan</button></nav><WorkspaceAccount user={user} onLogout={onLogout}/></aside><section className="workspace-main" aria-busy={loading}><header><div><span className="kicker">Your private workspace</span><h1>Home plans, in one place.</h1></div><button className="copper-button" onClick={()=>route('/start')}><Plus/> New project</button></header>{loading&&<p className="loading-line" role="status">Loading your projects…</p>}{error&&<div><p className="form-error" role="alert">{error}</p><button type="button" className="outline-button" onClick={()=>setLoadAttempt(value=>value+1)}>Retry projects <ArrowClockwise/></button></div>}{!loading&&!error&&projects.length===0&&<div className="empty-state"><Blueprint/><h2>Your first plot is still blank paper.</h2><p>Create a Brief Check and planning range before commissioning drawings.</p><button className="copper-button" onClick={()=>route('/start')}>Plan my home <ArrowRight/></button></div>}<div className="project-list">{projects.map((project,i)=><article key={project.id}><span className="project-number">{String(i+1).padStart(2,'0')}</span><div><small>{project.status?.replaceAll('_',' ')}</small><h2>{project.name}</h2><p>{project.input?.width||project.width||30} × {project.input?.length||project.length||50} ft · {project.input?.city||project.city||'India'} · {project.input?.floors||project.floors||'G+1'}</p></div><div><span>Planning range</span><strong>{formatLakh(project.estimate?.lowInr||project.low_inr)} – {formatLakh(project.estimate?.highInr||project.high_inr)}</strong></div><div className="project-actions"><button onClick={()=>route(`/projects/${project.id}`)}>{project.status==='archived'?'Open project':'Resume'} <ArrowRight/></button></div></article>)}</div></section></main>;
 }
 
 const projectHomeSteps = {
@@ -3756,20 +3766,31 @@ function LegalPage({ type }) {
 
 function NotFoundPage() { return <main className="error-page"><Compass/><span className="kicker">404 · Outside the plot</span><h1>This page is not in the plan.</h1><p>The address may have changed, or the page may never have existed.</p><button className="copper-button" onClick={()=>route('/')}>Return home <ArrowRight/></button></main>; }
 
-function AppShell({ user, children }) { return <><a className="skip-link" href="#main-content">Skip to content</a><Header user={user}/><div id="main-content">{children}</div><Footer/></>; }
+function AppShell({ user, children }) { return <><a className="skip-link" href="#main-content" onClick={event=>{event.preventDefault();const content=document.getElementById("main-content");content?.focus();content?.scrollIntoView({block:"start"})}}>Skip to content</a><Header user={user}/><div id="main-content" tabIndex="-1">{children}</div><Footer/></>; }
 
 export function App() {
   const [path,setPath]=useState(()=>{migrateLegacyFamilyAlignmentCapability();return window.location.pathname});const [user,setUser]=useState(()=>isAuthenticationFreePath(window.location.pathname)?null:undefined);
   const draftWorkflow=path==="/start"||((path==="/login"||path==="/register")&&window.history.state?.projectContinuation===true);
   const draftAccess=useAnonymousDraftStorageAccess(draftWorkflow);
   const focusedPath=useRef(path);
+  // A cancelled history traversal changes the URL before its restoration lands.
+  // Session invalidation must also protect the private screen still on display.
+  const renderedPath=useRef(path);renderedPath.current=path;
+  const privateScreenIsOpen=()=>isPrivateAccountPath(window.location.pathname)||isPrivateAccountPath(renderedPath.current);
   const authRevision=useRef(0);
   const authenticatedSession=useRef(false);
   const authBootstrapComplete=useRef(false);
+  const [authBootstrapFailure,setAuthBootstrapFailure]=useState(false);
+  const [authBootstrapAttempt,setAuthBootstrapAttempt]=useState(0);
+  const [authBootstrapPending,setAuthBootstrapPending]=useState(!isAuthenticationFreePath(path));
+  function acceptAuthenticatedUser(authenticated){
+    authRevision.current+=1;authenticatedSession.current=Boolean(authenticated);authBootstrapComplete.current=true;
+    setAuthBootstrapPending(false);setAuthBootstrapFailure(false);setUser(authenticated);
+  }
   useEffect(()=>{clearLegacyPendingProjectState();purgeInvalidAnonymousDraftOnBoot()},[]);
   useEffect(()=>{const onPop=()=>{migrateLegacyFamilyAlignmentCapability();setPath(window.location.pathname)};window.addEventListener('popstate',onPop);return()=>window.removeEventListener('popstate',onPop)},[]);
   useEffect(()=>{
-    const applyRemoteLogout=()=>{authRevision.current+=1;authenticatedSession.current=false;clearLocalLogoutState();setUser(null);if(isPrivateAccountPath(window.location.pathname))replaceRoute('/',{logoutConfirmed:true})};
+    const applyRemoteLogout=()=>{authRevision.current+=1;authenticatedSession.current=false;clearLocalLogoutState();setAuthBootstrapPending(false);setAuthBootstrapFailure(false);setUser(null);if(privateScreenIsOpen())replaceRoute('/',{logoutConfirmed:true})};
     const onStorage=event=>{if(isLogoutBroadcast(event))applyRemoteLogout()};
     const onChannel=event=>{if(isLogoutChannelMessage(event))applyRemoteLogout()};
     let channel=null;
@@ -3778,20 +3799,20 @@ export function App() {
     return()=>{window.removeEventListener('storage',onStorage);if(channel){channel.removeEventListener('message',onChannel);channel.close()}};
   },[]);
   useEffect(()=>{
-    if(isAuthenticationFreePath(path)){if(authBootstrapComplete.current)authRevision.current+=1;authBootstrapComplete.current=false;authenticatedSession.current=false;setUser(null);return}
+    if(isAuthenticationFreePath(path)){if(authBootstrapComplete.current)authRevision.current+=1;authBootstrapComplete.current=false;authenticatedSession.current=false;setUser(null);setAuthBootstrapPending(false);setAuthBootstrapFailure(false);return}
     if(authBootstrapComplete.current)return;
-    authBootstrapComplete.current=true;
+    authBootstrapComplete.current=true;setAuthBootstrapPending(true);
     const revision=authRevision.current;
-    api('/api/auth/me').then(x=>{if(authRevision.current===revision){authenticatedSession.current=Boolean(x.user);setUser(x.user||null);if(x.user&&window.history.state?.logoutConfirmed===true)replaceRoute(window.location.pathname,{})}}).catch(error=>{if(authRevision.current===revision&&isApplicationUnauthenticated(error)){authenticatedSession.current=false;setUser(null)}});
-  },[path]);
+    api('/api/auth/me').then(x=>{if(authRevision.current===revision){authenticatedSession.current=Boolean(x.user);setUser(x.user||null);setAuthBootstrapPending(false);setAuthBootstrapFailure(false);if(x.user&&window.history.state?.logoutConfirmed===true)replaceRoute(window.location.pathname,{})}}).catch(error=>{if(authRevision.current!==revision)return;setAuthBootstrapPending(false);if(isApplicationUnauthenticated(error)){authenticatedSession.current=false;setUser(null);setAuthBootstrapFailure(false)}else setAuthBootstrapFailure(true)});
+  },[path,authBootstrapAttempt]);
   useEffect(()=>{
     let checking=false;
     const revalidate=async()=>{
       const pathname=window.location.pathname;
       const requestedLocation=`${pathname}${window.location.search}${window.location.hash}`;
-      const privatePath=isPrivateAccountPath(pathname);
+      const privatePath=privateScreenIsOpen();
       const confirmationVisible=window.history.state?.logoutConfirmed===true;
-      if(isAuthenticationFreePath(pathname)){authenticatedSession.current=false;setUser(null);return}
+      if(isAuthenticationFreePath(pathname)&&!privatePath){authenticatedSession.current=false;setUser(null);return}
       if(checking||!shouldRevalidateSession(privatePath,window.history.state))return;
       checking=true;const revision=authRevision.current;
       const targetIsCurrent=()=>isCurrentSessionRevalidationTarget(
@@ -3800,13 +3821,13 @@ export function App() {
         confirmationVisible,
         window.history.state,
       );
-      try{const result=await api('/api/auth/me');if(authRevision.current===revision){authenticatedSession.current=Boolean(result.user);setUser(result.user||null);if(result.user&&confirmationVisible&&targetIsCurrent())replaceRoute(requestedLocation,{})}}
+      try{const result=await api('/api/auth/me');if(authRevision.current===revision){authenticatedSession.current=Boolean(result.user);setUser(result.user||null);setAuthBootstrapPending(false);setAuthBootstrapFailure(false);if(result.user&&confirmationVisible&&targetIsCurrent())replaceRoute(requestedLocation,{})}}
       catch(error){
         if(authRevision.current!==revision)return;
         if(isApplicationUnauthenticated(error)){
           const wasAuthenticated=authenticatedSession.current;
-          authenticatedSession.current=false;clearLocalLogoutState();setUser(null);
-          if(privatePath&&targetIsCurrent()){const destination=privateRouteAfterUnauthenticated(wasAuthenticated);authRevision.current+=1;replaceRoute(destination.path,destination.state)}
+          authenticatedSession.current=false;clearLocalLogoutState();setUser(null);setAuthBootstrapPending(false);setAuthBootstrapFailure(false);
+          if(privateScreenIsOpen()){const destination=privateRouteAfterUnauthenticated(wasAuthenticated);authRevision.current+=1;replaceRoute(destination.path,destination.state)}
         }else if(confirmationVisible&&targetIsCurrent()){
           setUser(undefined);
           replaceRoute(requestedLocation,{});
@@ -3818,6 +3839,8 @@ export function App() {
     window.addEventListener('focus',revalidate);window.addEventListener('pageshow',revalidate);document.addEventListener('visibilitychange',onVisibility);
     return()=>{window.removeEventListener('focus',revalidate);window.removeEventListener('pageshow',revalidate);document.removeEventListener('visibilitychange',onVisibility)};
   },[]);
+  const confirmedAnonymousPrivatePath=isPrivateAccountPath(path)&&user===null&&authBootstrapComplete.current&&!authBootstrapPending&&!authBootstrapFailure;
+  useEffect(()=>{if(confirmedAnonymousPrivatePath)replaceRoute('/login')},[confirmedAnonymousPrivatePath,path]);
   useEffect(()=>{const titles={'/explore':'Spatial studio — GrihaGrid','/':'GrihaGrid — Know what fits. Know what it costs.','/estimate':'Shared estimate — GrihaGrid','/pricing':'Pricing — GrihaGrid','/about':'About — GrihaGrid','/plans':'Sample plan — GrihaGrid','/compare/sample':'Sample Decision Compare — GrihaGrid','/start':'Plan my home — GrihaGrid','/login':'Log in — GrihaGrid','/register':'Create account — GrihaGrid','/forgot-password':'Recover account — GrihaGrid','/reset-password':'Reset password — GrihaGrid','/verify-email':'Verify email — GrihaGrid','/dashboard':'My projects — GrihaGrid','/security':'Account security — GrihaGrid','/review-workbench':'Professional review workbench — GrihaGrid','/orders':'Orders — GrihaGrid','/privacy':'Privacy — GrihaGrid','/terms':'Terms — GrihaGrid','/refund':'Refunds — GrihaGrid'};document.title=path.startsWith('/projects/')&&path.endsWith('/spatial')?'Spatial studio — GrihaGrid':path.startsWith('/report/')?'Decision book — GrihaGrid':path.startsWith('/projects/')&&path.endsWith('/brief')?'Brief Check — GrihaGrid':path.startsWith('/projects/')&&path.endsWith('/compare')?'Decision Compare — GrihaGrid':path.startsWith('/projects/')?'Project home — GrihaGrid':path.startsWith('/orders/')?'Purchased artifact — GrihaGrid':path==='/share/report'?'Professional handoff — GrihaGrid':path.startsWith('/share/decision/')?'Shared decision — GrihaGrid':isFamilyAlignmentPath(path)?'Family review — GrihaGrid':(titles[path]||'Page not found — GrihaGrid')},[path]);
   useEffect(()=>{
     if(focusedPath.current===path)return undefined;
@@ -3864,6 +3887,8 @@ export function App() {
       restoreTabIndex();
     };
   },[path]);
+  if(isPrivateAccountPath(path)&&(user===undefined||!authBootstrapComplete.current||authBootstrapPending||authBootstrapFailure&&user===null))return <SessionBootstrapRecovery failed={authBootstrapFailure} onRetry={()=>{authRevision.current+=1;authBootstrapComplete.current=false;setAuthBootstrapPending(true);setAuthBootstrapFailure(false);setAuthBootstrapAttempt(value=>value+1)}} onHome={()=>route('/')}/>;
+  if(confirmedAnonymousPrivatePath)return <main className="error-page"><h1>Returning to sign in…</h1><p role="status">Private account controls are closed.</p></main>;
   const historicalReportMatch=path.match(/^\/report\/([^/]+)\/revision\/([1-9]\d*)$/);
   const reportMatch=path.match(/^\/report\/([^/]+)$/);
   const briefMatch=path.match(/^\/projects\/([^/]+)\/brief$/);
@@ -3875,15 +3900,15 @@ export function App() {
   const spatialMatch=path.match(/^\/projects\/([^/]+)\/spatial$/);
   if(path==='/explore'||spatialMatch)return <Suspense fallback={<main className="error-page"><h1>Opening the spatial studio…</h1></main>}><SpatialWorkspace key={spatialMatch?.[1]||'demo'} projectId={spatialMatch?safeDecodePathSegment(spatialMatch[1]):null} onNavigate={route}/></Suspense>;
   if(path==='/estimate')return <SharedEstimatorPage/>;
-  if(path==='/start')return <StartPage user={user} draftAccess={draftAccess} onSessionEnded={()=>{authRevision.current+=1;authenticatedSession.current=false;setUser(null)}}/>;
-  if(path==='/login'||path==='/register')return <AuthPage key={path} mode={path.slice(1)} user={user} draftAccess={draftAccess} onAuthenticated={authenticated=>{authRevision.current+=1;authenticatedSession.current=Boolean(authenticated);setUser(authenticated)}}/>;
+  if(path==='/start')return <StartPage user={user} draftAccess={draftAccess} onSessionEnded={()=>acceptAuthenticatedUser(null)}/>;
+  if(path==='/login'||path==='/register')return <AuthPage key={path} mode={path.slice(1)} user={user} draftAccess={draftAccess} onAuthenticated={acceptAuthenticatedUser}/>;
   if(path==='/forgot-password')return <PasswordRecoveryPage mode="request"/>;
   if(path==='/reset-password')return <PasswordRecoveryPage mode="confirm"/>;
   if(path==='/verify-email')return <EmailVerificationPage onVerified={()=>{api('/api/auth/me').then(result=>{if(result?.user)setUser(result.user)}).catch(()=>{})}}/>;
-  if(path==='/dashboard')return <Dashboard user={user} onLogout={()=>{authRevision.current+=1;authenticatedSession.current=false;setUser(null)}}/>;
-  if(path==='/security')return <AccountSecurityPage key={user?.id||'unconfirmed-account'} user={user} onAuthenticated={authenticated=>{authRevision.current+=1;authenticatedSession.current=true;setUser(authenticated)}} onDeleted={()=>{authRevision.current+=1;authenticatedSession.current=false;setUser(null)}}/>;
+  if(path==='/dashboard')return <Dashboard user={user} onLogout={()=>acceptAuthenticatedUser(null)}/>;
+  if(path==='/security')return <AccountSecurityPage key={user?.id||'unconfirmed-account'} user={user} onAuthenticated={acceptAuthenticatedUser} onDeleted={()=>acceptAuthenticatedUser(null)}/>;
   if(path==='/review-workbench')return <ProfessionalReviewWorkbench user={user}/>;
-  if(path==='/orders')return <OrderHistoryPage user={user} onLogout={()=>{authRevision.current+=1;authenticatedSession.current=false;setUser(null)}}/>;
+  if(path==='/orders')return <OrderHistoryPage user={user} onLogout={()=>acceptAuthenticatedUser(null)}/>;
   if(briefMatch)return <BriefPage projectId={safeDecodePathSegment(briefMatch[1])}/>;
   if(decisionMatch)return <DecisionComparePage projectId={safeDecodePathSegment(decisionMatch[1])}/>;
   if(projectHomeMatch)return <ProjectHomePage projectId={safeDecodePathSegment(projectHomeMatch[1])}/>;

@@ -377,6 +377,16 @@ export function buildPreMigrationEvidence({
   };
 }
 
+export function verifyRequiredSchemaEvidence({ schemaPayload, columnsPayload }) {
+  const schemaNames = new Set(d1Rows(schemaPayload, "schema objects").map((row) => `${row.type}:${row.name}`));
+  for (const name of REQUIRED_SCHEMA_OBJECTS) {
+    assert.ok(schemaNames.has(name), `required schema object is missing: ${name}`);
+  }
+  const columns = new Set(d1Rows(columnsPayload, "schema columns").map((row) => `${row.table_name}:${row.name}`));
+  for (const name of REQUIRED_COLUMNS) assert.ok(columns.has(name), `required schema column is missing: ${name}`);
+  return { requiredSchemaObjectsVerified: REQUIRED_SCHEMA_OBJECTS.length, requiredColumnsVerified: REQUIRED_COLUMNS.length };
+}
+
 export function verifyPostMigrationEvidence({
   environment,
   pre,
@@ -406,12 +416,7 @@ export function verifyPostMigrationEvidence({
     "foreign-key check must succeed with zero rows",
   );
 
-  const schemaNames = new Set(d1Rows(schemaPayload, "schema objects").map((row) => `${row.type}:${row.name}`));
-  for (const name of REQUIRED_SCHEMA_OBJECTS) {
-    assert.ok(schemaNames.has(name), `required schema object is missing: ${name}`);
-  }
-  const columns = new Set(d1Rows(columnsPayload, "schema columns").map((row) => `${row.table_name}:${row.name}`));
-  for (const name of REQUIRED_COLUMNS) assert.ok(columns.has(name), `required schema column is missing: ${name}`);
+  verifyRequiredSchemaEvidence({ schemaPayload, columnsPayload });
 
   const counts = exactCounts(countsPayload);
   assert.deepEqual(counts, pre.counts, "migration changed protected table row counts");

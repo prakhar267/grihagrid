@@ -24,8 +24,8 @@ while the isolated R2 buckets or binding are absent.
 | Razorpay | Payment Links API and signed webhook | Checkout and paid-state confirmation | **Not active:** live account configuration, secrets, webhook registration, and reconciliation evidence are absent |
 | Google Gemini | Structured Interactions API | Optional sanitized planning brief | Active for sanitized beta; shared free-tier project must be isolated before material customer volume |
 | Cron | `17 2 * * *` | Session/order/AI admission cleanup | Configured daily at 02:17 UTC / 07:47 IST |
-| Backup | `.github/workflows/production-backup.yml` at `47 1,13 * * *` | Encrypted D1 export, Time Travel point, and isolated restore proof | Runs twice daily from protected `main`; retains only ciphertext and a bounded manifest for 7 days; remote restore remains incident-authorized |
-| Observability | Worker observability, `head_sampling_rate = 1`; automatic invocation logs disabled | Templated custom request logs and traces | Enabled at 100% sampling; raw-URL invocation logs stay off because share URLs contain bearer secrets; hourly GitHub smoke owns a bounded incident issue, while independent two-region synthetics still need an external provider |
+| Backup | `.github/workflows/production-backup.yml` at `47 1,13 * * *` | Encrypted D1 export, Time Travel point, and isolated restore proof | Scheduled twice daily from protected `main`; retains ciphertext and a bounded manifest as Actions artifacts for 7 days; the repository is public, so artifact access is not restricted to operators; remote restore remains incident-authorized |
+| Observability | Worker observability, `head_sampling_rate = 1`; automatic invocation logs disabled | Templated custom request logs and traces | Enabled at 100% sampling; raw-URL invocation logs stay off because share URLs contain bearer secrets; GitHub smoke is scheduled hourly and owns a bounded incident issue, while independent two-region synthetics and missed-run alerts remain unconfigured |
 
 `/api/health` is a dependency-independent liveness probe. `/api/readiness`
 checks D1 reachability, the required schema, the KV binding, and reports
@@ -793,8 +793,8 @@ settlement check, and full refund with the payment owner present.
 Configure checks from at least two external regions. Cloudflare's own dashboard
 does not count as an independent availability check.
 
-`.github/workflows/production-smoke.yml` runs the read-only public suite against
-production and staging hourly and on demand. On trusted `main`, a failed run
+`.github/workflows/production-smoke.yml` schedules the read-only public suite
+against production and staging hourly and supports on-demand runs. On trusted `main`, a failed run
 opens or updates the single `Production monitor: GrihaGrid public smoke failing`
 issue, assigns it to the repository owner, and a later successful run closes it.
 Exercise the route without skipping the real probes, then run a normal recovery:
@@ -809,6 +809,30 @@ regression backstop, not a one-minute/two-region availability monitor. Keep its
 paid expectation false until the signed launch release; if checkout is
 intentionally opened, update it in the same reviewed change so it asserts that
 only `decision_compare` accepts orders.
+
+The 2026-09-16 audit found successful scheduled smoke runs created at
+[21:30:01 UTC on September 15](https://github.com/prakhar267/grihagrid/actions/runs/35025956334),
+[00:29:55 UTC](https://github.com/prakhar267/grihagrid/actions/runs/35040245667), and
+[06:09:53 UTC](https://github.com/prakhar267/grihagrid/actions/runs/35062489568).
+At 10:54 UTC, the last completed probe was from 06:10:10 UTC. These gaps are
+monitoring gaps, not evidence of application downtime. The configured cron
+does not establish an hourly observation record. No independent watchdog
+currently alerts when a scheduled run never starts; issue routing can only
+react to a run that executes. Check completion timestamps, not only the latest
+green result, and keep external availability/freshness monitoring an open gate.
+The frequency table below is the target coverage, not a claim that those checks
+are all scheduled today.
+
+Current-Worker public smoke requires `checks.spatialSchema=current` and
+`capabilities.spatialStudio=true`, alongside the other free capabilities and
+closed paid/upload controls. Missing, degraded, false, or incorrectly typed
+spatial fields fail immediately without a network retry. Explicit
+`LEGACY_WORKER_COMPAT=true` rollback rehearsal omits these newer spatial
+requirements, so an older compatible Worker can still be inspected. This
+readiness contract does not replace the authenticated V2 preview/save/reload
+canary. Routine scheduled smoke also has no expected Worker version configured;
+exact-version fencing remains part of the protected release and observation,
+not a periodic deployment-drift alert.
 
 | Frequency | Check | Success condition |
 |---|---|---|
@@ -982,16 +1006,41 @@ remain complete at lower sampling.
 
 ### Backup policy
 
-`.github/workflows/production-backup.yml` exports production D1 twice daily from
-the protected production environment. The Cloudflare export step receives no
+`.github/workflows/production-backup.yml` schedules production D1 exports twice
+daily from the protected production environment. The Cloudflare export step receives no
 encryption secret; the encryption/verification step receives no Cloudflare
 credential. It uses the repository's authenticated AES-256-GCM envelope,
 decrypt-verifies the checksum, imports the plaintext into an isolated local D1,
 requires `PRAGMA integrity_check` to return `ok` and requires an empty
 `PRAGMA foreign_key_check`. Plaintext and the local restore are removed from the
-runner. Only ciphertext plus a bounded manifest is stored as a private GitHub
-artifact for the existing bounded seven-day release-evidence window. Longer
-retention requires an approved privacy/retention policy.
+runner. Only ciphertext plus a bounded manifest is retained as a GitHub Actions
+artifact for the existing seven-day window. This repository is public.
+[GitHub permits signed-in users with repository read access to download artifacts](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/download-workflow-artifacts);
+the artifact is therefore not an operator-only private store. AES-256-GCM
+protects the exported database contents, while the separate manifest remains
+readable. Do not describe this as plaintext exposure or private artifact access.
+An approved destination with restricted access is still needed to satisfy the
+operator-only storage policy below. Changing repository visibility, adding a
+storage destination, or extending retention requires a separate owner decision;
+no such change is part of the current setup.
+
+The latest backup checked on 2026-09-16,
+[run 35065393578](https://github.com/prakhar267/grihagrid/actions/runs/35065393578),
+completed export, encryption, checksum verification, isolated local restore,
+integrity/foreign-key checks, artifact upload and runner cleanup successfully
+at 06:53:46 UTC. Its artifact expires on September 23. Check the last successful
+backup's capture time and retained artifact before relying on recovery; the
+failure issue does not detect an absent scheduled run. A green local restore
+in that run proved SQLite integrity and foreign keys, not complete application
+schema/trigger coverage, row-count parity, or the four-hour remote recovery
+objective. The 16 September hardening adds `verify-backup-restore.mjs`: the
+restored local database must also contain every required table, column, index
+and trigger from the release schema contract. Its manifest records only
+`schema=current` and the numbers of required objects/columns verified, never
+customer rows or row counts. A missing immutable trigger, ownership index,
+account table or account column now fails verification even when SQLite
+integrity is `ok`. This does not prove remote restore time or row-count parity;
+record the first successful protected run of this stronger verifier separately.
 
 A failed backup opens or updates the single
 `Production backup: GrihaGrid encrypted backup failing` issue and assigns the
