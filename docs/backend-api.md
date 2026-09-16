@@ -1287,6 +1287,22 @@ AI POST requires a previously generated current report and returns
 - `DELETE /api/account` requires `{ currentPassword, confirmation: "DELETE" }`.
   Financial-retention and professional-offboarding cases return a stable 409.
 
+Account deletion establishes one authorization claim inside its destructive D1
+transaction using the verified password record, authentication generation and
+revision, and still-live requesting session. A reset, password change,
+revocation or logout that wins first makes deletion return
+`409 account_deletion_conflict` without deleting projects or creating a
+completion receipt. The claim rechecks retention, reviewer and private-file
+blockers; subsequent statements consume only that invocation's claim. An
+account with private file records returns
+`409 account_file_offboarding_required` before any R2 operation: cross-store
+cleanup requires a separate recoverable workflow before uploads can open.
+
+Successful authenticated password rotation also removes previously unused
+password-reset tokens in the same transaction, gated on the newly created
+replacement session. Losing rotations cannot invalidate another winner's recovery
+links. A new link requested after rotation remains independently redeemable.
+
 One-time tokens are stored only as hashes and are delivered in URL fragments.
 Verification and recovery readiness require migration 0018 plus a valid
 `RESEND_API_KEY` and `TRANSACTIONAL_EMAIL_FROM`.

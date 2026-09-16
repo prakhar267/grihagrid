@@ -217,6 +217,7 @@ export async function runSmoke(rawOrigin, options = {}) {
       assert.equal(body.checks?.reportShareSchema, "current");
       assert.equal(body.checks?.reportHandoffControl, expectReportHandoff ? "enabled" : "disabled");
       assert.equal(body.checks?.reportShareAbuseHashing, "configured");
+      assert.equal(body.checks?.spatialSchema, "current", "spatial schema is not current");
     }
     assert.equal(body.checks?.projectCreationSchema, "current");
     assert.equal(body.checks?.authSchema, "current");
@@ -231,7 +232,10 @@ export async function runSmoke(rawOrigin, options = {}) {
     assert.equal(body.capabilities?.familyAlignment, true);
     assert.equal(body.capabilities?.briefCheck, true);
     assert.equal(body.capabilities?.reportFeedback, true);
-    if (!legacyWorker) assert.equal(body.capabilities?.reportHandoff, expectReportHandoff);
+    if (!legacyWorker) {
+      assert.equal(body.capabilities?.reportHandoff, expectReportHandoff);
+      assert.equal(body.capabilities?.spatialStudio, true, "spatial studio is unavailable");
+    }
     assert.equal(body.capabilities?.accountSecurity, true);
     assert.equal(body.capabilities?.accountLifecycle, true);
     assert.equal(body.capabilities?.emailVerification, false);

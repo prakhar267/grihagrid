@@ -415,7 +415,7 @@ test("Family Alignment issues fragment-only links and uses strict canonical and 
   assert.match(appComponent, /if\(isFamilyAlignmentPath\(path\)\)return <FamilyAlignmentReviewPage\/>/u);
   assert.match(appComponent, /useState\(\(\)=>\{migrateLegacyFamilyAlignmentCapability\(\);return window\.location\.pathname\}\)/u);
   assert.match(appComponent, /isAuthenticationFreePath\(window\.location\.pathname\)\?null:undefined/u);
-  assert.match(appComponent, /if\(isAuthenticationFreePath\(path\)\)\{[\s\S]*?setUser\(null\);return\}/u);
+  assert.match(appComponent, /if\(isAuthenticationFreePath\(path\)\)\{if\(authBootstrapComplete\.current\)authRevision\.current\+=1;authBootstrapComplete\.current=false;authenticatedSession\.current=false;setUser\(null\);setAuthBootstrapPending\(false\);setAuthBootstrapFailure\(false\);return\}\s*if\(authBootstrapComplete\.current\)return;/u);
 });
 
 test("Family Alignment canonical and legacy routes are disallowed to crawlers and set page-level noindex metadata", async () => {

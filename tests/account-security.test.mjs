@@ -370,6 +370,7 @@ test("password change is strict, fail-closed, atomic, revoking, and race-safe on
     "0002_backend.sql",
     "0015_account_security.sql",
     "0017_login_attempt_fence.sql",
+    "0018_account_lifecycle.sql",
   ].includes(name)));
   const kv = new MemoryKv();
   const env = {
@@ -1073,6 +1074,7 @@ test("session revocation and password rotation have exactly one winner after con
     "0002_backend.sql",
     "0015_account_security.sql",
     "0017_login_attempt_fence.sql",
+    "0018_account_lifecycle.sql",
   ].includes(name)));
   const kv = new MemoryKv();
   const env = {

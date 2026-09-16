@@ -94,6 +94,12 @@ appropriate paid/zero-data-retention arrangement.
 
 ## Provider controls
 
+Brief responses are read as a stream under a 512 KiB response-byte limit before
+decoding, accumulation or JSON parsing. Missing/oversized/failed response
+streams are cancelled and produce the bounded `ai_provider_error` response;
+provider body text is never returned as a client error. The overall provider
+timeout still applies. Discarded error responses are cancelled before retry.
+
 - Stable `POST https://generativelanguage.googleapis.com/v1/interactions`.
 - Server-side `x-goog-api-key` authentication.
 - `store: false`; no Search grounding or provider tools.

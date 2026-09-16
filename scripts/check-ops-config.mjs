@@ -198,6 +198,8 @@ export async function checkOpsConfig() {
   assert.match(productionBackup, /! -name 'metadata\.sqlite'/u, "restore verification must exclude Miniflare metadata from the application database check");
   assert.match(productionBackup, /PRAGMA integrity_check;/u, "scheduled backup restore must pass SQLite integrity verification");
   assert.match(productionBackup, /PRAGMA foreign_key_check;/u, "scheduled backup restore must pass foreign-key verification");
+  assert.match(productionBackup, /verifyBackupRestoreSchema\(database\)/u, "scheduled backup restore must verify the required application schema");
+  assert.match(productionBackup, /isolatedRestore: restoreEvidence/u, "the backup manifest must retain actual restore verification evidence");
   assert.match(productionBackup, /actions\/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a/u, "scheduled backup must use the reviewed upload-artifact v7 pin");
   assert.match(productionBackup, /retention-days:\s*7/u, "scheduled encrypted backups must use the existing bounded seven-day evidence window");
   assert.match(productionBackup, /issues:\s*write/u, "backup alert must have narrowly scoped issue permission");

@@ -3557,6 +3557,23 @@ async function changePassword(request, env) {
         nextGeneration,
         nextRevisionId,
       ),
+      // A password change retires recovery links issued before this atomic
+      // commit. A losing change must leave the winner's newer links intact.
+      db.prepare(
+        `DELETE FROM password_reset_tokens
+          WHERE user_id=? AND consumed_at IS NULL
+            AND EXISTS (
+              SELECT 1 FROM sessions
+               WHERE id=? AND user_id=?
+                 AND auth_generation=? AND auth_revision_id IS ?
+            )`,
+      ).bind(
+        currentSession.user_id,
+        replacement.id,
+        currentSession.user_id,
+        nextGeneration,
+        nextRevisionId,
+      ),
   ]);
 
   const inserted = results?.[2]?.results?.[0];
@@ -3782,6 +3799,30 @@ async function deleteAccount(request, env) {
 
   const requestId = crypto.randomUUID();
   const requestedAt = sqliteTimestamp();
+  // Password verification happened before several awaited reads. Claim this
+  // deletion only if that credential revision and session are still valid, so
+  // password recovery, rotation, logout or revocation can win the race.
+  const deletionFence = `EXISTS (
+    SELECT 1 FROM users u JOIN sessions s ON s.user_id=u.id
+     WHERE u.id=? AND u.deleted_at IS NULL
+       AND u.auth_generation=? AND u.auth_revision_id IS ?
+       AND u.password_hash=? AND u.password_salt=?
+       AND u.password_iterations=? AND u.password_algorithm=?
+       AND s.id=? AND s.expires_at>datetime('now')
+       AND s.auth_generation=u.auth_generation
+       AND s.auth_revision_id IS u.auth_revision_id
+  )`;
+  const deletionFenceValues = [
+    session.user_id,
+    passwordRecord.auth_generation,
+    passwordRecord.auth_revision_id || null,
+    passwordRecord.password_hash,
+    passwordRecord.password_salt,
+    passwordRecord.password_iterations,
+    passwordRecord.password_algorithm,
+    session.session_id,
+  ];
+  const deletionConflict = () => new HttpError(409, "the account changed; sign in and retry", "account_deletion_conflict");
   const professionalRole = await db.prepare(
     `SELECT 1 AS present
        FROM professional_profiles p
@@ -3795,44 +3836,64 @@ async function deleteAccount(request, env) {
       "account_professional_offboarding_required",
     );
   }
+  const file = await db.prepare("SELECT id FROM project_files WHERE user_id=? LIMIT 1").bind(session.user_id).first();
+  if (file) {
+    // D1 cannot atomically fence an external R2 deletion. Uploads remain closed;
+    // existing private files require a recoverable operational cleanup workflow.
+    throw new HttpError(
+      409,
+      "accounts with private files require operational offboarding before deletion",
+      "account_file_offboarding_required",
+    );
+  }
   const order = await db.prepare("SELECT id FROM orders WHERE user_id=? LIMIT 1").bind(session.user_id).first();
   if (order) {
-    await db.prepare(
+    const retentionRequest = await db.prepare(
       `INSERT INTO account_deletion_requests (id,user_id,status,requested_at,completed_at,updated_at)
-       VALUES (?,?,'blocked_financial_retention',?,NULL,?)
+       SELECT ?,?,'blocked_financial_retention',?,NULL,? WHERE ${deletionFence}
+         AND NOT EXISTS (SELECT 1 FROM project_files WHERE user_id=?)
        ON CONFLICT(user_id) DO UPDATE SET
          status='blocked_financial_retention',updated_at=excluded.updated_at`,
-    ).bind(requestId, session.user_id, requestedAt, requestedAt).run();
+    ).bind(requestId, session.user_id, requestedAt, requestedAt, ...deletionFenceValues, session.user_id).run();
+    if (retentionRequest.meta.changes !== 1) throw deletionConflict();
     throw new HttpError(
       409,
       "this account has financial records that require a governed retention review; contact support",
       "account_financial_retention_required",
     );
   }
-
-  await db.prepare(
-    `INSERT INTO account_deletion_requests (id,user_id,status,requested_at,completed_at,updated_at)
-     VALUES (?,?,'requested',?,NULL,?)
-     ON CONFLICT(user_id) DO UPDATE SET status='requested',updated_at=excluded.updated_at`,
-  ).bind(requestId, session.user_id, requestedAt, requestedAt).run();
-  const files = (await db.prepare(
-    "SELECT object_key FROM project_files WHERE user_id=? ORDER BY id",
-  ).bind(session.user_id).all()).results || [];
-  if (files.length) {
-    const store = requireFileStore(env);
-    for (const file of files) await store.delete(file.object_key);
-  }
+  const deletionCommitFence = `${deletionFence}
+    AND NOT EXISTS (SELECT 1 FROM orders WHERE user_id=?)
+    AND NOT EXISTS (SELECT 1 FROM professional_profiles WHERE user_id=?)
+    AND NOT EXISTS (SELECT 1 FROM project_files WHERE user_id=?)`;
+  const deletionCommitValues = [...deletionFenceValues, session.user_id, session.user_id, session.user_id];
+  // Authorization is evaluated once at the first statement's linearization
+  // point. Rechecking wall-clock expiry later in the same atomic batch could
+  // otherwise allow project removal but skip the final account removal.
+  const deletionClaim = `EXISTS (
+    SELECT 1 FROM account_deletion_requests
+     WHERE id=? AND user_id=? AND status='requested'
+  )`;
+  const deletionClaimValues = [requestId, session.user_id];
   const completedAt = sqliteTimestamp();
   const results = await db.batch([
-    db.prepare("DELETE FROM projects WHERE user_id=?").bind(session.user_id),
     db.prepare(
-      "INSERT INTO account_deletion_receipts (request_id,completed_at) VALUES (?,?)",
-    ).bind(requestId, completedAt),
-    db.prepare("DELETE FROM users WHERE id=? AND deleted_at IS NULL RETURNING id").bind(session.user_id),
+      `INSERT INTO account_deletion_requests (id,user_id,status,requested_at,completed_at,updated_at)
+       SELECT ?,?,'requested',?,NULL,? WHERE ${deletionCommitFence}
+       ON CONFLICT(user_id) DO UPDATE SET
+         id=excluded.id,status='requested',requested_at=excluded.requested_at,
+         completed_at=NULL,updated_at=excluded.updated_at`,
+    ).bind(requestId, session.user_id, requestedAt, requestedAt, ...deletionCommitValues),
+    db.prepare(`DELETE FROM projects WHERE user_id=? AND ${deletionClaim}`)
+      .bind(session.user_id, ...deletionClaimValues),
+    db.prepare(
+      `INSERT INTO account_deletion_receipts (request_id,completed_at)
+       SELECT ?,? WHERE ${deletionClaim}`,
+    ).bind(requestId, completedAt, ...deletionClaimValues),
+    db.prepare(`DELETE FROM users WHERE id=? AND ${deletionClaim} RETURNING id`)
+      .bind(session.user_id, ...deletionClaimValues),
   ]);
-  if (!results?.[2]?.results?.[0]) {
-    throw new HttpError(409, "the account changed; sign in and retry", "account_deletion_conflict");
-  }
+  if (!results?.[3]?.results?.[0]) throw deletionConflict();
   await bestEffortSecurityEmail(db, env, {
     userId: null,
     to: session.email,
@@ -7949,6 +8010,34 @@ async function waitForGeminiRetry(signal, attempt) {
   if (signal.aborted) throw new HttpError(502, "AI provider is temporarily unavailable", "ai_provider_error");
 }
 
+async function readGeminiResponse(response) {
+  let reader;
+  try {
+    if (!response.body) throw new Error("missing provider body");
+    reader = response.body.getReader();
+    const declaredLength = Number(response.headers.get("content-length") || 0);
+    if (declaredLength > MAX_GEMINI_RESPONSE_BYTES) throw new Error("oversized provider body");
+    const decoder = new TextDecoder();
+    let bytes = 0;
+    let text = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      // Count response bytes before decoding or accumulating provider text.
+      if (bytes > MAX_GEMINI_RESPONSE_BYTES) throw new Error("oversized provider body");
+      text += decoder.decode(value, { stream: true });
+    }
+    return text + decoder.decode();
+  } catch {
+    // Cancellation is best effort and must not hold an error response open.
+    try { reader?.cancel().catch(() => {}); } catch { /* The stream may already be aborted. */ }
+    throw new HttpError(502, "AI provider returned an invalid planning brief", "ai_provider_error");
+  } finally {
+    reader?.releaseLock();
+  }
+}
+
 async function callGemini(env, prompt, config) {
   const providerFetch = typeof env.GEMINI_FETCH === "function" ? env.GEMINI_FETCH : fetch;
   let response;
@@ -7984,6 +8073,10 @@ async function callGemini(env, prompt, config) {
       }
       throw new HttpError(502, "AI provider is temporarily unavailable", "ai_provider_error");
     }
+    if (!response.ok) {
+      // Discard provider error bodies without allocating or exposing their text.
+      try { response.body?.cancel().catch(() => {}); } catch { /* Already closed or locked. */ }
+    }
     if (response.ok || !transientStatuses.has(response.status) || attempt === GEMINI_MAX_ATTEMPTS - 1) break;
     await waitForGeminiRetry(signal, attempt);
   }
@@ -7991,14 +8084,7 @@ async function callGemini(env, prompt, config) {
     if (response.status === 429) throw new HttpError(503, "AI capacity is temporarily unavailable", "ai_capacity_unavailable");
     throw new HttpError(502, "AI provider could not generate the planning brief", "ai_provider_error");
   }
-  const declaredLength = Number(response.headers.get("content-length") || 0);
-  if (declaredLength > MAX_GEMINI_RESPONSE_BYTES) {
-    throw new HttpError(502, "AI provider returned an invalid planning brief", "ai_provider_error");
-  }
-  const responseText = await response.text();
-  if (new TextEncoder().encode(responseText).byteLength > MAX_GEMINI_RESPONSE_BYTES) {
-    throw new HttpError(502, "AI provider returned an invalid planning brief", "ai_provider_error");
-  }
+  const responseText = await readGeminiResponse(response);
   let interaction;
   try {
     interaction = JSON.parse(responseText);

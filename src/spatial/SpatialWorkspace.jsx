@@ -2,6 +2,7 @@ import { Component, Suspense, lazy, useCallback, useEffect, useMemo, useRef, use
 import { spatialUUID } from './ids.js'
 import { ArrowLeft, ArrowRight, ArrowsOut, Blueprint, Buildings, Camera, Check, Compass, DownloadSimple, Eye, FloppyDisk, House, List, Pause, Play, Plus, ArrowClockwise, Sparkle, Trash, WarningCircle, X } from '@phosphor-icons/react';
 import { api } from '../api.js';
+import { registerNavigationGuard } from '../navigation-guard.js';
 import { createDemoBuilding, createMultiFloorDemo, validateBuilding, resizeBuilding } from './model.js';
 import { generateTour, parseTourIntent, retimeTour, isTourStale, getShotStatuses } from './tours.js';
 import DrawingImport from './DrawingImport.jsx';
@@ -13,6 +14,7 @@ import {reviewCameraMerge, resolveCameraMerge} from './camera-library.js';
 import './spatial.css';
 
 const WorldCanvas = lazy(() => import('./WorldCanvas.jsx'));
+const unsavedWarning = 'Leave the spatial studio? Unsaved layout, tour or camera changes in this tab will be lost. Save your project changes or download the scene to keep a copy.';
 const tabs = [['explore', '3D Explore', Buildings], ['plan', '2D Plan', Blueprint], ['tour', 'Camera Tour', Camera], ['export', 'Render / Export', DownloadSimple]];
 const area = room => Math.abs(room.polygon.reduce((a, p, i, points) => { const next = points[(i + 1) % points.length]; return a + p[0] * next[1] - next[0] * p[1]; }, 0)) / 2e6;
 const centroid = room => room.polygon.reduce((a, p) => [a[0] + p[0] / room.polygon.length, a[1] + p[1] / room.polygon.length], [0, 0]);
@@ -56,6 +58,7 @@ export default function SpatialWorkspace({ projectId, onNavigate }) {
   viewsDirtyRef.current=viewsDirty;
   const [selected, setSelected] = useState(initial.rooms[0].id), [hovered, setHovered] = useState(null);
   const [tour, setTour] = useState(() => generateTour(initial, {duration: 30}));
+  const [cleanTour,setCleanTour]=useState(tour);
   const [playing, setPlaying] = useState(false), [time, setTime] = useState(0), [speed, setSpeed] = useState(1);
   const [stops, setStops] = useState(tour.roomIds), [duration, setDuration] = useState(30);
   const [quality, setQuality] = useState('balanced'), [metrics, setMetrics] = useState(null), [views, setViews] = useState([]);
@@ -70,6 +73,19 @@ export default function SpatialWorkspace({ projectId, onNavigate }) {
   const room = model.rooms.find(r => r.id === selected), hoverRoom = model.rooms.find(r => r.id === hovered);
   const stale = dirty || Boolean(tour && isTourStale(model,tour)) || Boolean(remote?.stale || remote?.tourStale);
   const pendingItinerary = JSON.stringify(stops)!==JSON.stringify(tour.roomIds)||Math.abs(Number(duration)-tour.duration)>.01||Math.abs(eyeHeight-(tour.eyeHeight||1650))>1||JSON.stringify(shotPreferences)!==JSON.stringify(tour.shotPreferences||[]);
+  const tourDraftChanged=useMemo(()=>JSON.stringify(tour)!==JSON.stringify(cleanTour),[tour,cleanTour]);
+  const hasUnsavedChanges=dirty||pendingItinerary||tourDraftChanged||viewsDirty||Boolean(!projectId&&(model.revision!==initial.revision||views.length));
+  useEffect(()=>{
+    if(!hasUnsavedChanges)return undefined;
+    const warn=event=>{event.preventDefault();event.returnValue='';};
+    window.addEventListener('beforeunload',warn);
+    const unregister=registerNavigationGuard(()=>window.confirm(unsavedWarning));
+    return()=>{window.removeEventListener('beforeunload',warn);unregister();};
+  },[hasUnsavedChanges]);
+  function leaveStudio(){
+    if(hasUnsavedChanges&&!window.confirm(unsavedWarning))return;
+    onNavigate(projectId?`/projects/${projectId}`:'/');
+  }
   const archived = remote?.project?.status === 'archived';
   const shotStates=useMemo(()=>getShotStatuses(model,tour),[model,tour]);
   const currentShot=tour.shots.find(shot=>time<shot.startTime+shot.duration)||tour.shots.at(-1);
@@ -82,7 +98,7 @@ export default function SpatialWorkspace({ projectId, onNavigate }) {
     if(resetCameras)setTourConflict(null);
     const keepCameras=viewsDirtyRef.current&&!resetCameras;
     setRemote(current=>keepCameras?{...data,cameraRevision:current?.cameraRevision||0,viewpoints:current?.viewpoints||[]}:data); if (data.model) { setModel(data.model); setAccepted(data.model); const b = bounds(data.model); setWidth((b.x1-b.x0)/1000);setDepth(data.model.schemaVersion===2?(b.y1-b.y0)/1000:data.model.bounds.max[1]/1000); }
-    if (data.tour) {setTour(data.tour);setStops(data.tour.roomIds);setDuration(data.tour.duration);setEyeHeight(data.tour.eyeHeight||1650);setShotPreferences(data.tour.shotPreferences||[]);} else if(data.model){try{const nextTour=generateTour(data.model,{duration:30});setTour(nextTour);setStops(nextTour.roomIds);setDuration(nextTour.duration);setShotPreferences([]);}catch(e){setStops(data.model.rooms.slice(0,12).map(r=>r.id));setError(e.message);}}
+    if (data.tour) {setTour(data.tour);setCleanTour(data.tour);setStops(data.tour.roomIds);setDuration(data.tour.duration);setEyeHeight(data.tour.eyeHeight||1650);setShotPreferences(data.tour.shotPreferences||[]);} else if(data.model){try{const nextTour=generateTour(data.model,{duration:30});setTour(nextTour);setCleanTour(nextTour);setStops(nextTour.roomIds);setDuration(nextTour.duration);setShotPreferences([]);}catch(e){setStops(data.model.rooms.slice(0,12).map(r=>r.id));setError(e.message);}}
     if(!keepCameras){setViews(data.viewpoints||[]);setViewsDirty(false);viewsDirtyRef.current=false;cameraRequest.current=null;setCameraConflict(null);}
     if(data.model){setActiveFloorId(current=>data.model.floors.some(f=>f.id===current)?current:data.model.floors[0].id);setSelected(current=>data.model.rooms.some(r=>r.id===current)?current:data.model.rooms[0].id);}
     if(data.history)setHistory(data.history);else if(data.model)setHistory(current=>current.some(r=>r.revision===data.model.revision)?current:[{revision:data.model.revision,createdAt:new Date().toISOString()},...current]); setDirty(false);setStudy(null);setPlaying(false);
@@ -165,7 +181,7 @@ export default function SpatialWorkspace({ projectId, onNavigate }) {
     const next=useSaved?tourConflict.latest.tour:tourConflict.draft;
     if(!next)return;
     const latest=tourConflict.latest;
-    setTour(next);setStops(next.roomIds);setDuration(next.duration);setShotPreferences(next.shotPreferences||[]);setEyeHeight(next.eyeHeight||1650);setTime(0);setPlaying(false);
+    setTour(next);setCleanTour(latest.tour);setStops(next.roomIds);setDuration(next.duration);setShotPreferences(next.shotPreferences||[]);setEyeHeight(next.eyeHeight||1650);setTime(0);setPlaying(false);
     setRemote(current=>({...current,tourRevision:latest.tourRevision||0,tour:latest.tour,tourStale:isTourStale(accepted,next)}));
     tourRequest.current=null;setTourConflict(null);setError('');
     setMessage(useSaved?'The latest saved tour is now open. Your other drafts are unchanged.':'Your tour draft is ready. Save tour revision to append it after the reviewed revision.');
@@ -227,7 +243,7 @@ export default function SpatialWorkspace({ projectId, onNavigate }) {
   if(projectId&&!remote)return <main className="sp-empty"><h1>The project could not be opened.</h1><p role="alert">{error}</p><button onClick={load}>Retry</button><button onClick={()=>onNavigate('/dashboard')}>My projects</button></main>;
 
   return <main className="sp-studio">
-    <header className="sp-topbar"><button className="sp-brand" onClick={()=>onNavigate(projectId?`/projects/${projectId}`:'/')}><House size={23}/><span>GrihaGrid</span></button><div className="sp-breadcrumb">{projectId?'Private project':'The sample collection'}<span>/</span>Spatial studio</div><button className="sp-back" onClick={()=>onNavigate(projectId?`/projects/${projectId}`:'/')}><ArrowLeft/> {projectId?'Project home':'Back to GrihaGrid'}</button></header>
+    <header className="sp-topbar"><button className="sp-brand" onClick={leaveStudio}><House size={23}/><span>GrihaGrid</span></button><div className="sp-breadcrumb">{projectId?'Private project':'The sample collection'}<span>/</span>Spatial studio</div><button className="sp-back" onClick={leaveStudio}><ArrowLeft/> {projectId?'Project home':'Back to GrihaGrid'}</button></header>
     <section className="sp-heading"><div><div className="sp-eyebrow"><span className="sp-dot"/> {projectId?'Project concept':'Interactive demonstration'} <span className="sp-heading-divider">/</span> {model.floors.length===1?'Single storey':`${model.floors.length} floors`}</div><h1>{projectId?remote.project.name:model.id===initial.id?'The Courtyard House':model.name}<span>.</span></h1><p>A home to move through. A plan to make your own.</p></div><div className="sp-heading-meta"><span>CONCEPT {String(model.revision).padStart(2,'0')}</span><strong>{model.rooms.reduce((a,r)=>a+area(r),0).toFixed(0)} <small>m²</small></strong><small>{model.rooms.length} spaces · {projectId&&remote.spatialRevision?'Saved concept':model.id===initial.id?'Sample geometry':'Reviewed geometry'}</small></div></section>
     <div className="sp-tabbar"><nav aria-label="Spatial workspace views">{tabs.map(([id,label,Icon])=><button key={id} aria-current={tab===id?'page':undefined} className={tab===id?'is-active':''} onClick={()=>{setTab(id);if(id!=='tour')setPlaying(false);}}><Icon/>{label}</button>)}</nav><span className="sp-tab-note">{dirty?'Unaccepted layout study':archived?'Archived · read only':projectId&&remote.stale?'Brief changed · review required':`Concept planning · ${activeFloor.name}`}</span></div>
     <div className="sp-workspace">

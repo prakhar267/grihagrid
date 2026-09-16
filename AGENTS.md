@@ -20,6 +20,8 @@ For this spatial-studio delivery, the user explicitly deferred physical iPhone a
 
 On 15 September 2026 the user subsequently authorized the remaining drawing/visual polish and production release, including review, merge, deployment and production migrations. This supersedes the original deployment exclusion for this follow-up. Follow the existing protected staging-first release, backup and monitoring procedures; keep payments and private uploads closed, and keep iPhone/VoiceOver testing deferred.
 
+On 16 September 2026 the user requested production readiness except custom-domain and payment work. Complete and verify the free product's reliability, recovery, security and operating controls through the existing protected release process. Domain/payment activation is outside this cut. Preserve the previous iPhone/VoiceOver deferrals, keep unavailable capabilities honest, and distinguish tested engineering readiness from external service setup or human approval.
+
 ## Product and platform invariants
 
 Treat `README.md`, `package.json`, `wrangler.toml`, `worker/index.js`, `src/App.jsx`, `src/styles.css`, and the relevant files in `docs/` as the canonical implementation and operating context. Before architectural changes, inspect the architecture, backend API, launch-readiness, operations, feature, and test-plan documentation. Inspect the configured live product and existing styles before material UI changes; evolve the current system rather than redesigning it.
