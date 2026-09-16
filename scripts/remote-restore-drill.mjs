@@ -3,7 +3,8 @@
 // private runner bound solely to the clone, with every provider disabled.
 import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { chmod, lstat, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { chmod, mkdir, open, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -146,6 +147,30 @@ async function writePrivate(file, data) {
   await chmod(file, 0o600);
 }
 
+export async function readProtectedFile(file, { maxBytes, failureCode }) {
+  let directory, input;
+  try {
+    // These files live in an operator-owned 0700 directory. Keep its handle
+    // open while reading; never follow a symlink for either the directory or file.
+    directory = await open(path.dirname(path.resolve(file)), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    const boundary = await directory.stat();
+    requireSafe(boundary.isDirectory() && (boundary.mode & 0o777) === 0o700
+      && boundary.uid === process.getuid(), failureCode);
+    input = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const info = await input.stat();
+    requireSafe(info.isFile() && (info.mode & 0o777) === 0o600 && info.uid === boundary.uid
+      && info.nlink === 1 && info.size > 0 && info.size <= maxBytes, failureCode);
+    // Inspect and read the same descriptor, even if the pathname is replaced.
+    const raw = await input.readFile();
+    requireSafe(raw.length === info.size && raw.length <= maxBytes, failureCode);
+    return raw;
+  } catch {
+    throw new Error(failureCode);
+  } finally {
+    await Promise.allSettled([input?.close(), directory?.close()]);
+  }
+}
+
 function cloneConfig(clone) {
   return {
     name: clone.name, compatibility_date: '2026-08-01', workers_dev: false, preview_urls: false,
@@ -220,12 +245,9 @@ export async function runRemoteRestoreDrill({ directory, repo = repoDefault, run
     // Customer data is exported only after capacity and exact clone identity pass.
     await writeFile(exportPath, '', { mode: 0o600, flag: 'wx' });
     await run(['d1', 'export', 'DB', '--remote', '--config', configPath, '--env=', '--skip-confirmation', '--output', exportPath], { timeout: 300_000 });
-    await chmod(exportPath, 0o600);
-    const info = await lstat(exportPath);
-    requireSafe(info.isFile() && !info.isSymbolicLink() && (info.mode & 0o777) === 0o600
-      && info.size > 0 && info.size <= MAX_EXPORT_BYTES, 'protected_export_invalid');
-    const sql = await readFile(exportPath, 'utf8');
-    evidence.export = { sha256: sha256(sql), bytes: info.size, permissions: '600', capturedAt: now().toISOString() };
+    const raw = await readProtectedFile(exportPath, { maxBytes: MAX_EXPORT_BYTES, failureCode: 'protected_export_invalid' });
+    const sql = raw.toString('utf8');
+    evidence.export = { sha256: sha256(raw), bytes: raw.length, permissions: '600', capturedAt: now().toISOString() };
     const local = inspectLocalExport(sql);
     evidence.checks.localIntegrity = local.integrity;
     evidence.checks.localForeignKeys = local.foreignKeys;
@@ -272,9 +294,7 @@ export async function runRemoteRestoreDrill({ directory, repo = repoDefault, run
 export async function cleanupRemoteRestoreDrill({ evidencePath, expectedSha256, databaseId, databaseName, reviewedBy, repo = repoDefault, run = createWranglerRunner(repo) }) {
   requireSafe(SHA.test(expectedSha256 || '') && UUID.test(databaseId || ''), 'cleanup_confirmation_invalid');
   requireSafe(typeof reviewedBy === 'string' && /^[A-Za-z0-9_.@/-]{3,100}$/u.test(reviewedBy), 'independent_reviewer_required');
-  const info = await lstat(evidencePath);
-  requireSafe(info.isFile() && !info.isSymbolicLink() && (info.mode & 0o777) === 0o600, 'protected_evidence_required');
-  const raw = await readFile(evidencePath);
+  const raw = await readProtectedFile(evidencePath, { maxBytes: 1024 * 1024, failureCode: 'protected_evidence_required' });
   requireSafe(sha256(raw) === expectedSha256, 'reviewed_evidence_changed');
   const evidence = JSON.parse(raw.toString('utf8'));
   const configured = configuredDatabases(await readFile(path.join(repo, 'wrangler.toml'), 'utf8'));

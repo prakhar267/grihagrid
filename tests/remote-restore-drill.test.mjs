@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { access, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdtemp, open, readFile, readdir, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import {
   RESTORE_TABLES, applicationTables, assertIsolatedClone, cleanupRemoteRestoreDrill, configuredDatabases,
-  createWranglerRunner, inspectLocalExport, normalizeCounts, publicDrillSummary, runRemoteRestoreDrill,
+  createWranglerRunner, inspectLocalExport, normalizeCounts, publicDrillSummary, readProtectedFile, runRemoteRestoreDrill,
 } from '../scripts/remote-restore-drill.mjs';
 
 const repo = path.resolve(new URL('../', import.meta.url).pathname);
@@ -207,6 +207,123 @@ test('cleanup rejects a replaced name and never deletes a different remote UUID'
     run: async args => { assert.equal(args[1], 'list'); return [...inventory, { uuid: '21111111-1111-4111-8111-111111111111', name: evidence.clone.name }]; },
   }), /cleanup_remote_identity_mismatch/);
   assert.equal(f.calls.length, before);
+});
+
+test('a symlink substituted for an export is rejected before import without changing its target', async t => {
+  const f = await fixture(t);
+  const target = path.join(path.dirname(f.directory), 'untouched.sql');
+  await writeFile(target, fixtureSql, { mode: 0o644 });
+  const evidence = await runRemoteRestoreDrill({
+    directory: f.directory, repo,
+    run: async args => {
+      const result = await f.run(args);
+      if (args[1] === 'export') {
+        const output = args[args.indexOf('--output') + 1];
+        await rm(output);
+        await symlink(target, output);
+      }
+      return result;
+    },
+  });
+  assert.equal(evidence.status, 'failed');
+  assert.equal(evidence.failureCode, 'protected_export_invalid');
+  assert.equal(evidence.failurePhase, 'export');
+  assert.equal(f.calls.some(args => args[1] === 'execute'), false);
+  assert.equal((await stat(target)).mode & 0o777, 0o644);
+  assert.equal(await readFile(target, 'utf8'), fixtureSql);
+  await assert.rejects(access(path.join(f.directory, 'production-export.sql')));
+});
+
+test('cleanup rejects symlink evidence even when its target has the reviewed hash and permissions', async t => {
+  const f = await fixture(t);
+  const evidence = await runRemoteRestoreDrill({ directory: f.directory, repo, run: f.run });
+  const evidencePath = path.join(f.directory, 'evidence.json');
+  const target = path.join(f.directory, 'reviewed-target.json');
+  const raw = await readFile(evidencePath);
+  await rename(evidencePath, target);
+  await symlink(target, evidencePath);
+  const before = f.calls.length;
+  await assert.rejects(cleanupRemoteRestoreDrill({
+    evidencePath, expectedSha256: hash(raw), databaseId: evidence.clone.id,
+    databaseName: evidence.clone.name, reviewedBy: 'reviewer', repo, run: f.run,
+  }), /protected_evidence_required/);
+  assert.equal(f.calls.length, before);
+  assert.deepEqual(await readFile(target), raw);
+  assert.equal((await stat(target)).mode & 0o777, 0o600);
+});
+
+test('cleanup rejects replacement evidence before making any remote call', async t => {
+  const f = await fixture(t);
+  const evidence = await runRemoteRestoreDrill({ directory: f.directory, repo, run: f.run });
+  const evidencePath = path.join(f.directory, 'evidence.json');
+  const raw = await readFile(evidencePath);
+  await rename(evidencePath, path.join(f.directory, 'original.json'));
+  await writeFile(evidencePath, JSON.stringify({ ...evidence, clone: { ...evidence.clone, id: '21111111-1111-4111-8111-111111111111' } }), { mode: 0o600 });
+  const before = f.calls.length;
+  await assert.rejects(cleanupRemoteRestoreDrill({
+    evidencePath, expectedSha256: hash(raw), databaseId: evidence.clone.id,
+    databaseName: evidence.clone.name, reviewedBy: 'reviewer', repo, run: f.run,
+  }), /reviewed_evidence_changed/);
+  assert.equal(f.calls.length, before);
+});
+
+test('protected reads keep the inspected descriptor when the pathname is replaced after opening', async t => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'grihagrid-protected-read-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const file = path.join(directory, 'evidence.json');
+  await writeFile(file, 'reviewed original', { mode: 0o600 });
+  const probe = await open(file, 'r');
+  const prototype = Object.getPrototypeOf(probe), originalStat = prototype.stat;
+  await probe.close();
+  let inspected;
+  t.mock.method(prototype, 'stat', async function (...args) {
+    const info = await originalStat.apply(this, args);
+    if (info.isFile() && !inspected) {
+      inspected = this;
+      await rename(file, path.join(directory, 'original.json'));
+      await writeFile(file, 'unreviewed replacement', { mode: 0o600 });
+    }
+    return info;
+  });
+  const raw = await readProtectedFile(file, { maxBytes: 1024, failureCode: 'protected_test_invalid' });
+  assert.equal(raw.toString(), 'reviewed original');
+  assert.equal(await readFile(file, 'utf8'), 'unreviewed replacement');
+  assert.equal(inspected.fd, -1, 'the original descriptor is closed after reading');
+});
+
+test('protected reads reject symlink or nonprivate directory boundaries', async t => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'grihagrid-read-boundary-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const file = path.join(directory, 'evidence.json');
+  const alias = `${directory}-link`;
+  t.after(() => rm(alias, { force: true }));
+  await writeFile(file, 'reviewed original', { mode: 0o600 });
+  await symlink(directory, alias);
+  const options = { maxBytes: 1024, failureCode: 'protected_test_invalid' };
+  await assert.rejects(readProtectedFile(path.join(alias, 'evidence.json'), options), /protected_test_invalid/);
+  await chmod(directory, 0o755);
+  await assert.rejects(readProtectedFile(file, options), /protected_test_invalid/);
+  assert.equal(await readFile(file, 'utf8'), 'reviewed original');
+});
+
+test('protected reads close file and directory descriptors after a failed read without exposing the error', async t => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'grihagrid-read-failure-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const file = path.join(directory, 'evidence.json');
+  await writeFile(file, 'reviewed original', { mode: 0o600 });
+  const probe = await open(file, 'r');
+  const prototype = Object.getPrototypeOf(probe), originalStat = prototype.stat;
+  await probe.close();
+  const inspected = [];
+  t.mock.method(prototype, 'stat', async function (...args) {
+    inspected.push(this);
+    return originalStat.apply(this, args);
+  });
+  t.mock.method(prototype, 'readFile', async function () { throw new Error('private-customer-data'); });
+  await assert.rejects(readProtectedFile(file, { maxBytes: 1024, failureCode: 'protected_test_invalid' }),
+    error => error.message === 'protected_test_invalid' && error.cause === undefined);
+  assert.equal(inspected.length, 2);
+  assert.ok(inspected.every(handle => handle.fd === -1));
 });
 
 test('Wrangler transport forcibly disables disk logs and redacts child-process output on failure', async t => {
