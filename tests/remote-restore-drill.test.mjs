@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { constants } from 'node:fs';
 import { access, chmod, mkdtemp, open, readFile, readdir, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -229,8 +230,8 @@ test('a symlink substituted for an export is rejected before import without chan
   assert.equal(evidence.failureCode, 'protected_export_invalid');
   assert.equal(evidence.failurePhase, 'export');
   assert.equal(f.calls.some(args => args[1] === 'execute'), false);
-  assert.equal((await stat(target)).mode & 0o777, 0o644);
   assert.equal(await readFile(target, 'utf8'), fixtureSql);
+  assert.equal((await stat(target)).mode & 0o777, 0o644);
   await assert.rejects(access(path.join(f.directory, 'production-export.sql')));
 });
 
@@ -287,8 +288,13 @@ test('protected reads keep the inspected descriptor when the pathname is replace
   });
   const raw = await readProtectedFile(file, { maxBytes: 1024, failureCode: 'protected_test_invalid' });
   assert.equal(raw.toString(), 'reviewed original');
-  assert.equal(await readFile(file, 'utf8'), 'unreviewed replacement');
   assert.equal(inspected.fd, -1, 'the original descriptor is closed after reading');
+  const replacement = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    assert.equal(await replacement.readFile('utf8'), 'unreviewed replacement');
+  } finally {
+    await replacement.close();
+  }
 });
 
 test('protected reads reject symlink or nonprivate directory boundaries', async t => {
