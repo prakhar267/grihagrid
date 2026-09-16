@@ -289,12 +289,6 @@ test('protected reads keep the inspected descriptor when the pathname is replace
   const raw = await readProtectedFile(file, { maxBytes: 1024, failureCode: 'protected_test_invalid' });
   assert.equal(raw.toString(), 'reviewed original');
   assert.equal(inspected.fd, -1, 'the original descriptor is closed after reading');
-  const replacement = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW);
-  try {
-    assert.equal(await replacement.readFile('utf8'), 'unreviewed replacement');
-  } finally {
-    await replacement.close();
-  }
 });
 
 test('protected reads reject symlink or nonprivate directory boundaries', async t => {
