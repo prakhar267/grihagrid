@@ -37,8 +37,9 @@ verify it, and remove only that drill resource after reviewing its evidence.
 Success means verified monitoring, privately retained and verified ciphertext,
 and a completed non-destructive remote recovery rehearsal. Recovery SQL checks
 alone do not establish application canaries or the full four-hour recovery
-objective. These are operational changes; unchanged application code does not
-need another runtime deployment.
+objective. These changes do not modify application behavior, but the existing
+protected release workflow classifies operational scripts as deployable. Follow
+its staging-first validation and production observation before closing the release.
 
 ## Current infrastructure constraints
 
