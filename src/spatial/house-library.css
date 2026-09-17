@@ -1,0 +1,28 @@
+.new-house-page { max-width: 920px; padding: 28px 5% 64px; margin: auto; }
+.new-house-page > header { display: flex; align-items: center; justify-content: space-between; gap: 20px; border-bottom: 1px solid var(--rule); padding-bottom: 24px; }
+.new-house-intro { margin: 48px 0 28px; }
+.new-house-intro h1 { font-family: var(--serif); font-weight: 500; font-size: clamp(42px, 6vw, 64px); margin: 12px 0; }
+.new-house-intro p, .new-house-note { color: var(--muted); line-height: 1.7; }
+.new-house-form { max-width: 620px; }
+.new-house-form fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.new-house-form legend { font-size: 13px; margin-bottom: 20px; }
+.new-house-form label { display: flex; flex-direction: column; gap: 8px; font-size: 13px; margin-bottom: 20px; }
+.new-house-form input, .new-house-form select { width: 100%; min-width: 0; min-height: 48px; background: var(--paper-pale); border: 1px solid var(--rule); padding: 12px; color: var(--ink); }
+.new-house-dimensions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+.new-house-note { font-size: 12px; margin: 22px 0; }
+.house-library .project-list > article { grid-template-columns: 36px minmax(0, 1fr) auto; }
+.house-library .project-list h2 { overflow-wrap: anywhere; }
+.house-library .project-actions { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.house-library .project-actions button { min-height: 44px; display: inline-flex; align-items: center; gap: 8px; border: 0; background: transparent; padding: 8px 0; text-align: left; color: var(--muted); font-size: 12px; }
+.house-library-tools { margin-top: 40px; border-top: 1px solid var(--rule); padding-top: 20px; color: var(--muted); }
+.house-library-tools summary { cursor: pointer; min-height: 44px; font-size: 13px; }
+.house-library-tools nav { display: flex; gap: 20px; flex-wrap: wrap; }
+.house-library-tools button { border: 0; background: none; min-height: 44px; font-size: 12px; }
+@media (max-width: 600px) {
+  .new-house-page > header { flex-wrap: wrap; gap: 12px; }
+  .new-house-dimensions { grid-template-columns: 1fr; gap: 0; }
+  .new-house-form > .copper-button { width: 100%; }
+  .house-library .project-list > article { grid-template-columns: 28px minmax(0, 1fr); }
+  .house-library .project-actions { grid-column: 2; }
+}
+@media print { .new-house-page > header, .new-house-form > button, .house-library-tools, .house-library .project-actions { display: none; } }

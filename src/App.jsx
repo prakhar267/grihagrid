@@ -2,7 +2,7 @@ import { lazy, Suspense, useEffect, useId, useMemo, useRef, useState } from "rea
 import {
   ArrowClockwise, ArrowLeft, ArrowRight, ArrowSquareOut, ArrowsLeftRight, Blueprint, Buildings,
   Check, CheckCircle, Compass, Copy, CurrencyInr, DownloadSimple, Eye, FileText, FloppyDisk,
-  House, LinkSimple, List, LockKey, MapPin, PencilSimple, Plus, Receipt, Ruler, SealCheck,
+  House, LinkSimple, List, LockKey, PencilSimple, Plus, Receipt, SealCheck,
   ShareNetwork, ShieldCheck, SignOut, Sparkle, Stack, Trash, UploadSimple, UserCircle,
   WarningCircle, X, XCircle,
 } from "@phosphor-icons/react";
@@ -62,6 +62,8 @@ import {
   validateEstimatorScenario,
 } from "./public-estimator.js";
 
+import NewHouse from "./spatial/NewHouse.jsx";
+
 const SpatialWorkspace = lazy(() => import("./spatial/SpatialWorkspace.jsx"));
 
 const cityFactors = { Pune: 1, Bengaluru: 1.08, Mumbai: 1.18, Delhi: 1.1, Hyderabad: .98, Chennai: 1.02, Jaipur: .88, Other: .95 };
@@ -103,12 +105,6 @@ const reportHandoffSectionOptions = [
 ];
 const reportHandoffSectionSet = new Set(reportHandoffSectionOptions.map(([value]) => value));
 const defaultReportHandoffSections = ["overview", "programme", "risks", "next_actions"];
-
-function useCommerceCatalog() {
-  const [availability,setAvailability]=useState({});
-  useEffect(()=>{let active=true;api('/api/commerce/catalog').then(result=>{if(active)setAvailability(Object.fromEntries((result.plans||[]).map(plan=>[plan.id,Boolean(plan.acceptingOrders)])))}).catch(()=>{if(active)setAvailability({})});return()=>{active=false}},[]);
-  return availability;
-}
 
 function useReadinessCapability(capability) {
   const [state,setState]=useState({phase:"loading",enabled:false});
@@ -252,7 +248,7 @@ function useProjectCreationKey(recoverStored = false) {
 }
 
 function isPrivateAccountPath(pathname) {
-  return /^\/(?:dashboard|security(?:\/|$)|review-workbench(?:\/|$)|orders(?:\/|$)|projects\/|report\/|checkout\/return)/u.test(pathname);
+  return /^\/(?:dashboard|houses\/new(?:\/|$)|security(?:\/|$)|review-workbench(?:\/|$)|orders(?:\/|$)|projects\/|report\/|checkout\/return)/u.test(pathname);
 }
 
 function isPublicReportSharePath(pathname) {
@@ -264,7 +260,7 @@ function isFamilyAlignmentPath(pathname) {
 }
 
 function isAuthenticationFreePath(pathname) {
-  return isPublicReportSharePath(pathname)||isFamilyAlignmentPath(pathname)||pathname==="/estimate"||pathname==="/explore";
+  return isPublicReportSharePath(pathname)||isFamilyAlignmentPath(pathname)||pathname==="/estimate"||pathname==="/explore"||pathname==="/";
 }
 
 function familyAlignmentCapabilityToken(location=window.location) {
@@ -503,19 +499,17 @@ function Header({ user }) {
   return <header className="site-header"><div className="header-inner">
     <Brand/>
     <nav id="primary-navigation" className={`main-nav ${open ? "main-nav--open" : ""}`} aria-label="Primary navigation">
-      <button onClick={() => { route("/#how"); setOpen(false); }}>How it works</button>
-      <button onClick={() => { route("/plans"); setOpen(false); }}>Sample plan</button>
-      <button onClick={() => { route("/explore"); setOpen(false); }}>Explore a home</button>
-      <button onClick={() => { route("/pricing"); setOpen(false); }}>Pricing</button>
-      <button onClick={() => { route("/about"); setOpen(false); }}>About</button>
+      <button onClick={() => { route("/"); setOpen(false); }}>3D studio</button>
+      <button onClick={() => { route("/dashboard"); setOpen(false); }}>My houses</button>
+      <button onClick={() => { route("/about"); setOpen(false); }}>Studio guide</button>
       <div className="main-nav-mobile-actions">
-        <button className="outline-button" onClick={() => { route(user ? "/dashboard" : "/login"); setOpen(false); }}>{user ? "My projects" : "Log in"}</button>
-        <button className="copper-button" onClick={() => { route("/start"); setOpen(false); }}>Plan my home <ArrowRight/></button>
+        <button className="outline-button" onClick={() => { route(user ? "/dashboard" : "/login"); setOpen(false); }}>{user ? "My houses" : "Log in"}</button>
+        <button className="copper-button" onClick={() => { route("/houses/new"); setOpen(false); }}>New house <ArrowRight/></button>
       </div>
     </nav>
     <div className="header-actions">
-      <button className="quiet-action header-login" onClick={() => route(user ? "/dashboard" : "/login")}>{user ? "My projects" : "Log in"}</button>
-      <button className="copper-button header-cta" onClick={() => route("/start")}>Plan my home</button>
+      <button className="quiet-action header-login" onClick={() => route(user ? "/dashboard" : "/login")}>{user ? "My houses" : "Log in"}</button>
+      <button className="copper-button header-cta" onClick={() => route("/houses/new")}>New house</button>
       <button ref={menuButtonRef} className="menu-trigger" aria-label={open ? "Close menu" : "Open menu"} aria-expanded={open} aria-controls="primary-navigation" onClick={() => setOpen(!open)}>{open ? <X/> : <List/>}</button>
     </div>
   </div></header>;
@@ -548,15 +542,11 @@ function WorkspaceAccount({ user, onLogout }) {
 
 function Footer() {
   return <footer className="site-footer"><div className="footer-main">
-    <div className="footer-intro"><Brand/><p>A clear concept, a credible budget, and a better first conversation with your architect.</p><span><ShieldCheck/> Private by default</span></div>
-    <div><h4>Explore</h4><button onClick={() => route("/start")}>Plan my home</button><button onClick={() => route("/plans")}>Sample plan</button><button onClick={() => route("/pricing")}>Pricing</button></div>
-    <div><h4>Company</h4><button onClick={() => route("/about")}>About</button><a href="mailto:hello@grihagrid.in">Contact</a><a href="mailto:architects@grihagrid.in">Architect network</a></div>
+    <div className="footer-intro"><Brand/><p>Shape a house. Explore every room. Direct the tour.</p><span><ShieldCheck/> Private by default</span></div>
+    <div><h4>Studio</h4><button onClick={() => route("/")}>Explore the example</button><button onClick={() => route("/dashboard")}>My houses</button><button onClick={() => route("/houses/new")}>New house</button></div>
+    <div><h4>Help</h4><button onClick={() => route("/about")}>Studio guide</button><a href="mailto:hello@grihagrid.in">Contact</a></div>
     <div><h4>Legal</h4><button onClick={() => route("/privacy")}>Privacy</button><button onClick={() => route("/terms")}>Terms</button><button onClick={() => route("/refund")}>Refunds</button></div>
-  </div><div className="footer-meta"><span>© 2026 GrihaGrid Labs</span><span>Concept planning—not municipal or structural approval.</span><span>Made for India</span></div></footer>;
-}
-
-function SectionHeading({ kicker, title, copy, align = "left" }) {
-  return <div className={`section-heading section-heading--${align}`}>{kicker && <span className="kicker">{kicker}</span>}<h2>{title}</h2>{copy && <p>{copy}</p>}</div>;
+  </div><div className="footer-meta"><span>© 2026 GrihaGrid Labs</span><span>Concept design · Professional verification before construction.</span></div></footer>;
 }
 
 function EstimateInstrument({ condensed = false, initial, entryPoint = "public_estimator", id }) {
@@ -751,88 +741,15 @@ function SharedEstimatorPage() {
     window.history.replaceState({},"",canonical);
   },[scenario]);
 
-  if(!scenario)return <main className="shared-estimate-page shared-estimate-page--invalid"><header><Brand onHome={()=>route("/")}/><span><LockKey/> No private project opened</span></header><section className="shared-estimate-invalid" role="alert"><WarningCircle/><span className="kicker">Shared scenario unavailable</span><h1>This estimate link is incomplete.</h1><p>GrihaGrid did not load partial values or substitute defaults. Ask the sender for a fresh link, or open a new estimator without carrying anything from this address.</p><button type="button" className="copper-button" onClick={()=>route("/#plot-cost-estimator")}>Open a fresh estimator <ArrowRight/></button></section></main>;
+  if(locationRevision==="/estimate")return <><main className="shared-estimate-page"><header><Brand/><span>Planning tools</span></header><section className="shared-estimate-intro"><div><span className="kicker">Planning reference</span><h1>Explore a construction range.</h1></div><p>This separate planning instrument estimates from plot details. It does not measure or modify your 3D model.</p></section><section className="shared-estimate-workbench"><EstimateInstrument/></section></main><Footer/></>;
+  if(!scenario)return <main className="shared-estimate-page shared-estimate-page--invalid"><header><Brand onHome={()=>route("/")}/><span><LockKey/> No private project opened</span></header><section className="shared-estimate-invalid" role="alert"><WarningCircle/><span className="kicker">Shared scenario unavailable</span><h1>This estimate link is incomplete.</h1><p>GrihaGrid did not load partial values or substitute defaults. Ask the sender for a fresh link, or open a new estimator without carrying anything from this address.</p><button type="button" className="copper-button" onClick={()=>route("/estimate")}>Open a fresh estimator <ArrowRight/></button></section></main>;
 
   const canonicalPath=buildSharedEstimatorPath(scenario);
   return <><main className="shared-estimate-page"><header><Brand onHome={()=>route("/")}/><span><LockKey/> Non-personal scenario · recalculated live</span></header><section className="shared-estimate-intro"><div><span className="kicker">Scenario shared with you</span><h1>Recheck the range.<br/><i>Make it yours.</i></h1></div><div><p>This link carries only plot width, length, city, floor programme and finish—not a saved price, address, account or project. GrihaGrid recalculates it against the current planning rule each time it opens, so the range may change when the published method changes.</p><span><ShieldCheck/> No sign-in, cookie-backed account check or anonymous server record is needed to view this scenario.</span></div></section><section className="shared-estimate-workbench" aria-labelledby="shared-estimate-title"><header><div><span className="kicker">Live planning instrument</span><h2 id="shared-estimate-title">Test this starting point.</h2></div><p>Edit any input before sharing it again or carrying it into your own private Brief Check.</p></header><EstimateInstrument key={canonicalPath} initial={scenario} entryPoint="shared_estimate"/></section></main><Footer/></>;
 }
 
-function HomePage({ user }) {
-  const availability=useCommerceCatalog();
-  const loggedOut=user===null&&window.history.state?.logoutConfirmed===true;
-  return <main>
-    {loggedOut&&<p className="logout-confirmation" role="status"><CheckCircle/> You’re logged out. Private workspace data was cleared from this tab.</p>}
-    <section className="monograph-hero">
-      <div className="monograph-copy">
-        <span className="kicker">AI home planning for Indian plots</span>
-        <h1>Know what fits.<br/>Know what it costs.</h1>
-        <p>Enter your plot details. See the evidence gaps and programme pressure, get an indicative construction range, and walk into your first architect meeting prepared.</p>
-        <div className="hero-actions"><button className="copper-button copper-button--large" onClick={() => route("/start")}>Plan my home <ArrowRight/></button><button className="underlined-action" onClick={() => route("/plans")}>See a sample plan</button></div>
-        <EstimateInstrument id="plot-cost-estimator" condensed/>
-        <div className="hero-steps" aria-label="How GrihaGrid works">
-          <div><span>01</span><UploadSimple/><p>Share plot<br/>details</p></div>
-          <div><span>02</span><Blueprint/><p>Check the brief<br/>& likely cost</p></div>
-          <div><span>03</span><UserCircle/><p>Consult an architect<br/><em>optional</em></p></div>
-        </div>
-        <div className="hero-trust"><span><ShieldCheck/> Your saved project is account-scoped by default</span><span>Concept first. Professionals before construction.</span></div>
-      </div>
-      <div className="monograph-visual">
-        <img width="1536" height="1024" src="/assets/v2/monograph-house-v2.jpg" onError={e => { e.currentTarget.src = "/assets/grihagrid-hero.jpg"; }} alt="Contemporary Indian home with an overlaid 30 by 50 foot plot plan"/>
-      </div>
-    </section>
-
-    <section id="how" className="editorial-section editorial-section--split">
-      <SectionHeading kicker="Before the first drawing" title="A confident brief changes every conversation." copy="GrihaGrid turns scattered wishes into a measured starting point: a plot envelope, a room programme, a live budget range, and the questions a professional needs to answer."/>
-      <div className="editorial-list">
-        {[['01','Brief Check','See which key facts are known, which remain missing, and where the programme is under pressure.'],['02','Cost intelligence','Explore a transparent range by city, size and finish—not a false fixed quote.'],['03','Professional handoff','Carry one coherent brief into architect, contractor and family conversations.']].map(([n,t,c]) => <article key={n}><span>{n}</span><div><h3>{t}</h3><p>{c}</p></div></article>)}
-      </div>
-    </section>
-
-    <section className="report-story">
-      <div className="report-story-image"><img loading="lazy" width="1536" height="1024" src="/assets/grihagrid-hero.jpg" alt="Warm modern independent home elevation concept"/><span>Elevation direction · Warm modern</span></div>
-      <div className="report-story-copy"><span className="kicker">Your decision book</span><h2>Useful before it becomes technical.</h2><p>A concise report that helps your family align on the home—and helps your architect begin with context instead of a blank page.</p>
-        <dl><div><dt>Brief Check</dt><dd>Enough to explore</dd></div><div><dt>Likely built-up</dt><dd>1,830 sq ft</dd></div><div><dt>Planning range</dt><dd>₹37L–₹44L</dd></div><div><dt>Key unknown</dt><dd>Road width and local setbacks</dd></div></dl>
-        <button className="underlined-action" onClick={() => route("/plans")}>Open the sample plan <ArrowRight/></button>
-      </div>
-    </section>
-
-    <section className="editorial-section process-section"><SectionHeading kicker="The process" title="From a plot to an architect-ready brief." align="center"/>
-      <div className="process-line">{[[Ruler,'Map the plot','Dimensions, road edge, facing and city context.'],[House,'Shape the home','Family needs, floors, parking and preferences.'],[CurrencyInr,'See the range','A city- and finish-adjusted planning budget.'],[Blueprint,'Choose a direction','Compare two real alternatives before drawings begin.']].map(([Icon,t,c],i) => <div key={t}><span>0{i+1}</span><Icon/><h3>{t}</h3><p>{c}</p></div>)}</div>
-    </section>
-
-    <section className="pricing-editorial"><div><span className="kicker">Simple, one-project pricing</span><h2>Start with clarity.<br/><i>Buy detail when it matters.</i></h2><p>No subscription. Your free Brief Check remains yours.</p></div><div className="pricing-lines">
-      {[['Brief Check','Free','Evidence gaps, room programme and an indicative concept-planning range.',null],['Decision Compare','₹999','Two versioned options, one chosen direction and a secure shared comparison.','decision_compare']].map(([name,price,copy,sku],i)=>{const accepting=!sku||availability[sku];return <article key={name}><span>0{i+1}</span><div><h3>{name}</h3><p>{copy}</p></div><strong>{price}{sku&&!accepting&&<small>Opening soon</small>}</strong><button disabled={!accepting} onClick={() => {if(sku)sessionStorage.setItem('grihagrid.plan',sku);route('/start')}} aria-label={accepting?`Choose ${name}`:`${name} is not accepting orders`}><ArrowRight/></button></article>})}
-      <button className="underlined-action" onClick={() => route('/pricing')}>Compare every inclusion</button>
-    </div></section>
-
-    <section className="principle-quote"><blockquote>“The first value of a plan is not the drawing. It is making the right decisions visible.”</blockquote><p>GrihaGrid is built for that moment—before commitments become expensive.</p><button className="copper-button copper-button--large" onClick={() => route('/start')}>Start with my plot <ArrowRight/></button></section>
-
-    <FaqSection/>
-  </main>;
-}
-
-function FaqSection() {
-  const faqs = [
-    ["Is this an architectural or sanction drawing?", "No. It is a concept-stage decision brief. A licensed local architect and structural engineer must validate every drawing, site assumption and construction decision."],
-    ["How is the cost range calculated?", "We combine the likely built-up area with finish-level benchmarks and a city factor, then show a planning band. It is transparent guidance—not a contractor quotation."],
-    ["Can I keep my project private?", "Yes. Projects are account-scoped and sessions use secure cookies. When private upload storage is enabled for a release, files are served through authenticated access rather than public links; the product checks availability before showing a file picker."],
-    ["Can I involve my family?", "Yes. Every saved comparison can open one free seven-day Family Alignment room for up to five structured responses. A purchased Decision Compare separately supports an expiring, revocable artifact link for family or your architect."],
-  ];
-  return <section className="faq-editorial"><SectionHeading kicker="Questions worth asking" title="Clear boundaries build trust."/><div>{faqs.map(([q,a],i)=><details key={q} open={i===0}><summary><span>0{i+1}</span>{q}<Plus/></summary><p>{a}</p></details>)}</div></section>;
-}
-
-const plans = [
-  {name:"Brief Check",price:"Free",lead:"Answer the first questions.",items:["Evidence-gap assessment","Room programme","City-adjusted planning range","Private saved project","7-day Family Alignment room · up to five structured responses"],eta:"Immediate",sku:null},
-  {name:"Decision Compare",price:"₹999",lead:"Choose between two real alternatives.",items:["Exactly two versioned options","Area and cost differences","Trade-offs and recommendation","Five architect questions","Immutable artifact and expiring share"],eta:"Immediate",featured:true,sku:"decision_compare"},
-];
-
-function PricingPage() {
-  const availability=useCommerceCatalog();
-  return <main className="page-main"><section className="page-hero"><span className="kicker">One plot · one payment</span><h1>Choose with evidence, not guesswork.</h1><p>Begin with a free Brief Check. Upgrade the same private project only when two competing directions need one clear decision.</p></section><section className="plan-table">{plans.map((p,i)=>{const accepting=!p.sku||availability[p.sku];return <article className={p.featured?"featured":""} key={p.name}><div className="plan-index">0{i+1}</div><div className="plan-name">{p.featured&&<span>Recommended</span>}<h2>{p.name}</h2><p>{p.lead}</p></div><div className="plan-price"><strong>{p.price}</strong><small>{p.sku&&!accepting?'Opening soon':p.eta}</small></div><ul>{p.items.map(x=><li key={x}><Check/>{x}</li>)}</ul><button disabled={!accepting} className={p.featured?"copper-button":"outline-button"} onClick={()=>{if(p.sku)sessionStorage.setItem('grihagrid.plan',p.sku);route('/start')}}>{i===0?'Start free':accepting?'Choose plan':'Not accepting orders'} {accepting&&<ArrowRight/>}</button></article>})}</section><section className="scope-note"><WarningCircle/><div><h2>Planning before permission.</h2><p>Neither offer replaces the licensed professionals, soil investigation, structural design or municipal approval required to build safely.</p></div></section></main>;
-}
-
 function AboutPage() {
-  return <main className="page-main"><section className="about-editorial"><span className="kicker">Why GrihaGrid exists</span><h1>Every home begins as a family conversation.</h1><p className="lead">But too often that conversation is forced into drawings, quotes and commitments before the family understands what is possible.</p><div className="about-columns"><p>GrihaGrid creates a calmer first step. Plot dimensions and family needs become an honest Brief Check, a visible planning range and a structured record that a professional can challenge and improve.</p><p>AI helps us make exploration fast and affordable. Licensed people remain responsible for the decisions that affect safety, permission and construction.</p></div></section><section className="values-rule">{[['Clarity over theatre','Assumptions and ranges stay visible.'],['Context over templates','Indian plots, cities and family patterns shape the brief.'],['Professionals at the right moment','Automation explores; experts validate.']].map(([t,c],i)=><article key={t}><span>0{i+1}</span><h2>{t}</h2><p>{c}</p></article>)}</section><section className="principle-quote"><blockquote>Help every family ask better questions before the first expensive answer.</blockquote><p>That is the standard we use to choose what GrihaGrid builds.</p></section></main>;
+  return <main className="page-main"><section className="about-editorial"><span className="kicker">The studio guide</span><h1>A plan you can move through.</h1><p className="lead">Shape a house in 2D, explore the same spaces in 3D, and direct a camera tour through them.</p><div className="about-columns"><p>Open the example without an account. Choose a room, orbit the house or walk inside. Create a private house when you are ready to save a model, camera views and tour revisions.</p><p>Import a drawing in 2D Plan, check its scale and interpretation, then edit rooms, walls, doors and furniture. Review the Change Study before saving. A drawing interpretation is a starting point to correct, never a verified survey.</p></div></section><section className="values-rule">{[['Draw and refine','One shared geometry model connects the floor plan, browser scene and Blender export.'],['Explore and direct','Select a room, walk inside or build a guided tour. Local room matching works without AI; live Gemini requires availability and your consent.'],['Render and keep','Download scene JSON, GLB or a Blender bundle. Film rendering uses a paired local Blender service; it is not an always-on cloud renderer.']].map(([t,c],i)=><article key={t}><span>0{i+1}</span><h2>{t}</h2><p>{c}</p></article>)}</section><section className="studio-guide-actions"><button className="copper-button" onClick={()=>route('/')}>Open the studio <ArrowRight/></button><button className="outline-button" onClick={()=>route('/houses/new')}>New house <Plus/></button><p>Concept design only. Licensed professionals must verify site conditions, structure and approvals before construction.</p><details><summary>Existing planning tools</summary><p>Your saved briefs, estimates, comparisons, reports and sharing links remain available through My houses → Project details.</p><button className="underlined-action" onClick={()=>route('/estimate')}>Open the planning estimator</button></details></section></main>;
 }
 
 function SamplePlanPage() {
@@ -1201,11 +1118,11 @@ function AuthPage({ mode, user, draftAccess, onAuthenticated }) {
   }
   if(continuationRequested&&(draftAccess.phase!=="ready"&&draftAccess.phase!=="memory"))return <AnonymousDraftAccessGate phase={draftAccess.phase} onRetry={draftAccess.retry}/>;
   if(continuationRequested&&continuation===undefined)return <AnonymousDraftAccessGate phase="checking" onRetry={draftAccess.retry}/>;
-  if(user&&!continuationRequested)return <main className="auth-page"><div className="auth-architecture"><img width="1536" height="1024" src="/assets/v2/monograph-house-v2.jpg" onError={e=>{e.currentTarget.src='/assets/grihagrid-hero.jpg'}} alt="Contemporary Indian home"/><div><Brand inverted onHome={()=>route("/")}/><blockquote>Start with clarity.<br/>Build with confidence.</blockquote></div></div><section className="auth-form" aria-live="polite"><button className="back-action" onClick={()=>route("/")}><ArrowLeft/> Home</button><span className="kicker">Private project workspace</span><h1>{directSessionPhase==="unavailable"?"We could not confirm this session.":"Checking your account."}</h1><p>{directSessionPhase==="unavailable"?"GrihaGrid will not assume this browser is signed in or send you back into a private-page loop. Retry the check, or return home.":"A current session goes to your projects. An expired session returns to the credential form here."}</p>{directSessionPhase==="unavailable"&&<div className="draft-resume-actions"><button className="copper-button" onClick={()=>setDirectSessionAttempt(value=>value+1)}>Retry session check <ArrowClockwise/></button><button className="outline-button" onClick={()=>route("/")}>Return home</button></div>}</section></main>;
+  if(user&&!continuationRequested)return <main className="auth-page"><div className="auth-architecture"><img width="1536" height="1024" src="/assets/v2/monograph-house-v2.jpg" onError={e=>{e.currentTarget.src='/assets/grihagrid-hero.jpg'}} alt="Contemporary Indian home"/><div><Brand inverted onHome={()=>route("/")}/><blockquote>Shape the spaces.<br/>Explore your house.</blockquote></div></div><section className="auth-form" aria-live="polite"><button className="back-action" onClick={()=>route("/")}><ArrowLeft/> Home</button><span className="kicker">Private project workspace</span><h1>{directSessionPhase==="unavailable"?"We could not confirm this session.":"Checking your account."}</h1><p>{directSessionPhase==="unavailable"?"GrihaGrid will not assume this browser is signed in or send you back into a private-page loop. Retry the check, or return home.":"A current session goes to your projects. An expired session returns to the credential form here."}</p>{directSessionPhase==="unavailable"&&<div className="draft-resume-actions"><button className="copper-button" onClick={()=>setDirectSessionAttempt(value=>value+1)}>Retry session check <ArrowClockwise/></button><button className="outline-button" onClick={()=>route("/")}>Return home</button></div>}</section></main>;
   const continuationMissing=continuationRequested&&(!continuation||Boolean(continuationFailure));
   const heading=authenticated&&continuation?"Finish saving your brief.":isLogin?'Welcome back.':'Create your account.';
-  const copy=authenticated&&continuation?"Your account is ready. The exact browser copy and original retry key will be used once.":isLogin?'Return to your saved home plans.':'Save the brief you just created and keep every decision together.';
-  return <main className="auth-page"><div className="auth-architecture"><img width="1536" height="1024" src="/assets/v2/monograph-house-v2.jpg" onError={e=>{e.currentTarget.src='/assets/grihagrid-hero.jpg'}} alt="Contemporary Indian home"/><div><Brand inverted disabled={busy} onHome={back}/><blockquote>Start with clarity.<br/>Build with confidence.</blockquote></div></div><section className="auth-form"><button className="back-action" disabled={busy} onClick={back}><ArrowLeft/> {continuation?'Back to brief':'Home'}</button><span className="kicker">Private project workspace</span><h1>{heading}</h1><p>{copy}</p>{continuationMissing?<div className="auth-continuation-missing"><WarningCircle/><p><strong>{continuationFailure==="conflict"?"This browser draft changed after this account page opened.":"No recoverable browser copy was found."}</strong> {continuationFailure==="conflict"?"Nothing was submitted. Review the current browser copy before continuing.":"It may have expired, been discarded, or been cleared by this device. GrihaGrid will not reconstruct it from browser history or submit partial details."}</p>{error&&<p ref={errorRef} className="form-error" tabIndex="-1" role="alert">{error}</p>}<button className="copper-button" onClick={()=>replaceRoute('/start',continuation?anonymousDraftContinuationState(continuation,localStorageRef.current):{})}>{continuationFailure==="conflict"?"Review current brief":"Start a new brief"} <ArrowRight/></button></div>:<form onSubmit={submit} aria-busy={busy}>{continuation&&<div className="auth-continuation-ready" role="status"><LockKey/><p>{authenticated?<><strong>Exact retry protected.</strong> No dedicated password, account-detail, file or estimate field is stored with this browser draft.</>:isLogin?<><strong>Your brief stays separate.</strong> Sign-in sends only your email and password. After it succeeds, GrihaGrid uses the exact browser copy and original retry key.</>:<><strong>Your brief stays separate.</strong> Account creation sends only your name, email and password. After it succeeds, GrihaGrid uses the exact browser copy and original retry key.</>}</p></div>}{!authenticated&&<>{!isLogin&&<label>Full name<input required disabled={busy} maxLength="80" autoComplete="name" value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label>}<label>Email address<input required disabled={busy} type="email" maxLength="254" autoComplete="email" autoCapitalize="none" spellCheck="false" value={form.email} onChange={e=>setForm({...form,email:e.target.value})}/></label><label>Password<input required disabled={busy} type="password" minLength="10" maxLength="128" autoComplete={isLogin?'current-password':'new-password'} autoCapitalize="none" spellCheck="false" value={form.password} onChange={e=>setForm({...form,password:e.target.value})}/><small>10–128 characters</small></label></>}{error&&<p ref={errorRef} className="form-error" tabIndex="-1" role="alert">{error}</p>}<button disabled={busy} className="copper-button" type="submit">{busy?'Please wait…':authenticated&&continuation?'Save exact brief':isLogin?'Log in':'Create account'} <ArrowRight/></button></form>}{!continuationMissing&&!authenticated&&<>{isLogin&&(passwordRecovery.phase==="ready"&&passwordRecovery.enabled?<p className="auth-switch"><button disabled={busy} onClick={()=>route('/forgot-password')}>Forgot password?</button></p>:passwordRecovery.phase!=="loading"?<p className="auth-capability-note" role="status">Email recovery is not available in this release. Contact support if you are locked out.</p>:null)}<p className="auth-switch">{isLogin?'New to GrihaGrid?':'Already have an account?'} <button disabled={busy} onClick={()=>replaceRoute(isLogin?'/register':'/login',anonymousDraftContinuationState(continuation,localStorageRef.current))}>{isLogin?'Create account':'Log in'}</button></p></>}</section></main>;
+  const copy=authenticated&&continuation?"Your account is ready. The exact browser copy and original retry key will be used once.":isLogin?'Return to your houses, plans and camera tours.':'Save your house models, camera views and tour revisions in one private workspace.';
+  return <main className="auth-page"><div className="auth-architecture"><img width="1536" height="1024" src="/assets/v2/monograph-house-v2.jpg" onError={e=>{e.currentTarget.src='/assets/grihagrid-hero.jpg'}} alt="Contemporary Indian home"/><div><Brand inverted disabled={busy} onHome={back}/><blockquote>Shape the spaces.<br/>Explore your house.</blockquote></div></div><section className="auth-form"><button className="back-action" disabled={busy} onClick={back}><ArrowLeft/> {continuation?'Back to brief':'Home'}</button><span className="kicker">Private project workspace</span><h1>{heading}</h1><p>{copy}</p>{continuationMissing?<div className="auth-continuation-missing"><WarningCircle/><p><strong>{continuationFailure==="conflict"?"This browser draft changed after this account page opened.":"No recoverable browser copy was found."}</strong> {continuationFailure==="conflict"?"Nothing was submitted. Review the current browser copy before continuing.":"It may have expired, been discarded, or been cleared by this device. GrihaGrid will not reconstruct it from browser history or submit partial details."}</p>{error&&<p ref={errorRef} className="form-error" tabIndex="-1" role="alert">{error}</p>}<button className="copper-button" onClick={()=>replaceRoute('/start',continuation?anonymousDraftContinuationState(continuation,localStorageRef.current):{})}>{continuationFailure==="conflict"?"Review current brief":"Start a new brief"} <ArrowRight/></button></div>:<form onSubmit={submit} aria-busy={busy}>{continuation&&<div className="auth-continuation-ready" role="status"><LockKey/><p>{authenticated?<><strong>Exact retry protected.</strong> No dedicated password, account-detail, file or estimate field is stored with this browser draft.</>:isLogin?<><strong>Your brief stays separate.</strong> Sign-in sends only your email and password. After it succeeds, GrihaGrid uses the exact browser copy and original retry key.</>:<><strong>Your brief stays separate.</strong> Account creation sends only your name, email and password. After it succeeds, GrihaGrid uses the exact browser copy and original retry key.</>}</p></div>}{!authenticated&&<>{!isLogin&&<label>Full name<input required disabled={busy} maxLength="80" autoComplete="name" value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label>}<label>Email address<input required disabled={busy} type="email" maxLength="254" autoComplete="email" autoCapitalize="none" spellCheck="false" value={form.email} onChange={e=>setForm({...form,email:e.target.value})}/></label><label>Password<input required disabled={busy} type="password" minLength="10" maxLength="128" autoComplete={isLogin?'current-password':'new-password'} autoCapitalize="none" spellCheck="false" value={form.password} onChange={e=>setForm({...form,password:e.target.value})}/><small>10–128 characters</small></label></>}{error&&<p ref={errorRef} className="form-error" tabIndex="-1" role="alert">{error}</p>}<button disabled={busy} className="copper-button" type="submit">{busy?'Please wait…':authenticated&&continuation?'Save exact brief':isLogin?'Log in':'Create account'} <ArrowRight/></button></form>}{!continuationMissing&&!authenticated&&<>{isLogin&&(passwordRecovery.phase==="ready"&&passwordRecovery.enabled?<p className="auth-switch"><button disabled={busy} onClick={()=>route('/forgot-password')}>Forgot password?</button></p>:passwordRecovery.phase!=="loading"?<p className="auth-capability-note" role="status">Email recovery is not available in this release. Contact support if you are locked out.</p>:null)}<p className="auth-switch">{isLogin?'New to GrihaGrid?':'Already have an account?'} <button disabled={busy} onClick={()=>replaceRoute(isLogin?'/register':'/login',anonymousDraftContinuationState(continuation,localStorageRef.current))}>{isLogin?'Create account':'Log in'}</button></p></>}</section></main>;
 }
 
 function lifecycleTokenFromFragment(){
@@ -1553,7 +1470,7 @@ function Dashboard({ user, onLogout }) {
     }).finally(()=>{if(!controller.signal.aborted)setLoading(false)});
     return()=>controller.abort();
   },[loadAttempt]);
-  return <main className="workspace"><aside><Brand/><nav><button className="active"><Blueprint/> Projects</button><button onClick={()=>route('/orders')}><Receipt/> Orders</button><button onClick={()=>route('/start')}><Plus/> New brief</button><button onClick={()=>route('/plans')}><FileText/> Sample plan</button></nav><WorkspaceAccount user={user} onLogout={onLogout}/></aside><section className="workspace-main" aria-busy={loading}><header><div><span className="kicker">Your private workspace</span><h1>Home plans, in one place.</h1></div><button className="copper-button" onClick={()=>route('/start')}><Plus/> New project</button></header>{loading&&<p className="loading-line" role="status">Loading your projects…</p>}{error&&<div><p className="form-error" role="alert">{error}</p><button type="button" className="outline-button" onClick={()=>setLoadAttempt(value=>value+1)}>Retry projects <ArrowClockwise/></button></div>}{!loading&&!error&&projects.length===0&&<div className="empty-state"><Blueprint/><h2>Your first plot is still blank paper.</h2><p>Create a Brief Check and planning range before commissioning drawings.</p><button className="copper-button" onClick={()=>route('/start')}>Plan my home <ArrowRight/></button></div>}<div className="project-list">{projects.map((project,i)=><article key={project.id}><span className="project-number">{String(i+1).padStart(2,'0')}</span><div><small>{project.status?.replaceAll('_',' ')}</small><h2>{project.name}</h2><p>{project.input?.width||project.width||30} × {project.input?.length||project.length||50} ft · {project.input?.city||project.city||'India'} · {project.input?.floors||project.floors||'G+1'}</p></div><div><span>Planning range</span><strong>{formatLakh(project.estimate?.lowInr||project.low_inr)} – {formatLakh(project.estimate?.highInr||project.high_inr)}</strong></div><div className="project-actions"><button onClick={()=>route(`/projects/${project.id}`)}>{project.status==='archived'?'Open project':'Resume'} <ArrowRight/></button></div></article>)}</div></section></main>;
+  return <main className="workspace house-library"><aside><Brand/><nav><button className="active" aria-current="page"><House/> My houses</button><button onClick={()=>route('/')}><Buildings/> Example studio</button><button onClick={()=>route('/houses/new')}><Plus/> New house</button><button onClick={()=>route('/about')}><FileText/> Studio guide</button></nav><WorkspaceAccount user={user} onLogout={onLogout}/></aside><section className="workspace-main" aria-busy={loading}><header><div><span className="kicker">Your private workspace</span><h1>Your houses.</h1><p>Plans, spaces and camera tours, together.</p></div><button className="copper-button" onClick={()=>route('/houses/new')}><Plus/> New house</button></header>{loading&&<p className="loading-line" role="status">Loading your houses…</p>}{error&&<div><p className="form-error" role="alert">{error}</p><button type="button" className="outline-button" onClick={()=>setLoadAttempt(value=>value+1)}>Retry projects <ArrowClockwise/></button></div>}{!loading&&!error&&projects.length===0&&<div className="empty-state"><House/><h2>Make room for your first house.</h2><p>Start with an editable example, import a drawing, then save your own plan and camera tour.</p><button className="copper-button" onClick={()=>route('/houses/new')}>New house <ArrowRight/></button></div>}<div className="project-list">{projects.map((project,i)=><article key={project.id}><span className="project-number">{String(i+1).padStart(2,'0')}</span><div><small>{project.status==='archived'?'Archived · read only':'Private house'}</small><h2>{project.name}</h2><p>2D plan · 3D spaces · Camera tours</p></div><div className="project-actions"><button onClick={()=>route(`/projects/${encodeURIComponent(project.id)}/spatial`)}>Open studio <ArrowRight/></button><button onClick={()=>route(`/projects/${encodeURIComponent(project.id)}`)}>Project details <FileText/></button></div></article>)}</div><details className="house-library-tools"><summary>Planning tools &amp; existing records</summary><p>Briefs, estimates, reports and revisions remain in each house’s Project details.</p><nav aria-label="Planning tools"><button onClick={()=>route('/start')}>Create planning brief</button><button onClick={()=>route('/estimate')}>Planning estimator</button><button onClick={()=>route('/plans')}>Sample report</button><button onClick={()=>route('/orders')}>Orders &amp; artifacts</button></nav></details></section></main>;
 }
 
 const projectHomeSteps = {
@@ -2724,16 +2641,8 @@ function DecisionComparePage({ projectId }) {
 }
 
 function PurchasePanel({ projectId, readonly = false }) {
-  const selected=sessionStorage.getItem('grihagrid.plan')==='decision_compare'?'decision_compare':null;
-  const [plan,setPlan]=useState(selected||'plan');const [busy,setBusy]=useState(false);const [error,setError]=useState("");
-  const availability=useCommerceCatalog();
-  const details={plan:['Planning report','₹499'],decision_compare:['Decision Compare','₹999'],site_plus:['Site-informed','₹999'],expert:['Architect reviewed','₹3,499']};
   if(readonly)return null;
-  if(!selected)return <section className="purchase-panel"><div><span className="kicker">Need more confidence?</span><h2>Put two options on the table.</h2><p>Use Decision Compare when the free Brief Check has framed the problem but competing directions still need one clear choice.</p></div><button className="underlined-action" onClick={()=>route('/pricing')}>Compare offers <ArrowRight/></button></section>;
-  if(selected==='decision_compare')return <section className="purchase-panel purchase-panel--selected"><div><span className="kicker">Selected next step</span><h2>Decision Compare</h2><p>Create exactly two alternatives and choose a direction before secure checkout opens.</p></div><button className="copper-button" onClick={()=>{sessionStorage.removeItem('grihagrid.plan');route(`/projects/${projectId}/compare`)}}>Compare two options <ArrowsLeftRight/></button></section>;
-  async function checkout(){setBusy(true);setError("");try{const keyName=`grihagrid.checkout.${projectId}.${plan}`;let key=sessionStorage.getItem(keyName);if(!key){key=crypto.randomUUID();sessionStorage.setItem(keyName,key)}const result=await api(`/api/projects/${projectId}/orders`,{method:'POST',headers:{'idempotency-key':key},body:{plan}});sessionStorage.removeItem('grihagrid.plan');if(result.checkoutUrl)window.location.assign(result.checkoutUrl);else if(result.order?.id)route(`/checkout/return?order=${encodeURIComponent(result.order.id)}`);else throw new Error('Checkout is not available for this order.');}catch(err){setError(err.status===503?'Secure checkout is being connected. Your project is saved; no payment was taken.':err.message);}finally{setBusy(false)}}
-  const accepting=Boolean(availability[plan]);
-  return <section className="purchase-panel purchase-panel--selected"><div><span className="kicker">Selected next step</span><h2>{details[plan][0]}</h2><p>{accepting?'One project · one payment. The checkout provider confirms payment directly with GrihaGrid before fulfillment begins.':'This paid service is visible for comparison, but is not accepting orders yet. Your free project remains saved.'}</p></div><div><label>Plan<select value={plan} onChange={e=>setPlan(e.target.value)}>{Object.entries(details).map(([value,[name,price]])=><option key={value} value={value}>{name} · {price}</option>)}</select></label><button disabled={busy||!accepting} className="copper-button" onClick={checkout}>{busy?'Opening checkout…':accepting?`Continue · ${details[plan][1]}`:'Not accepting orders'} {accepting&&<ArrowRight/>}</button></div>{error&&<p className="form-error" role="alert">{error}</p>}</section>;
+  return <section className="purchase-panel"><div><span className="kicker">Explore alternatives</span><h2>Put two options on the table.</h2><p>Compare two planning directions alongside your house model. Existing comparisons and artifacts remain in your project history.</p></div><button className="underlined-action" onClick={()=>route(`/projects/${projectId}/compare`)}>Compare two options <ArrowsLeftRight/></button></section>;
 }
 
 function ProjectFiles({ projectId, readonly = false }) {
@@ -3841,7 +3750,7 @@ export function App() {
   },[]);
   const confirmedAnonymousPrivatePath=isPrivateAccountPath(path)&&user===null&&authBootstrapComplete.current&&!authBootstrapPending&&!authBootstrapFailure;
   useEffect(()=>{if(confirmedAnonymousPrivatePath)replaceRoute('/login')},[confirmedAnonymousPrivatePath,path]);
-  useEffect(()=>{const titles={'/explore':'Spatial studio — GrihaGrid','/':'GrihaGrid — Know what fits. Know what it costs.','/estimate':'Shared estimate — GrihaGrid','/pricing':'Pricing — GrihaGrid','/about':'About — GrihaGrid','/plans':'Sample plan — GrihaGrid','/compare/sample':'Sample Decision Compare — GrihaGrid','/start':'Plan my home — GrihaGrid','/login':'Log in — GrihaGrid','/register':'Create account — GrihaGrid','/forgot-password':'Recover account — GrihaGrid','/reset-password':'Reset password — GrihaGrid','/verify-email':'Verify email — GrihaGrid','/dashboard':'My projects — GrihaGrid','/security':'Account security — GrihaGrid','/review-workbench':'Professional review workbench — GrihaGrid','/orders':'Orders — GrihaGrid','/privacy':'Privacy — GrihaGrid','/terms':'Terms — GrihaGrid','/refund':'Refunds — GrihaGrid'};document.title=path.startsWith('/projects/')&&path.endsWith('/spatial')?'Spatial studio — GrihaGrid':path.startsWith('/report/')?'Decision book — GrihaGrid':path.startsWith('/projects/')&&path.endsWith('/brief')?'Brief Check — GrihaGrid':path.startsWith('/projects/')&&path.endsWith('/compare')?'Decision Compare — GrihaGrid':path.startsWith('/projects/')?'Project home — GrihaGrid':path.startsWith('/orders/')?'Purchased artifact — GrihaGrid':path==='/share/report'?'Professional handoff — GrihaGrid':path.startsWith('/share/decision/')?'Shared decision — GrihaGrid':isFamilyAlignmentPath(path)?'Family review — GrihaGrid':(titles[path]||'Page not found — GrihaGrid')},[path]);
+  useEffect(()=>{const titles={'/explore':'Spatial studio — GrihaGrid','/':'Spatial studio — GrihaGrid','/houses/new':'New house — GrihaGrid','/estimate':'Shared estimate — GrihaGrid','/pricing':'Studio guide — GrihaGrid','/about':'Studio guide — GrihaGrid','/plans':'Sample plan — GrihaGrid','/compare/sample':'Sample Decision Compare — GrihaGrid','/start':'Plan my home — GrihaGrid','/login':'Log in — GrihaGrid','/register':'Create account — GrihaGrid','/forgot-password':'Recover account — GrihaGrid','/reset-password':'Reset password — GrihaGrid','/verify-email':'Verify email — GrihaGrid','/dashboard':'My houses — GrihaGrid','/security':'Account security — GrihaGrid','/review-workbench':'Professional review workbench — GrihaGrid','/orders':'Orders — GrihaGrid','/privacy':'Privacy — GrihaGrid','/terms':'Terms — GrihaGrid','/refund':'Refunds — GrihaGrid'};document.title=path.startsWith('/projects/')&&path.endsWith('/spatial')?'Spatial studio — GrihaGrid':path.startsWith('/report/')?'Decision book — GrihaGrid':path.startsWith('/projects/')&&path.endsWith('/brief')?'Brief Check — GrihaGrid':path.startsWith('/projects/')&&path.endsWith('/compare')?'Decision Compare — GrihaGrid':path.startsWith('/projects/')?'Project home — GrihaGrid':path.startsWith('/orders/')?'Purchased artifact — GrihaGrid':path==='/share/report'?'Professional handoff — GrihaGrid':path.startsWith('/share/decision/')?'Shared decision — GrihaGrid':isFamilyAlignmentPath(path)?'Family review — GrihaGrid':(titles[path]||'Page not found — GrihaGrid')},[path]);
   useEffect(()=>{
     if(focusedPath.current===path)return undefined;
     focusedPath.current=path;
@@ -3898,14 +3807,15 @@ export function App() {
   const shareMatch=path.match(/^\/share\/decision\/([^/]+)$/);
   const checkoutOrder=path==='/checkout/return'?new URLSearchParams(window.location.search).get('order'):null;
   const spatialMatch=path.match(/^\/projects\/([^/]+)\/spatial$/);
-  if(path==='/explore'||spatialMatch)return <Suspense fallback={<main className="error-page"><h1>Opening the spatial studio…</h1></main>}><SpatialWorkspace key={spatialMatch?.[1]||'demo'} projectId={spatialMatch?safeDecodePathSegment(spatialMatch[1]):null} onNavigate={route}/></Suspense>;
+  if(path==='/'||path==='/explore'||spatialMatch)return <Suspense fallback={<main className="error-page"><h1>Opening the spatial studio…</h1></main>}><SpatialWorkspace key={spatialMatch?`${user?.id}:${spatialMatch[1]}`:'demo'} projectId={spatialMatch?safeDecodePathSegment(spatialMatch[1]):null} onNavigate={route} logoutConfirmed={path==='/'&&user===null&&window.history.state?.logoutConfirmed===true}/></Suspense>;
+  if(path==='/houses/new')return <NewHouse key={user?.id} onNavigate={route}/>;
   if(path==='/estimate')return <SharedEstimatorPage/>;
   if(path==='/start')return <StartPage user={user} draftAccess={draftAccess} onSessionEnded={()=>acceptAuthenticatedUser(null)}/>;
   if(path==='/login'||path==='/register')return <AuthPage key={path} mode={path.slice(1)} user={user} draftAccess={draftAccess} onAuthenticated={acceptAuthenticatedUser}/>;
   if(path==='/forgot-password')return <PasswordRecoveryPage mode="request"/>;
   if(path==='/reset-password')return <PasswordRecoveryPage mode="confirm"/>;
   if(path==='/verify-email')return <EmailVerificationPage onVerified={()=>{api('/api/auth/me').then(result=>{if(result?.user)setUser(result.user)}).catch(()=>{})}}/>;
-  if(path==='/dashboard')return <Dashboard user={user} onLogout={()=>acceptAuthenticatedUser(null)}/>;
+  if(path==='/dashboard')return <Dashboard key={user?.id} user={user} onLogout={()=>acceptAuthenticatedUser(null)}/>;
   if(path==='/security')return <AccountSecurityPage key={user?.id||'unconfirmed-account'} user={user} onAuthenticated={acceptAuthenticatedUser} onDeleted={()=>acceptAuthenticatedUser(null)}/>;
   if(path==='/review-workbench')return <ProfessionalReviewWorkbench user={user}/>;
   if(path==='/orders')return <OrderHistoryPage user={user} onLogout={()=>acceptAuthenticatedUser(null)}/>;
@@ -3919,7 +3829,7 @@ export function App() {
   if(shareMatch)return <SharedDecisionPage token={safeDecodePathSegment(shareMatch[1])}/>;
   if(isFamilyAlignmentPath(path))return <FamilyAlignmentReviewPage/>;
   if(path==='/checkout/return')return <CheckoutReturnPage orderId={checkoutOrder}/>;
-  let page=path==='/'?<HomePage user={user}/>:<NotFoundPage/>;
-  if(path==='/pricing')page=<PricingPage/>;else if(path==='/about')page=<AboutPage/>;else if(path==='/plans')page=<SamplePlanPage/>;else if(path==='/compare/sample')page=<SampleDecisionComparePage/>;else if(path==='/privacy'||path==='/terms'||path==='/refund')page=<LegalPage type={path.slice(1)}/>;
+  let page=<NotFoundPage/>;
+  if(path==='/pricing'||path==='/about')page=<AboutPage/>;else if(path==='/plans')page=<SamplePlanPage/>;else if(path==='/compare/sample')page=<SampleDecisionComparePage/>;else if(path==='/privacy'||path==='/terms'||path==='/refund')page=<LegalPage type={path.slice(1)}/>;
   return <AppShell user={user}>{page}</AppShell>;
 }

@@ -1,232 +1,152 @@
 # GrihaGrid
 
-> **Know what fits. Know what it costs.**
+**Edit a house in 2D. Explore it in 3D. Direct a camera tour.**
 
-India-first concept-stage home planning for families building on their own
-plot. GrihaGrid turns a structured plot and household brief into an indicative
-construction range, a private project workspace, traceable planning reports,
-decision tools, and a selective handoff for professional review.
+GrihaGrid is a concept-stage house studio for Indian households. A single
+validated building model connects the editable floor plan, furnished browser
+scene, camera tours and local Blender exports. Rooms, openings, furniture,
+floors and stairs remain consistent as the user edits the plan or moves the
+camera. A model is real spatial geometry, not a sequence of generated pictures.
+
+The supporting planning tools still answer “Know what fits. Know what it costs.”
+Estimates, reports, Change Study, comparison, sharing and account controls remain
+available around the same private project history.
 
 [![CI](https://github.com/prakhar267/grihagrid/actions/workflows/ci.yml/badge.svg)](https://github.com/prakhar267/grihagrid/actions/workflows/ci.yml)
 [![Production smoke](https://github.com/prakhar267/grihagrid/actions/workflows/production-smoke.yml/badge.svg)](https://github.com/prakhar267/grihagrid/actions/workflows/production-smoke.yml)
 [![Production backup](https://github.com/prakhar267/grihagrid/actions/workflows/production-backup.yml/badge.svg)](https://github.com/prakhar267/grihagrid/actions/workflows/production-backup.yml)
 
-## Live product
+## Start with the house
 
-**[Open the production demo →](https://grihagrid.prakhargupta267.workers.dev)**
+The primary journey in this checkout is:
 
-Useful public starting points:
+1. Open `/` or `/explore` to enter the labelled demonstration house.
+2. Inspect **2D Plan**, select a floor, and edit rooms, walls, openings or furniture.
+   Drawing import proposes geometry locally and requires review and scale calibration.
+3. Use **3D Explore** to orbit, highlight a room, enter it or walk through connected spaces.
+4. Build a **Camera Tour**, adjust its stops and timing, pause to look around and resume.
+   Manual direction and “Tour all rooms” work without an AI provider.
+5. Choose **New house** at `/houses/new` to create an owned project, then keep
+   accepted model, tour and viewpoint revisions. **Your houses** on `/dashboard`
+   opens the private studio at `/projects/:id/spatial`; **Project details** remains
+   a secondary action.
+6. Pair the **Render/Export** panel with local Blender to create previews, an editable
+   `.blend`, GLB, manifest and MP4. The app shows the actual render and recovery state.
 
-- [Home](https://grihagrid.prakhargupta267.workers.dev/)
-- [Plan my home](https://grihagrid.prakhargupta267.workers.dev/start)
-- [Sample plan](https://grihagrid.prakhargupta267.workers.dev/plans)
-- [Sample Decision Compare](https://grihagrid.prakhargupta267.workers.dev/compare/sample)
-- [Pricing and availability](https://grihagrid.prakhargupta267.workers.dev/pricing)
+The public demonstration remains in the current tab or downloaded files; it is
+not an automatically saved personal house. A new-house flow establishes private
+project ownership and a labelled starting concept. It does not pretend an estimate
+brief is a professionally designed floor plan.
 
-The free public planning journey is live. Paid checkout and paid fulfillment
-remain intentionally disabled. The production site currently uses its
-`workers.dev` address; a custom domain is not configured.
+Secondary routes retain `/start` for the full planning brief, `/estimate` for
+the editable calculator or a valid shared scenario, `/projects/:id` for planning history, `/report/:id` for
+reports, and comparison/handoff routes. Existing links and saved records keep
+working. A malformed shared-estimate query stays invalid rather than becoming
+a valid calculator result. Pricing is not the primary entry point, and paid
+capabilities remain closed.
 
-## What the product does
+## Scope of this change
 
-GrihaGrid is built for Indian and NRI households that want clarity before
-commissioning detailed architectural or construction work. A user enters the
-plot, household programme, budget, finish level, and priorities once. The
-product then helps the family:
+The current product cleanup is **local implementation and review only**. It does
+not authorize deployment, remote migrations, paid infrastructure, new provider
+accounts, or activation of payments/private uploads. Historical releases already
+include the spatial studio; this checkout's navigation and documentation changes
+must not be described as deployed without separate exact-version evidence.
 
-1. understand an indicative, city-adjusted construction range;
-2. identify missing information and obvious programme tensions;
-3. save one private, versioned source of truth for the project;
-4. preview the impact of a change before accepting a new revision;
-5. compare exactly two planning directions without losing their assumptions;
-6. collect small, structured family feedback through a private link;
-7. generate a deterministic planning report and optional Gemini explanation;
-8. share only selected report sections through a revocable professional
-   handoff; and
-9. take a clearer brief, decision history, and verification list to licensed
-   local professionals.
+The existing hosted application is at
+[the production workers.dev address](https://grihagrid.prakhargupta267.workers.dev/explore).
+That link is a deployed baseline, not proof that the current branch is live.
+Release evidence remains in [launch readiness](docs/launch-readiness.md),
+[free-production readiness](docs/free-production-readiness.md) and
+[production operations](docs/production-operations.md).
 
-The core outcome is decision clarity—not an AI-rendered house, automatic floor
-plan, construction drawing, or approval.
+## Spatial capabilities and boundaries
 
-## Current capability status
-
-| Capability | Production status | What it means |
+| Area | Current implementation | Boundary |
 | --- | --- | --- |
-| Public planning range | Live | Server-recalculated, city- and finish-adjusted indicative range |
-| Account registration and login | Live | Private project workspace with secure cookie sessions |
-| Anonymous brief continuity | Live | One explicit, seven-day same-browser draft; no anonymous server record |
-| Private projects | Live | Owner-scoped project data, archive/delete controls, and dashboard |
-| Architecture Design Document | Live | Deterministic, printable concept report with assumptions and verification registers |
-| Brief Check | Live | Missing-information and deterministic programme-tension assessment |
-| Change Study and revision history | Live | Read-only impact preview before an immutable accepted revision |
-| Decision Compare | Live without checkout | Versioned A/B comparison, owner selection, and sharing |
-| Family Alignment | Live | Seven-day, structured, anonymous-to-owner family review for up to five responses |
-| Gemini planning brief | Live | Optional advisory explanation generated from allowlisted planning facts |
-| Structured report feedback | Live | Version-bound outcome and concern labels; never rewrites the report |
-| Professional Handoff | Live | Expiring, revocable link containing only owner-selected report sections |
-| Professional review workflow | Technical path live, controlled | Exact-report request/reviewer workflow; no practitioner identity or approval is implied |
-| Account security and lifecycle | Live | Session review, revoke others, password change, export, and guarded deletion |
-| Email verification and password recovery | Unavailable | Requires a verified sender domain and transactional-email configuration |
-| Private image uploads | Unavailable | Implementation is fail-closed until isolated private R2 buckets are approved and bound |
-| Paid checkout and fulfillment | Disabled | No public money is accepted and no paid artifact is issued |
-| Custom domain | Not configured | Production remains available on the live `workers.dev` URL above |
+| Drawing → 2D | Browser-local PNG/JPEG/WebP/SVG/PDF review, line recognition, OCR and calibration | Recognition proposes a draft; the user corrects it before acceptance |
+| Shared geometry | Versioned millimetre model, polygon rooms, independent walls/openings/furniture, up to four floors and stairs | Invalid geometry or disconnected walking space is rejected |
+| 3D exploration | Three.js/React Three Fiber, room hover/focus, overview, walking, cutaways and quality controls | Cutaways change presentation, not the exported building |
+| Camera tours | Checked paths, shot subjects, stop order, timing, pause/resume, manual takeover and saved viewpoints | Layout changes mark affected tours stale until regenerated/reviewed |
+| Optional Gemini direction | Server-side structured intent from existing room/object references | AI does not invent trusted coordinates or executable scripts; local tours remain available |
+| Private house history | Owner-scoped accepted model, tour and camera-library revisions in D1 | Unsaved public demo changes are not cloud persistence; stale writes conflict |
+| Blender rendering | Paired loopback service, Cycles previews/film, progress, cancellation and recovery | Requires local Blender/FFmpeg and sufficient resources; no hosted GPU service |
+| Account and planning tools | Existing estimates, reports, Change Study, comparisons, sharing and account lifecycle | Retained supporting workflows, not replaced by the studio |
+| Private server uploads, R2 and payments | Existing fail-closed implementations and controls | Browser-local import does not activate server storage or checkout |
+| Email recovery and verification | Configuration-gated | Unavailable without the required sender setup |
 
-The exact release evidence and remaining external approvals are recorded in
-[Launch readiness](docs/launch-readiness.md) and
-[Quality evidence](docs/quality-evidence.md).
-
-## How to demonstrate GrihaGrid
-
-Use fictional details for a product demonstration. Do not enter a real street
-address, confidential client brief, credentials used elsewhere, or sensitive
-site information.
-
-### Quick public tour
-
-1. Open the [production home page](https://grihagrid.prakhargupta267.workers.dev/).
-2. Review the editorial product explanation and concept-stage boundary.
-3. Open the [sample plan](https://grihagrid.prakhargupta267.workers.dev/plans)
-   to see the shape of the planning output without creating an account.
-4. Open the
-   [sample comparison](https://grihagrid.prakhargupta267.workers.dev/compare/sample)
-   to see how two directions are evaluated.
-
-### Complete planning journey
-
-1. Select **Plan my home**.
-2. Enter fictional plot dimensions, city, facing, floor count, room programme,
-   parking, finish level, style, road width, accessibility, future-use, and
-   budget information.
-3. Review the indicative range and the assumptions behind it.
-4. Create a dedicated demo account, or log in, to save the exact brief. Email
-   verification is not required for the current free demo.
-5. Open **Project Home** and generate the Architecture Design Document.
-6. Review **Brief Check**. Change a project input to see **Change Study** before
-   accepting the new revision.
-7. Save two alternatives in **Decision Compare**, inspect their trade-offs, and
-   make an owner choice if appropriate.
-8. Create a **Family Alignment** room to demonstrate bounded structured input.
-   Treat its capability link as private and revoke it after the demo.
-9. Generate the optional **AI planning brief** after reading its consent and
-   data-use disclosure.
-10. Use **Professional Handoff** to select specific report sections and create
-    an expiring link. Treat the link as a bearer secret and revoke it after use.
-11. Visit **Account security** to review sessions, rotate the demo password,
-    export the account, or delete an ordinary demo account.
-
-Because email recovery is unavailable, retain the demo-account password. The
-app visibly refuses checkout, paid fulfillment, and uploads in this release.
-
-## Product principles and boundaries
-
-- **Decision utility over visual theatre:** every output should support a
-  decision or expose an assumption.
-- **Ranges over false precision:** cost, area, and schedule information includes
-  its basis, exclusions, and uncertainty.
-- **One brief, progressively enriched:** reports, revisions, comparisons, and
-  handoffs stay connected to the same project history.
-- **Automation explores; professionals validate:** software never becomes the
-  authority for safety, permissions, design, or construction.
-- **Private by default:** project routes are owner-scoped and public sharing is
-  deliberately selective, expiring, and revocable.
-- **India is product context:** supported choices include Indian cities, plot
-  units, family patterns, parking, climate, finish levels, and optional Vastu
-  preferences without promising compliance.
-
-GrihaGrid reports are concept-stage planning aids. They are not architectural,
-structural, geotechnical, quantity-surveying, tax, legal, municipal-sanction,
-contractor-quotation, or construction approval. A licensed local professional
-must validate every decision before design development or construction.
+A furnished concept is not a construction drawing, structural assessment,
+municipal approval, contractor quotation or professional endorsement. Materials
+and lighting are illustrative. Browser rendering and Blender share geometry and
+camera motion; they do not produce identical shaders or lighting.
 
 ## Architecture
 
 ```text
-Browser
-  ├─ React application and static assets
-  ├─ one optional same-browser anonymous draft
-  └─ strict /api/* requests
-          │
-          ▼
-Cloudflare Worker
-  ├─ authentication, session, CSRF, and abuse-control boundaries
-  ├─ estimator, project, revision, comparison, report, and sharing services
-  ├─ sanitized Gemini planning-brief service
-  └─ health, readiness, release metadata, and scheduled retention
-          │
-          ├───────────────┐
-          ▼               ▼
-         D1               KV
-  users/projects/      perimeter and
-  immutable history   abuse-control brakes
-
-External, gated boundaries: Gemini, email, R2, payments, and human reviewers
+React / Vite browser
+  ├─ SVG 2D editor and local drawing review
+  ├─ shared validated millimetre model + deterministic routes/tours
+  └─ lazy Three.js / React Three Fiber 3D workspace
+       │ same-origin API                  │ explicit local pairing
+       ▼                                  ▼
+Cloudflare Worker                    Loopback Node render service
+  auth, validation, source fences      fixed Blender Python modules
+  accepted revisions, AI intent        scene → cameras → render / resume
+       │                 │               │
+       ▼                 ▼               ▼
+      D1                KV          private local .blend / GLB / MP4
+  owned history     admission brakes
+       │
+       └─ optional server-side Gemini structured intent
 ```
 
-Production and staging use separate Workers, D1 databases, KV namespaces,
-secrets, and origins. D1 is the source of truth for application state. KV is an
-abuse-control dependency, never the ledger for money or entitlements. Private
-R2 storage, transactional email, and payments fail closed when their bindings
-or controls are absent.
+The Worker does not run Blender. There is no implemented Cloudflare Queue or
+cloud PDF/render pipeline. The render service has its own bounded local job
+queue. R2, payments and email remain separate gated boundaries.
 
-### Technology
-
-- React 19 and Vite 8
-- Cloudflare Workers with static assets
-- Cloudflare D1 for relational state and immutable history
-- Cloudflare KV for fail-closed admission and abuse controls
-- Google Gemini through a server-only, sanitized and bounded integration
-- Node's built-in test runner with real local workerd/D1 coverage
-- GitHub Actions, CodeQL, protected environments, encrypted backup evidence,
-  staged deployment, authenticated canaries, and exact-version monitoring
-
-See [Technical architecture](docs/architecture.md) and
-[Backend API](docs/backend-api.md) for the complete system and endpoint
-contracts.
+Read [technical architecture](docs/architecture.md),
+[spatial schema and camera contracts](docs/spatial-workspace.md) and
+[Blender operation](docs/spatial-blender.md). The full [documentation index](docs/README.md)
+separates current product guides, supporting contracts and dated evidence.
 
 ## Run locally
 
-### Prerequisites
+Use Node.js 22 and npm. The sample 2D/3D experience needs no paid service or AI key.
+For private project persistence, start the local Worker with an isolated database:
 
-- Node.js 22 (the CI runtime)
-- npm
-- Wrangler authentication only when interacting with a Cloudflare account;
-  local development does not require production credentials
-
-### Install and start
-
-```bash
-git clone https://github.com/prakhar267/grihagrid.git
-cd grihagrid
+```sh
 npm ci
-npx wrangler d1 migrations apply grihagrid-db --local
-```
-
-Run the local Worker API in one terminal:
-
-```bash
+npx wrangler d1 migrations apply DB --local --persist-to .wrangler/spatial-dev
 npx wrangler dev --local --port 8790 --ip 127.0.0.1 \
-  --var APP_ENV:test \
-  --var APP_ORIGIN:http://127.0.0.1:5173
+  --persist-to .wrangler/spatial-dev \
+  --var APP_ENV:test --var APP_ORIGIN:http://127.0.0.1:5277
 ```
 
-Run the Vite application in another terminal:
+In another terminal, start Vite:
 
-```bash
-npm run dev
+```sh
+npm run dev -- --host 127.0.0.1 --port 5277
 ```
 
-Vite proxies `/api` to the local Worker on port `8790`. Only the test
-environment accepts an HTTP loopback origin; staging and production require
-HTTPS.
+Open `http://127.0.0.1:5277/`. Vite proxies `/api` to the local Worker on port
+8790. Test mode permits an exact HTTP loopback origin; deployed environments
+require HTTPS. Use fictional accounts and project details for local verification.
 
-Do not place provider keys in source control. Gemini, Cloudflare, email,
-payment, handoff, canary, and backup credentials belong only in Worker secrets
-or protected GitHub environment secrets.
+For local rendering, install Blender 4.5 LTS and FFmpeg, then start:
 
-## Verification commands
+```sh
+npm run spatial:service
+```
 
-```bash
+The service binds `127.0.0.1:43127`. Pair through the app using the private code
+file identified by the service. Restarting the service requires pairing again.
+No pairing code or provider credential belongs in source, URLs, logs or public
+assets. See [render setup and recovery](docs/spatial-blender.md) for exact
+requirements, supported origins, local storage and output conventions.
+
+## Verification
+
+```sh
 npm ci
 npm run check
 npm run check:migrations
@@ -236,124 +156,53 @@ npm audit --audit-level=high
 git diff --check
 ```
 
-| Command | Purpose |
-| --- | --- |
-| `npm run check` | Production build, complete serialized test suite, and operations-config validation |
-| `npm run check:migrations` | Applies all migrations in order to a fresh temporary local D1 database |
-| `npm run check:worker` | Bundles the production Worker without deployment or remote data access |
-| `npm run check:worker:staging` | Bundles the isolated staging target without deployment |
-| `npm run smoke` | Runs the bounded public smoke contract against an explicitly supplied target |
-| `npm run smoke:auth` | Runs the cleanup-safe authenticated release canary |
-| `npm run load:smoke` | Runs bounded local load checks; remote execution requires explicit opt-in |
+`check` builds the app, runs the serialized repository tests and validates
+operations configuration. The Worker checks are dry runs, not deployments.
+Focused browser scripts are `scripts/check-spatial-*.mjs`; use their documented
+local fixtures and inspect the resulting evidence. Rendering is verified only
+when actual artifacts have been produced and inspected.
 
-## Release model
+[Spatial verification](docs/spatial-verification.md),
+[performance measurements](docs/spatial-performance.md) and
+[visual polish](docs/spatial-visual-polish.md) preserve dated results and their
+limits. Physical iPhone and spoken VoiceOver testing remain explicitly deferred;
+desktop touch emulation does not establish physical-phone performance. Earlier
+live Gemini and film results are historical evidence, not fresh executions in
+this documentation/navigation cleanup.
 
-Every change is developed on a branch and merged through a pull request.
-Required CI and JavaScript/TypeScript CodeQL checks must pass on the exact PR
-head. After squash merge, the protected deployment workflow authorizes the
-exact `main` SHA, rebuilds it on a fresh runner, and then:
+## Security and retained workflows
 
-1. inspects migrations and creates encrypted recovery evidence when required;
-2. applies forward-only migrations and deploys to isolated staging;
-3. runs readiness latency checks, public smoke, and an authenticated canary;
-4. promotes the same reviewed SHA to production;
-5. repeats the smoke/canary gates and verifies zero synthetic residue; and
-6. observes the exact production Worker version for 30 minutes with bounded
-   public probes and Worker-tail aggregates.
+Private houses use the existing ownership, same-origin, CSRF, strict-schema,
+idempotency and optimistic-concurrency boundaries. Accepted model revisions do
+not mutate older reports or purchased snapshots. Tours and viewpoints retain
+their own revisions and source references. Account export/deletion includes
+spatial history under the existing retention and safety rules.
 
-Documentation-only changes are classified and skip runtime deployment.
-Production D1 backups are encrypted with AES-256-GCM and verified through an
-isolated restore rehearsal. Operational failures route to bounded,
-owner-assigned GitHub incidents.
+The Gemini direction boundary receives validated aliases and safe intent, not
+raw drawings, account details or arbitrary project prose. Uploaded documents
+are decoded locally. Renderer pairing is a separate, temporary capability for
+this computer; it does not grant another user's cloud-project access.
 
-See [Operations runbook](docs/operations-runbook.md),
-[Readiness and performance](docs/readiness-performance.md), and
-[Test plan](docs/test-plan.md).
-
-## Security and privacy highlights
-
-- Owner-scoped project, report, comparison, file, review, and account queries.
-- Secure HTTP-only sessions, same-origin write checks, and CSRF validation.
-- Generic authentication failures, PBKDF2 password records, per-IP KV limits,
-  and per-account D1 login fencing.
-- Strict request schemas, bounded streaming bodies, idempotency keys, and
-  optimistic concurrency for mutable workflows.
-- Immutable project revisions and report versions; structured feedback never
-  changes generated report bytes.
-- Share and handoff capabilities are high-entropy, digest-only at rest,
-  expiring, revocable, non-indexed, and excluded from operational logs.
-- Gemini receives allowlisted planning facts—not account details, exact
-  addresses, uploaded files, or payment data.
-- Synthetic release canaries delete only their exact test records and prove
-  cleanup before a release succeeds.
-- Provider credentials are never stored in the repository or exposed to
-  untrusted build steps.
-
-Security architecture and known residual risks are documented in
-[Account security](docs/account-security.md),
-[Account lifecycle](docs/account-lifecycle.md), and
-[Quality evidence](docs/quality-evidence.md).
-
-## Documentation map
-
-| Area | Document |
-| --- | --- |
-| Product strategy, users, scope, metrics, and roadmap | [Product blueprint](docs/product-blueprint.md) |
-| Technical system and security architecture | [Architecture](docs/architecture.md) |
-| API contracts and external dependencies | [Backend API](docs/backend-api.md) |
-| Public estimate calculation and sharing | [Public estimator](docs/public-estimator.md) |
-| Anonymous browser draft and auth handoff | [Anonymous brief resume](docs/anonymous-brief-resume.md) |
-| Project decision workspace | [Project Home](docs/project-home.md) |
-| Completeness checks, change preview, and revisions | [Brief Check](docs/brief-check.md) |
-| Two-option decision workflow | [Decision Compare](docs/decision-compare.md) |
-| Structured private family review | [Family Alignment](docs/family-alignment.md) |
-| Deterministic report and professional registers | [Architect review pack](docs/architect-review-pack.md) |
-| Optional advisory AI explanation | [Gemini AI](docs/gemini-ai.md) |
-| Immutable report feedback | [Report feedback](docs/report-feedback.md) |
-| Selective professional sharing | [Professional Handoff](docs/report-handoff.md) |
-| Controlled reviewer workflow | [Professional review](docs/professional-review.md) |
-| Authentication, sessions, and password rotation | [Account security](docs/account-security.md) |
-| Verification, recovery, export, and deletion | [Account lifecycle](docs/account-lifecycle.md) |
-| Private static-image implementation and activation gate | [Private uploads](docs/private-uploads.md) |
-| Payment state machine and disabled launch controls | [Payments](docs/payments.md) |
-| Release evidence and current go/no-go decision | [Launch readiness](docs/launch-readiness.md) |
-| Human and automated quality evidence | [Quality evidence](docs/quality-evidence.md) |
-| Deployment, monitoring, backup, incident, and rollback | [Operations runbook](docs/operations-runbook.md) |
+Read [backend contracts](docs/backend-api.md), [account security](docs/account-security.md),
+[account lifecycle](docs/account-lifecycle.md) and [operations](docs/operations-runbook.md)
+before changing those boundaries. Existing release, backup and recovery records
+remain intact. Operational gaps must be read from their dated evidence, not
+inferred as solved from a passing local build.
 
 ## Repository structure
 
 ```text
-src/                  React application and design system
-worker/               Cloudflare Worker API
-migrations/           Forward-only D1 migrations
-scripts/              Build, smoke, canary, backup, and release tooling
-tests/                 Unit, integration, browser-contract, workerd, and D1 tests
-docs/                  Product, architecture, API, security, and operations records
-.github/workflows/     CI, CodeQL-gated deployment, smoke, and backup automation
-wrangler.toml          Production and isolated staging configuration
+src/spatial/           shared model, SVG editor, Three.js scene and camera UI
+src/                   application shell, account and retained planning/report flows
+scripts/spatial/       local renderer, job service and reusable Blender Python
+worker/                same-origin Cloudflare API
+migrations/            forward-only D1 schema and immutable-history constraints
+tests/                 geometry, API, ownership, recovery and browser contracts
+docs/                  current product guides, supporting contracts and evidence
+scripts/               build, local QA, smoke, backup and release tooling
+ops/backup-vault/      prepared manual private-receiver template; execution gated
+.github/workflows/     existing CI, protected release, smoke and backup automation
 ```
 
-## Current launch boundary
-
-The repository-controlled free demo is released and monitored. Broad public or
-commercial promotion still requires accountable human approval for legal copy,
-keyboard and assistive-technology testing, independent security/privacy review,
-representative practitioner review, staffed support ownership, independent
-two-region monitoring, and a governed remote restore drill.
-
-Those approvals must not be inferred from automated checks. Paid checkout,
-fulfillment, private uploads, transactional email, and custom-domain activation
-remain separately gated and visibly unavailable.
-
-## Spatial studio (local implementation)
-
-The spatial workspace adds a furnished demonstration at `/explore` and an
-owner-scoped studio at `/projects/:id/spatial`: browser-local drawing
-recognition and OCR, a complete 2D layout editor, shared polygon/multi-floor
-3D geometry with stairs, room exploration and camera tours, private camera
-libraries, and a paired local Blender render service. Spatial Change Study
-and immutable revisions protect accepted work. Gemini direction is optional; local tour creation works without it.
-This implementation has not been deployed. Existing launch controls remain
-unchanged. See [spatial architecture and scope](docs/spatial-workspace.md),
-[Blender rendering](docs/spatial-blender.md), and
-[verification evidence](docs/spatial-verification.md).
+Generated render outputs, private local jobs, backups, credentials and QA captures
+are not product source and are not cleanup targets for this change.

@@ -5,6 +5,8 @@ dist/
 *.log
 .DS_Store
 qa-artifacts/
+# Generated spatial scenes and films stay local; preserve them outside commits.
+output/
 .artifacts/
 tmp/
 public/spatial-ocr/
