@@ -3,14 +3,26 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { chromium } from '@playwright/test';
 
 const origin = process.env.SPATIAL_UI_ORIGIN || 'http://127.0.0.1:5277';
+assert.ok(['127.0.0.1','localhost','[::1]'].includes(new URL(origin).hostname),'Spatial browser verification requires a local origin');
+const entryPath = process.env.SPATIAL_UI_PATH || '/';
+assert.ok(['/', '/explore'].includes(entryPath), 'Use the studio homepage or its retained alias');
 const output = new URL('../qa-artifacts/spatial-ui/', import.meta.url);
 await mkdir(output, {recursive: true});
 const browser = await chromium.launch({channel:'chrome',headless:true});
-const findings = {origin,device:'Chrome on local host; mobile viewport emulation',checks:[],errors:[]};
+const findings = {origin,entryPath,device:'Chrome on local host; CSS viewport emulation, not a physical device or browser zoom test',renderer:'Only the optional loopback health probe is mocked; this UI test neither pairs nor renders a film.',checks:[],errors:[],consoleErrors:[],failedRequests:[],httpErrors:[]};
+function observe(page) {
+  page.on('pageerror', error => findings.errors.push(error.message));
+  page.on('console', message => { if (message.type() === 'error') findings.consoleErrors.push(message.text().slice(0,500)); });
+  page.on('requestfailed', request => findings.failedRequests.push({pathname:new URL(request.url()).pathname,error:request.failure()?.errorText}));
+  page.on('response', response => { if (response.status() >= 400) findings.httpErrors.push({pathname:new URL(response.url()).pathname,status:response.status()}); });
+}
 try {
   const page = await browser.newPage({viewport:{width:1440,height:1080}});
-  page.on('pageerror', error => findings.errors.push(error.message));
-  await page.goto(origin + '/explore');
+  observe(page);
+  // Render availability is external to this deterministic UI journey. Service,
+  // pairing and actual Blender jobs have their own integration coverage.
+  await page.route('http://127.0.0.1:43127/health', route => route.fulfill({json:{service:'grihagrid-local-renderer',version:1}}));
+  await page.goto(origin + entryPath);
   await page.getByRole('heading',{name:'The Courtyard House.'}).waitFor();
   await page.locator('canvas').waitFor();
   await page.waitForTimeout(1000);
@@ -23,7 +35,9 @@ try {
   assert.equal(await studyRoom.evaluate(element=>document.activeElement===element),true);
   await page.getByRole('button',{name:'Reset overview',exact:true}).click();
   await page.screenshot({path:new URL('desktop.png',output).pathname,fullPage:true});
-  findings.checks.push('Desktop 1440px: live scene, correct title and no overflow');
+  findings.checks.push('Studio homepage at desktop 1440px: live scene, correct title, keyboard room focus and no overflow');
+  await page.getByRole('button',{name:'My houses',exact:true}).waitFor();
+  await page.getByRole('button',{name:'New house',exact:true}).waitFor();
   await page.getByRole('button',{name:'2D Plan',exact:true}).click();
   await page.getByRole('button',{name:'Study a two-floor example',exact:false}).click();
   await page.getByLabel('Active floor',{exact:true}).selectOption('upper');
@@ -81,9 +95,10 @@ try {
     assert.ok(['127.0.0.1','localhost','[::1]'].includes(new URL(origin).hostname),'Synthetic account verification requires a local origin');
     const context = await browser.newContext();
     const privatePage = await context.newPage({viewport:{width:1440,height:1080}});
+    observe(privatePage);
     let projectId;
     try {
-      await privatePage.goto(origin + '/explore');
+      await privatePage.goto(origin + entryPath);
       projectId = await privatePage.evaluate(async () => {
         const post = async (path,body,csrf) => {
           const response = await fetch(path,{method:'POST',headers:{'content-type':'application/json','idempotency-key':crypto.randomUUID(),...(csrf?{'x-csrf-token':csrf}:{})},body:JSON.stringify(body)});
@@ -136,15 +151,36 @@ try {
   await page.setViewportSize({width:720,height:540});
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
   findings.checks.push('Reduced motion and 200%-equivalent CSS viewport reflow');
+  await page.getByRole('button',{name:'2D Plan',exact:true}).click();
+  await page.emulateMedia({media:'print'});
+  await page.getByRole('heading',{name:'The Courtyard House.'}).waitFor();
+  await page.getByRole('group',{name:'Editable building plan'}).waitFor();
+  assert.equal(await page.locator('.sp-topbar').isVisible(),false);
+  assert.equal(await page.locator('.sp-tabbar').isVisible(),false);
+  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+  await page.screenshot({path:new URL('print-plan.png',output).pathname,fullPage:true});
+  await page.pdf({path:new URL('print-plan.pdf',output).pathname,preferCSSPageSize:true,printBackground:true});
+  findings.checks.push('Print media preserves the house heading and plan while hiding studio navigation; print screenshot and PDF saved');
+  await page.emulateMedia({media:'screen'});
+  const alias = await browser.newPage({viewport:{width:390,height:844}});
+  observe(alias);
+  const aliasPath = entryPath === '/' ? '/explore' : '/';
+  await alias.goto(origin + aliasPath);
+  await alias.getByRole('heading',{name:'The Courtyard House.'}).waitFor();
+  await alias.locator('canvas').waitFor();
+  assert.equal(await alias.title(),'Spatial studio — GrihaGrid');
+  assert.equal(await alias.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
+  findings.checks.push('Both / and the retained /explore alias open the same usable studio at 390px');
+  await alias.close();
   const fallback = await browser.newPage();
-  fallback.on('pageerror', error => findings.errors.push(error.message));
+  observe(fallback);
   await fallback.addInitScript(() => {
     const getContext = HTMLCanvasElement.prototype.getContext;
     HTMLCanvasElement.prototype.getContext = function(type,...args) {
       return /webgl/i.test(type) ? null : getContext.call(this,type,...args);
     };
   });
-  await fallback.goto(origin + '/explore');
+  await fallback.goto(origin + entryPath);
   await fallback.getByText('3D graphics are unavailable.',{exact:true}).waitFor();
   assert.equal(await fallback.getByRole('button',{name:'Play tour',exact:true}).isDisabled(),true);
   await fallback.getByRole('button',{name:'2D Plan',exact:true}).click();
@@ -153,6 +189,9 @@ try {
   await fallback.close();
   findings.checks.push('Missing WebGL cleanly falls back to a usable 2D plan without uncaught errors');
   assert.deepEqual(findings.errors,[]);
+  assert.deepEqual(findings.consoleErrors,[],'No browser console errors');
+  assert.deepEqual(findings.failedRequests,[],'No failed browser requests');
+  assert.deepEqual(findings.httpErrors,[],'No HTTP error responses');
   await writeFile(new URL('verification.json',output),JSON.stringify(findings,null,2)+'\n');
   console.log(JSON.stringify(findings,null,2));
 } finally { await browser.close(); }

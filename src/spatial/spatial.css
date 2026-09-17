@@ -39,3 +39,24 @@
 .sp-camera-entry input{width:145px;min-width:0;background:var(--paper-pale);border:1px solid var(--rule);padding:10px;font:inherit;font-size:12px}
 .sp-camera-entry button{font-size:11px;min-height:38px;white-space:nowrap}
 @media(max-width:760px){.sp-floor-controls{flex-direction:row;flex-wrap:wrap;margin:0 0 12px}.sp-floor-controls>label:first-child{flex:1;min-width:150px}.sp-floor-controls select{max-width:170px}.sp-camera-entry{width:100%}.sp-camera-entry input{flex:1;width:100px}.sp-plan-actions{gap:8px}.sp-plan-actions>button{width:100%}}
+
+/* The studio is the app entrance; all primary destinations remain reachable. */
+.sp-topbar { height: auto; min-height: 72px; flex-wrap: wrap; padding-block: 10px; gap: 12px 26px; }
+.sp-primary-nav { margin-left: auto; display: flex; align-items: center; flex-wrap: wrap; gap: 8px 20px; }
+.sp-primary-nav button { min-height: 44px; }
+.sp-primary-nav .sp-new-house { background: var(--copper); color: var(--paper-pale); padding: 0 16px; }
+.sp-heading > div:first-child { min-width: 0; }
+.sp-heading h1 { overflow-wrap: anywhere; }
+@media (max-width: 760px) {
+  .sp-topbar { padding-inline: 5%; gap: 4px 16px; }
+  .sp-primary-nav { gap: 4px 14px; justify-content: flex-start; }
+  .sp-primary-nav .sp-new-house { padding-inline: 12px; }
+  .sp-primary-nav .sp-guide-link { flex-basis: 100%; justify-content: flex-end; min-height: 36px; }
+}
+@media (max-width: 450px) {
+  .sp-primary-nav { width: 100%; margin-left: 0; }
+  .sp-primary-nav .sp-guide-link { flex-basis: auto; margin-left: auto; min-height: 44px; }
+}
+@media print { .sp-topbar { display: none !important; } }
+
+.sp-first-model-note { margin: 0 4% 24px; padding: 14px 18px; border-left: 2px solid var(--copper); background: var(--paper-deep); font-size: 12px; line-height: 1.6; }

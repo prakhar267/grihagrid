@@ -6,19 +6,18 @@ const app = await readFile(new URL("../src/App.jsx", import.meta.url), "utf8");
 const styles = await readFile(new URL("../src/styles.css", import.meta.url), "utf8");
 
 test("mobile navigation keeps account actions reachable and restores menu focus", () => {
-  const header = app.slice(app.indexOf("function Header("), app.indexOf("function Hero("));
+  const header = app.slice(app.indexOf("function Header("), app.indexOf("function WorkspaceAccount("));
   assert.match(header, /const menuButtonRef = useRef\(null\)/u);
   assert.match(header, /menuButtonRef\.current\?\.focus\(\{ preventScroll: true \}\)/u);
   assert.match(header, /<div className="main-nav-mobile-actions">/u);
-  assert.match(header, /\{user \? "My projects" : "Log in"\}/u);
-  assert.match(header, /Plan my home/u);
+  assert.match(header, /\{user \? "My houses" : "Log in"\}/u);
+  assert.match(header, /New house/u);
   assert.match(styles, /\.main-nav-mobile-actions \{\s*display: none;/u);
   assert.match(styles, /@media \(max-width: 900px\)[\s\S]*?\.main-nav-mobile-actions \{[\s\S]*?display: grid;[\s\S]*?grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/u);
   assert.match(styles, /@media \(max-width: 600px\)[\s\S]*?\.main-nav-mobile-actions \{\s*grid-template-columns: 1fr;/u);
 });
 
-test("hero image, estimator range, and route focus remain stable across viewport sizes", () => {
-  assert.match(styles, /\.monograph-visual > img \{[\s\S]*?position: absolute;[\s\S]*?inset: 0;[\s\S]*?height: 100%;[\s\S]*?object-fit: cover;/u);
+test("retained estimator range and route focus remain stable across viewport sizes", () => {
   assert.match(styles, /\.instrument-output \{[\s\S]*?grid-template-columns: max-content minmax\(0, 1fr\)/u);
   assert.match(styles, /\.instrument-output strong \{[\s\S]*?white-space: nowrap;/u);
   assert.match(styles, /main h1\[tabindex="-1"\]:focus \{\s*outline: none;/u);
@@ -26,9 +25,12 @@ test("hero image, estimator range, and route focus remain stable across viewport
   assert.match(styles, /@media print/u);
 });
 
-test("the featured pricing card cannot outgrow the tablet page gutter", () => {
-  assert.match(styles, /@media \(max-width: 900px\)[\s\S]*?\.plan-table > article\.featured \{[\s\S]*?margin-inline: max\(-2rem, -4vw\);[\s\S]*?padding-inline: min\(2rem, 4vw\);/u);
-  assert.match(styles, /@media \(max-width: 600px\)[\s\S]*?\.plan-table > article,[\s\S]*?\.plan-table > article\.featured \{[\s\S]*?margin-inline: -0\.75rem;[\s\S]*?padding: 2rem 0\.75rem;/u);
+test("the house studio replaces retired homepage and pricing marketing", () => {
+  assert.doesNotMatch(app, /function (HomePage|PricingPage|FaqSection)\(/u);
+  assert.match(app, /if\(path==='\/'\|\|path==='\/explore'\|\|spatialMatch\)/u);
+  assert.match(app, /if\(path==='\/houses\/new'\)return <NewHouse/u);
+  assert.match(app, /Open studio <ArrowRight/u);
+  assert.doesNotMatch(styles, /\.(monograph-hero|pricing-lines|plan-table|faq-editorial)/u);
 });
 
 test("the tablet workspace track can shrink below its navigation content width", () => {

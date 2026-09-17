@@ -10,7 +10,7 @@ When implementing from a selected generated mock, treat that image as the source
 
 The selected visual direction is **Architectural Monograph**. Keep the experience editorial, calm, and materially grounded: warm ivory paper (`#f3efe6`), near-black ink (`#181511`), restrained copper actions (`#a7532f`), Cormorant Garamond display type, DM Sans interface type, thin rules, generous whitespace, and photography that feels like a premium Indian architecture journal. Avoid gradients, glossy SaaS card walls, pill-heavy controls, decorative glassmorphism, and playful illustration. Product screens should feel like working pages from the same architectural book, not a separate admin template.
 
-The product name is **GrihaGrid**. The core promise is: “Know what fits. Know what it costs.” It is an India-first concept-planning and professional-handoff product, never a substitute for licensed architectural, structural, geotechnical, or municipal work.
+The product name is **GrihaGrid**. The primary experience is an editable house studio: drawing → reviewed 2D plan → persistent 3D environment → camera tour → Blender render/export. Open the studio at `/`, with private houses at `/dashboard` and creation at `/houses/new`. Preserve the architectural visual direction and the existing planning, estimation, reports, Change Study, ownership, revisions, comparison and sharing capabilities as supporting tools. Concept designs never substitute for licensed architectural, structural, geotechnical, or municipal work.
 
 Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts/prepare-sites-build.mjs`, and `tests/sites-worker.test.mjs` intact so the same local prototype can be handed to Sites. Before a Sites handoff, run `npm run build` and `npm run test:sites`; the build must leave `dist/client/index.html`, `dist/server/index.js`, and `dist/.openai/hosting.json`.
 
@@ -21,6 +21,8 @@ For this spatial-studio delivery, the user explicitly deferred physical iPhone a
 On 15 September 2026 the user subsequently authorized the remaining drawing/visual polish and production release, including review, merge, deployment and production migrations. This supersedes the original deployment exclusion for this follow-up. Follow the existing protected staging-first release, backup and monitoring procedures; keep payments and private uploads closed, and keep iPhone/VoiceOver testing deferred.
 
 On 16 September 2026 the user requested production readiness except custom-domain and payment work. Complete and verify the free product's reliability, recovery, security and operating controls through the existing protected release process. Domain/payment activation is outside this cut. Preserve the previous iPhone/VoiceOver deferrals, keep unavailable capabilities honest, and distinguish tested engineering readiness from external service setup or human approval.
+
+On 17 September 2026 the user requested removing obsolete product screens and cleaning the repository to match the spatial goal. Remove the old primary cost-estimator/pricing marketing funnel and dead code, not customer data or supporting planning functionality. The newly attached brief explicitly limits this change to local implementation, verification and reviewable changes: **deployment and paid infrastructure are outside this task**. For this cleanup, prepare a draft PR and check its exact head; do not merge or trigger a release. Preserve films, scenes, backups, historical evidence, activation controls and prior device-test deferrals.
 
 ## Product and platform invariants
 

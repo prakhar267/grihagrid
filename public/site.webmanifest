@@ -1,7 +1,7 @@
 {
   "name": "GrihaGrid",
   "short_name": "GrihaGrid",
-  "description": "India-first home feasibility and construction-budget planning.",
+  "description": "Editable house plans, interactive 3D spaces and camera tours.",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#f3efe6",
