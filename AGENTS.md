@@ -26,6 +26,8 @@ On 17 September 2026 the user requested removing obsolete product screens and cl
 
 On 21 September 2026 the user approved the latest local appearance and requested scenario-driven coverage for homeowners, homebuyers, architects and builders: locations, plot conditions, room programmes, floors, Vastu and everyday household needs. Preserve the visual direction. Requirements must change the actual study or produce an explicit supported manual path; never claim universal city-rule, structural or professional certification. Continue the local implementation, verification and draft-review scope.
 
+In the same follow-up, the user reported that adding a second or later floor left an unusable-looking blank map. Every floor needs visible starting layouts, a copy-floor path, manual room addition and explicit room edit/remove controls. Keep floor changes independent and undoable; reference outlines must be labelled, and unsupported stair placements must explain the next step.
+
 ## Product and platform invariants
 
 Treat `README.md`, `package.json`, `wrangler.toml`, `worker/index.js`, `src/App.jsx`, `src/styles.css`, and the relevant files in `docs/` as the canonical implementation and operating context. Before architectural changes, inspect the architecture, backend API, launch-readiness, operations, feature, and test-plan documentation. Inspect the configured live product and existing styles before material UI changes; evolve the current system rather than redesigning it.

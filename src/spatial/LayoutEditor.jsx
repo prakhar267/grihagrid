@@ -3,6 +3,8 @@ import { spatialUUID } from './ids.js'
 import { pointInPolygon, validateBuilding } from './model.js'
 import { toV2, stairPolygon, doorLeafPrimitive } from './model-v2.js'
 import { applySceneEdit } from './editor-ops.js'
+import { clearFloor } from './floor-plans.js'
+import FloorTools from './FloorTools.jsx'
 import './layout-editor.css'
 
 const id = prefix => `${prefix}-${spatialUUID().slice(0, 8)}`
@@ -30,22 +32,33 @@ export default function LayoutEditor({ model, onChange, onStatus, selectedRoomId
   const [tool, setTool] = useState('select'), [selection, setSelection] = useState(selectedRoomId ? { type: 'room', id: selectedRoomId } : null), [points, setPoints] = useState([])
   const [preview, setPreview] = useState(null), [error, setError] = useState(''), [history, setHistory] = useState([]), [future, setFuture] = useState([]), [snap, setSnap] = useState(100)
   const [furnitureKind, setFurnitureKind] = useState('chair'), [stairTarget, setStairTarget] = useState(''), [view, setView] = useState(null)
-  const svg = useRef(null), drag = useRef(null), modelIdentity = useRef(model.id)
+  const [removingFloor, setRemovingFloor] = useState(false)
+  const removalHeading = useRef(null), removeFloorButton = useRef(null)
+  const svg = useRef(null), drag = useRef(null), modelIdentity = useRef(model.id), editor = useRef(null), inspector = useRef(null), errorMessage = useRef(null), pendingTool = useRef(null)
   const allPoints = scene.rooms.flatMap(room => room.polygon), extents = { x0: Math.min(...allPoints.map(p => p[0])) - 1800, y0: Math.min(...allPoints.map(p => p[1])) - 1800, x1: Math.max(...allPoints.map(p => p[0])) + 1800, y1: Math.max(...allPoints.map(p => p[1])) + 1800 }
   const fit = () => [extents.x0, extents.y0, extents.x1 - extents.x0, extents.y1 - extents.y0]
   const box = view || fit(), display = preview || scene
   useEffect(() => { if (modelIdentity.current !== model.id) { modelIdentity.current = model.id; setHistory([]); setFuture([]); setSelection(null); setView(null); setPoints([]) } }, [model.id])
-  useEffect(() => { if (selectedRoomId && scene.rooms.some(r => r.id === selectedRoomId)) setSelection({ type: 'room', id: selectedRoomId }) }, [selectedRoomId])
-  function chooseFloor(next) { setLocalFloor(next); onActiveFloorChange?.(next); setSelection(null); setPoints([]); setPreview(null); setView(null); setError('') }
+  useEffect(() => { setTool(pendingTool.current?.floorId === floorId ? pendingTool.current.tool : 'select'); pendingTool.current = null; setPoints([]); setPreview(null); setView(null); setError(''); setRemovingFloor(false); drag.current = null }, [floorId])
+  useEffect(() => { setSelection(scene.rooms.some(r => r.id === selectedRoomId && r.floorId === floorId) ? { type: 'room', id: selectedRoomId } : null) }, [selectedRoomId, floorId])
+  function chooseFloor(next) { setLocalFloor(next); onActiveFloorChange?.(next); setTool('select'); setSelection(null); setPoints([]); setPreview(null); setView(null); setError(''); drag.current = null }
+  function chooseTool(next) { setTool(next); setPoints([]); setError(''); if (next === 'room') window.requestAnimationFrame(() => svg.current?.focus()) }
+  const focusFloor = () => window.requestAnimationFrame(() => editor.current?.querySelector('.le-floor-intro h3')?.focus())
+  function inspectRoom(roomId) { select('room', roomId); window.requestAnimationFrame(() => inspector.current?.focus()) }
   const status = text => { onStatus?.(text) }
   function commit(operation, message = 'Layout change previewed. Review Change Study before accepting the revision.') {
     if (disabled) return false
     try {
-      const operations = Array.isArray(operation) ? operation : [operation]
       let next = scene
-      for (const item of operations) next = applySceneEdit(next, item)
+      if (typeof operation === 'function') {
+        const result = operation(scene)
+        next = result?.type ? applySceneEdit(scene, result) : result
+        const validation = validateBuilding(next)
+        if (!validation.valid) throw new Error(validation.errors.slice(0, 3).join(' '))
+      } else for (const item of Array.isArray(operation) ? operation : [operation]) next = applySceneEdit(next, item)
+      if (selection?.type === 'room' && !next.rooms.some(r => r.id === selection.id)) setSelection(null)
       setHistory(items => [...items.slice(-49), scene]); setFuture([]); setPreview(null); setError(''); onChange(next); status(message); return next
-    } catch (e) { setPreview(null); setError(e.message); return false }
+    } catch (e) { setPreview(null); setError(e.message.replace(/Room polygons overlap: [^.]+\./g, 'Rooms cannot overlap on the same floor. Adjust the room position or dimensions.')); window.requestAnimationFrame(() => errorMessage.current?.focus()); return false }
   }
   function restore(direction) {
     if (disabled) return
@@ -62,7 +75,7 @@ export default function LayoutEditor({ model, onChange, onStatus, selectedRoomId
   }
   function point(event, matrix) { const p = svg.current.createSVGPoint(); p.x = event.clientX; p.y = event.clientY; const result = p.matrixTransform(matrix || svg.current.getScreenCTM().inverse()); const grid = Number(snap) || 1; return [Math.round(result.x / grid) * grid, Math.round(result.y / grid) * grid] }
   const roomAt = (p, atFloor = floorId) => scene.rooms.find(room => room.floorId === atFloor && pointInPolygon(p, room.polygon))
-  const selectedRoom = scene.rooms.find(room => selection?.type === 'room' && room.id === selection.id)
+  const selectedRoom = scene.rooms.find(room => selection?.type === 'room' && room.id === selection.id && room.floorId === floorId)
   const selectedWall = scene.walls.find(wall => selection?.type === 'wall' && wall.id === selection.id)
   const selectedFurniture = scene.furniture.find(item => selection?.type === 'furniture' && item.id === selection.id)
   const openingWall = scene.walls.find(wall => wall.id === selection?.wallId), selectedOpening = openingWall?.openings.find(opening => selection?.type === 'opening' && opening.id === selection.id)
@@ -161,7 +174,7 @@ export default function LayoutEditor({ model, onChange, onStatus, selectedRoomId
   }
   function key(event) {
     if (disabled) return
-    if (event.target.closest('input,textarea,select,[contenteditable="true"]')) return
+    if (event.target.closest('input,textarea,select,button,a,summary,[contenteditable="true"]')) return
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') { event.preventDefault(); restore(event.shiftKey ? 'redo' : 'undo') }
     if (event.key === 'Escape') { setPoints([]); setTool('select'); setPreview(null) }
     if (event.key === 'Enter' && tool === 'room') { event.preventDefault(); finishRoom() }
@@ -172,21 +185,23 @@ export default function LayoutEditor({ model, onChange, onStatus, selectedRoomId
   function addFloor() {
     try {
       const last = [...scene.floors].sort((a, b) => b.elevation - a.elevation)[0], next = { id: id('floor'), name: `Floor ${scene.floors.length + 1}`, elevation: last.elevation + last.height + 200, height: 3000 }
-      if (commit({ type: 'addFloor', floor: next })) chooseFloor(next.id)
+      if (commit({ type: 'addFloor', floor: next }, `${next.name} added. Choose a starting layout, copy a floor or add your first room.`)) { chooseFloor(next.id); focusFloor() }
     } catch (e) { setError(e.message) }
   }
   function removeFloor() {
-    const roomIds = scene.rooms.filter(r => r.floorId === floorId).map(r => r.id), stairIds = scene.stairs.filter(s => [s.fromFloorId, s.toFloorId].includes(floorId)).map(s => s.id)
-    if (commit([...stairIds.map(stairId => ({ type: 'removeStair', stairId })), ...roomIds.map(roomId => ({ type: 'removeRoom', roomId })), { type: 'removeFloor', floorId }])) chooseFloor(scene.floors.find(f => f.id !== floorId)?.id)
+    if (commit(current => clearFloor(current, floorId, true), `${floor.name} deleted. Other floors keep their rooms; Undo restores the removed floor.`)) { setRemovingFloor(false); chooseFloor([...scene.floors].filter(f => f.elevation < floor.elevation).sort((a, b) => b.elevation - a.elevation)[0]?.id || scene.floors[0].id); focusFloor() }
   }
   const openingView = (wall, opening) => { const dx = wall.end[0] - wall.start[0], dy = wall.end[1] - wall.start[1], length = Math.hypot(dx, dy); return [[wall.start[0] + dx * opening.offset / length, wall.start[1] + dy * opening.offset / length], [wall.start[0] + dx * (opening.offset + opening.width) / length, wall.start[1] + dy * (opening.offset + opening.width) / length]] }
   const updateOpening = patch => { const opening = { ...selectedOpening, ...patch }; if (opening.kind === 'window') { delete opening.hinge; delete opening.swing } return commit({ type: 'upsertOpening', wallId: openingWall.id, opening }) }
   const updateFurniture = patch => commit({ type: 'upsertFurniture', furniture: { ...selectedFurniture, ...patch } })
   const updateStair = patch => commit({ type: 'upsertStair', stair: { ...selectedStair, ...patch } })
-  return <section className="layout-editor" aria-label="Full layout editor" onKeyDown={key}><fieldset className="le-controls" disabled={disabled}>
+  return <section ref={editor} className="layout-editor" aria-label="Full layout editor" onKeyDown={key}><fieldset className="le-controls" disabled={disabled}>
     <div className="le-heading"><div><span className="sp-eyebrow">EDIT THE SPATIAL MODEL</span><h2>Every corner is yours.</h2><p>Draw rooms, adjust shared wall vertices, place openings and furniture, and connect floors with real stairs.</p></div><div className="le-history"><button type="button" disabled={!history.length} onClick={() => restore('undo')}>Undo</button><button type="button" disabled={!future.length} onClick={() => restore('redo')}>Redo</button></div></div>
-    <div className="le-floorbar"><label>Editing floor<select aria-label="Editing floor" value={floorId} onChange={event => chooseFloor(event.target.value)}>{scene.floors.map(f => <option key={f.id} value={f.id}>{f.name} · {metres(f.elevation)} m</option>)}</select></label><button type="button" disabled={scene.floors.length >= 4} onClick={addFloor}>Add floor</button><button type="button" disabled={scene.floors.length < 2 || floor.elevation === 0} onClick={removeFloor}>Delete floor and contents</button><label>Snap<select aria-label="Layout snap grid" value={snap} onChange={event => setSnap(Number(event.target.value))}><option value="1">Free</option><option value="50">50 mm</option><option value="100">100 mm</option><option value="250">250 mm</option><option value="500">500 mm</option></select></label></div>
-    <div className="le-toolbar" role="group" aria-label="Layout drawing tools">{[['select', 'Select / move'], ['pan', 'Pan'], ['room', 'Draw room'], ['wall', 'Wall'], ['door', 'Door'], ['window', 'Window'], ['furniture', 'Furniture'], ['stairs', 'Stairs']].map(([value, label]) => <button key={value} type="button" aria-pressed={tool === value} onClick={() => { setTool(value); setPoints([]); setError('') }}>{label}</button>)}<button type="button" disabled={tool !== 'room' || points.length < 3} onClick={finishRoom}>Close room</button><button type="button" disabled={!selection} onClick={removeSelection}>Delete selection</button></div>
+    <div className="le-floorbar"><label>Editing floor<select aria-label="Editing floor" value={floorId} onChange={event => chooseFloor(event.target.value)}>{scene.floors.map(f => <option key={f.id} value={f.id}>{f.name} · {metres(f.elevation)} m</option>)}</select></label><button type="button" disabled={scene.floors.length >= 4} onClick={addFloor}>Add floor</button><button ref={removeFloorButton} type="button" disabled={scene.floors.length < 2 || floor.elevation === 0} onClick={() => { setRemovingFloor(true); window.requestAnimationFrame(() => removalHeading.current?.focus()) }}>Delete floor and contents</button><label>Snap<select aria-label="Layout snap grid" value={snap} onChange={event => setSnap(Number(event.target.value))}><option value="1">Free</option><option value="50">50 mm</option><option value="100">100 mm</option><option value="250">250 mm</option><option value="500">500 mm</option></select></label></div>
+    {removingFloor && <section className="le-floor-delete" aria-label="Confirm floor deletion"><h3 ref={removalHeading} tabIndex={-1}>Delete {floor.name}?</h3><p>Remove this floor, its {rooms.length} {rooms.length === 1 ? 'room' : 'rooms'}, walls, furniture and connected stairs. Other floors keep their rooms. Undo can restore this edit.</p><div className="le-floor-actions"><button type="button" onClick={removeFloor}>Confirm delete floor</button><button type="button" onClick={() => { setRemovingFloor(false); window.requestAnimationFrame(() => removeFloorButton.current?.focus()) }}>Keep this floor</button></div></section>}
+    {error && <p ref={errorMessage} tabIndex={-1} className="le-error" role="alert">{error} The previous valid layout is retained.</p>}
+    <FloorTools scene={scene} floorId={floorId} selectedRoomId={selectedRoom?.id} onApply={commit} onSelectRoom={inspectRoom} onTool={chooseTool} disabled={disabled} onDrawStairs={(from, to) => { pendingTool.current = { floorId: from, tool: 'stairs' }; chooseFloor(from); setStairTarget(to); setTool('stairs'); window.requestAnimationFrame(() => svg.current?.focus()) }}/>
+    <div className="le-toolbar" role="group" aria-label="Layout drawing tools">{[['select', 'Select / move'], ['pan', 'Pan'], ['room', 'Draw room'], ['wall', 'Wall'], ['door', 'Door'], ['window', 'Window'], ['furniture', 'Furniture'], ['stairs', 'Stairs']].map(([value, label]) => <button key={value} type="button" aria-pressed={tool === value} onClick={() => chooseTool(value)}>{label}</button>)}<button type="button" disabled={tool !== 'room' || points.length < 3} onClick={finishRoom}>Close room</button><button type="button" disabled={!selection} onClick={removeSelection}>Delete selection</button></div>
     <div className="le-editor-grid"><div><div className="le-plan-stage"><svg ref={svg} viewBox={box.join(' ')} role="group" aria-label="Editable building plan" tabIndex="0" onClick={click} onPointerMove={moving} onPointerUp={stopDrag} onPointerCancel={() => { drag.current = null; setPreview(null) }} onPointerDown={event => { if (tool === 'pan') beginDrag(event, { type: 'pan' }) }}>
       <defs><pattern id="layout-mm-grid" width="500" height="500" patternUnits="userSpaceOnUse"><path d="M500 0H0V500" fill="none" stroke="#ddd4c6" strokeWidth="10"/></pattern></defs><rect x={box[0]} y={box[1]} width={box[2]} height={box[3]} fill="url(#layout-mm-grid)"/>
       {display.rooms.filter(room => room.floorId !== floorId).map(room => <polygon key={room.id} points={room.polygon.map(p => p.join(',')).join(' ')} fill="none" stroke="#b8afa1" strokeWidth="25" strokeDasharray="100 100" style={{ pointerEvents: 'none' }}/ >)}
@@ -207,7 +222,7 @@ export default function LayoutEditor({ model, onChange, onStatus, selectedRoomId
       {points.length > 0 && <polyline points={points.map(p => p.join(',')).join(' ')} fill="none" stroke="#a7532f" strokeWidth="45" strokeDasharray="90 60" style={{ pointerEvents: 'none' }}/ >}
     </svg><div className="le-zoom"><button type="button" aria-label="Zoom plan in" onClick={() => setView([box[0] + box[2] * 0.1, box[1] + box[3] * 0.1, box[2] * 0.8, box[3] * 0.8])}>+</button><button type="button" aria-label="Zoom plan out" onClick={() => setView([box[0] - box[2] * 0.125, box[1] - box[3] * 0.125, box[2] * 1.25, box[3] * 1.25])}>−</button><button type="button" onClick={() => setView(null)}>Fit plan</button></div></div>
       <p className="le-stage-help">{tool === 'room' ? 'Click corners in order, then Close room. New perimeter walls are created with the polygon.' : tool === 'stairs' ? 'Click the bottom and top of a straight stair run. Both floor openings and tread geometry are generated together.' : tool === 'door' || tool === 'window' ? `Click a wall to place a ${tool}, then adjust its dimensions in the inspector.` : tool === 'furniture' ? 'Choose a furniture type, then click a free position inside a room.' : tool === 'wall' ? 'Click two endpoints. Select a wall to move its endpoints or edit its dimensions.' : tool === 'pan' ? 'Drag the plan to move your view. Use the zoom controls to change scale.' : 'Select and drag furniture, rooms or corner handles. Arrow keys nudge the selection; Shift uses 500 mm. Ctrl/Cmd+Z undoes an edit.'}</p></div>
-      <aside className="le-inspector">
+      <aside ref={inspector} tabIndex={-1} className="le-inspector" aria-label="Plan selection inspector">
         {tool === 'furniture' && <><h3>Place furniture</h3><label>Furniture type<select aria-label="Furniture type to add" value={furnitureKind} onChange={event => setFurnitureKind(event.target.value)}>{kinds.map(kind => <option key={kind}>{kind}</option>)}</select></label></>}
         {tool === 'stairs' && <><h3>Connect floors</h3><label>Upper destination<select aria-label="Stair destination floor" value={stairTarget} onChange={event => setStairTarget(event.target.value)}><option value="">Next upper floor</option>{scene.floors.filter(f => f.elevation > floor.elevation).map(f => <option key={f.id} value={f.id}>{f.name}</option>)}</select></label><p>Draw a run long enough for 220–500 mm treads and 80–220 mm risers. The opening must fit inside a room on each floor.</p></>}
         {selectedRoom && <><h3>Room</h3><TextField label="Room name" value={selectedRoom.name} onCommit={name => commit({ type: 'updateRoom', roomId: selectedRoom.id, patch: { name } })}/><label>Room color<input aria-label="Room color" type="color" value={selectedRoom.color} onChange={event => commit({ type: 'updateRoom', roomId: selectedRoom.id, patch: { color: event.target.value } })}/></label><label className="le-check"><input type="checkbox" checked={selectedRoom.exterior} onChange={event => commit({ type: 'updateRoom', roomId: selectedRoom.id, patch: { exterior: event.target.checked } })}/> Outdoor ground / terrace</label><details open><summary>Boundary vertices</summary>{selectedRoom.polygon.map((p, index) => <div className="le-vertex-row" key={index}><span>{index + 1}</span><Field label={`Vertex ${index + 1} X`} value={metres(p[0])} onCommit={value => commit({ type: 'moveVertex', roomId: selectedRoom.id, index, point: [value * 1000, p[1]] })}/><Field label={`Vertex ${index + 1} Y`} value={metres(p[1])} onCommit={value => commit({ type: 'moveVertex', roomId: selectedRoom.id, index, point: [p[0], value * 1000] })}/></div>)}</details><button type="button" onClick={() => { const [a, b] = selectedRoom.polygon; commit({ type: 'insertVertex', roomId: selectedRoom.id, index: 0, point: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] }) }}>Add a boundary corner</button><button type="button" disabled={selectedRoom.polygon.length <= 3} onClick={() => commit({ type: 'removeVertex', roomId: selectedRoom.id, index: selectedRoom.polygon.length - 1 })}>Remove last corner</button></>}
@@ -218,6 +233,6 @@ export default function LayoutEditor({ model, onChange, onStatus, selectedRoomId
         {!selection && <><h3>{floor.name}</h3><TextField label="Floor name" value={floor.name} onCommit={name => commit({ type: 'updateFloor', floorId, patch: { name } })}/><Field label="Floor elevation" value={metres(floor.elevation)} min={0} onCommit={value => commit({ type: 'updateFloor', floorId, patch: { elevation: value * 1000 } })}/><Field label="Floor height" value={metres(floor.height)} min={2.2} max={6} onCommit={value => commit({ type: 'updateFloor', floorId, patch: { height: value * 1000 } })}/><p>{rooms.length} rooms on this floor. Other floors appear as dashed reference outlines.</p></>}
         {selection && <div className="le-nudge" role="group" aria-label="Nudge selection"><button type="button" onClick={() => nudge(0, -snap)}>↑</button><button type="button" onClick={() => nudge(-snap, 0)}>←</button><button type="button" onClick={() => nudge(snap, 0)}>→</button><button type="button" onClick={() => nudge(0, snap)}>↓</button></div>}
       </aside></div>
-    {error && <p className="le-error" role="alert">{error} The previous valid layout is retained.</p>}<p className="le-muted">Edits are validated before entering the shared model. Invalid overlaps, openings, furniture bounds and stair dimensions are rejected; accepted project revisions still go through Change Study.</p>
+    <p className="le-muted">Edits are validated before entering the shared model. Invalid overlaps, openings, furniture bounds and stair dimensions are rejected; accepted project revisions still go through Change Study.</p>
   </fieldset></section>
 }

@@ -128,7 +128,7 @@ export default function SpatialWorkspace({ projectId, onNavigate, logoutConfirme
   useEffect(() => { const media = window.matchMedia('(prefers-reduced-motion: reduce)'); const changed = () => setReduced(media.matches); media.addEventListener('change', changed); return () => media.removeEventListener('change', changed); }, []);
   const pause = useCallback(() => {setPlaying(false);}, []);
   const selectRoom = useCallback(id => {setSelected(id);const target=model.rooms.find(r=>r.id===id);if(target)setActiveFloorId(target.floorId);setPlaying(false);setMode('room'); if(tab==='plan')return; viewer.current?.focusRoom(id);}, [tab,model]);
-  function selectFloor(id){setActiveFloorId(id);setPlaying(false);const first=model.rooms.find(r=>r.floorId===id);if(first)setSelected(first.id);setMode('overview');}
+  function selectFloor(id){setActiveFloorId(id);setPlaying(false);const first=model.rooms.find(r=>r.floorId===id);setSelected(first?.id||null);setMode('overview');}
   const setCameraMode = value => {setPlaying(false);setMode(value);if(value==='overview')viewer.current?.reset();};
   const handleError = useCallback(value => {setRenderError(String(value));if(value)setPlaying(false);}, []);
 

@@ -19,6 +19,10 @@ invariants, not production conversion or professional-certification metrics.
 
 ## Journey audit
 
+The follow-up [floor editor workflow](floor-plan-editing.md) adds visible floor
+templates, copying, numeric room addition and direct room edit/remove controls
+when a second or later floor is added.
+
 | Step | Before | Implemented and verified |
 | --- | --- | --- |
 | 1. Describe the site | Eight city choices and a width/depth reference | Free-text city/village and authority, feet/metres, climate, road edge/width, survey north, shape/terrain, explicit setbacks and entered FAR/coverage/height/source |
