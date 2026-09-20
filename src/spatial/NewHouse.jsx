@@ -4,18 +4,18 @@ import { api } from '../api.js';
 import { validAnonymousProjectName } from '../anonymous-draft.js';
 import { isApplicationUnauthenticated } from '../logout.js';
 import { registerNavigationGuard } from '../navigation-guard.js';
-import { ESTIMATOR_CITIES } from '../public-estimator.js';
+import HouseBrief from './HouseBrief.jsx';
+import { defaultHouseBrief, validateHouseBrief } from './house-brief.js';
 import './house-library.css';
 
 const exitWarning = 'Leave this house setup? Unsaved details will be lost. If creation was interrupted, check My houses before creating another.';
 
 export default function NewHouse({ onNavigate }) {
   const [name, setName] = useState('');
-  const [width, setWidth] = useState('40'), [length, setLength] = useState('50');
-  const [city, setCity] = useState('Other');
+  const [brief, setBrief] = useState(defaultHouseBrief);
   const [phase, setPhase] = useState('idle'), [error, setError] = useState('');
   const submission = useRef(null), pending = useRef(false), request = useRef(null);
-  const dirty = Boolean(name || width !== '40' || length !== '50' || city !== 'Other' || submission.current);
+  const dirty = Boolean(name || JSON.stringify(brief) !== JSON.stringify(defaultHouseBrief()) || submission.current);
   useEffect(() => () => request.current?.abort(), []);
   useEffect(() => {
     if (!dirty) return;
@@ -33,18 +33,17 @@ export default function NewHouse({ onNavigate }) {
     if (pending.current) return;
     const normalizedName = name.normalize('NFKC').trim().replace(/\s+/gu, ' ');
     if (!validAnonymousProjectName(normalizedName)) { setError('Enter a house name with 2–100 characters.'); return; }
-    if (![width, length].every(value => value.trim() && Number.isFinite(Number(value)) && Number(value) >= 10 && Number(value) <= 500)) {
-      setError('Enter plot dimensions between 10 and 500 feet.'); return;
-    }
+    const validation = validateHouseBrief(brief);
+    if (!validation.valid) { setError(validation.errors[0]); return; }
     // Preserve one request across uncertain responses; changing its payload could create a duplicate.
-    submission.current ||= { key: crypto.randomUUID(), body: { name: normalizedName, input: { width: Number(width), length: Number(length), city, floors: 'G', quality: 'Signature' } } };
+    submission.current ||= { key: crypto.randomUUID(), body: { name: normalizedName, input: { width: brief.widthM / .3048, length: brief.depthM / .3048, quality: 'Signature' }, houseBrief: brief } };
     const controller = new AbortController(); request.current = controller;
     pending.current = true; setPhase('creating'); setError('');
     try {
       const result = await api('/api/projects', { method: 'POST', headers: { 'idempotency-key': submission.current.key }, body: submission.current.body, signal: controller.signal });
       if (controller.signal.aborted) return;
       if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(result?.project?.id || '')) throw new Error('Creation could not be confirmed. Retry the same request or check My houses.');
-      onNavigate(`/projects/${result.project.id}/spatial`, { initialView: 'plan' });
+      onNavigate(`/projects/${result.project.id}/spatial`, { initialView: 'brief' });
     } catch (failure) {
       if (controller.signal.aborted) return;
       if (isApplicationUnauthenticated(failure)) { onNavigate('/login'); return; }
@@ -56,14 +55,13 @@ export default function NewHouse({ onNavigate }) {
   }
   return <main className="new-house-page">
     <header><button className="brand" onClick={leave} disabled={phase === 'creating'}><House/> GrihaGrid</button><button className="quiet-action" onClick={leave} disabled={phase === 'creating'}><ArrowLeft/> My houses</button></header>
-    <section className="new-house-intro"><span className="kicker">Your private studio</span><h1>Begin a house.</h1><p>Import a drawing, shape the floor plan, then move through it in 3D.</p></section>
+    <section className="new-house-intro"><span className="kicker">Your private studio</span><h1>Begin a house.</h1><p>Describe your site and the rooms you need, then develop the plan in 2D and 3D.</p></section>
     <form onSubmit={create} className="new-house-form" aria-busy={phase === 'creating'}>
       <fieldset disabled={phase === 'creating' || Boolean(submission.current)}><legend>House details</legend>
         <label>Name<input required minLength={2} maxLength={100} autoComplete="off" value={name} onChange={event => setName(event.target.value)} placeholder="e.g. Our courtyard home"/></label>
-        <div className="new-house-dimensions"><label>Plot width (feet)<input type="number" required min="10" max="500" step="0.01" value={width} onChange={event => setWidth(event.target.value)}/></label><label>Plot depth (feet)<input type="number" required min="10" max="500" step="0.01" value={length} onChange={event => setLength(event.target.value)}/></label></div>
-        <label>City<select value={city} onChange={event => setCity(event.target.value)}>{ESTIMATOR_CITIES.map(value => <option key={value} value={value}>{value === 'Other' ? 'Other / not specified' : value}</option>)}</select></label>
+        <HouseBrief value={brief} onChange={setBrief} isPrivate disabled={phase === 'creating' || Boolean(submission.current)}/>
       </fieldset>
-      <p className="new-house-note">You’ll start with an editable example. These plot details are a planning reference; they do not generate or resize the layout. Import your drawing or edit the rooms, then review the Change Study to save your first model.</p>
+      <p className="new-house-note">Your site and room brief will be saved privately. In the studio, create a sized layout study or import a measured drawing, then review the concept before accepting it. Unconfirmed requirements stay visible.</p>
       {error && <p className="form-error" role="alert">{error}</p>}
       {phase === 'error' && submission.current && <p role="status">Your details are held for a safe retry. The same request won’t create a second house.</p>}
       <button className="copper-button" type="submit" disabled={phase === 'creating'}>{phase === 'creating' ? 'Creating house…' : phase === 'error' && submission.current ? 'Retry creation' : 'Create house'}<ArrowRight/></button>

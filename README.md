@@ -109,6 +109,11 @@ Read [technical architecture](docs/architecture.md),
 [Blender operation](docs/spatial-blender.md). The full [documentation index](docs/README.md)
 separates current product guides, supporting contracts and dated evidence.
 
+Detailed house requirements and their implementation/test boundaries are in the
+[house scenario guide](docs/house-scenario-coverage.md). Use **House brief** in the
+studio to set a location, room programme, floor allocation and preferences, then
+compare or generate a study.
+
 ## Run locally
 
 Use Node.js 22 and npm. The sample 2D/3D experience needs no paid service or AI key.
@@ -116,6 +121,7 @@ For private project persistence, start the local Worker with an isolated databas
 
 ```sh
 npm ci
+npm run build
 npx wrangler d1 migrations apply DB --local --persist-to .wrangler/spatial-dev
 npx wrangler dev --local --port 8790 --ip 127.0.0.1 \
   --persist-to .wrangler/spatial-dev \

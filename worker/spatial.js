@@ -1,3 +1,4 @@
+import { handleHouseBrief } from './house-brief.js';
 import { validateBuilding } from '../src/spatial/model.js';
 import { validateConnectivity } from '../src/spatial/navigation.js';
 import { validateTour } from '../src/spatial/tours.js';
@@ -25,24 +26,28 @@ function normalizeModel(value, nextRevision, HttpError) {
   return { ...value, revision: nextRevision };
 }
 async function latestRows(db, projectId) {
-  const [model, tour, cameras] = await Promise.all([
+  const [model, tour, cameras, brief] = await Promise.all([
     db.prepare('SELECT * FROM spatial_revisions WHERE project_id=? ORDER BY revision DESC LIMIT 1').bind(projectId).first(),
     db.prepare('SELECT * FROM spatial_tour_revisions WHERE project_id=? ORDER BY revision DESC LIMIT 1').bind(projectId).first(),
     db.prepare('SELECT * FROM spatial_camera_revisions WHERE project_id=? ORDER BY revision DESC LIMIT 1').bind(projectId).first(),
+    db.prepare('SELECT * FROM house_brief_revisions WHERE project_id=? ORDER BY revision DESC LIMIT 1').bind(projectId).first(),
   ]);
-  return { model, tour, cameras };
+  return { model, tour, cameras, brief };
 }
 function projection(project, rows, history) {
   return {
-    project: { id: project.id, name: project.name, status: project.status, inputRevision: Number(project.input_revision) },
+    project: { id: project.id, name: project.name, status: project.status, inputRevision: Number(project.input_revision), input: JSON.parse(project.input_json || "{}") },
+    houseBrief: rows.brief ? JSON.parse(rows.brief.brief_json) : null,
+    briefRevision: Number(rows.brief?.revision || 0),
+    briefStale: Boolean(rows.brief && Number(rows.brief.input_revision)!==Number(project.input_revision)),
     spatialRevision: Number(rows.model?.revision || 0), tourRevision: Number(rows.tour?.revision || 0),
     model: rows.model ? JSON.parse(rows.model.model_json) : null,
     tour: rows.tour ? JSON.parse(rows.tour.tour_json) : null,
     cameraRevision:Number(rows.cameras?.revision||0),
     viewpoints:rows.cameras?JSON.parse(rows.cameras.viewpoints_json):[],
     sourceInputRevision: rows.model ? Number(rows.model.input_revision) : null,
-    stale: Boolean(rows.model && Number(rows.model.input_revision) !== Number(project.input_revision)),
-    tourStale: Boolean(rows.tour && (Number(rows.tour.spatial_revision) !== Number(rows.model?.revision) || Number(rows.tour.input_revision) !== Number(project.input_revision))),
+    stale: Boolean(rows.model && (Number(rows.model.input_revision) !== Number(project.input_revision) || Number(rows.model.brief_revision || 0) !== Number(rows.brief?.revision || 0))),
+    tourStale: Boolean(rows.tour && (Number(rows.tour.spatial_revision) !== Number(rows.model?.revision) || Number(rows.tour.input_revision) !== Number(project.input_revision) || Number(rows.model?.brief_revision || 0) !== Number(rows.brief?.revision || 0))),
     ...(history ? { history } : {}),
   };
 }
@@ -67,8 +72,11 @@ export async function handleSpatialRequest(request, env, projectId, action, h) {
   requireAbuseControl(env);
   await rateLimit(request, env, `spatial:${session.user_id}`, 60, 3600);
   const body = await readJson(request);
-  const fields = ['expectedInputRevision', 'expectedSpatialRevision'];
-  if ((action === 'tour' || action === 'tour-intent' || action === 'viewpoints') && rows.model && Number(rows.model.input_revision) !== Number(project.input_revision))
+  if(action==='brief'||action==='brief-preview')return handleHouseBrief({request,body,action,db,project,rows,session,h,projection,latestRows});
+  const fields = ['expectedInputRevision', 'expectedSpatialRevision', 'expectedBriefRevision'];
+  if(body.expectedBriefRevision!==undefined&&(!Number.isSafeInteger(body.expectedBriefRevision)||body.expectedBriefRevision<0))throw new HttpError(400,'A valid house brief source revision is required','invalid_spatial_request');
+  if((body.expectedBriefRevision??0)!==Number(rows.brief?.revision||0))throw new HttpError(409,'The house brief changed. Reload and review it before saving.','house_brief_conflict');
+  if ((action === 'tour' || action === 'tour-intent' || action === 'viewpoints') && rows.model && (Number(rows.model.input_revision) !== Number(project.input_revision)||Number(rows.model.brief_revision||0)!==Number(rows.brief?.revision||0)))
     throw new HttpError(409, 'The brief changed. Review and accept the spatial concept before directing a tour.', 'spatial_source_stale');
   if(action==='viewpoints')return saveViewpoints({request,body,db,project,rows,session,helpers:h,assertBase,projection,latestRows});
   if (action === 'tour-intent') {
@@ -106,6 +114,7 @@ export async function handleSpatialRequest(request, env, projectId, action, h) {
       const current = await ownedProject(db, projectId, session.user_id);
       const currentRows = await latestRows(db, projectId);
       requireActiveProject(current); assertBase(body, current, currentRows.model, HttpError);
+      if((body.expectedBriefRevision??0)!==Number(currentRows.brief?.revision||0))throw new HttpError(409,'The house brief changed during camera direction. Review the current brief.','house_brief_conflict');
       return json({ intent, source: 'gemini', sourceRevision: model.revision });
     } finally { await h.releaseAiGenerationLease(db, projectId, session.user_id, lease); }
   }
@@ -124,9 +133,10 @@ export async function handleSpatialRequest(request, env, projectId, action, h) {
     const resultInsert = await db.prepare(`INSERT INTO spatial_tour_revisions (project_id,revision,spatial_revision,input_revision,tour_json,request_key,request_hash)
       SELECT ?,?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM projects WHERE id=? AND user_id=? AND status!='archived' AND input_revision=?)
       AND COALESCE((SELECT MAX(revision) FROM spatial_tour_revisions WHERE project_id=?),0)=?
-      AND (SELECT MAX(revision) FROM spatial_revisions WHERE project_id=?)=?`)
+      AND (SELECT MAX(revision) FROM spatial_revisions WHERE project_id=?)=?
+      AND COALESCE((SELECT MAX(revision) FROM house_brief_revisions WHERE project_id=?),0)=?`)
       .bind(projectId, body.expectedTourRevision + 1, rows.model.revision, project.input_revision, JSON.stringify(body.tour), key, hash,
-        projectId, session.user_id, body.expectedInputRevision, projectId, body.expectedTourRevision, projectId, body.expectedSpatialRevision).run();
+        projectId, session.user_id, body.expectedInputRevision, projectId, body.expectedTourRevision, projectId, body.expectedSpatialRevision, projectId, Number(rows.brief?.revision||0)).run();
     if (resultInsert.meta.changes !== 1) throw new HttpError(409, 'The tour changed. Reload before saving.', 'spatial_revision_conflict');
     return json(projection(project, await latestRows(db, projectId)), 201);
   }
@@ -143,11 +153,12 @@ export async function handleSpatialRequest(request, env, projectId, action, h) {
   const replay = await db.prepare('SELECT request_hash FROM spatial_revisions WHERE project_id=? AND request_key=?').bind(projectId, key).first();
   if (replay) { if (replay.request_hash !== hash) throw new HttpError(409, 'This request key was already used', 'idempotency_conflict'); return json(projection(project, rows)); }
   assertBase(body, project, rows.model, HttpError);
-  const inserted = await db.prepare(`INSERT INTO spatial_revisions (project_id,revision,input_revision,model_json,request_key,request_hash)
-    SELECT ?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM projects WHERE id=? AND user_id=? AND status!='archived' AND input_revision=?)
-    AND COALESCE((SELECT MAX(revision) FROM spatial_revisions WHERE project_id=?),0)=?`)
-    .bind(projectId, body.expectedSpatialRevision + 1, project.input_revision, JSON.stringify(model), key, hash,
-      projectId, session.user_id, body.expectedInputRevision, projectId, body.expectedSpatialRevision).run();
+  const inserted = await db.prepare(`INSERT INTO spatial_revisions (project_id,revision,input_revision,model_json,request_key,request_hash,brief_revision)
+    SELECT ?,?,?,?,?,?,? WHERE EXISTS(SELECT 1 FROM projects WHERE id=? AND user_id=? AND status!='archived' AND input_revision=?)
+    AND COALESCE((SELECT MAX(revision) FROM spatial_revisions WHERE project_id=?),0)=?
+    AND COALESCE((SELECT MAX(revision) FROM house_brief_revisions WHERE project_id=?),0)=?`)
+    .bind(projectId, body.expectedSpatialRevision + 1, project.input_revision, JSON.stringify(model), key, hash, Number(rows.brief?.revision||0),
+      projectId, session.user_id, body.expectedInputRevision, projectId, body.expectedSpatialRevision, projectId, Number(rows.brief?.revision||0)).run();
   if (inserted.meta.changes !== 1) throw new HttpError(409, 'The project changed. Reload before saving.', 'spatial_revision_conflict');
   return json(projection(project, await latestRows(db, projectId)), 201);
 }

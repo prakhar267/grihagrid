@@ -13,6 +13,7 @@ place, together with their historical evidence.
 | [Product blueprint](product-blueprint.md) | Studio journey, acceptance criteria and retained supporting use cases |
 | [Technical architecture](architecture.md) | Shared geometry, browser/Worker/local-renderer responsibilities and security |
 | [Studio entry cleanup](spatial-product-cleanup.md) | Current cleanup scope, acceptance criteria and reproduction |
+| [House scenario coverage](house-scenario-coverage.md) | Site and room briefs, generated studies, scenario matrix, persistence and honest limits |
 | [Spatial workspace](spatial-workspace.md) | Building schema, drawing import, editor, navigation, tours, saved cameras and private API |
 | [Blender studio](spatial-blender.md) | Pairing, reusable Python pipeline, output formats, job limits and recovery |
 | [Spatial performance](spatial-performance.md) | Render budgets, idle behavior, quality modes and actual device measurements |

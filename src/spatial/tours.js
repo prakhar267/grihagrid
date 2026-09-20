@@ -33,11 +33,17 @@ export function defaultTourRoomIds(scene) {
   const preferred=['living','kitchen','main-bedroom','bedroom-two','study','garden']
   const demoIds=[...preferred,'bathroom','hallway']
   const isDemoLayout=preferred.every(id=>scene.rooms.some(room=>room.id===id))&&scene.rooms.every(room=>demoIds.includes(room.id))
+  const requested=scene.rooms.filter(room=>/^brief-r[0-9]+$/.test(room.id));
+  if(requested.length){
+    const floors=[...scene.floors].sort((a,b)=>a.elevation-b.elevation), selected=[];
+    for(let index=0;selected.length<Math.min(12,requested.length);index++)for(const floor of floors){const room=requested.filter(r=>r.floorId===floor.id)[index];if(room&&selected.length<12)selected.push(room.id);}
+    return requested.filter(room=>selected.includes(room.id)).map(room=>room.id);
+  }
   return (isDemoLayout?preferred:scene.rooms.map(room=>room.id)).slice(0,12)
 }
 
 export function generateTour(scene,{roomIds,duration=30,includeExterior=true,source='deterministic',eyeHeight=1650,shotPreferences}={}) {
-  if(scene.schemaVersion===2||shotPreferences?.length||eyeHeight!==1650)return generateTourV2(scene,{roomIds,duration,includeExterior,source,eyeHeight,shotPreferences})
+  if(scene.schemaVersion===2||shotPreferences?.length||eyeHeight!==1650)return generateTourV2(scene,{roomIds:roomIds?.length?roomIds:defaultTourRoomIds(scene),duration,includeExterior,source,eyeHeight,shotPreferences})
   if(!Number.isFinite(duration)||duration<8||duration>300)throw new Error('Tour duration must be between 8 and 300 seconds.')
   const requested=roomIds?.length?roomIds:defaultTourRoomIds(scene)
   const unknown=requested.filter(id=>!scene.rooms.some(room=>room.id===id))

@@ -24,6 +24,8 @@ On 16 September 2026 the user requested production readiness except custom-domai
 
 On 17 September 2026 the user requested removing obsolete product screens and cleaning the repository to match the spatial goal. Remove the old primary cost-estimator/pricing marketing funnel and dead code, not customer data or supporting planning functionality. The newly attached brief explicitly limits this change to local implementation, verification and reviewable changes: **deployment and paid infrastructure are outside this task**. For this cleanup, prepare a draft PR and check its exact head; do not merge or trigger a release. Preserve films, scenes, backups, historical evidence, activation controls and prior device-test deferrals.
 
+On 21 September 2026 the user approved the latest local appearance and requested scenario-driven coverage for homeowners, homebuyers, architects and builders: locations, plot conditions, room programmes, floors, Vastu and everyday household needs. Preserve the visual direction. Requirements must change the actual study or produce an explicit supported manual path; never claim universal city-rule, structural or professional certification. Continue the local implementation, verification and draft-review scope.
+
 ## Product and platform invariants
 
 Treat `README.md`, `package.json`, `wrangler.toml`, `worker/index.js`, `src/App.jsx`, `src/styles.css`, and the relevant files in `docs/` as the canonical implementation and operating context. Before architectural changes, inspect the architecture, backend API, launch-readiness, operations, feature, and test-plan documentation. Inspect the configured live product and existing styles before material UI changes; evolve the current system rather than redesigning it.

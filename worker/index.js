@@ -1,3 +1,4 @@
+import { normalizeHouseBrief } from '../src/spatial/house-brief.js';
 import { handleSpatialRequest } from "./spatial.js";
 import { SPATIAL_SCHEMA } from "./spatial-schema.js";
 import { buildArchitecturalHandoff, publicArchitecturalProgramme } from "../src/architect-report.js";
@@ -53,7 +54,7 @@ const REPORT_VERSION = 2;
 const PROJECT_INPUT_SCHEMA_VERSION = 1;
 const ESTIMATE_RULE_VERSION = 1;
 const ESTIMATE_RULE_PUBLISHED_DATE = "2026-08-16";
-const ESTIMATE_FLOOR_FACTORS = Object.freeze({ G: 0.72, "G+1": 1.22, "G+2": 1.65 });
+const ESTIMATE_FLOOR_FACTORS = Object.freeze({ G: 0.72, "G+1": 1.22, "G+2": 1.65, "G+3": 2.08 });
 const ESTIMATE_FINISH_RATES = Object.freeze({ Essential: 1750, Signature: 2200, Premium: 2850, Luxury: 3900 });
 const ESTIMATE_CITY_FACTORS = Object.freeze({ Pune: 1, Bengaluru: 1.08, Mumbai: 1.18, Delhi: 1.1, Hyderabad: 0.98, Chennai: 1.02, Jaipur: 0.88, Other: 0.95 });
 const ESTIMATE_PUBLIC_FIELDS = new Set(["width", "length", "floors", "quality", "city"]);
@@ -3671,6 +3672,9 @@ async function exportAccount(request, env) {
          FROM spatial_camera_revisions r JOIN projects p ON p.id=r.project_id
         WHERE p.user_id=? ORDER BY r.project_id,r.revision`,
     ).bind(session.user_id),
+    db.prepare(`SELECT r.project_id,r.revision,r.input_revision,r.brief_json,r.created_at
+      FROM house_brief_revisions r JOIN projects p ON p.id=r.project_id
+      WHERE p.user_id=? ORDER BY r.project_id,r.revision`).bind(session.user_id),
   ]);
   const rows = (index) => Array.isArray(results?.[index]?.results) ? results[index].results : [];
   const user = rows(0)[0];
@@ -3759,6 +3763,7 @@ async function exportAccount(request, env) {
       projectId: row.project_id, revision: Number(row.revision), inputRevision: Number(row.input_revision),
       model: parse(row.model_json), createdAt: row.created_at,
     })),
+    houseBriefs: rows(15).map(row => ({ projectId: row.project_id, revision: row.revision, inputRevision: row.input_revision, brief: parse(row.brief_json), createdAt: row.created_at })),
     spatialTours: rows(13).map((row) => ({
       projectId: row.project_id, revision: Number(row.revision), spatialRevision: Number(row.spatial_revision),
       inputRevision: Number(row.input_revision), tour: parse(row.tour_json), createdAt: row.created_at,
@@ -4012,7 +4017,7 @@ const REVISION_INPUT_LABELS = Object.freeze({
 });
 const REVISION_CITIES = new Set(["Pune", "Bengaluru", "Mumbai", "Delhi", "Hyderabad", "Chennai", "Jaipur", "Other"]);
 const REVISION_FACINGS = new Set(["North", "East", "South", "West"]);
-const REVISION_FLOORS = new Set(["G", "G+1", "G+2"]);
+const REVISION_FLOORS = new Set(["G", "G+1", "G+2", "G+3"]);
 const REVISION_QUALITIES = new Set(["Essential", "Signature", "Premium", "Luxury"]);
 const REVISION_PLOT_SHAPES = new Set(["regular", "irregular", "corner", "unknown"]);
 const REVISION_ACCESSIBILITY = new Set(["none", "step_free", "wheelchair_ready", "unknown"]);
@@ -4095,8 +4100,8 @@ function normalizeCreateProjectBody(body) {
   }
   const nested = Object.hasOwn(body, "input");
   const allowedOuter = nested
-    ? new Set(["name", "input"])
-    : new Set(["name", ...REVISION_INPUT_FIELDS]);
+    ? new Set(["name", "input", "houseBrief"])
+    : new Set(["name", "houseBrief", ...REVISION_INPUT_FIELDS]);
   const unsupportedOuter = Object.keys(body).find((field) => !allowedOuter.has(field));
   if (unsupportedOuter) {
     throw new HttpError(400, `unsupported project field: ${unsupportedOuter}`, "invalid_project_input");
@@ -4122,7 +4127,16 @@ function normalizeCreateProjectBody(body) {
     }
     throw error;
   }
-  return { name: body.name, ...normalizeProjectInput(normalizedFields) };
+  let houseBrief = null;
+  if (Object.hasOwn(body, "houseBrief")) {
+    try { houseBrief = normalizeHouseBrief(body.houseBrief); }
+    catch (error) { throw new HttpError(400, error.message, "invalid_project_input"); }
+    normalizedFields.width = Number((houseBrief.widthM / .3048).toFixed(8));
+    normalizedFields.length = Number((houseBrief.depthM / .3048).toFixed(8));
+    normalizedFields.floors = ["G", "G+1", "G+2", "G+3"][houseBrief.floors - 1];
+    normalizedFields.city = REVISION_CITIES.has(houseBrief.city) ? houseBrief.city : "Other";
+  }
+  return { name: body.name, houseBrief, ...normalizeProjectInput(normalizedFields) };
 }
 
 function normalizeReportFeedback(body) {
@@ -4382,7 +4396,7 @@ async function createProject(request, env) {
   await requireCsrf(request, session);
   requireAbuseControl(env);
   const body = await readJson(request);
-  const { name: suppliedName, input, estimate } = normalizeCreateProjectBody(body);
+  const { name: suppliedName, input, estimate, houseBrief } = normalizeCreateProjectBody(body);
   const assessment = briefCheck(input, estimate);
   const inputHash = await digestHex(revisionBasis(input, estimate));
   const name = normalizeProjectName(suppliedName);
@@ -4391,7 +4405,7 @@ async function createProject(request, env) {
     ? await digestBase64(`project-create:${session.user_id}:${idempotencyKey}`)
     : null;
   const creationRequestHash = idempotencyKey
-    ? await digestHex(stableStringify({ version: 1, name, input }))
+    ? await digestHex(stableStringify({ version: 1, name, input, ...(houseBrief ? { houseBrief } : {}) }))
     : null;
   const replayProject = async () => {
     if (!creationKeyHash) return null;
@@ -4412,7 +4426,7 @@ async function createProject(request, env) {
   const id = crypto.randomUUID();
   const now = sqliteTimestamp();
   try {
-    await db.prepare(
+    const insertProject = db.prepare(
       `INSERT INTO projects
          (id,user_id,name,status,input_json,estimate_json,input_hash,input_schema_version,
           estimate_rule_version,brief_check_version,brief_check_json,creation_key_hash,
@@ -4422,7 +4436,12 @@ async function createProject(request, env) {
       id, session.user_id, name, "feasibility_ready", JSON.stringify(input), JSON.stringify(estimate), inputHash,
       PROJECT_INPUT_SCHEMA_VERSION, ESTIMATE_RULE_VERSION, BRIEF_CHECK_VERSION, JSON.stringify(assessment),
       creationKeyHash, creationRequestHash, now, now,
-    ).run();
+    );
+    if (houseBrief) {
+      await db.batch([insertProject, db.prepare(`INSERT INTO house_brief_revisions
+        (project_id,revision,input_revision,brief_json,request_key,request_hash) VALUES (?,1,1,?,?,?)`)
+        .bind(id, JSON.stringify(houseBrief), creationKeyHash || crypto.randomUUID(), creationRequestHash || await digestHex(JSON.stringify(houseBrief)))]);
+    } else await insertProject.run();
   } catch (error) {
     const message = String(error?.message || error);
     if (creationKeyHash && /creation_key_hash/iu.test(message) && /unique/iu.test(message)) {
@@ -5599,7 +5618,7 @@ function stableStringify(value) {
 }
 
 const DECISION_PRIORITIES = new Set(["balanced", "budget", "space", "speed"]);
-const DECISION_FLOORS = new Set(["G", "G+1", "G+2"]);
+const DECISION_FLOORS = new Set(["G", "G+1", "G+2", "G+3"]);
 const DECISION_QUALITIES = new Set(["Essential", "Signature", "Premium", "Luxury"]);
 
 function normalizedDecisionText(value, field, maximum, minimum = 0) {
@@ -5622,7 +5641,7 @@ function normalizeDecisionScenario(value, index) {
   const floors = String(value.floors || "");
   const bedrooms = Number(value.bedrooms);
   const quality = String(value.quality || "");
-  if (!DECISION_FLOORS.has(floors)) throw new HttpError(400, "floors must be G, G+1, or G+2", "invalid_decision_compare");
+  if (!DECISION_FLOORS.has(floors)) throw new HttpError(400, "floors must be G, G+1, G+2, or G+3", "invalid_decision_compare");
   if (!Number.isInteger(bedrooms) || bedrooms < 1 || bedrooms > 10) {
     throw new HttpError(400, "bedrooms must be an integer between 1 and 10", "invalid_decision_compare");
   }
@@ -5659,7 +5678,7 @@ function normalizeDecisionInput(body) {
 }
 
 function decisionFloorCount(value) {
-  return value === "G" ? 1 : value === "G+2" ? 3 : 2;
+  return ({ G: 1, "G+1": 2, "G+2": 3, "G+3": 4 })[value] || 2;
 }
 
 function buildDecisionScenario(projectInput, scenario, index, comparisonId) {
@@ -8265,7 +8284,7 @@ function boundedInteger(value, fallback, minimum, maximum) {
 function buildReport(project, inputHash, reportId, generatedAt) {
   const input = parseStoredJson(project.input_json, {});
   const estimate = parseStoredJson(project.estimate_json, computeEstimate(input));
-  const floorCount = { G: 1, "G+1": 2, "G+2": 3 }[estimate.floors] || 2;
+  const floorCount = { G: 1, "G+1": 2, "G+2": 3, "G+3": 4 }[estimate.floors] || 2;
   const bedrooms = boundedInteger(input.bedrooms, floorCount === 1 ? 2 : 3, 1, 10);
   const bathrooms = boundedInteger(input.bathrooms, Math.max(2, bedrooms), 1, 12);
   const floorPlateSqft = Math.round(estimate.builtUpSqft / floorCount);
@@ -9489,7 +9508,7 @@ async function api(request, env, ctx, url) {
       if (request.method === "POST") return await createReportShare(request, env, projectId);
       return methodNotAllowed(["GET", "POST"]);
     }
-    const spatialMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/spatial(?:\/(preview|tour|tour-intent|viewpoints))?$/u);
+    const spatialMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/spatial(?:\/(preview|tour|tour-intent|viewpoints|brief|brief-preview))?$/u);
     if (spatialMatch) return await handleSpatialRequest(request, env, decodeProjectPathSegment(spatialMatch[1]), spatialMatch[2] || '', {
       HttpError, json, requireDatabase, getSession, ownedProject, requireActiveProject,
       requireTrustedOrigin, requireCsrf, readJson, digestHex, normalizeIdempotencyKey,
@@ -9676,7 +9695,7 @@ function isApiRoute(pathname) {
     || /^\/api\/orders\/[^/]+(?:\/(?:fulfillment|artifact|progress))?$/u.test(pathname)
     || /^\/api\/shared\/decision-compare\/[^/]+$/u.test(pathname)
     || /^\/api\/family-alignment\/[^/]+(?:\/response)?$/u.test(pathname)
-    || /^\/api\/projects\/[^/]+(?:\/spatial(?:\/(?:preview|tour|tour-intent|viewpoints))?|\/home|\/report|\/report-shares(?:\/[^/]+)?|\/ai-brief|\/orders|\/revisions(?:\/preview|\/\d+(?:\/report|\/reports\/\d+\/feedback)?)?|\/family-alignment(?:\/[^/]+)?|\/decision-compare(?:\/choice|\/shares(?:\/[^/]+)?)?|\/professional-reviews(?:\/[^/]+(?:\/messages)?)?|\/files(?:\/[^/]+)?)?$/u.test(pathname)
+    || /^\/api\/projects\/[^/]+(?:\/spatial(?:\/(?:preview|tour|tour-intent|viewpoints|brief|brief-preview))?|\/home|\/report|\/report-shares(?:\/[^/]+)?|\/ai-brief|\/orders|\/revisions(?:\/preview|\/\d+(?:\/report|\/reports\/\d+\/feedback)?)?|\/family-alignment(?:\/[^/]+)?|\/decision-compare(?:\/choice|\/shares(?:\/[^/]+)?)?|\/professional-reviews(?:\/[^/]+(?:\/messages)?)?|\/files(?:\/[^/]+)?)?$/u.test(pathname)
     || /^\/api\/professional-reviews(?:\/[^/]+(?:\/(?:claim|messages))?)?$/u.test(pathname);
 }
 

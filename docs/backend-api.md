@@ -1387,3 +1387,11 @@ Login hardening does not close registration enumeration or prevent repeated
 targeted account-window exhaustion. Treat a sustained aggregate rise in generic
 login 401s as an abuse signal without adding email/IP/fence identifiers to logs;
 verified recovery and a customer-safe challenge/unlock design remain required.
+
+
+## Detailed house brief revisions
+
+The spatial studio also exposes `/api/projects/:id/spatial/brief-preview` and
+`/api/projects/:id/spatial/brief`. Creation accepts an optional top-level
+`houseBrief`, separate from the legacy planning input. See the
+[full source-revision, validation and privacy contract](house-scenario-coverage.md#persistence-and-api).

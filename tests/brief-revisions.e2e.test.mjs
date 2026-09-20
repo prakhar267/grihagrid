@@ -484,10 +484,10 @@ test("Brief Check revisions are truthful, immutable, owner-scoped, and race safe
   let server = null;
   const capturedLogs = [];
   try {
-    requireD1Success(d1(stateDirectory, "migrate"), "fresh 0001-0023 migration chain failed");
+    requireD1Success(d1(stateDirectory, "migrate"), "fresh 0001-0024 migration chain failed");
     const applied = rowsFor(stateDirectory, "SELECT name FROM d1_migrations ORDER BY id", "migration ledger query failed");
-    assert.equal(applied.length, 23, JSON.stringify(applied));
-    assert.equal(applied.at(-1)?.name, "0023_spatial_camera_library.sql");
+    assert.equal(applied.length, 24, JSON.stringify(applied));
+    assert.equal(applied.at(-1)?.name, "0024_house_design_briefs.sql");
 
     server = await startWorker(stateDirectory, assetsDirectory, port);
     const readiness = await call(server.origin, "/api/readiness");

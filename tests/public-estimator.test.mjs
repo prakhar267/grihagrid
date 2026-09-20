@@ -75,7 +75,7 @@ function validEnvelope(input = puneRequest) {
 test("estimator options expose the complete supported public tuple", () => {
   assert.deepEqual(ESTIMATOR_CITIES, ["Pune", "Bengaluru", "Mumbai", "Delhi", "Hyderabad", "Chennai", "Jaipur", "Other"]);
   assert.deepEqual(ESTIMATOR_ENTRY_POINTS, ["public_estimator", "shared_estimate"]);
-  assert.deepEqual(ESTIMATOR_FLOORS, ["G", "G+1", "G+2"]);
+  assert.deepEqual(ESTIMATOR_FLOORS, ["G", "G+1", "G+2", "G+3"]);
   assert.deepEqual(ESTIMATOR_QUALITIES, ["Essential", "Signature", "Premium", "Luxury"]);
   assert.equal(Object.isFrozen(ESTIMATOR_CITIES), true);
   assert.equal(Object.isFrozen(ESTIMATOR_ENTRY_POINTS), true);
