@@ -89,7 +89,7 @@ legacy estimate/report input, using the existing indicative heuristic extended
 to factor 2.08. That estimate is not a model-derived construction quote.
 
 - `GET /api/projects/:id/spatial` returns `houseBrief`, `briefRevision`,
-  `briefStale`, model/tour staleness and the existing spatial data.
+  `briefStale`, `sourceBriefRevision`, model/tour staleness and the existing spatial data.
 - `POST /api/projects/:id/spatial/brief-preview` accepts `brief` and
   `expectedInputRevision`, `expectedSpatialRevision`, `expectedBriefRevision`.
   It is read-only and returns the assessment and Change Study.
@@ -102,7 +102,8 @@ to factor 2.08. That estimate is not a model-derived construction quote.
   sources, including AI direction that completed after the change.
 - A change to the separate legacy planning input marks the detailed brief for
   reconciliation. The same brief may be reaccepted against that new input.
-- `/api/account/export` includes owner-only `houseBriefs`. Project deletion
+- `/api/account/export` includes owner-only `houseBriefs` and each model’s source
+  `briefRevision`. Project deletion
   cascades through the new table. Readiness, release schema evidence, canary
   residue checks and the isolated Sites package include the new contract.
 
@@ -124,7 +125,7 @@ and synthetic local data. It includes a two-floor family brief with elders and
 Vastu mismatch, a private four-floor architect brief with eleven requested rooms,
 accept/revise/save/reopen, keyboard focus, responsive layouts, and console checks.
 Screenshots and the detailed local audit are in
-`../reports/house-scenarios-2026-09-21/` relative to the repository's parent.
+`../reports/house-scenarios-2026-09-21/` relative to the repository root.
 Physical iPhone and spoken VoiceOver remain explicitly deferred by the user.
 
 The focused scenario/API suite passes **122 tests**. Native Chrome zoom at

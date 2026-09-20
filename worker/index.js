@@ -3658,7 +3658,7 @@ async function exportAccount(request, env) {
         WHERE r.owner_id=? ORDER BY m.review_id,m.created_at,m.rowid`,
     ).bind(session.user_id),
     db.prepare(
-      `SELECT r.project_id,r.revision,r.input_revision,r.model_json,r.created_at
+      `SELECT r.project_id,r.revision,r.input_revision,r.brief_revision,r.model_json,r.created_at
          FROM spatial_revisions r JOIN projects p ON p.id=r.project_id
         WHERE p.user_id=? ORDER BY r.project_id,r.revision`,
     ).bind(session.user_id),
@@ -3761,7 +3761,7 @@ async function exportAccount(request, env) {
     professionalReviewMessages: rows(11),
     spatialLayouts: rows(12).map((row) => ({
       projectId: row.project_id, revision: Number(row.revision), inputRevision: Number(row.input_revision),
-      model: parse(row.model_json), createdAt: row.created_at,
+      briefRevision: Number(row.brief_revision || 0), model: parse(row.model_json), createdAt: row.created_at,
     })),
     houseBriefs: rows(15).map(row => ({ projectId: row.project_id, revision: row.revision, inputRevision: row.input_revision, brief: parse(row.brief_json), createdAt: row.created_at })),
     spatialTours: rows(13).map((row) => ({

@@ -46,6 +46,7 @@ function projection(project, rows, history) {
     cameraRevision:Number(rows.cameras?.revision||0),
     viewpoints:rows.cameras?JSON.parse(rows.cameras.viewpoints_json):[],
     sourceInputRevision: rows.model ? Number(rows.model.input_revision) : null,
+    sourceBriefRevision: rows.model ? Number(rows.model.brief_revision || 0) : null,
     stale: Boolean(rows.model && (Number(rows.model.input_revision) !== Number(project.input_revision) || Number(rows.model.brief_revision || 0) !== Number(rows.brief?.revision || 0))),
     tourStale: Boolean(rows.tour && (Number(rows.tour.spatial_revision) !== Number(rows.model?.revision) || Number(rows.tour.input_revision) !== Number(project.input_revision) || Number(rows.model?.brief_revision || 0) !== Number(rows.brief?.revision || 0))),
     ...(history ? { history } : {}),
@@ -65,7 +66,7 @@ export async function handleSpatialRequest(request, env, projectId, action, h) {
   const project = await ownedProject(db, projectId, session.user_id);
   const rows = await latestRows(db, projectId);
   if (request.method === 'GET') {
-    const history = await db.prepare('SELECT revision,input_revision AS inputRevision,created_at AS createdAt FROM spatial_revisions WHERE project_id=? ORDER BY revision DESC LIMIT 20').bind(projectId).all();
+    const history = await db.prepare('SELECT revision,input_revision AS inputRevision,brief_revision AS briefRevision,created_at AS createdAt FROM spatial_revisions WHERE project_id=? ORDER BY revision DESC LIMIT 20').bind(projectId).all();
     return json(projection(project, rows, history.results || []));
   }
   requireActiveProject(project);

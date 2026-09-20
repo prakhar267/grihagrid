@@ -70,7 +70,7 @@ test('house brief survives real D1 creation, revision, private reads and accepte
     const saved = await worker.fetch(request(path + '/spatial/brief', owner, commit, { key: revisionKey }), env); assert.ok([200, 201].includes(saved.status), JSON.stringify(await saved.clone().json()));
     const replay = await worker.fetch(request(path + '/spatial/brief', owner, commit, { key: revisionKey }), env); assert.equal(replay.status, 200);
     const opened = await expect(await worker.fetch(request(path + '/spatial', owner), env), 200);
-    assert.equal(opened.project.inputRevision, 1); assert.equal(opened.briefRevision, 2); assert.equal(opened.houseBrief.rooms[0].areaM2, 30); assert.equal(opened.stale, true); assert.deepEqual(opened.model, model);
+    assert.equal(opened.project.inputRevision, 1); assert.equal(opened.briefRevision, 2); assert.equal(opened.houseBrief.rooms[0].areaM2, 30); assert.equal(opened.stale, true); assert.equal(opened.sourceBriefRevision, 1); assert.deepEqual(opened.model, model);
     const original = await db.prepare('SELECT brief_json FROM house_brief_revisions WHERE project_id=? AND revision=1').bind(project.id).first(); assert.equal(JSON.parse(original.brief_json).rooms[0].areaM2, 18);
     await expect(await worker.fetch(request(path + '/spatial/brief', owner, { ...draft, brief, acceptedImpact: true }), env), 409);
   });
@@ -92,7 +92,7 @@ test('house brief survives real D1 creation, revision, private reads and accepte
   });
   await context.test('account export contains the owner brief history and excludes another account', async () => {
     const own = await expect(await worker.fetch(request('/api/account/export', owner), env), 200);
-    assert.equal(own.houseBriefs.length, 3); assert.deepEqual(own.houseBriefs[0].brief, brief);
+    assert.equal(own.spatialLayouts[0].briefRevision, 1); assert.equal(own.houseBriefs.length, 3); assert.deepEqual(own.houseBriefs[0].brief, brief);
     assert.ok(own.houseBriefs.every(row => row.projectId === project.id));
     assert.equal(JSON.stringify(own.houseBriefs).includes('request_hash'), false);
     const other = await expect(await worker.fetch(request('/api/account/export', stranger), env), 200);
