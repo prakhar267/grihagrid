@@ -28,6 +28,8 @@ On 21 September 2026 the user approved the latest local appearance and requested
 
 In the same follow-up, the user reported that adding a second or later floor left an unusable-looking blank map. Every floor needs visible starting layouts, a copy-floor path, manual room addition and explicit room edit/remove controls. Keep floor changes independent and undoable; reference outlines must be labelled, and unsupported stair placements must explain the next step.
 
+The user explicitly requires end-to-end testing beyond the editor: added floors and room edits must be exercised in 3D Explore, walking, Camera Tour, saved viewpoints and Render / Export. A rendered canvas or geometry-only test is insufficient; verify playback, mode transitions, stale-state recovery and real browser behavior.
+
 ## Product and platform invariants
 
 Treat `README.md`, `package.json`, `wrangler.toml`, `worker/index.js`, `src/App.jsx`, `src/styles.css`, and the relevant files in `docs/` as the canonical implementation and operating context. Before architectural changes, inspect the architecture, backend API, launch-readiness, operations, feature, and test-plan documentation. Inspect the configured live product and existing styles before material UI changes; evolve the current system rather than redesigning it.

@@ -2,6 +2,7 @@ import { spatialUUID } from './ids.js'
 import { validateBuilding } from './model.js'
 import { toV2, recalculateBounds, polygonFitsInside, stairPolygon } from './model-v2.js'
 import { isRouteClear } from './navigation-v2.js'
+import { validateConnectivity } from './navigation.js'
 
 export const FLOOR_LAYOUTS = [
   { id: 'bedrooms', name: 'Two-bedroom floor', description: 'Two bedrooms, a family lounge, bathroom and central hall.' },
@@ -157,12 +158,21 @@ export function connectFloorBelow(original, floorId) {
           const path = [[start[0] - ux * 400, start[1] - uy * 400, lower.elevation + 1650]]
           for (let i = 0; i <= steps * 2; i++) { const t = i / (steps * 2); path.push([start[0] + ux * run * t, start[1] + uy * run * t, lower.elevation + (upper.elevation - lower.elevation) * t + 1650]) }
           path.push([end[0] + ux * 400, end[1] + uy * 400, upper.elevation + 1650])
-          if (isRouteClear(next, path)) return finish(original, next)
+          if (isRouteClear(next, path) && validateConnectivity(connectedFloors(next, lower.id)).valid) return finish(original, next)
         }
       }
     }
   }
-  throw new Error('No clear straight stair fits both floors with landing space. Move obstructing furniture, align a larger stair hall, or use the Stairs drawing tool from the lower floor.')
+  throw new Error('No clear straight stair fits without blocking room access. Move obstructing furniture, align a larger stair hall with landing space, or use the Stairs drawing tool from the lower floor.')
+}
+// Check every room reached by this connection, while allowing other new floors
+// to remain unfinished. A locally walkable stair must not cut off a doorway.
+function connectedFloors(scene, start) {
+  const ids = new Set([start])
+  for (let i = 0; i < scene.floors.length; i++) for (const stair of scene.stairs) {
+    if (ids.has(stair.fromFloorId) || ids.has(stair.toFloorId)) { ids.add(stair.fromFloorId); ids.add(stair.toFloorId) }
+  }
+  return { ...scene, floors: scene.floors.filter(f => ids.has(f.id)), rooms: scene.rooms.filter(r => ids.has(r.floorId)), walls: scene.walls.filter(w => ids.has(w.floorId)), furniture: scene.furniture.filter(f => ids.has(f.floorId)), stairs: scene.stairs.filter(s => ids.has(s.fromFloorId) && ids.has(s.toFloorId)) }
 }
 function segmentIntersectsBox(a, b, box, pad) {
   let t0 = 0, t1 = 1

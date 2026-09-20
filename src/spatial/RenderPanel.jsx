@@ -27,6 +27,7 @@ export default function RenderPanel({ model, tour, viewpoints = [], disabled = f
   const [error, setError] = useMountedState('', mounted)
   const [busy, setBusy] = useMountedState(false, mounted)
   const [quality, setQuality] = useMountedState(8, mounted)
+  const [device, setDevice] = useMountedState('auto', mounted)
   const [media, setMedia] = useMountedState(null, mounted)
   const mediaUrl = useRef(null)
 
@@ -34,7 +35,9 @@ export default function RenderPanel({ model, tour, viewpoints = [], disabled = f
     const controller = new AbortController(); requests.current.add(controller)
     const timeout = setTimeout(() => controller.abort(), 8000)
     let response
-    try { response = await fetch(`${SERVICE}${pathname}`, { ...options, signal: controller.signal, headers: { ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...(session ? { Authorization: `Bearer ${session.token}` } : {}), ...options.headers }, credentials: 'omit' }) } finally { clearTimeout(timeout); requests.current.delete(controller) }
+    try { response = await fetch(`${SERVICE}${pathname}`, { ...options, signal: controller.signal, headers: { ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...(session ? { Authorization: `Bearer ${session.token}` } : {}), ...options.headers }, credentials: 'omit' }) }
+    catch { throw new Error('The local renderer is not responding. Check its connection to see the latest progress; running work may continue on your computer.') }
+    finally { clearTimeout(timeout); requests.current.delete(controller) }
     if (!response.ok) {
       const body = await response.json().catch(() => ({}))
       if (response.status === 401 && pathname !== '/pair') { pairedSession = null; setSession(null) }
@@ -80,7 +83,7 @@ export default function RenderPanel({ model, tour, viewpoints = [], disabled = f
   async function submit(mode) {
     setBusy(true); setError('')
     try {
-      await (await api('/jobs', { method: 'POST', body: JSON.stringify({ model, tour, viewpoints, settings: { mode, samples: quality } }) })).json()
+      await (await api('/jobs', { method: 'POST', body: JSON.stringify({ model, tour, viewpoints, settings: { mode, samples: quality, device } }) })).json()
       await refresh()
     } catch (error) { setError(error.message) } finally { setBusy(false) }
   }
@@ -119,15 +122,15 @@ export default function RenderPanel({ model, tour, viewpoints = [], disabled = f
       <details open={status === 'offline'}><summary>Set up the local renderer once</summary><p>Start the local render service in your GrihaGrid checkout. This command allows this app address to connect:</p><code>{serviceCommand}</code><p>Open the private pairing-code file named by the service, then paste its code below. Keep the service running while rendering. If your browser asks, allow this site to connect to devices on your local network.</p></details>
       <form className="render-pairing" onSubmit={pair}><label>Pairing code<input type="password" autoComplete="off" value={pairCode} onChange={event => setPairCode(event.target.value)} placeholder="Private code from your computer" required /></label><button type="submit" disabled={busy || !pairCode.trim()}>Connect renderer</button></form>
     </> : <>
-      <div className="render-settings"><label>Cycles quality<select value={quality} onChange={event => setQuality(Number(event.target.value))}><option value={8}>Quick preview · 8 samples</option><option value={16}>Balanced · 16 samples</option><option value={32}>Detailed · 32 samples</option><option value={64}>High quality · 64 samples</option></select></label><button onClick={() => submit('preview')} disabled={busy || disabled || !tour}>Render previews</button><button onClick={() => submit('film')} disabled={busy || disabled || !tour}>Render 1080p film</button><button className="render-subtle" onClick={disconnect}>Disconnect</button></div>
+      <div className="render-settings"><label>Cycles quality<select value={quality} onChange={event => setQuality(Number(event.target.value))}><option value={8}>Quick preview · 8 samples</option><option value={16}>Balanced · 16 samples</option><option value={32}>Detailed · 32 samples</option><option value={64}>High quality · 64 samples</option></select></label><label>Render device<select value={device} onChange={event => setDevice(event.target.value)}><option value="auto">Automatic · GPU when available</option><option value="cpu">CPU · use if GPU rendering fails</option></select></label><button onClick={() => submit('preview')} disabled={busy || disabled || !tour}>Render previews</button><button onClick={() => submit('film')} disabled={busy || disabled || !tour}>Render 1080p film</button><button className="render-subtle" onClick={disconnect}>Disconnect</button></div>
       {status === 'offline' && <p role="status" className="render-note">Connection lost. These are the last known job states; rendering may still continue on your computer. <button className="render-subtle" onClick={refresh}>Check connection</button></p>}
-      <p className="render-note">Films use 30 frames per second. Rendering can take minutes to hours depending on the tour, quality and hardware. Review the previews before a long film.</p>
+      <p className="render-note">Films use 30 frames per second. Rendering can take minutes to hours depending on the tour, quality and hardware. Review the previews before a long film. If GPU rendering fails or exhausts memory, choose CPU and start a new render; resuming keeps the original job settings.</p>
       {disabled && <p className="render-note">Review the current model and regenerate any stale tour before rendering.</p>}
-      <div className="render-jobs" aria-label="Local render jobs">{jobs.length === 0 ? <p>No local renders yet. Start with previews to check materials and framing.</p> : jobs.map(job => {
+      <div className="render-jobs" aria-label="Local render jobs">{jobs.length === 0 ? <p>{status === 'connected' ? 'No local renders yet. Start with previews to check materials and framing.' : 'Local jobs could not be loaded yet. Check the connection to restore their status.'}</p> : jobs.map(job => {
         const active = ['queued', 'running', 'cancelling'].includes(job.status)
         const percent = job.progress?.total ? Math.min(100, Math.round((job.progress.frame || 0) / job.progress.total * 100)) : 0
         return <article className="render-job" key={job.id} data-render-job-id={job.id}>
-          <div className="render-job-title"><strong>{job.name}</strong><span>{job.mode === 'film' ? 'Film' : job.mode === 'preview' ? 'Previews' : 'Scene'} · Cycles · {job.samples} samples</span></div>
+          <div className="render-job-title"><strong>{job.name}</strong><span>{job.mode === 'film' ? 'Film' : job.mode === 'preview' ? 'Previews' : 'Scene'} · Cycles · {job.samples} samples · {job.device === 'cpu' ? 'CPU' : 'Auto device'}</span></div>
           <p className="render-job-status">{job.status.replaceAll('-', ' ')} · revision {job.sourceRevision}{active ? ` · ${job.progress?.stage || 'waiting'}` : ''}{job.progress?.frame > 0 ? job.mode === 'preview' ? ` · preview at tour frame ${job.progress.frame} of ${job.progress.total}` : ` · ${job.progress.frame} / ${job.progress.total} frames` : ''}</p>
           {active && <progress max="100" value={percent} aria-label={`${job.name} render progress`}>{percent}%</progress>}
           {job.error && <p>{job.error}</p>}

@@ -34,11 +34,11 @@ export default function LayoutEditor({ model, onChange, onStatus, selectedRoomId
   const [furnitureKind, setFurnitureKind] = useState('chair'), [stairTarget, setStairTarget] = useState(''), [view, setView] = useState(null)
   const [removingFloor, setRemovingFloor] = useState(false)
   const removalHeading = useRef(null), removeFloorButton = useRef(null)
-  const svg = useRef(null), drag = useRef(null), modelIdentity = useRef(model.id), editor = useRef(null), inspector = useRef(null), errorMessage = useRef(null), pendingTool = useRef(null)
+  const svg = useRef(null), drag = useRef(null), modelIdentity = useRef({id:model.id,revision:model.revision}), editor = useRef(null), inspector = useRef(null), errorMessage = useRef(null), pendingTool = useRef(null)
   const allPoints = scene.rooms.flatMap(room => room.polygon), extents = { x0: Math.min(...allPoints.map(p => p[0])) - 1800, y0: Math.min(...allPoints.map(p => p[1])) - 1800, x1: Math.max(...allPoints.map(p => p[0])) + 1800, y1: Math.max(...allPoints.map(p => p[1])) + 1800 }
   const fit = () => [extents.x0, extents.y0, extents.x1 - extents.x0, extents.y1 - extents.y0]
   const box = view || fit(), display = preview || scene
-  useEffect(() => { if (modelIdentity.current !== model.id) { modelIdentity.current = model.id; setHistory([]); setFuture([]); setSelection(null); setView(null); setPoints([]) } }, [model.id])
+  useEffect(() => { if (modelIdentity.current.id !== model.id || model.revision < modelIdentity.current.revision) { setHistory([]); setFuture([]); setSelection(null); setView(null); setPoints([]) } modelIdentity.current = {id:model.id,revision:model.revision} }, [model.id,model.revision])
   useEffect(() => { setTool(pendingTool.current?.floorId === floorId ? pendingTool.current.tool : 'select'); pendingTool.current = null; setPoints([]); setPreview(null); setView(null); setError(''); setRemovingFloor(false); drag.current = null }, [floorId])
   useEffect(() => { setSelection(scene.rooms.some(r => r.id === selectedRoomId && r.floorId === floorId) ? { type: 'room', id: selectedRoomId } : null) }, [selectedRoomId, floorId])
   function chooseFloor(next) { setLocalFloor(next); onActiveFloorChange?.(next); setTool('select'); setSelection(null); setPoints([]); setPreview(null); setView(null); setError(''); drag.current = null }

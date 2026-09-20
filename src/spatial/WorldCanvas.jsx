@@ -8,6 +8,7 @@ import { buildPrimitives, toBrowser, fromBrowser, floorApertures, pointInPolygon
 import { resolveCollision, floorAtPosition } from './navigation.js'
 import { getOverviewView, getRoomView, sampleTour } from './tours.js'
 import { validateViewpoints } from './viewpoints.js'
+import { cameraFloor, roomOnFloor } from './workspace-navigation.js'
 import './world-canvas.css'
 
 extend({ RoundedBoxGeometry })
@@ -317,16 +318,23 @@ function CameraDirector({ model, mode, selectedRoomId, tour, tourPlaying, tourTi
     if (mode === 'room' && manualView.current && manualView.current.fromMode !== 'room') { jumpTo(manualView.current.view); manualView.current = null; return }
     manualView.current = null
     if (mode === 'overview') jumpTo(overviewView(model), false)
-    else if (mode === 'room' || mode === 'walk') jumpTo(getRoomView(model, selectedRoomId || model.rooms.find(room => !room.exterior)?.id, eyeHeight))
+    else if (mode === 'room' || mode === 'walk') {
+      const room = roomOnFloor(model, activeFloorId, selectedRoomId)
+      if (room) jumpTo(getRoomView(model, room.id, eyeHeight))
+    }
   }, [mode, selectedRoomId, model, eyeHeight])
   useEffect(() => { if (mode === 'overview') applyView(overviewView(model)) }, [viewport.width, viewport.height, activeFloorId, isolateFloor])
 
   useEffect(() => {
-    if (Math.abs((Number(tourTime) || 0) - published.current) > 0.25) {
+    if (!tourPlaying || Math.abs((Number(tourTime) || 0) - published.current) > 0.000001) {
       elapsed.current = Number(tourTime) || 0
-      if (tour && mode === 'tour') { const pose = sampleTour(tour, elapsed.current); applyView(pose); onFade?.(pose?.fade || 0) }
+      if (tour && mode === 'tour') {
+        const pose = sampleTour(tour, elapsed.current); applyView(pose); onFade?.(pose?.fade || 0)
+        const floorId = cameraFloor(model, pose?.position, tour.eyeHeight || eyeHeight)
+        if (floorId) { walkingFloor.current = floorId; live.current.onFloorChange?.(floorId) }
+      }
     }
-  }, [tourTime, tour, mode])
+  }, [tourTime, tour, mode, tourPlaying])
   useEffect(() => { elapsed.current = Number(tourTime) || 0; published.current = -1 }, [tour])
   useEffect(() => {
     if (tourPlaying && tour && mode === 'tour') jumpTo(sampleTour(tour, elapsed.current))

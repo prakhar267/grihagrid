@@ -57,8 +57,33 @@ test('local bridge rejects DNS rebinding, hostile origins, missing auth and cred
 
 test('job settings accept only bounded fixed Cycles operations and valid scene references', () => {
   assert.equal(validateRenderRequest(requestBody).settings.engine, 'cycles');
+  assert.equal(validateRenderRequest(requestBody).settings.device, 'auto');
+  assert.equal(validateRenderRequest({ ...requestBody, settings: { ...requestBody.settings, device: 'cpu' } }).settings.device, 'cpu');
   for (const settings of [{ mode: 'shell', samples: 8 }, { mode: 'film', samples: 999 }, { mode: 'film', samples: 8, engine: 'custom' }]) assert.throws(() => validateRenderRequest({ ...requestBody, settings }));
+  for (const device of ['cuda', 'shell', '', null, {}]) assert.throws(() => validateRenderRequest({ ...requestBody, settings: { ...requestBody.settings, device } }));
   assert.throws(() => validateRenderRequest({ ...requestBody, tour: { ...scene.tour, sourceRevision: 99 } }), /older|revision/i);
+});
+
+test('CPU jobs reach the renderer and survive service restart with the same device', async () => {
+  let renderedDevice;
+  const f=await fixture({executor:async options=>{renderedDevice=options.device;}});
+  let restarted;
+  try {
+    const response=await f.request('/jobs',{method:'POST',body:JSON.stringify({...requestBody,settings:{...requestBody.settings,device:'cpu'}})});
+    assert.equal(response.status,201);
+    const {job}=await response.json();
+    await waitFor(f.jobs,jobs=>jobs.find(item=>item.id===job.id)?.status==='complete');
+    assert.equal(renderedDevice,'cpu');
+    assert.equal((await f.jobs()).find(item=>item.id===job.id).device,'cpu');
+    await f.service.close();
+    restarted=await startRenderService({rootDirectory:f.rootDirectory,port:0,allowedOrigins:[ORIGIN],checkDependencies:false,checkDisk:false,executor:async()=>{throw new Error('Completed jobs must not rerun');}});
+    const headers={Origin:ORIGIN,'Content-Type':'application/json'};
+    const paired=await fetch(`${restarted.origin}/pair`,{method:'POST',headers,body:JSON.stringify({code:await readFile(restarted.pairingFile,'utf8')})});
+    const {token}=await paired.json();
+    const jobs=await (await fetch(`${restarted.origin}/jobs`,{headers:{...headers,Authorization:`Bearer ${token}`}})).json();
+    assert.equal(jobs.jobs.find(item=>item.id===job.id).device,'cpu');
+    assert.equal(jobs.jobs.find(item=>item.id===job.id).status,'complete');
+  } finally { if(restarted)await restarted.close(); await f.close(); }
 });
 
 test('paired jobs persist validated camera libraries and reject stale or unsupported cameras', async () => {
