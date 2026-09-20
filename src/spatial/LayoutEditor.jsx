@@ -3,7 +3,7 @@ import { spatialUUID } from './ids.js'
 import { pointInPolygon, validateBuilding } from './model.js'
 import { toV2, stairPolygon, doorLeafPrimitive } from './model-v2.js'
 import { applySceneEdit } from './editor-ops.js'
-import { clearFloor } from './floor-plans.js'
+import { clearFloor, nextFloor } from './floor-plans.js'
 import FloorTools from './FloorTools.jsx'
 import './layout-editor.css'
 
@@ -184,7 +184,7 @@ export default function LayoutEditor({ model, onChange, onStatus, selectedRoomId
   }
   function addFloor() {
     try {
-      const last = [...scene.floors].sort((a, b) => b.elevation - a.elevation)[0], next = { id: id('floor'), name: `Floor ${scene.floors.length + 1}`, elevation: last.elevation + last.height + 200, height: 3000 }
+      const next = nextFloor(scene)
       if (commit({ type: 'addFloor', floor: next }, `${next.name} added. Choose a starting layout, copy a floor or add your first room.`)) { chooseFloor(next.id); focusFloor() }
     } catch (e) { setError(e.message) }
   }

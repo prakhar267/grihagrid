@@ -51,6 +51,13 @@ export function rectangularRoom(original, floorId, { name, x, y, width, depth })
   if (![x, y, width, depth].every(Number.isFinite) || width < 1000 || depth < 1000 || width > 20000 || depth > 20000) throw new Error('Enter room widths and depths between 1 and 20 metres, and finite plan coordinates.')
   return { id: uid('room'), name: name.trim(), floorId, polygon: rectangle(x, y, width, depth), color: '#ddd0bc', exterior: false }
 }
+export function nextFloor(original) {
+  if (original.floors.length >= 4) throw new Error('This studio supports up to four floors.')
+  const last = [...original.floors].sort((a, b) => b.elevation - a.elevation)[0]
+  let number = original.floors.length + 1
+  while (original.floors.some(f => f.name === `Floor ${number}`)) number++
+  return { id: uid('floor'), name: `Floor ${number}`, elevation: last.elevation + last.height + 200, height: 3000 }
+}
 export function clearFloor(original, floorId, remove = false) {
   const scene = toV2(original), floor = floorFor(scene, floorId)
   if (remove && floor.elevation === 0) throw new Error('Keep the ground floor. You can edit its rooms instead.')

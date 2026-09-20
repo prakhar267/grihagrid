@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createDemoBuilding, createMultiFloorDemo, validateBuilding, buildPrimitives } from '../src/spatial/model.js'
 import { applySceneEdit } from '../src/spatial/editor-ops.js'
-import { FLOOR_LAYOUTS, clearFloor, connectFloorBelow, floorReference, populateFloor, rectangularRoom, suggestedRoomPosition } from '../src/spatial/floor-plans.js'
+import { FLOOR_LAYOUTS, clearFloor, connectFloorBelow, floorReference, nextFloor, populateFloor, rectangularRoom, suggestedRoomPosition } from '../src/spatial/floor-plans.js'
 import { floorScene } from '../src/spatial/navigation-v2.js'
 import { validateConnectivity } from '../src/spatial/navigation.js'
 import { generateTour, validateTour } from '../src/spatial/tours.js'
@@ -10,6 +10,17 @@ import { toV2, recalculateBounds } from '../src/spatial/model-v2.js'
 
 const addLevel = (scene, level) => applySceneEdit(scene, { type: 'addFloor', floor: { id: `level-${level}`, name: `Floor ${level + 1}`, elevation: level * 3200, height: 3000 } })
 const floorContents = (scene, floorId) => Object.fromEntries(['rooms', 'walls', 'furniture'].map(key => [key, scene[key].filter(item => item.floorId === floorId)]))
+
+test('adding after deleting an intermediate floor gives the new level a unique label and correct elevation', () => {
+  let scene = addLevel(addLevel(createDemoBuilding(), 1), 2)
+  scene = clearFloor(scene, 'level-1', true)
+  const added = nextFloor(scene)
+  assert.equal(added.name, 'Floor 4'); assert.equal(added.elevation, 9600)
+  assert.equal(validateBuilding(applySceneEdit(scene, { type: 'addFloor', floor: added })).valid, true)
+  scene = applySceneEdit(scene, { type: 'addFloor', floor: added })
+  scene = applySceneEdit(scene, { type: 'addFloor', floor: nextFloor(scene) })
+  assert.throws(() => nextFloor(scene), /up to four floors/)
+})
 
 for (const layout of [...FLOOR_LAYOUTS.map(item => item.id), 'copy']) {
   for (const level of [1, 2, 3]) test(`${layout} produces an editable floor ${level + 1} without changing other floors`, () => {
