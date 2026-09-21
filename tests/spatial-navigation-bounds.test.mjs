@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import {getObstacles,isSegmentClear} from '../src/spatial/navigation.js'
+import {createDemoBuilding} from '../src/spatial/model.js'
+import {getObstacles,isSegmentClear,validateConnectivity} from '../src/spatial/navigation.js'
 
 function sceneFor(box) {
   return {schemaVersion:1,exactClearance:true,walls:[],furniture:[{id:'obstacle',kind:'console',position:[...box.position,0],size:[...box.size,1000],rotation:box.rotation}],rooms:[{polygon:[[-200000,-200000],[200000,-200000],[200000,200000],[-200000,200000]]}]}
@@ -83,4 +84,25 @@ test('seeded rotated-obstacle sweeps agree with independent continuous geometry'
     const a=point(),b=i%7===0?a.slice():point(),clearance=20+random()*900,scene=sceneFor(box)
     assert.equal(isSegmentClear(scene,a,b,clearance),referenceClear(a,b,box,clearance),JSON.stringify({i,a,b,box,clearance}))
   }
+})
+
+
+test('prepared connectivity sweeps retain the independent continuous-geometry oracle',()=>{
+  const driver=createDemoBuilding(),rooms=driver.rooms
+  let entered=false,seed=0x174311
+  const random=()=>((seed=(Math.imul(seed,1664525)+1013904223)>>>0)/4294967296)
+  Object.defineProperty(driver,'rooms',{get(){
+    if(!entered){
+      entered=true
+      for(let i=0;i<3000;i++){
+        const box={position:[random()*20000-10000,random()*20000-10000],size:[.01+random()*5000,.01+random()*5000],rotation:random()*Math.PI*2}
+        const point=()=>[box.position[0]+random()*12000-6000,box.position[1]+random()*12000-6000]
+        const a=point(),b=i%7===0?a.slice():point(),clearance=20+random()*900,scene=sceneFor(box)
+        assert.equal(isSegmentClear(scene,a,b,clearance),referenceClear(a,b,box,clearance),`prepared sweep ${i}`)
+      }
+    }
+    return rooms
+  }})
+  assert.equal(validateConnectivity(driver).valid,true)
+  assert.equal(entered,true)
 })
