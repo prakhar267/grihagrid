@@ -1,5 +1,5 @@
 import {floorFor,insidePolygon,stairPolygon,floorApertures,polygonCenter,doorLeafPrimitive} from './model-v2.js'
-import {isWalkable as legacyWalkable,findPath as legacyPath,nearestWalkable as legacyNearest} from './navigation.js'
+import {isWalkable as legacyWalkable,findPath as legacyPath,nearestWalkable as legacyNearest,isSegmentClear as legacySegmentClear,getObstacles} from './navigation.js'
 
 const cache=new WeakMap(),distance=(a,b)=>Math.hypot(a[0]-b[0],a[1]-b[1])
 export function floorScene(scene,floorId,{blockStairs=true}={}){let entries=cache.get(scene);if(!entries){entries=new Map();cache.set(scene,entries)}const key=`${floorId}-${blockStairs}`;if(entries.has(key))return entries.get(key);const floor=floorFor(scene,floorId),rooms=scene.rooms.filter(r=>r.floorId===floorId),furniture=scene.furniture.filter(f=>f.floorId===floorId).map(f=>({...f}));for(const item of (scene.coordination||[]).filter(v=>v.floorId===floorId&&['column','beam'].includes(v.kind)))furniture.push({...item,kind:'console'});for(const wall of scene.walls.filter(w=>w.floorId===floorId))for(const opening of wall.openings)if(opening.kind==='door'&&opening.open){const leaf=doorLeafPrimitive(wall,opening);furniture.push({id:leaf.id,roomId:leaf.roomId,kind:'console',position:[leaf.position[0],leaf.position[1],0],size:leaf.size,rotation:leaf.rotation})}if(blockStairs)for(const stair of scene.stairs.filter(s=>[s.fromFloorId,s.toFloorId].includes(floorId))){const dx=stair.end[0]-stair.start[0],dy=stair.end[1]-stair.start[1];furniture.push({id:`${stair.id}-navigation-shaft`,roomId:stair.roomIds[stair.fromFloorId===floorId?0:1],kind:'console',position:[(stair.start[0]+stair.end[0])/2,(stair.start[1]+stair.end[1])/2,0],size:[Math.hypot(dx,dy),stair.width,3000],rotation:Math.atan2(dy,dx)})}const projected={...scene,schemaVersion:1,exactClearance:true,floors:[{...floor,elevation:0}],rooms,walls:scene.walls.filter(w=>w.floorId===floorId),furniture,stairs:undefined};entries.set(key,projected);return projected}
@@ -17,6 +17,128 @@ export function getRoomAnchorV2(scene,roomId,clearance=220){const room=scene.roo
 export function findPathV2(scene,start,end,{clearance=220,step=200,smooth=true,floorId=scene.floors[0].id}={}){return legacyPath(floorScene(scene,floorId),start,end,{clearance,step,smooth})}
 function stairEndpoints(scene,stair,eyeHeight){const local=stairLocal(stair,stair.start),from=floorFor(scene,stair.fromFloorId),to=floorFor(scene,stair.toFloorId);return [[stair.start[0]-local.ux*400,stair.start[1]-local.uy*400,from.elevation+eyeHeight],[stair.end[0]+local.ux*400,stair.end[1]+local.uy*400,to.elevation+eyeHeight]]}
 function stairRoute(scene,stair,eyeHeight){const endpoints=stairEndpoints(scene,stair,eyeHeight),from=floorFor(scene,stair.fromFloorId),to=floorFor(scene,stair.toFloorId),path=[endpoints[0]];for(let i=0;i<=stair.steps*2;i++){const t=i/(stair.steps*2);path.push([stair.start[0]+(stair.end[0]-stair.start[0])*t,stair.start[1]+(stair.end[1]-stair.start[1])*t,from.elevation+(to.elevation-from.elevation)*t+eyeHeight])}path.push(endpoints[1]);return path}
-export function findRoute(scene,start,end,{clearance=220,eyeHeight=1650}={}){const first=surfaceAt(scene,start,{clearance,eyeHeight,maxStep:40}),last=surfaceAt(scene,end,{clearance,eyeHeight,maxStep:40});if(!first||!last)return [];if(first.floorId===last.floorId){const path=findPathV2(scene,start,end,{clearance,floorId:first.floorId});if(path.length)return path.map(p=>[...p,floorFor(scene,first.floorId).elevation+eyeHeight])}
-  const nodes=[{id:'start',floorId:first.floorId,p:start},{id:'end',floorId:last.floorId,p:end}];for(const stair of scene.stairs){const [a,b]=stairEndpoints(scene,stair,eyeHeight);nodes.push({id:`${stair.id}-from`,floorId:stair.fromFloorId,p:a,stair,side:0},{id:`${stair.id}-to`,floorId:stair.toFloorId,p:b,stair,side:1})}const queue=[0],previous=new Map([[0,null]]),segments=new Map();while(queue.length){const i=queue.shift();if(i===1)break;for(let j=0;j<nodes.length;j++){if(previous.has(j))continue;const a=nodes[i],b=nodes[j];let path=[];if(a.floorId===b.floorId)path=findPathV2(scene,a.p,b.p,{clearance,floorId:a.floorId}).map(p=>[...p,floorFor(scene,a.floorId).elevation+eyeHeight]);else if(a.stair&&a.stair===b.stair){path=stairRoute(scene,a.stair,eyeHeight);if(a.side===1)path.reverse()}if(path.length&&isRouteClear(scene,path,{clearance,eyeHeight})){previous.set(j,i);segments.set(j,path);queue.push(j)}}}if(!previous.has(1))return [];const parts=[];for(let n=1;previous.get(n)!==null;n=previous.get(n))parts.unshift(segments.get(n));return parts.flatMap((path,i)=>i?path.slice(1):path)}
-export function validateConnectivityV2(scene,{clearance=220,eyeHeight=1650}={}){const errors=[],first=scene.rooms[0],anchor=getRoomAnchorV2(scene,first.id,clearance);if(!anchor)return {valid:false,errors:[`No usable viewpoint in ${first.name}.`]};const start=[...anchor,floorFor(scene,first.floorId).elevation+eyeHeight];for(const room of scene.rooms){const target=getRoomAnchorV2(scene,room.id,clearance);if(!target||!findRoute(scene,start,[...target,floorFor(scene,room.floorId).elevation+eyeHeight],{clearance,eyeHeight}).length)errors.push(`No traversable route to ${room.name}.`)}return {valid:errors.length===0,errors}}
+export function findRoute(scene,start,end,options={}) {
+  return routeWithContext(scene,start,end,options)
+}
+
+function routeWithContext(scene,start,end,{clearance=220,eyeHeight=1650}={},context) {
+  const first=surfaceAt(scene,start,{clearance,eyeHeight,maxStep:40}),last=surfaceAt(scene,end,{clearance,eyeHeight,maxStep:40})
+  if(!first||!last)return []
+  const horizontal=(a,b)=> {
+    const key=context&&`${a.floorId}:${a.p.join(',')}:${b.p.join(',')}`
+    if(context?.paths.has(key))return context.paths.get(key)
+    const path=findPathV2(scene,a.p,b.p,{clearance,floorId:a.floorId}).map(p=>[...p,floorFor(scene,a.floorId).elevation+eyeHeight])
+    if(context&&context.paths.size<1024)context.paths.set(key,path)
+    return path
+  }
+  const checked=(a,b)=> {
+    const key=context&&`${a.id}:${a.p.join(',')}:${b.id}:${b.p.join(',')}`
+    if(context?.checked.has(key))return context.checked.get(key)
+    let path=[]
+    if(a.floorId===b.floorId)path=horizontal(a,b)
+    else if(a.stair&&a.stair===b.stair){path=stairRoute(scene,a.stair,eyeHeight);if(a.side===1)path.reverse()}
+    if(path.length&&!isRouteClear(scene,path,{clearance,eyeHeight}))path=[]
+    if(context&&context.checked.size<1024)context.checked.set(key,path)
+    return path
+  }
+  const nodes=[{id:'start',floorId:first.floorId,p:start},{id:'end',floorId:last.floorId,p:end}]
+  if(first.floorId===last.floorId){const path=horizontal(nodes[0],nodes[1]);if(path.length)return path}
+  for(const stair of scene.stairs){const [a,b]=stairEndpoints(scene,stair,eyeHeight);nodes.push({id:`${stair.id}-from`,floorId:stair.fromFloorId,p:a,stair,side:0},{id:`${stair.id}-to`,floorId:stair.toFloorId,p:b,stair,side:1})}
+  const queue=[0],previous=new Map([[0,null]]),segments=new Map()
+  while(queue.length){
+    const i=queue.shift();if(i===1)break
+    for(let j=0;j<nodes.length;j++){
+      if(previous.has(j))continue
+      const path=checked(nodes[i],nodes[j])
+      if(path.length){previous.set(j,i);segments.set(j,path);queue.push(j)}
+    }
+  }
+  if(!previous.has(1))return []
+  const parts=[];for(let n=1;previous.get(n)!==null;n=previous.get(n))parts.unshift(segments.get(n))
+  return parts.flatMap((path,i)=>i?path.slice(1):path)
+}
+
+// Prove ordinary room-to-door connections first. Each edge uses the same
+// swept body clearance as walking; a failed proof falls back to route search.
+function portalConnectivity(scene,anchors,{clearance,eyeHeight}) {
+  const nodes=[],byRoom=new Map(scene.rooms.map(room=>[room.id,[]])),edges=[]
+  let overflow=false,checks=0
+  const add=(p,floorId,roomIds)=>{
+    if(!roomIds.length)return null
+    if(nodes.length>=1024){overflow=true;return null}
+    if(!legacyWalkable(floorScene(scene,floorId),p,clearance))return null
+    const id=nodes.length;nodes.push({p,floorId});edges.push([])
+    for(const roomId of roomIds)byRoom.get(roomId)?.push(id)
+    return id
+  }
+  const roomNodes=scene.rooms.map((room,i)=>anchors[i]&&add(anchors[i],room.floorId,[room.id]))
+  if(roomNodes.some(id=>id==null))return false
+  for(const room of scene.rooms){
+    const center=polygonCenter(room.polygon)
+    for(const vertex of room.polygon){
+      const p=vertex.map((value,i)=>value+Math.sign(center[i]-value)*(clearance+200))
+      if(insidePolygon(p,room.polygon))add(p,room.floorId,[room.id])
+    }
+  }
+  const wallIds=new Set(scene.walls.map(wall=>wall.id))
+  for(const floor of scene.floors)for(const box of getObstacles(floorScene(scene,floor.id))){
+    if(wallIds.has(box.id))continue
+    const c=Math.cos(box.rotation),s=Math.sin(box.rotation),radius=clearance+1
+    for(const x of[-1,1])for(const y of[-1,1]){
+      const lx=x*(box.size[0]/2+radius),ly=y*(box.size[1]/2+radius),p=[box.position[0]+lx*c-ly*s,box.position[1]+lx*s+ly*c]
+      const roomIds=scene.rooms.filter(room=>room.floorId===floor.id&&insidePolygon(p,room.polygon)).map(room=>room.id)
+      if(roomIds.length)add(p,floor.id,roomIds)
+    }
+  }
+  for(const wall of scene.walls)for(const door of wall.openings){
+    if(door.kind!=='door'||!door.open||door.height<2000||door.sill!==0)continue
+    const length=Math.hypot(wall.end[0]-wall.start[0],wall.end[1]-wall.start[1])
+    for(const offset of [door.width/2,50+clearance+1,door.width-50-clearance-1]){
+      const t=(door.offset+offset)/length
+      const p=[wall.start[0]+(wall.end[0]-wall.start[0])*t,wall.start[1]+(wall.end[1]-wall.start[1])*t]
+      add(p,wall.floorId,wall.roomIds)
+      const nx=-(wall.end[1]-wall.start[1])/length,ny=(wall.end[0]-wall.start[0])/length
+      for(const side of[-1,1]){
+        const distance=side*(clearance+wall.thickness/2+1),q=[p[0]+nx*distance,p[1]+ny*distance]
+        add(q,wall.floorId,wall.roomIds.filter(id=>insidePolygon(q,scene.rooms.find(room=>room.id===id).polygon)))
+      }
+    }
+  }
+  for(const stair of scene.stairs){
+    const ends=stairEndpoints(scene,stair,eyeHeight),a=add(ends[0],stair.fromFloorId,[stair.roomIds[0]]),b=add(ends[1],stair.toFloorId,[stair.roomIds[1]])
+    if(a!=null&&b!=null){
+      const path=stairRoute(scene,stair,eyeHeight)
+      if(isRouteClear(scene,path,{clearance,eyeHeight}))edges[a].push(b)
+      if(isRouteClear(scene,path.slice().reverse(),{clearance,eyeHeight}))edges[b].push(a)
+    }
+  }
+  if(overflow)return false
+  const memberships=nodes.map(()=>[])
+  for(const ids of byRoom.values())for(const id of ids)memberships[id].push(ids)
+  const reached=new Set([roomNodes[0]]),queue=[roomNodes[0]]
+  for(let i=0;i<queue.length;i++){
+    const from=queue[i],a=nodes[from],candidates=new Set([...edges[from],...memberships[from].flat()])
+    for(const id of candidates){
+      if(reached.has(id))continue
+      if(++checks>4096)return false
+      const b=nodes[id]
+      if(edges[from].includes(id)||(a.floorId===b.floorId&&legacySegmentClear(floorScene(scene,a.floorId),a.p,b.p,clearance))){reached.add(id);queue.push(id)}
+    }
+    if(roomNodes.every(id=>reached.has(id)))return true
+  }
+  return roomNodes.every(id=>reached.has(id))
+}
+
+export function validateConnectivityV2(scene,{clearance=220,eyeHeight=1650}={}) {
+  const errors=[],first=scene.rooms[0],anchors=scene.rooms.map(room=>getRoomAnchorV2(scene,room.id,clearance)),anchor=anchors[0]
+  if(!anchor)return {valid:false,errors:[`No usable viewpoint in ${first.name}.`]}
+  if(portalConnectivity(scene,anchors,{clearance,eyeHeight}))return {valid:true,errors:[]}
+  const start=[...anchor,floorFor(scene,first.floorId).elevation+eyeHeight]
+  // One validation shares identical directed segments; no cache survives an edit.
+  const context={paths:new Map(),checked:new Map()}
+  for(const [index,room] of scene.rooms.entries()){
+    const target=anchors[index]
+    if(!target||!routeWithContext(scene,start,[...target,floorFor(scene,room.floorId).elevation+eyeHeight],{clearance,eyeHeight},context).length)errors.push(`No traversable route to ${room.name}.`)
+  }
+  return {valid:errors.length===0,errors}
+}

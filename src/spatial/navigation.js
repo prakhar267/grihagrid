@@ -45,11 +45,22 @@ function connectivityGeometry(scene) {
     geometry={
       rooms:scene.rooms.map(room=>{
         const xs=room.polygon.map(point=>point[0]),ys=room.polygon.map(point=>point[1])
+        const minX=Math.min(...xs),maxX=Math.max(...xs),minY=Math.min(...ys),maxY=Math.max(...ys)
+        const rectangle=room.polygon.length===4&&new Set(room.polygon.map(p=>p.join(','))).size===4&&room.polygon.every((p,i)=>{
+          const q=room.polygon[(i+1)%4]
+          return (p[0]===minX||p[0]===maxX)&&(p[1]===minY||p[1]===maxY)&&(p[0]===q[0]||p[1]===q[1])
+        })
         return {
-          polygon:room.polygon,
+          polygon:room.polygon,rectangle,innerMinX:minX,innerMaxX:maxX,innerMinY:minY,innerMaxY:maxY,
           minX:Math.min(...xs)-1e-6,maxX:Math.max(...xs)+1e-6,
           minY:Math.min(...ys)-1e-6,maxY:Math.max(...ys)+1e-6,
         }
+      }),
+      segmentBounds:getObstacles(scene).map(box=>{
+        const c=Math.abs(Math.cos(box.rotation)),s=Math.abs(Math.sin(box.rotation)),x=Math.abs(box.size[0])/2,y=Math.abs(box.size[1])/2
+        const extentX=c*x+s*y,extentY=s*x+c*y
+        return {box,minX:box.position[0]-extentX,maxX:box.position[0]+extentX,minY:box.position[1]-extentY,maxY:box.position[1]+extentY,
+          magnitude:Math.max(...box.position.map(Math.abs),...box.size.map(Math.abs))}
       }),
       obstacles:getObstacles(scene).map(box=>({
         x:box.position[0],y:box.position[1],
@@ -66,7 +77,7 @@ function preparedWalkability(scene,position,clearance) {
   const geometry=connectivityGeometry(scene)
   for(const [dx,dy] of [[0,0],[clearance,0],[-clearance,0],[0,clearance],[0,-clearance]]) {
     const x=position[0]+dx,y=position[1]+dy
-    if(!geometry.rooms.some(room=>x>=room.minX&&x<=room.maxX&&y>=room.minY&&y<=room.maxY&&pointInPolygon([x,y],room.polygon)))return false
+    if(!geometry.rooms.some(room=>x>=room.minX&&x<=room.maxX&&y>=room.minY&&y<=room.maxY&&((room.rectangle&&x>room.innerMinX&&x<room.innerMaxX&&y>room.innerMinY&&y<room.innerMaxY)||pointInPolygon([x,y],room.polygon))))return false
   }
   return !geometry.obstacles.some(box=>{
     const dx=position[0]-box.x,dy=position[1]-box.y
@@ -117,8 +128,8 @@ function segmentOutsideBoxBounds(start,end,box,radius) {
   return Math.min(start[0],end[0])>bounds.maxX+padding||Math.max(start[0],end[0])<bounds.minX-padding||Math.min(start[1],end[1])>bounds.maxY+padding||Math.max(start[1],end[1])<bounds.minY-padding
 }
 
-function segmentNearBox(start,end,box,radius){
-  if(segmentOutsideBoxBounds(start,end,box,radius))return false
+function segmentNearBox(start,end,box,radius,insideBounds=false){
+  if(!insideBounds&&segmentOutsideBoxBounds(start,end,box,radius))return false
   const c=Math.cos(box.rotation),s=Math.sin(box.rotation),local=p=>{const x=p[0]-box.position[0],y=p[1]-box.position[1];return [x*c+y*s,-x*s+y*c]},a=local(start),b=local(end),x=box.size[0]/2,y=box.size[1]/2,corners=[[-x,-y],[x,-y],[x,y],[-x,y]]
   const pointDistance=(p,u,v)=>{const dx=v[0]-u[0],dy=v[1]-u[1],length=dx*dx+dy*dy,t=length?Math.max(0,Math.min(1,((p[0]-u[0])*dx+(p[1]-u[1])*dy)/length)):0;return Math.hypot(p[0]-u[0]-t*dx,p[1]-u[1]-t*dy)}
   const cross=(u,v,p)=>(v[0]-u[0])*(p[1]-u[1])-(v[1]-u[1])*(p[0]-u[0])
@@ -132,7 +143,17 @@ function segmentNearBox(start,end,box,radius){
 }
 
 export function isSegmentClear(scene, start, end, clearance=220) {
-  if(scene.exactClearance&&getObstacles(scene).some(box=>segmentNearBox(start,end,box,clearance)))return false
+  if(scene.exactClearance){
+    if(connectivityScope){
+      const minX=Math.min(start[0],end[0]),maxX=Math.max(start[0],end[0]),minY=Math.min(start[1],end[1]),maxY=Math.max(start[1],end[1])
+      const magnitude=Math.max(Math.abs(start[0]),Math.abs(start[1]),Math.abs(end[0]),Math.abs(end[1]),Math.abs(clearance))
+      for(const bounds of connectivityGeometry(scene).segmentBounds){
+        const padding=Math.max(0,clearance)+Math.max(1e-6,Number.EPSILON*16*Math.max(magnitude,bounds.magnitude))
+        if(minX>bounds.maxX+padding||maxX<bounds.minX-padding||minY>bounds.maxY+padding||maxY<bounds.minY-padding)continue
+        if(segmentNearBox(start,end,bounds.box,clearance,true))return false
+      }
+    }else if(getObstacles(scene).some(box=>segmentNearBox(start,end,box,clearance)))return false
+  }
   const steps=Math.max(1,Math.ceil(distance(start,end)/Math.min(70,clearance/2)))
   for(let i=0;i<=steps;i++)if(!isWalkable(scene,[start[0]+(end[0]-start[0])*i/steps,start[1]+(end[1]-start[1])*i/steps],clearance))return false
   return true
