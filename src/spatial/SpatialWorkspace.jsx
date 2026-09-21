@@ -170,7 +170,7 @@ export default function SpatialWorkspace({ projectId, onNavigate, logoutConfirme
     setDirty(false);setStudy(null);setPlaying(false);setMode('overview');requestKey.current=null;setError('');setMessage('Layout study discarded. The accepted concept and its available rooms are restored.');
   }
   function generateFromBrief(brief) {
-    const result=generateBriefLayout(brief,{id:'brief-house',name:remote?.project?.name||'Your house study',revision:accepted.revision+1});
+    const result=generateBriefLayout(brief,{id:'brief-house',name:remote?.project?.name||(brief.city.trim()?`${brief.city.trim().slice(0,80)} house study`:'Your house study'),revision:accepted.revision+1});
     const connected=validateConnectivity(result.model);
     if(!connected.valid)throw new Error('The starter could not connect every room. Revise the programme or import a measured drawing.');
     if(dirty&&!window.confirm('Replace the current unsaved layout study? The accepted concept remains in history.'))return;

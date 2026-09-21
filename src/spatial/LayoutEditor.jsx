@@ -25,6 +25,21 @@ function TextField({ label, value, onCommit }) {
   return <label className="le-field">{label}<input aria-label={label} value={draft} maxLength="100" onChange={event => setDraft(event.target.value)} onBlur={() => { if (draft !== value && onCommit(draft.trim()) === false) setDraft(value) }} onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur() }}/></label>
 }
 
+function StairDirection({ stair, floorId }) {
+  const up = stair.fromFloorId === floorId
+  const from = up ? stair.start : stair.end, to = up ? stair.end : stair.start
+  const dx = to[0] - from[0], dy = to[1] - from[1], length = Math.hypot(dx, dy)
+  const ux = dx / length, uy = dy / length, middle = from.map((v, i) => (v + to[i]) / 2)
+  const offset = stair.width * .28, half = Math.min(length * .2, 900)
+  const center = [middle[0] - uy * offset, middle[1] + ux * offset]
+  const tip = [center[0] + ux * half, center[1] + uy * half]
+  return <g style={{ pointerEvents: 'none' }}>
+    <line x1={center[0] - ux * half} y1={center[1] - uy * half} x2={tip[0]} y2={tip[1]} stroke="#322b22" strokeWidth="30"/>
+    <path d={`M${tip[0] - ux * 200 - uy * 120},${tip[1] - uy * 200 + ux * 120} L${tip.join(',')} L${tip[0] - ux * 200 + uy * 120},${tip[1] - uy * 200 - ux * 120}`} fill="none" stroke="#322b22" strokeWidth="30"/>
+    <text x={middle[0] + uy * 100} y={middle[1] - ux * 100} textAnchor="middle" dominantBaseline="middle" fontSize="180" fill="#322b22">{up ? 'UP' : 'DOWN'}</text>
+  </g>
+}
+
 export default function LayoutEditor({ model, onChange, onStatus, selectedRoomId, onSelectRoom, activeFloorId, onActiveFloorChange, disabled = false }) {
   const scene = useMemo(() => toV2(model), [model]), [localFloor, setLocalFloor] = useState(scene.floors[0].id)
   const floorId = scene.floors.some(f => f.id === (activeFloorId || localFloor)) ? (activeFloorId || localFloor) : scene.floors[0].id
@@ -215,7 +230,7 @@ export default function LayoutEditor({ model, onChange, onStatus, selectedRoomId
         const sweep = (a[0] - h[0]) * (b[1] - h[1]) - (a[1] - h[1]) * (b[0] - h[0]) > 0 ? 1 : 0, end = opening.open ? b : a
         return <g key={`swing-${opening.id}`} aria-hidden="true" style={{ pointerEvents: 'none' }}><path d={`M${a[0]} ${a[1]} A${radius} ${radius} 0 0 ${sweep} ${b[0]} ${b[1]}`} fill="none" stroke="#9f7853" strokeWidth="18" strokeDasharray="45 25"/><line x1={h[0]} y1={h[1]} x2={end[0]} y2={end[1]} stroke="#806448" strokeWidth="40"/><circle cx={h[0]} cy={h[1]} r="30" fill="#806448"/></g>
       }))}
-      {display.stairs.filter(stair => [stair.fromFloorId, stair.toFloorId].includes(floorId)).map(stair => <g key={stair.id} role="button" tabIndex={tool === 'select' ? 0 : -1} aria-label={`Edit ${stair.name}`} onClick={event => { if (tool === 'select') { event.stopPropagation(); select('stair', stair.id) } }} onKeyDown={event => { if (event.key === 'Enter') select('stair', stair.id) }}><polygon points={stairPolygon(stair).map(p => p.join(',')).join(' ')} fill="#b9a37d" fillOpacity=".5" stroke={selection?.id === stair.id ? '#a7532f' : '#6f6048'} strokeWidth="40" style={{ pointerEvents: tool === 'select' ? 'auto' : 'none' }}/>{Array.from({ length: stair.steps }, (_, i) => { const t = i / stair.steps, dx = stair.end[0] - stair.start[0], dy = stair.end[1] - stair.start[1], length = Math.hypot(dx, dy), x = stair.start[0] + dx * t, y = stair.start[1] + dy * t; return <line key={i} x1={x - dy / length * stair.width / 2} y1={y + dx / length * stair.width / 2} x2={x + dy / length * stair.width / 2} y2={y - dx / length * stair.width / 2} stroke="#6f6048" strokeWidth="20" style={{ pointerEvents: 'none' }}/> })}<text x={(stair.start[0] + stair.end[0]) / 2} y={(stair.start[1] + stair.end[1]) / 2} fontSize="180" fill="#322b22" style={{ pointerEvents: 'none' }}>UP ↑</text></g>)}
+      {display.stairs.filter(stair => [stair.fromFloorId, stair.toFloorId].includes(floorId)).map(stair => <g key={stair.id} role="button" tabIndex={tool === 'select' ? 0 : -1} aria-label={`Edit ${stair.name}`} onClick={event => { if (tool === 'select') { event.stopPropagation(); select('stair', stair.id) } }} onKeyDown={event => { if (event.key === 'Enter') select('stair', stair.id) }}><polygon points={stairPolygon(stair).map(p => p.join(',')).join(' ')} fill="#b9a37d" fillOpacity=".5" stroke={selection?.id === stair.id ? '#a7532f' : '#6f6048'} strokeWidth="40" style={{ pointerEvents: tool === 'select' ? 'auto' : 'none' }}/>{Array.from({ length: stair.steps }, (_, i) => { const t = i / stair.steps, dx = stair.end[0] - stair.start[0], dy = stair.end[1] - stair.start[1], length = Math.hypot(dx, dy), x = stair.start[0] + dx * t, y = stair.start[1] + dy * t; return <line key={i} x1={x - dy / length * stair.width / 2} y1={y + dx / length * stair.width / 2} x2={x + dy / length * stair.width / 2} y2={y - dx / length * stair.width / 2} stroke="#6f6048" strokeWidth="20" style={{ pointerEvents: 'none' }}/> })}<StairDirection stair={stair} floorId={floorId}/></g>)}
       {selection?.type === 'room' && display.rooms.find(room => room.id === selection.id)?.polygon.map((p, index) => <circle key={index} cx={p[0]} cy={p[1]} r={Math.max(65, box[2] / 140)} fill="#fff9ed" stroke="#a7532f" strokeWidth="30" aria-label={`Room vertex ${index + 1}`} onPointerDown={event => beginDrag(event, { type: 'vertex', id: selection.id, index })} onClick={event => event.stopPropagation()}/>)}
       {selectedWall && ['start', 'end'].map(end => { const wall = display.walls.find(w => w.id === selectedWall.id); return <circle key={end} cx={wall[end][0]} cy={wall[end][1]} r={Math.max(70, box[2] / 140)} fill="#fff9ed" stroke="#a7532f" strokeWidth="30" onPointerDown={event => beginDrag(event, { type: 'wall-end', id: selectedWall.id, end })} onClick={event => event.stopPropagation()}/> })}
       {selectedStair && ['start', 'end'].map(end => { const stair = display.stairs.find(s => s.id === selectedStair.id); return <circle key={end} cx={stair[end][0]} cy={stair[end][1]} r="100" fill="#fff9ed" stroke="#a7532f" strokeWidth="30" onPointerDown={event => beginDrag(event, { type: 'stair-end', id: selectedStair.id, end })} onClick={event => event.stopPropagation()}/> })}
