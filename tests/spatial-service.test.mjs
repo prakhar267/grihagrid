@@ -76,9 +76,12 @@ test('CPU jobs reach the renderer and survive service restart with the same devi
     assert.equal(renderedDevice,'cpu');
     assert.equal((await f.jobs()).find(item=>item.id===job.id).device,'cpu');
     await f.service.close();
-    restarted=await startRenderService({rootDirectory:f.rootDirectory,port:0,allowedOrigins:[ORIGIN],checkDependencies:false,checkDisk:false,executor:async()=>{throw new Error('Completed jobs must not rerun');}});
+    const restartCode=randomBytes(24).toString('base64url');
+    restarted=await startRenderService({rootDirectory:f.rootDirectory,port:0,allowedOrigins:[ORIGIN],checkDependencies:false,checkDisk:false,pairingCode:restartCode,executor:async()=>{throw new Error('Completed jobs must not rerun');}});
+    assert.equal(await readFile(restarted.pairingFile,'utf8'),restartCode);
     const headers={Origin:ORIGIN,'Content-Type':'application/json'};
-    const paired=await fetch(`${restarted.origin}/pair`,{method:'POST',headers,body:JSON.stringify({code:await readFile(restarted.pairingFile,'utf8')})});
+    const paired=await fetch(`${restarted.origin}/pair`,{method:'POST',headers,body:JSON.stringify({code:restartCode})});
+    assert.equal(paired.status,200);
     const {token}=await paired.json();
     const jobs=await (await fetch(`${restarted.origin}/jobs`,{headers:{...headers,Authorization:`Bearer ${token}`}})).json();
     assert.equal(jobs.jobs.find(item=>item.id===job.id).device,'cpu');

@@ -59,13 +59,15 @@ These are the existing versions, not this candidate. Paid checkout, paid
 fulfillment and private uploads remain disabled. No remote migration, merge,
 release dispatch or deployment was performed during this preflight.
 
-## Remaining release decision
+## Release approval — 22 September 2026
 
-The latest recorded scope in `AGENTS.md` is local implementation, verification
-and draft review. The operations runbook also requires explicit two-person
-review for schema changes. The PR currently has no independent approving human
-review. Review the database change above and confirm the staging-first release
-before merging. Green automated checks do not constitute that review.
+The owner replied “approved u have full access” after being shown this database
+review and asked whether the required schema review was completed and PR #83
+could be merged and deployed. This approval expands the earlier local/draft
+scope to the protected staging-first release, migration and monitoring. It is
+recorded in the task and PR description; it is not a GitHub approving-review
+event or evidence of deployment completion. Preserve the normal branch checks,
+encrypted backup, rollback rehearsal and production observation requirements.
 
 Physical iPhone and spoken VoiceOver checks remain explicitly deferred by the
 user. Domain, payment and private-upload activation remain outside this cut.
