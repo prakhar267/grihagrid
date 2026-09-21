@@ -43,6 +43,7 @@ test('spatial workspace enforces authenticated ownership, immutable real-D1 revi
   const base=()=>({expectedInputRevision:1,expectedSpatialRevision:spatialRevision})
 
   await context.test('candidate release canary persists model, tour and viewpoints with archive fences and exact cleanup',async()=>{
+    const user=await owner(env,'release-spatial-owner@example.test')
     const created=await expect(await worker.fetch(request('/api/projects',user,{name:'Exact spatial release canary',input:{width:30,length:50,floors:'G+1',city:'Pune',quality:'Signature'}}),env),201)
     const id=created.project.id
     const call=async(route,init={},statuses=[200])=>{
@@ -53,15 +54,19 @@ test('spatial workspace enforces authenticated ownership, immutable real-D1 revi
       const result=await runSpatialReleaseCanary(call,id,created.project.inputRevision)
       assert.equal(result.v2PreviewVerified,true)
       assert.equal(result.persistenceVerified,true);assert.equal(result.archiveFenceVerified,true);assert.equal(result.staleRevisionRejected,true)
-      for(const table of ['spatial_revisions','spatial_tour_revisions','spatial_camera_revisions'])assert.equal((await db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE project_id=?`).bind(id).first()).n,1)
+      assert.deepEqual(result.houses.map(h=>[h.city,h.floors,h.cameraFloors,h.tourFloors]),[['Jaipur',3,3,3],['Delhi',3,3,3]])
+      assert.ok(result.houses.every(h=>h.briefReplayVerified&&h.readOnlyPreviewVerified&&h.staleBriefRejected))
+      for(const table of ['spatial_revisions','spatial_tour_revisions','spatial_camera_revisions'])assert.equal((await db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE project_id=?`).bind(id).first()).n,3)
+      assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM house_brief_revisions WHERE project_id=?').bind(id).first()).n,2)
     }finally{
       assert.equal((await worker.fetch(request(`/api/projects/${id}`,user,undefined,{method:'DELETE'}),env)).status,204)
     }
-    for(const table of ['spatial_revisions','spatial_tour_revisions','spatial_camera_revisions'])assert.equal((await db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE project_id=?`).bind(id).first()).n,0)
+    for(const table of ['house_brief_revisions','spatial_revisions','spatial_tour_revisions','spatial_camera_revisions'])assert.equal((await db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE project_id=?`).bind(id).first()).n,0)
     assert.equal((await expect(await worker.fetch(request(`/api/projects/${user.project.id}`,user),env),200)).project.id,user.project.id)
   })
 
   await context.test('full authenticated candidate canary requires spatial persistence and cleans only its synthetic project',async()=>{
+    const canaryOwner=await owner(env,'release-auth-owner@example.test')
     const originalFetch=globalThis.fetch
     const before=(await db.prepare('SELECT id FROM projects ORDER BY id').all()).results
     env.APP_ORIGIN=ORIGIN
@@ -69,13 +74,43 @@ test('spatial workspace enforces authenticated ownership, immutable real-D1 revi
     await db.prepare("UPDATE report_handoff_controls SET enabled=1 WHERE control_key='report_handoff'").run()
     globalThis.fetch=async(input,init)=>{assert.equal(new URL(input).origin,ORIGIN);return worker.fetch(new Request(input,init),env)}
     try{
-      const result=await runAuthenticatedSmoke(ORIGIN,{email:'spatial-owner@example.test',password:'correct horse battery staple'},{expectSpatial:true})
+      const result=await runAuthenticatedSmoke(ORIGIN,{email:'release-auth-owner@example.test',password:'correct horse battery staple'},{expectSpatial:true})
       assert.equal(result.spatialExpected,true);assert.equal(result.spatial.persistenceVerified,true);assert.equal(result.spatial.archiveFenceVerified,true)
       assert.equal(result.spatial.v2PreviewVerified,true)
+      assert.deepEqual(result.spatial.houses.map(h=>[h.city,h.floors,h.cameraFloors,h.tourFloors]),[['Jaipur',3,3,3],['Delhi',3,3,3]])
       assert.equal(result.projectDeleted,true);assert.equal(result.sessionRevocationVerified,true)
-      assert.equal(result.canaryProjectIds.length,1);assert.notEqual(result.canaryProjectIds[0],user.project.id)
+      assert.equal(result.canaryProjectIds.length,1);assert.notEqual(result.canaryProjectIds[0],canaryOwner.project.id)
       assert.deepEqual((await db.prepare('SELECT id FROM projects ORDER BY id').all()).results,before)
-      for(const table of ['spatial_revisions','spatial_tour_revisions','spatial_camera_revisions'])assert.equal(await count(table),0)
+      for(const table of ['house_brief_revisions','spatial_revisions','spatial_tour_revisions','spatial_camera_revisions'])assert.equal(await count(table),0)
+    }finally{
+      globalThis.fetch=originalFetch;delete env.REPORT_SHARE_ABUSE_HMAC_KEY;delete env.APP_ORIGIN
+      await db.prepare("UPDATE report_handoff_controls SET enabled=0 WHERE control_key='report_handoff'").run()
+    }
+  })
+
+  await context.test('an ambiguous second-city brief save fails release and cleans only its synthetic project',async()=>{
+    const canaryOwner=await owner(env,'release-failure-owner@example.test')
+    const before=(await db.prepare('SELECT id FROM projects ORDER BY id').all()).results
+    const originalFetch=globalThis.fetch
+    env.APP_ORIGIN=ORIGIN
+    env.REPORT_SHARE_ABUSE_HMAC_KEY='ab'.repeat(32)
+    await db.prepare("UPDATE report_handoff_controls SET enabled=1 WHERE control_key='report_handoff'").run()
+    let failedProjectId
+    globalThis.fetch=async(input,init)=>{
+      const url=new URL(input);assert.equal(url.origin,ORIGIN)
+      const response=await worker.fetch(new Request(input,init),env)
+      if(url.pathname.endsWith('/spatial/brief')&&JSON.parse(init.body).brief.city==='Delhi'&&response.status===201){
+        failedProjectId=url.pathname.split('/')[3]
+        assert.equal((await db.prepare('SELECT COUNT(*) AS n FROM house_brief_revisions WHERE project_id=?').bind(failedProjectId).first()).n,2)
+        return Response.json({error:'Synthetic interrupted response'},{status:503})
+      }
+      return response
+    }
+    try{
+      await assert.rejects(runAuthenticatedSmoke(ORIGIN,{email:'release-failure-owner@example.test',password:'correct horse battery staple'},{expectSpatial:true}),/spatial\/brief returned 503/)
+      assert.ok(failedProjectId);assert.notEqual(failedProjectId,canaryOwner.project.id)
+      assert.deepEqual((await db.prepare('SELECT id FROM projects ORDER BY id').all()).results,before)
+      for(const table of ['house_brief_revisions','spatial_revisions','spatial_tour_revisions','spatial_camera_revisions'])assert.equal((await db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE project_id=?`).bind(failedProjectId).first()).n,0)
     }finally{
       globalThis.fetch=originalFetch;delete env.REPORT_SHARE_ABUSE_HMAC_KEY;delete env.APP_ORIGIN
       await db.prepare("UPDATE report_handoff_controls SET enabled=0 WHERE control_key='report_handoff'").run()

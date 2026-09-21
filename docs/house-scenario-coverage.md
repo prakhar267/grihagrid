@@ -119,6 +119,24 @@ No brief or location is added to Gemini payloads or analytics.
 
 ## Verification evidence
 
+The candidate release canary now saves synthetic **Jaipur and Delhi G+2** briefs
+on its exact disposable project. For each city it checks a read-only brief and
+layout preview, an idempotent brief retry, rejection of the old brief/model
+source, accepted V2 geometry, three saved floor viewpoints, and a 45-second tour
+covering all three floors. It reloads the complete brief, walls, openings,
+furniture, stairs, cameras and tour and compares them with the submitted data.
+Archive checks cover brief edits as well as model, camera and tour writes.
+
+The checked-in `scripts/fixtures/house-release.json` uses generated 40×60 ft and
+45×60 ft studies with explicit synthetic working setbacks, not assumed Jaipur
+or Delhi municipal rules. The privileged canary has no npm runtime dependencies
+and calls no AI provider. Existing live Workers AI evidence remains separate.
+The API suite also interrupts the response after the second city's brief has
+already persisted: the release must fail, remove only that synthetic project
+and its cascading brief/spatial records, and retain pre-existing projects.
+This is automated API release coverage, not evidence of a staging/production
+deployment or a substitute for visual 2D, 3D, walking and tour checks.
+
 Automated cases live in `tests/house-scenarios.test.mjs` and
 `tests/house-brief-api.test.mjs`; spatial geometry/tour and full repository
 regressions are also run. The API suite uses disposable real D1 storage with all

@@ -60,7 +60,7 @@ test('privileged release canaries import and execute without repository dependen
   const directory = await mkdtemp(join(tmpdir(), 'grihagrid-canary-no-dependencies-'));
   try {
     await mkdir(join(directory, 'fixtures'));
-    for (const name of ['authenticated-smoke.mjs', 'spatial-release-canary.mjs', 'fixtures/spatial-release.json']) {
+    for (const name of ['authenticated-smoke.mjs', 'spatial-release-canary.mjs', 'fixtures/spatial-release.json', 'fixtures/house-release.json']) {
       await writeFile(join(directory, name), await readFile(new URL('../scripts/' + name, import.meta.url)));
     }
     const result = spawnSync(process.execPath, ['--input-type=module', '-'], { cwd: directory, encoding: 'utf8',
