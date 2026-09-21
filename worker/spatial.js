@@ -81,42 +81,40 @@ export async function handleSpatialRequest(request, env, projectId, action, h) {
     throw new HttpError(409, 'The brief changed. Review and accept the spatial concept before directing a tour.', 'spatial_source_stale');
   if(action==='viewpoints')return saveViewpoints({request,body,db,project,rows,session,helpers:h,assertBase,projection,latestRows});
   if (action === 'tour-intent') {
-    exact(body, [...fields, 'acceptedAiTerms', 'intent'], HttpError);
+    exact(body, [...fields, 'acceptedAiTerms', 'aiProviders', 'intent'], HttpError);
     assertBase(body, project, rows.model, HttpError);
     if (body.acceptedAiTerms !== true) throw new HttpError(400, 'Consent to sending room stops and timing is required', 'ai_terms_required');
     if (!rows.model) throw new HttpError(409, 'Save the spatial concept before requesting AI direction', 'spatial_model_required');
     const model = JSON.parse(rows.model.model_json);
     if (!validateSpatialIntent(body.intent, model)) throw new HttpError(400, 'Choose known rooms and a duration between 10 and 180 seconds', 'invalid_tour_intent');
-    const config = h.requireGeminiConfig(env);
+    const config = h.requireAiConfig(env, body);
     const sourceHash = await digestHex(rows.model.model_json);
     const lease = await h.acquireAiGenerationAdmission(db, projectId, session.user_id, sourceHash);
     try {
       const context=providerIntentContext(model,body.intent);
       const sanitized=context.data;
-      const provider = typeof env.GEMINI_FETCH === 'function' ? env.GEMINI_FETCH : fetch;
-      let response;
-      try { response = await provider('https://generativelanguage.googleapis.com/v1/interactions', {
-        method: 'POST', headers: { 'content-type': 'application/json', 'x-goog-api-key': config.apiKey },
-        body: JSON.stringify({ model: config.model, store: false,
-          input: spatialIntentPrompt + JSON.stringify(sanitized),
-          generation_config: { max_output_tokens: 2400, thinking_level: 'low' },
-          response_format: { type: 'text', mime_type: 'application/json', schema:tourIntentResponseSchema(sanitized) },
-        }), signal: AbortSignal.timeout(25000),
-      }); } catch { throw new HttpError(503, 'AI direction is temporarily unavailable. Manual tours remain available.', 'tour_ai_unavailable'); }
-      if (!response.ok) throw new HttpError(503, 'AI direction is temporarily unavailable. Manual tours remain available.', 'tour_ai_unavailable');
-      if (!response.body) throw new HttpError(502, 'The AI response was empty', 'invalid_tour_intent');
-      const reader = response.body.getReader(); let text = ''; let bytes = 0; const decoder = new TextDecoder();
-      try { while (true) { const part = await reader.read(); if (part.done) break; bytes += part.value.byteLength; if (bytes > 65536) throw new Error('size'); text += decoder.decode(part.value, { stream: true }); } text += decoder.decode(); }
-      catch { await reader.cancel().catch(() => {}); throw new HttpError(502, 'The AI response could not be validated', 'invalid_tour_intent'); }
-      let intent;
-      try { intent = JSON.parse(h.extractGeminiText(JSON.parse(text))); } catch { throw new HttpError(502, 'The AI response could not be validated', 'invalid_tour_intent'); }
-      intent=context.fromProvider(intent);
-      if (!validateSpatialIntent(intent, model)||!preservesRequestedDirection(intent,body.intent)) throw new HttpError(502, 'The AI direction did not preserve the requested rooms, subjects or timing', 'invalid_tour_intent');
+      let generated;
+      try {
+        generated = await h.callAiJson(env, spatialIntentPrompt + JSON.stringify(sanitized), config, {
+          schema: tourIntentResponseSchema(sanitized),
+          maxAttempts: 1, transportStatus: 503,
+          reserveCloudflare: () => h.reserveCloudflareAi(db, env, projectId, lease, sourceHash),
+          validate: raw => {
+            const intent = context.fromProvider(raw);
+            if (!validateSpatialIntent(intent, model) || !preservesRequestedDirection(intent, body.intent)) throw new Error('Invalid direction');
+            return intent;
+          },
+        });
+      } catch (error) {
+        if (error.code === 'ai_provider_error') throw new HttpError(502, 'The AI direction could not be validated; saved tours are unchanged', 'invalid_tour_intent');
+        throw error;
+      }
+      const intent = generated.content;
       const current = await ownedProject(db, projectId, session.user_id);
       const currentRows = await latestRows(db, projectId);
       requireActiveProject(current); assertBase(body, current, currentRows.model, HttpError);
       if((body.expectedBriefRevision??0)!==Number(currentRows.brief?.revision||0))throw new HttpError(409,'The house brief changed during camera direction. Review the current brief.','house_brief_conflict');
-      return json({ intent, source: 'gemini', sourceRevision: model.revision });
+      return json({ intent, source: generated.provider, model: generated.model, sourceRevision: model.revision });
     } finally { await h.releaseAiGenerationLease(db, projectId, session.user_id, lease); }
   }
   if (action === 'tour') {

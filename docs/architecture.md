@@ -25,7 +25,7 @@ Cloudflare Worker                     Node local render service
   auth, ownership, CSRF, admission      bounded local jobs and progress
   source checks and immutable saves     fixed repository Python entrypoints
   deterministic planning/report APIs         │
-  bounded optional Gemini intent             ▼
+  bounded Cloudflare-first AI intent             ▼
        │               │               Blender / FFmpeg processes
        ▼               ▼                scene, GLB, preview, MP4
       D1              KV                private local output directories
@@ -91,7 +91,7 @@ vertical FOV, easing/transition and source signatures. A changed layout makes
 affected shots stale; saved poses remain attributable to their original concept.
 Tour and camera-library edits are versioned independently of the accepted model.
 
-Gemini is optional structured intent. The browser parses room/subject/shot
+Cloudflare Workers AI provides optional structured intent; Gemini is a separately consented fallback. The browser parses room/subject/shot
 preferences, and the Worker aliases identifiers and limits provider input to
 safe vocabulary. It sends no raw drawing, unrestricted prompt, address,
 coordinate or account record through the tour endpoint. Returned identifiers,
@@ -218,8 +218,9 @@ recovery semantics, formats and inspected native export evidence.
   not add device telemetry, persist a viewed session list, or emit a product
   event with session times. Verification and recovery mail stores only bounded
   delivery evidence and is unavailable without provider configuration.
-- Gemini requests use a Worker secret, `store: false`, provider core-harm protection,
-  adult consent, and sanitized inputs that exclude identity, project names,
+- Cloudflare uses the server-side AI binding with explicit processor consent and
+  conservative D1 neuron reservations. Gemini fallback uses a Worker secret and
+  `store: false`, with separate Google consent. Both use sanitized inputs that exclude identity, project names,
   precise addresses, coordinates, payments, and uploads.
 - Generated text is rejected unless it stays inside the advisory boundary; D1
   enforces per-user and platform spend ceilings, while KV remains a best-effort

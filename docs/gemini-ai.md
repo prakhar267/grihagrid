@@ -1,5 +1,11 @@
 # Gemini AI planning brief
 
+> Current routing (21 September 2026): Cloudflare Workers AI is primary for both
+> planning briefs and camera direction. Gemini is an optional fallback with
+> separate Google consent. See [Cloudflare-first AI delivery](cloudflare-ai-migration.md)
+> for current configuration, limits and verification. This document describes
+> the retained Gemini transport and its historical evidence.
+
 ## Purpose and boundary
 
 GrihaGrid uses Google Gemini for an optional, owner-triggered second reading

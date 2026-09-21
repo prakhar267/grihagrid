@@ -72,6 +72,7 @@ async function startWorker(stateDirectory, assetsDirectory, port) {
     "--var", "ENABLED_PAYMENT_PLANS:",
     "--var", `RAZORPAY_WEBHOOK_SECRET:${webhookSecret}`,
     "--var", "GEMINI_API_KEY:",
+    "--var", "AI_PROVIDER:gemini",
   ];
   const child = spawn(process.execPath, [wranglerCli, ...args], {
     cwd: root,

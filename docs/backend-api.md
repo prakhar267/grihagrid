@@ -151,7 +151,7 @@ ready.
 
 Free-product readiness probe. Returns `200 status=ready` only when D1 is
 reachable, the required schema is present, and the KV abuse-control binding
-exists. The response separately reports Gemini planning, private upload, and
+exists. The response separately reports AI planning, private upload, and
 paid-checkout capabilities, including `authSchema`, `decisionSchema`,
 `paymentSchema`, `revisionSchema`, `reportFeedbackSchema`, and
 `projectCreationSchema`, plus `reportShareSchema`.
@@ -1244,25 +1244,30 @@ cannot create or change it. Missing and foreign projects/reports use the same
 owner-safe `404`; project deletion cascades the response. The complete product,
 privacy, migration, and rollback contract is in [report-feedback.md](report-feedback.md).
 
-## Gemini planning-brief endpoints
+## AI planning-brief endpoints
 
 These owner-scoped endpoints provide an optional advisory reading of the
-current deterministic report. Gemini never replaces the estimate or report,
+current deterministic report. Cloudflare Workers AI is primary, with separately consented Gemini fallback. AI never replaces the estimate or report,
 and a provider failure does not affect either one. The complete privacy and
-operations boundary is documented in `docs/gemini-ai.md`.
+operations boundary is documented in `docs/cloudflare-ai-migration.md` and `docs/gemini-ai.md`.
 
 ### `GET /api/projects/:projectId/ai-brief`
 
 Returns `{ aiBrief, cached: true }` for the current report, model, schema, and
 prompt versions. A missing or stale brief returns `404 ai_brief_not_found`
-rather than silently calling Google from a read request.
+rather than silently calling an AI provider from a read request.
 
 ### `POST /api/projects/:projectId/ai-brief`
 
 Requires same-origin, authentication, project ownership, CSRF, atomic D1
 admission control, and `Content-Type: application/json`. The exact request body is
-`{ "acceptedAiTerms": true, "refresh": false }`; `refresh` is optional. Missing
-adult/Google-processing acknowledgement returns `400 ai_terms_required`.
+`{ "acceptedAiTerms": true, "aiProviders": ["cloudflare"], "refresh": false }`;
+`refresh` is optional. Add `"gemini"` to `aiProviders` only with separate Google
+fallback consent. Missing adult/processor acknowledgement returns
+`400 ai_terms_required`. Legacy requests without `aiProviders` authorize Google
+only. Responses include the actual `aiBrief.provider` and `aiBrief.model`.
+The spatial `tour-intent` endpoint accepts the same consent fields and returns
+actual `source` and `model`; persisted tours support source `cloudflare`.
 
 A new generation returns `201 { aiBrief, cached: false }`. A current cache hit
 or successful refresh returns `200`. Expected provider-side failures are

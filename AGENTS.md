@@ -36,7 +36,7 @@ The user subsequently rejected schematic detail as insufficient even when module
 
 Treat `README.md`, `package.json`, `wrangler.toml`, `worker/index.js`, `src/App.jsx`, `src/styles.css`, and the relevant files in `docs/` as the canonical implementation and operating context. Before architectural changes, inspect the architecture, backend API, launch-readiness, operations, feature, and test-plan documentation. Inspect the configured live product and existing styles before material UI changes; evolve the current system rather than redesigning it.
 
-The platform is React/Vite on a Cloudflare Worker with D1 and KV. Production and staging must use physically separate resources. R2 and private uploads are intentionally disabled. Gemini calls stay server-side and use the `GEMINI_API_KEY` Worker secret.
+The platform is React/Vite on a Cloudflare Worker with D1 and KV. Production and staging must use physically separate resources. R2 and private uploads are intentionally disabled. On 21 September 2026 the user requested Cloudflare free AI wherever possible, retaining Gemini only as fallback. Both planning briefs and camera direction use the server-side Workers AI binding first. Preserve explicit processor consent, bounded free-allocation reservations and actual provider provenance. Gemini fallback uses the `GEMINI_API_KEY` Worker secret and separate Google consent. Local OCR and deterministic geometry remain independent of cloud AI. See `docs/cloudflare-ai-migration.md`.
 
 Preserve deterministic planning behavior, honest uncertainty and conflict states, Change Study before committed revisions, versioned conflict-safe project history, and immutability of revisions and purchased artifacts.
 

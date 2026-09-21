@@ -1,6 +1,7 @@
 import { normalizeHouseBrief } from '../src/spatial/house-brief.js';
 import { handleSpatialRequest } from "./spatial.js";
 import { SPATIAL_SCHEMA } from "./spatial-schema.js";
+import { createCloudflareAi, CLOUDFLARE_NEURONS_PER_CALL } from "./cloudflare-ai.js";
 import { buildArchitecturalHandoff, publicArchitecturalProgramme } from "../src/architect-report.js";
 
 const JSON_HEADERS = {
@@ -233,6 +234,8 @@ class HttpError extends Error {
     this.code = code;
   }
 }
+
+const cloudflareAi = createCloudflareAi(HttpError);
 
 function secure(response) {
   const headers = new Headers(response.headers);
@@ -7700,6 +7703,58 @@ function requireGeminiConfig(env) {
   return { apiKey, model: aiModel(env) };
 }
 
+function requireAiConfig(env, consent) {
+  const provider = env.AI_PROVIDER || (env.AI ? "cloudflare" : "gemini");
+  if (!["cloudflare", "gemini"].includes(provider)) throw new HttpError(503, "AI planning is not configured", "ai_unavailable");
+  let gemini = null;
+  if (provider === "gemini" || env.AI_GEMINI_FALLBACK === "true") {
+    try { gemini = { ...requireGeminiConfig(env), provider: "gemini" }; } catch { /* Optional fallback stays closed. */ }
+  }
+  const primary = provider === "cloudflare" ? cloudflareAi.config(env) : gemini;
+  const config = primary ? { ...primary, fallback: primary.provider === "cloudflare" ? gemini : null } : gemini;
+  if (!config) throw new HttpError(503, "AI planning is not configured", "ai_unavailable");
+  if (consent !== undefined) {
+    if (consent.acceptedAiTerms !== true) throw new HttpError(400, "Confirm you are 18+ and accept AI processing before continuing", "ai_terms_required");
+    const providers = consent.aiProviders;
+    if (providers !== undefined && (!Array.isArray(providers) || !providers.length || providers.length > 2 || new Set(providers).size !== providers.length || providers.some(value => !["cloudflare", "gemini"].includes(value)))) {
+      throw new HttpError(400, "Choose the AI processors you consent to", "invalid_ai_request");
+    }
+    // Legacy clients disclosed Google only. Their checkbox cannot authorize
+    // Cloudflare; new clients send the explicit processor allowlist.
+    if (!(providers || ["gemini"]).includes(config.provider)) throw new HttpError(400, "Review and accept processing by the available AI provider", "ai_terms_required");
+    if (!providers?.includes("gemini")) config.fallback = null;
+  }
+  return config;
+}
+
+async function reserveCloudflareAi(db, env, projectId, leaseToken, sourceHash, date = new Date()) {
+  const limit = cloudflareAi.dailyLimit(env);
+  const now = sqliteTimestamp(date);
+  try {
+    const result = await aiCounterStatement(db, "platform_day", "cloudflare_neurons", `${now.slice(0, 10)} 00:00:00`, CLOUDFLARE_NEURONS_PER_CALL, limit, now, projectId, leaseToken, sourceHash).run();
+    if (!result.results?.length) throw new HttpError(409, "AI generation lease expired", "ai_generation_in_progress");
+  } catch (error) {
+    if (/check constraint failed:\s*(?:ai_generation_counter_within_limit|request_count\s*<=\s*limit_count)\b/iu.test(String(error?.message || error))) {
+      throw new HttpError(503, "The daily Cloudflare AI allowance is used. Try after 00:00 UTC or allow Gemini fallback.", "ai_capacity_unavailable");
+    }
+    throw error;
+  }
+}
+
+async function callAiJson(env, prompt, config, options) {
+  if (config.provider === "gemini") return callGemini(env, prompt, config, options);
+  try {
+    const input = cloudflareAi.request(prompt, options.schema);
+    await options.reserveCloudflare();
+    return await cloudflareAi.run(env, config.model, input, options.validate);
+  } catch (error) {
+    if (error.code !== "ai_capacity_unavailable" || !config.fallback) throw error;
+    // At most one Cloudflare call plus one Gemini call under the existing
+    // two-attempt reservation. No fallback from schema/semantic rejection.
+    return callGemini(env, prompt, config.fallback, { ...options, maxAttempts: 1, timeoutMs: 15_000 });
+  }
+}
+
 function requiredAiString(value, field, minimum, maximum) {
   if (typeof value !== "string") throw new Error(`${field} must be a string`);
   const normalized = value.normalize("NFKC").replace(/\p{Cf}/gu, "").replace(/\p{Pd}/gu, "-").replace(/[’‘]/gu, "'").trim().replace(/\s+/gu, " ");
@@ -7878,6 +7933,7 @@ function aiBriefFromRow(row) {
     schemaVersion: Number(row.schema_version),
     promptVersion: row.prompt_version,
     model: row.model,
+    provider: String(row.model).startsWith("@cf/") ? "cloudflare" : "gemini",
     source: {
       reportId: row.source_report_id,
       reportVersion: Number(row.source_report_version),
@@ -8057,10 +8113,11 @@ async function readGeminiResponse(response) {
   }
 }
 
-async function callGemini(env, prompt, config) {
+async function callGemini(env, prompt, config, options = {}) {
   const providerFetch = typeof env.GEMINI_FETCH === "function" ? env.GEMINI_FETCH : fetch;
   let response;
-  const signal = AbortSignal.timeout(GEMINI_TIMEOUT_MS);
+  const signal = AbortSignal.timeout(options.timeoutMs || GEMINI_TIMEOUT_MS);
+  const attempts = options.maxAttempts || GEMINI_MAX_ATTEMPTS;
   const transientStatuses = new Set([408, 429, 500, 502, 503, 504]);
   const providerRequest = {
     method: "POST",
@@ -8077,31 +8134,31 @@ async function callGemini(env, prompt, config) {
       response_format: {
         type: "text",
         mime_type: "application/json",
-        schema: AI_BRIEF_RESPONSE_SCHEMA,
+        schema: options.schema || AI_BRIEF_RESPONSE_SCHEMA,
       },
     }),
     signal,
   };
-  for (let attempt = 0; attempt < GEMINI_MAX_ATTEMPTS; attempt += 1) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
       response = await providerFetch(GEMINI_INTERACTIONS_URL, providerRequest);
     } catch {
-      if (attempt < GEMINI_MAX_ATTEMPTS - 1 && !signal.aborted) {
+      if (attempt < attempts - 1 && !signal.aborted) {
         await waitForGeminiRetry(signal, attempt);
         continue;
       }
-      throw new HttpError(502, "AI provider is temporarily unavailable", "ai_provider_error");
+      throw new HttpError(options.transportStatus || 502, "AI provider is temporarily unavailable", options.transportStatus ? "tour_ai_unavailable" : "ai_provider_error");
     }
     if (!response.ok) {
       // Discard provider error bodies without allocating or exposing their text.
       try { response.body?.cancel().catch(() => {}); } catch { /* Already closed or locked. */ }
     }
-    if (response.ok || !transientStatuses.has(response.status) || attempt === GEMINI_MAX_ATTEMPTS - 1) break;
+    if (response.ok || !transientStatuses.has(response.status) || attempt === attempts - 1) break;
     await waitForGeminiRetry(signal, attempt);
   }
   if (!response.ok) {
     if (response.status === 429) throw new HttpError(503, "AI capacity is temporarily unavailable", "ai_capacity_unavailable");
-    throw new HttpError(502, "AI provider could not generate the planning brief", "ai_provider_error");
+    throw new HttpError(options.transportStatus || 502, "AI provider could not generate the planning brief", options.transportStatus ? "tour_ai_unavailable" : "ai_provider_error");
   }
   const responseText = await readGeminiResponse(response);
   let interaction;
@@ -8112,7 +8169,7 @@ async function callGemini(env, prompt, config) {
   }
   let content;
   try {
-    content = validateAiBriefContent(JSON.parse(extractGeminiText(interaction)));
+    content = (options.validate || validateAiBriefContent)(JSON.parse(extractGeminiText(interaction)));
   } catch (error) {
     if (error instanceof HttpError) throw error;
     console.warn("AI provider output failed validation", {
@@ -8121,7 +8178,7 @@ async function callGemini(env, prompt, config) {
     throw new HttpError(502, "AI provider returned an invalid planning brief", "ai_provider_error");
   }
   const interactionId = typeof interaction.id === "string" && interaction.id.length <= 512 ? interaction.id : null;
-  return { content, interactionId, usage: aiUsage(interaction.usage) };
+  return { content, interactionId, usage: aiUsage(interaction.usage), provider: "gemini", model: config.model };
 }
 
 async function getAiBrief(request, env, projectId) {
@@ -8163,16 +8220,16 @@ async function generateAiBrief(request, env, projectId) {
   await requireCsrf(request, session);
   const body = await readJson(request);
   if (body.acceptedAiTerms !== true) {
-    throw new HttpError(400, "confirm that you are 18+ and accept Google AI processing before continuing", "ai_terms_required");
+    throw new HttpError(400, "confirm that you are 18+ and accept AI processing before continuing", "ai_terms_required");
   }
   if (Object.hasOwn(body, "refresh") && typeof body.refresh !== "boolean") {
     throw new HttpError(400, "refresh must be a boolean", "invalid_ai_request");
   }
-  const supportedFields = new Set(["acceptedAiTerms", "refresh"]);
+  const supportedFields = new Set(["acceptedAiTerms", "aiProviders", "refresh"]);
   if (Object.keys(body).some((key) => !supportedFields.has(key))) {
     throw new HttpError(400, "request contains unsupported fields", "invalid_ai_request");
   }
-  const config = requireGeminiConfig(env);
+  const config = requireAiConfig(env, body);
 
   const project = await ownedProject(db, projectId, session.user_id);
   if (project.status === "archived") throw new HttpError(409, "restore the project before generating an AI brief", "project_archived");
@@ -8186,7 +8243,7 @@ async function generateAiBrief(request, env, projectId) {
     && existing.source_input_hash === report.inputHash
     && existing.prompt_version === AI_PROMPT_VERSION
     && Number(existing.schema_version) === AI_BRIEF_SCHEMA_VERSION
-    && existing.model === config.model;
+    && (existing.model === config.model || existing.model === config.fallback?.model);
   if (sourceMatches && !body.refresh) {
     try {
       return json({ aiBrief: aiBriefFromRow(existing), cached: true });
@@ -8198,7 +8255,10 @@ async function generateAiBrief(request, env, projectId) {
   const prompt = aiPrompt(report);
   const leaseToken = await acquireAiGenerationAdmission(db, projectId, session.user_id, report.inputHash);
   try {
-    const generated = await callGemini(env, prompt, config);
+    const generated = await callAiJson(env, prompt, config, {
+      schema: AI_BRIEF_RESPONSE_SCHEMA, validate: validateAiBriefContent,
+      reserveCloudflare: () => reserveCloudflareAi(db, env, projectId, leaseToken, report.inputHash),
+    });
     const id = existing?.id || crypto.randomUUID();
     const now = sqliteTimestamp();
     const persisted = await db.prepare(
@@ -8237,7 +8297,7 @@ async function generateAiBrief(request, env, projectId) {
       AI_BRIEF_SCHEMA_VERSION,
       AI_PROMPT_VERSION,
       await digestHex(prompt),
-      config.model,
+      generated.model,
       report.id,
       Number(report.version) || REPORT_VERSION,
       report.inputHash,
@@ -9235,14 +9295,13 @@ async function api(request, env, ctx, url) {
       } catch {
         // Professional Handoff fails closed without its dedicated pseudonymization key.
       }
-      let geminiConfiguration = "invalid";
+      let aiConfiguration = null;
       try {
-        requireGeminiConfig(env);
-        geminiConfiguration = "valid";
+        aiConfiguration = requireAiConfig(env);
       } catch {
         // Readiness reports only a safe status, never key or model details.
       }
-      const geminiConfigured = geminiConfiguration === "valid"
+      const aiConfigured = Boolean(aiConfiguration)
         && aiSchema === "current"
         && aiAbuseControl === "configured";
       let transactionalEmail = "unavailable";
@@ -9281,7 +9340,9 @@ async function api(request, env, ctx, url) {
           professionalReviewSchema,
           spatialSchema,
           transactionalEmail,
-          ai: geminiConfigured ? "configured" : "unavailable",
+          ai: aiConfigured ? "configured" : "unavailable",
+          aiProvider: aiConfigured ? aiConfiguration.provider : null,
+          aiFallback: aiConfigured && aiConfiguration.fallback ? "gemini" : null,
           privateStorage: env.FILES && privateUploadSchema === "current" ? "configured" : "unavailable",
           acceptingPaidPlans: acceptingPlans,
         },
@@ -9290,7 +9351,7 @@ async function api(request, env, ctx, url) {
           privateUploads: freeReady && privateUploadSchema === "current" && Boolean(env.FILES),
           paidCheckout: freeReady && acceptingPlans.length > 0,
           paidFulfillment: enabledFlag(env.DECISION_COMPARE_FULFILLMENT_ENABLED),
-          aiPlanningBrief: geminiConfigured,
+          aiPlanningBrief: aiConfigured,
           decisionCompare: freeReady && decisionSchema === "current",
           familyAlignment: freeReady && decisionSchema === "current" && familyAlignmentSchema === "current" && rateLimit === "configured",
           briefCheck: freeReady && revisionSchema === "current" && rateLimit === "configured",
@@ -9512,7 +9573,7 @@ async function api(request, env, ctx, url) {
     if (spatialMatch) return await handleSpatialRequest(request, env, decodeProjectPathSegment(spatialMatch[1]), spatialMatch[2] || '', {
       HttpError, json, requireDatabase, getSession, ownedProject, requireActiveProject,
       requireTrustedOrigin, requireCsrf, readJson, digestHex, normalizeIdempotencyKey,
-      requireAbuseControl, rateLimit, methodNotAllowed, requireGeminiConfig,
+      requireAbuseControl, rateLimit, methodNotAllowed, requireAiConfig, callAiJson, reserveCloudflareAi,
       acquireAiGenerationAdmission, releaseAiGenerationLease, extractGeminiText,
     });
     const aiBriefMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/ai-brief$/u);
@@ -9908,6 +9969,11 @@ export const __test = {
   briefCheck,
   changeStudy,
   callGemini,
+  callAiJson,
+  requireAiConfig,
+  reserveCloudflareAi,
+  releaseAiGenerationLease,
+  AI_BRIEF_RESPONSE_SCHEMA,
   canonicalAppOrigin,
   commerceCatalog,
   computeEstimate,

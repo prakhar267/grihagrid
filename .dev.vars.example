@@ -1,4 +1,9 @@
 APP_ENV=development
+AI_PROVIDER=cloudflare
+AI_GEMINI_FALLBACK=true
+CLOUDFLARE_AI_MODEL=@cf/meta/llama-3.3-70b-instruct-fp8-fast
+CLOUDFLARE_AI_DAILY_NEURONS=5600
+# AI uses the Worker binding and your Wrangler session. Gemini is optional.
 GEMINI_API_KEY=
 METRICS_READ_TOKEN=
 REPORT_SHARE_ABUSE_HMAC_KEY=

@@ -72,7 +72,17 @@ export async function checkOpsConfig() {
   const production = environmentBlock(wrangler, "production");
   const staging = environmentBlock(wrangler, "staging");
 
+  // Keep the two independent D1 reservations inside the shared free account
+  // allocation. Model changes need fresh structured-output and pricing checks.
+  assert.match(wrangler, /\[ai\]\s+binding = "AI"/u);
+  assert.match(wrangler, /\[env\.staging\.ai\]\s+binding = "AI"/u);
+  assert.equal(quotedVariable(production, "CLOUDFLARE_AI_DAILY_NEURONS"), "5600");
+  assert.equal(quotedVariable(staging, "CLOUDFLARE_AI_DAILY_NEURONS"), "2800");
+
   for (const [name, block] of [["production", production], ["staging", staging]]) {
+    assert.equal(quotedVariable(block, "AI_PROVIDER"), "cloudflare", `${name} must prefer Cloudflare AI`);
+    assert.equal(quotedVariable(block, "CLOUDFLARE_AI_MODEL"), "@cf/meta/llama-3.3-70b-instruct-fp8-fast");
+    assert.equal(quotedVariable(block, "AI_GEMINI_FALLBACK"), "true");
     assert.equal(
       quotedVariable(block, "PAID_CHECKOUT_ENABLED"),
       "false",

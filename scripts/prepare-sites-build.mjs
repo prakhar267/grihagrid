@@ -20,7 +20,7 @@ mkdirSync(path.join(dist, "src"), { recursive: true });
 mkdirSync(path.join(dist, ".openai"), { recursive: true });
 copyFileSync(worker, path.join(dist, "server", "index.js"));
 copyFileSync(architectReport, path.join(dist, "src", "architect-report.js"));
-for (const file of ["spatial.js", "spatial-intent.js", "spatial-viewpoints.js", "spatial-schema.js", "house-brief.js"]) copyFileSync(path.join(root, "worker", file), path.join(dist, "server", file));
+for (const file of ["cloudflare-ai.js", "spatial.js", "spatial-intent.js", "spatial-viewpoints.js", "spatial-schema.js", "house-brief.js"]) copyFileSync(path.join(root, "worker", file), path.join(dist, "server", file));
 mkdirSync(path.join(dist, "src", "spatial"), { recursive: true });
 for (const file of readdirSync(path.join(root, "src", "spatial")).filter(name => name.endsWith(".js"))) {
   copyFileSync(path.join(root, "src", "spatial", file), path.join(dist, "src", "spatial", file));

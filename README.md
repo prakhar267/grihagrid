@@ -68,7 +68,7 @@ Release evidence remains in [launch readiness](docs/launch-readiness.md),
 | Shared geometry | Versioned millimetre model, polygon rooms, independent walls/openings/furniture, up to four floors and stairs | Invalid geometry or disconnected walking space is rejected |
 | 3D exploration | Three.js/React Three Fiber, room hover/focus, overview, walking, cutaways and quality controls | Cutaways change presentation, not the exported building |
 | Camera tours | Checked paths, shot subjects, stop order, timing, pause/resume, manual takeover and saved viewpoints | Layout changes mark affected tours stale until regenerated/reviewed |
-| Optional Gemini direction | Server-side structured intent from existing room/object references | AI does not invent trusted coordinates or executable scripts; local tours remain available |
+| Optional AI direction | Server-side structured intent from existing room/object references | AI does not invent trusted coordinates or executable scripts; local tours remain available |
 | Private house history | Owner-scoped accepted model, tour and camera-library revisions in D1 | Unsaved public demo changes are not cloud persistence; stale writes conflict |
 | Blender rendering | Paired loopback service, Cycles previews/film, progress, cancellation and recovery | Requires local Blender/FFmpeg and sufficient resources; no hosted GPU service |
 | Account and planning tools | Existing estimates, reports, Change Study, comparisons, sharing and account lifecycle | Retained supporting workflows, not replaced by the studio |
@@ -97,7 +97,7 @@ Cloudflare Worker                    Loopback Node render service
       D1                KV          private local .blend / GLB / MP4
   owned history     admission brakes
        │
-       └─ optional server-side Gemini structured intent
+       └─ optional Cloudflare AI intent (consented Gemini fallback)
 ```
 
 The Worker does not run Blender. There is no implemented Cloudflare Queue or
@@ -184,7 +184,7 @@ not mutate older reports or purchased snapshots. Tours and viewpoints retain
 their own revisions and source references. Account export/deletion includes
 spatial history under the existing retention and safety rules.
 
-The Gemini direction boundary receives validated aliases and safe intent, not
+The AI direction boundary receives validated aliases and safe intent, not
 raw drawings, account details or arbitrary project prose. Uploaded documents
 are decoded locally. Renderer pairing is a separate, temporary capability for
 this computer; it does not grant another user's cloud-project access.
@@ -212,3 +212,11 @@ ops/backup-vault/      prepared manual private-receiver template; execution gate
 
 Generated render outputs, private local jobs, backups, credentials and QA captures
 are not product source and are not cleanup targets for this change.
+
+### Cloudflare AI
+
+Planning briefs and camera direction now prefer Cloudflare Workers AI. Google
+Gemini is a separately consented fallback. See [provider configuration and live
+verification](docs/cloudflare-ai-migration.md) for free-allocation limits and
+`node scripts/check-cloudflare-ai.mjs --live`. Drawing/OCR, 2D/3D geometry, walking
+and exports continue to work without cloud AI.

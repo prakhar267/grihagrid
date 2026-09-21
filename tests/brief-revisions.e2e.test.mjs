@@ -63,6 +63,7 @@ async function startWorker(stateDirectory, assetsDirectory, port) {
     "ENABLED_PAYMENT_PLANS:",
     "--var",
     "GEMINI_API_KEY:",
+    "--var", "AI_PROVIDER:gemini",
   ];
   const child = spawn(process.execPath, [wranglerCli, ...args], {
     cwd: root,
@@ -497,7 +498,7 @@ test("Brief Check revisions are truthful, immutable, owner-scoped, and race safe
     assertExactKeys(
       readiness.payload.checks,
       [
-        "database", "schema", "rateLimit", "aiSchema", "aiAbuseControl", "decisionSchema",
+        "database", "schema", "rateLimit", "aiSchema", "aiAbuseControl", "aiProvider", "aiFallback", "decisionSchema",
         "paymentSchema", "familyAlignmentSchema", "archiveSafetySchema", "revisionSchema", "reportFeedbackSchema", "reportShareSchema", "reportHandoffControl", "reportShareAbuseHashing", "projectCreationSchema", "authSchema", "accountLifecycleSchema", "privateUploadSchema", "professionalReviewSchema", "spatialSchema", "transactionalEmail", "ai",
         "privateStorage", "acceptingPaidPlans",
       ],

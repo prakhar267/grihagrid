@@ -218,6 +218,7 @@ async function startWorker(stateDirectory, assetsDirectory, port) {
     "ENABLED_PAYMENT_PLANS:",
     "--var",
     "GEMINI_API_KEY:",
+    "--var", "AI_PROVIDER:gemini",
   ];
   const child = spawn(process.execPath, [wranglerCli, ...args], {
     cwd: root,

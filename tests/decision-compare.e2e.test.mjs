@@ -68,6 +68,7 @@ async function startWorker({ stateDirectory, assetsDirectory, port, checkout, fu
     `RAZORPAY_WEBHOOK_SECRET:${webhookSecret}`,
     "--var",
     "GEMINI_API_KEY:",
+    "--var", "AI_PROVIDER:gemini",
     "--var",
     `METRICS_READ_TOKEN:${metricsToken}`,
   ];
