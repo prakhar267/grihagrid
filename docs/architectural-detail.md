@@ -147,3 +147,12 @@ Jaipur's original automatic-device preview retry again exhausted disk space at
 the final frame. A new CPU job 439ae657-15f5-4835-bca7-c5f772d96ab4 completed all
 six frames with the exact model, tour and six saved viewpoints. Original failed
 records are retained separately; no unrelated files were removed to make space.
+
+Final browser verification also passed actual native Chrome 200% zoom (DPR 4,
+viewport/page width 735), reduced-motion mode switching, and an eight-page native
+Chrome print preview. No physical printing was requested. Both 45-second tours
+finished on floor-2 after section inspection. Restored browser scene exports
+match their source model, tour, six cameras and recovered brief exactly; GLBs
+retain 649/624 nodes with six saved cameras. Both live viewer consoles are clean.
+Reopening a scene resets the editor history even when the file has the same
+building ID and revision; stale Undo/Redo from a previous tab study must not survive.
