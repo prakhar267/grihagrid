@@ -110,7 +110,7 @@ try {
   assert.equal(await page.getByRole('button', { name: 'Review Change Study', exact: true }).count(), 0);
   await page.screenshot({ path: new URL('archived-plan.png', output).pathname, fullPage: true });
   await page.getByRole('button', { name: 'Camera Tour', exact: true }).click();
-  for (const name of ['Rebuild tour', 'Save tour revision', 'Match room names locally', 'Use Gemini direction']) await disabled(page.getByRole('button', { name, exact: true }));
+  for (const name of ['Rebuild tour', 'Save tour revision', 'Match room names locally', 'Use AI direction']) await disabled(page.getByRole('button', { name, exact: true }));
   await disabled(page.getByRole('spinbutton', { name: 'Tour duration in seconds', exact: true }));
   await page.screenshot({ path: new URL('archived-tour.png', output).pathname, fullPage: true });
   // The same loopback host shares its session cookie. Reads through Vite's Worker proxy are allowed;

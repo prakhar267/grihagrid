@@ -11,8 +11,10 @@ a desktop touch viewport is not a physical-phone benchmark.
 
 `/explore` is a labelled public demonstration. Its model and cameras remain in
 the tab or downloaded JSON. `/projects/:id/spatial` persists the owner's accepted
-model, tour and camera library. An empty private studio starts visibly from a
-sample; the estimate brief is not silently converted into invented architecture.
+model, tour and camera library. An empty private studio opens its saved house brief without claiming an accepted
+model. The user explicitly generates a bounded rectangular study or imports a
+drawing. Sample geometry elsewhere is labelled. See [house scenario coverage](house-scenario-coverage.md)
+for requirements, supported generation and separate brief revision fences.
 
 The studio retains Architectural Monograph typography and ivory/ink/copper
 colors. Accepted changes require Change Study. Estimates, purchased reports,

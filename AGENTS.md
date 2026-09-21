@@ -10,7 +10,7 @@ When implementing from a selected generated mock, treat that image as the source
 
 The selected visual direction is **Architectural Monograph**. Keep the experience editorial, calm, and materially grounded: warm ivory paper (`#f3efe6`), near-black ink (`#181511`), restrained copper actions (`#a7532f`), Cormorant Garamond display type, DM Sans interface type, thin rules, generous whitespace, and photography that feels like a premium Indian architecture journal. Avoid gradients, glossy SaaS card walls, pill-heavy controls, decorative glassmorphism, and playful illustration. Product screens should feel like working pages from the same architectural book, not a separate admin template.
 
-The product name is **GrihaGrid**. The core promise is: “Know what fits. Know what it costs.” It is an India-first concept-planning and professional-handoff product, never a substitute for licensed architectural, structural, geotechnical, or municipal work.
+The product name is **GrihaGrid**. The primary experience is an editable house studio: drawing → reviewed 2D plan → persistent 3D environment → camera tour → Blender render/export. Open the studio at `/`, with private houses at `/dashboard` and creation at `/houses/new`. Preserve the architectural visual direction and the existing planning, estimation, reports, Change Study, ownership, revisions, comparison and sharing capabilities as supporting tools. Concept designs never substitute for licensed architectural, structural, geotechnical, or municipal work.
 
 Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts/prepare-sites-build.mjs`, and `tests/sites-worker.test.mjs` intact so the same local prototype can be handed to Sites. Before a Sites handoff, run `npm run build` and `npm run test:sites`; the build must leave `dist/client/index.html`, `dist/server/index.js`, and `dist/.openai/hosting.json`.
 
@@ -22,11 +22,23 @@ On 15 September 2026 the user subsequently authorized the remaining drawing/visu
 
 On 16 September 2026 the user requested production readiness except custom-domain and payment work. Complete and verify the free product's reliability, recovery, security and operating controls through the existing protected release process. Domain/payment activation is outside this cut. Preserve the previous iPhone/VoiceOver deferrals, keep unavailable capabilities honest, and distinguish tested engineering readiness from external service setup or human approval.
 
+On 17 September 2026 the user requested removing obsolete product screens and cleaning the repository to match the spatial goal. Remove the old primary cost-estimator/pricing marketing funnel and dead code, not customer data or supporting planning functionality. The newly attached brief explicitly limits this change to local implementation, verification and reviewable changes: **deployment and paid infrastructure are outside this task**. For this cleanup, prepare a draft PR and check its exact head; do not merge or trigger a release. Preserve films, scenes, backups, historical evidence, activation controls and prior device-test deferrals.
+
+On 21 September 2026 the user approved the latest local appearance and requested scenario-driven coverage for homeowners, homebuyers, architects and builders: locations, plot conditions, room programmes, floors, Vastu and everyday household needs. Preserve the visual direction. Requirements must change the actual study or produce an explicit supported manual path; never claim universal city-rule, structural or professional certification. Continue the local implementation, verification and draft-review scope.
+
+On 22 September 2026 (Asia/Kolkata), after being shown the migration 0024 release review and asked to approve its review, merge and deployment, the user replied “approved u have full access.” This authorizes PR #83's protected staging-first release, including the additive production migration and monitoring, and supersedes the preceding local/draft restriction for this release. Do not ask for the same approval again. Keep backups, exact-commit checks, release protections and rollback safeguards in force; payments, private uploads, purchases and broader credential permissions remain outside this cut.
+
+In the same follow-up, the user reported that adding a second or later floor left an unusable-looking blank map. Every floor needs visible starting layouts, a copy-floor path, manual room addition and explicit room edit/remove controls. Keep floor changes independent and undoable; reference outlines must be labelled, and unsupported stair placements must explain the next step.
+
+The user explicitly requires end-to-end testing beyond the editor: added floors and room edits must be exercised in 3D Explore, walking, Camera Tour, saved viewpoints and Render / Export. A rendered canvas or geometry-only test is insufficient; verify playback, mode transitions, stale-state recovery and real browser behavior.
+
+The user subsequently rejected schematic detail as insufficient even when modules work. House output must read like a detailed residential drawing: measured dimensions, room sizes, recognizable furniture and sanitary/kitchen fixtures, door/window tags and schedules, stair measurements, levels and model-derived elevations/sections. The same furnishings and openings must appear in editable 2D, 3D, camera views and exports. Preserve the existing visual direction. Never substitute decorative annotations or invented structural/services specifications for actual shared geometry.
+
 ## Product and platform invariants
 
 Treat `README.md`, `package.json`, `wrangler.toml`, `worker/index.js`, `src/App.jsx`, `src/styles.css`, and the relevant files in `docs/` as the canonical implementation and operating context. Before architectural changes, inspect the architecture, backend API, launch-readiness, operations, feature, and test-plan documentation. Inspect the configured live product and existing styles before material UI changes; evolve the current system rather than redesigning it.
 
-The platform is React/Vite on a Cloudflare Worker with D1 and KV. Production and staging must use physically separate resources. R2 and private uploads are intentionally disabled. Gemini calls stay server-side and use the `GEMINI_API_KEY` Worker secret.
+The platform is React/Vite on a Cloudflare Worker with D1 and KV. Production and staging must use physically separate resources. R2 and private uploads are intentionally disabled. On 21 September 2026 the user requested Cloudflare free AI wherever possible, retaining Gemini only as fallback. Both planning briefs and camera direction use the server-side Workers AI binding first. Preserve explicit processor consent, bounded free-allocation reservations and actual provider provenance. Gemini fallback uses the `GEMINI_API_KEY` Worker secret and separate Google consent. Local OCR and deterministic geometry remain independent of cloud AI. See `docs/cloudflare-ai-migration.md`.
 
 Preserve deterministic planning behavior, honest uncertainty and conflict states, Change Study before committed revisions, versioned conflict-safe project history, and immutability of revisions and purchased artifacts.
 
@@ -80,3 +92,10 @@ Verify GitHub and Wrangler identities before release work. Deployment automation
 Before remote migrations, inspect pending migrations and remote data, create a protected export, record its SHA-256, permissions, D1 Time Travel bookmark, and current Worker version, then verify the resulting schema and that no migrations remain pending. Prefer Worker rollback for application failures; never rewrite remote migration history.
 
 After a runtime release, report the configured production and staging URLs, PR, exact merged SHA, production Worker version, CI/CodeQL results, migration state, smoke/canary/monitoring evidence, launch-control state, and honest remaining limitations. Derive environment URLs from repository configuration rather than duplicating them here. Never claim a test, merge, migration, deployment, or live version without exact evidence; monitor high-risk production releases against the exact version for at least 30 minutes.
+
+The user now requires production-level software beyond the detailed presentation.
+Prioritize complete editable and persisted authoring workflows, including entered
+structural and service coordination, recovery, cross-module consistency and tested
+failure states. Do not describe passing tests or detailed visuals alone as complete
+engineering capability. Structural/member/service specifications must come from
+explicit project input and remain attributable in the shared saved model.

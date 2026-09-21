@@ -54,7 +54,7 @@ function text(value, fallback = "") {
 }
 
 function floorCountFrom(input, estimate) {
-  return { G: 1, "G+1": 2, "G+2": 3 }[text(estimate?.floors || input?.floors)] || 2;
+  return { G: 1, "G+1": 2, "G+2": 3, "G+3": 4 }[text(estimate?.floors || input?.floors)] || 2;
 }
 
 function floorLabel(index) {

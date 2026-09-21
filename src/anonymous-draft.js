@@ -43,7 +43,7 @@ const DRAFT_FIELDS = Object.freeze([
 ]);
 const CITIES = Object.freeze(["Pune", "Bengaluru", "Mumbai", "Delhi", "Hyderabad", "Chennai", "Jaipur", "Other"]);
 const FACINGS = Object.freeze(["North", "East", "South", "West"]);
-const FLOORS = Object.freeze(["G", "G+1", "G+2"]);
+const FLOORS = Object.freeze(["G", "G+1", "G+2", "G+3"]);
 const BEDROOMS = Object.freeze([2, 3, 4, "5+"]);
 const PARKING = Object.freeze(["None", "1 car", "2 cars"]);
 const PLOT_SHAPES = Object.freeze(["regular", "irregular", "corner", "unknown"]);

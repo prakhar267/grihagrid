@@ -12,7 +12,7 @@ const [app, styles, documentSource, robots] = await Promise.all([
 
 const instrumentStart = app.indexOf("function EstimateInstrument(");
 const sharedPageStart = app.indexOf("function SharedEstimatorPage(", instrumentStart);
-const sharedPageEnd = app.indexOf("function HomePage(", sharedPageStart);
+const sharedPageEnd = app.indexOf("function AboutPage(", sharedPageStart);
 const appStart = app.indexOf("export function App()");
 assert.ok(instrumentStart >= 0 && sharedPageStart > instrumentStart, "EstimateInstrument must remain a discrete component");
 assert.ok(sharedPageEnd > sharedPageStart, "SharedEstimatorPage must remain a discrete component");
@@ -46,7 +46,7 @@ test("the route parses before rendering, canonicalizes valid links, and never hy
   assert.match(sharedPage, /if\(!scenario\)return <main[\s\S]*?Shared scenario unavailable/u);
   assert.match(sharedPage, /GrihaGrid did not load partial values or substitute defaults\./u);
   assert.match(sharedPage, /open a new estimator without carrying anything from this address/u);
-  assert.match(sharedPage, /route\("\/#plot-cost-estimator"\)/u);
+  assert.match(sharedPage, /route\("\/estimate"\)/u);
   assert.ok(
     sharedPage.indexOf("if(!scenario)return") < sharedPage.indexOf("const canonicalPath=buildSharedEstimatorPath(scenario)"),
     "an invalid URL must exit before the estimator receives initial values",

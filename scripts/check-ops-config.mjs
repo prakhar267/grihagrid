@@ -72,7 +72,17 @@ export async function checkOpsConfig() {
   const production = environmentBlock(wrangler, "production");
   const staging = environmentBlock(wrangler, "staging");
 
+  // Keep the two independent D1 reservations inside the shared free account
+  // allocation. Model changes need fresh structured-output and pricing checks.
+  assert.match(wrangler, /\[ai\]\s+binding = "AI"/u);
+  assert.match(wrangler, /\[env\.staging\.ai\]\s+binding = "AI"/u);
+  assert.equal(quotedVariable(production, "CLOUDFLARE_AI_DAILY_NEURONS"), "5600");
+  assert.equal(quotedVariable(staging, "CLOUDFLARE_AI_DAILY_NEURONS"), "2800");
+
   for (const [name, block] of [["production", production], ["staging", staging]]) {
+    assert.equal(quotedVariable(block, "AI_PROVIDER"), "cloudflare", `${name} must prefer Cloudflare AI`);
+    assert.equal(quotedVariable(block, "CLOUDFLARE_AI_MODEL"), "@cf/meta/llama-3.3-70b-instruct-fp8-fast");
+    assert.equal(quotedVariable(block, "AI_GEMINI_FALLBACK"), "true");
     assert.equal(
       quotedVariable(block, "PAID_CHECKOUT_ENABLED"),
       "false",
@@ -429,7 +439,7 @@ export async function checkOpsConfig() {
     "protected-count evidence must not exceed D1's compound SELECT term limit",
   );
   assert.equal(
-    (deployWorkflow.match(/WITH target_tables\(table_name\) AS \(VALUES \('users'\),\('sessions'\),\('password_change_attempt_counters'\),\('login_attempt_fences'\),\('report_share_read_counters'\),\('report_share_create_counters'\),\('report_handoff_controls'\),\('projects'\),\('orders'\),\('project_revisions'\),\('report_feedback'\),\('report_shares'\),\('project_files'\),\('email_verification_tokens'\),\('password_reset_tokens'\),\('transactional_email_events'\),\('account_deletion_requests'\),\('account_deletion_receipts'\),\('professional_profiles'\),\('professional_review_requests'\),\('professional_review_messages'\),\('professional_review_events'\),\('spatial_revisions'\),\('spatial_tour_revisions'\),\('spatial_camera_revisions'\)\) SELECT target_tables\.table_name,columns\.name FROM target_tables JOIN pragma_table_info\(target_tables\.table_name\) AS columns/gu) || []).length,
+    (deployWorkflow.match(/WITH target_tables\(table_name\) AS \(VALUES \('users'\),\('sessions'\),\('password_change_attempt_counters'\),\('login_attempt_fences'\),\('report_share_read_counters'\),\('report_share_create_counters'\),\('report_handoff_controls'\),\('projects'\),\('orders'\),\('project_revisions'\),\('report_feedback'\),\('report_shares'\),\('project_files'\),\('email_verification_tokens'\),\('password_reset_tokens'\),\('transactional_email_events'\),\('account_deletion_requests'\),\('account_deletion_receipts'\),\('professional_profiles'\),\('professional_review_requests'\),\('professional_review_messages'\),\('professional_review_events'\),\('spatial_revisions'\),\('spatial_tour_revisions'\),\('spatial_camera_revisions'\),\('house_brief_revisions'\)\) SELECT target_tables\.table_name,columns\.name FROM target_tables JOIN pragma_table_info\(target_tables\.table_name\) AS columns/gu) || []).length,
     2,
     "both schema-column inventories must include all spatial tables in one D1-compatible SELECT",
   );

@@ -1,0 +1,6330 @@
+[
+  {
+    "brief": {
+      "version": 1,
+      "persona": "homeowner",
+      "projectType": "new_build",
+      "city": "Jaipur",
+      "locality": "",
+      "climate": "hot_dry",
+      "widthM": 12.192,
+      "depthM": 18.288,
+      "floors": 3,
+      "northDegrees": null,
+      "roadSide": "front",
+      "roadWidthM": null,
+      "shape": "rectangular",
+      "setbacks": {
+        "front": 1,
+        "back": 1,
+        "left": 0.3,
+        "right": 0.3
+      },
+      "rules": {
+        "far": null,
+        "coverage": null,
+        "heightM": null,
+        "source": ""
+      },
+      "household": {
+        "adults": 2,
+        "children": 0,
+        "elders": 0,
+        "accessibility": "none"
+      },
+      "vastu": "none",
+      "parking": 0,
+      "features": [],
+      "rooms": [
+        {
+          "id": "r1",
+          "kind": "living",
+          "name": "Living room",
+          "floor": 0,
+          "areaM2": 18,
+          "priority": "required",
+          "direction": "any"
+        },
+        {
+          "id": "r2",
+          "kind": "kitchen",
+          "name": "Kitchen",
+          "floor": 0,
+          "areaM2": 10,
+          "priority": "required",
+          "direction": "any"
+        },
+        {
+          "id": "r3",
+          "kind": "main_bedroom",
+          "name": "Main bedroom",
+          "floor": 0,
+          "areaM2": 16,
+          "priority": "required",
+          "direction": "any"
+        },
+        {
+          "id": "r4",
+          "kind": "bedroom",
+          "name": "Bedroom",
+          "floor": 0,
+          "areaM2": 12,
+          "priority": "required",
+          "direction": "any"
+        },
+        {
+          "id": "r5",
+          "kind": "bathroom",
+          "name": "Bathroom",
+          "floor": 0,
+          "areaM2": 5,
+          "priority": "required",
+          "direction": "any"
+        },
+        {
+          "id": "r6",
+          "kind": "bedroom",
+          "name": "Bedroom",
+          "floor": 1,
+          "areaM2": 12,
+          "priority": "required",
+          "direction": "any"
+        },
+        {
+          "id": "r7",
+          "kind": "bathroom",
+          "name": "Bathroom",
+          "floor": 1,
+          "areaM2": 5,
+          "priority": "required",
+          "direction": "any"
+        },
+        {
+          "id": "r8",
+          "kind": "bedroom",
+          "name": "Bedroom",
+          "floor": 2,
+          "areaM2": 12,
+          "priority": "required",
+          "direction": "any"
+        },
+        {
+          "id": "r9",
+          "kind": "bathroom",
+          "name": "Bathroom",
+          "floor": 2,
+          "areaM2": 5,
+          "priority": "required",
+          "direction": "any"
+        }
+      ],
+      "notes": "Synthetic release test. Working setbacks are test inputs, not municipal rules.",
+      "budget": {
+        "budgetLakh": null,
+        "rateInrM2": null,
+        "contingencyPercent": 10
+      }
+    },
+    "model": {
+      "schemaVersion": 2,
+      "id": "release-jaipur-g2",
+      "name": "Synthetic Jaipur three-storey house",
+      "revision": 2,
+      "seed": 1847,
+      "units": "mm",
+      "axes": "XY-ground-Z-up",
+      "bounds": {
+        "min": [
+          0,
+          0,
+          0
+        ],
+        "max": [
+          11392,
+          10437,
+          9400
+        ]
+      },
+      "floors": [
+        {
+          "id": "floor-0",
+          "name": "Ground floor",
+          "elevation": 0,
+          "height": 3000
+        },
+        {
+          "id": "floor-1",
+          "name": "First floor",
+          "elevation": 3200,
+          "height": 3000
+        },
+        {
+          "id": "floor-2",
+          "name": "Second floor",
+          "elevation": 6400,
+          "height": 3000
+        }
+      ],
+      "rooms": [
+        {
+          "id": "hall-0",
+          "name": "Stair hall",
+          "floorId": "floor-0",
+          "polygon": [
+            [
+              3596,
+              0
+            ],
+            [
+              7796,
+              0
+            ],
+            [
+              7796,
+              10437
+            ],
+            [
+              3596,
+              10437
+            ]
+          ],
+          "color": "#e7decc",
+          "exterior": false
+        },
+        {
+          "id": "brief-r1",
+          "name": "Living room",
+          "floorId": "floor-0",
+          "polygon": [
+            [
+              0,
+              0
+            ],
+            [
+              3596,
+              0
+            ],
+            [
+              3596,
+              5449
+            ],
+            [
+              0,
+              5449
+            ]
+          ],
+          "color": "#ded0bc",
+          "exterior": false
+        },
+        {
+          "id": "brief-r2",
+          "name": "Kitchen",
+          "floorId": "floor-0",
+          "polygon": [
+            [
+              0,
+              5449
+            ],
+            [
+              3596,
+              5449
+            ],
+            [
+              3596,
+              8556
+            ],
+            [
+              0,
+              8556
+            ]
+          ],
+          "color": "#ded0bc",
+          "exterior": false
+        },
+        {
+          "id": "brief-r5",
+          "name": "Bathroom",
+          "floorId": "floor-0",
+          "polygon": [
+            [
+              0,
+              8556
+            ],
+            [
+              3596,
+              8556
+            ],
+            [
+              3596,
+              10437
+            ],
+            [
+              0,
+              10437
+            ]
+          ],
+          "color": "#d1dcd7",
+          "exterior": false
+        },
+        {
+          "id": "brief-r3",
+          "name": "Main bedroom",
+          "floorId": "floor-0",
+          "polygon": [
+            [
+              7796,
+              0
+            ],
+            [
+              11392,
+              0
+            ],
+            [
+              11392,
+              4864
+            ],
+            [
+              7796,
+              4864
+            ]
+          ],
+          "color": "#ded0bc",
+          "exterior": false
+        },
+        {
+          "id": "brief-r4",
+          "name": "Bedroom",
+          "floorId": "floor-0",
+          "polygon": [
+            [
+              7796,
+              4864
+            ],
+            [
+              11392,
+              4864
+            ],
+            [
+              11392,
+              10437
+            ],
+            [
+              7796,
+              10437
+            ]
+          ],
+          "color": "#ded0bc",
+          "exterior": false
+        },
+        {
+          "id": "hall-1",
+          "name": "Stair hall",
+          "floorId": "floor-1",
+          "polygon": [
+            [
+              3596,
+              0
+            ],
+            [
+              7796,
+              0
+            ],
+            [
+              7796,
+              7800
+            ],
+            [
+              3596,
+              7800
+            ]
+          ],
+          "color": "#e7decc",
+          "exterior": false
+        },
+        {
+          "id": "brief-r6",
+          "name": "Bedroom",
+          "floorId": "floor-1",
+          "polygon": [
+            [
+              0,
+              0
+            ],
+            [
+              3596,
+              0
+            ],
+            [
+              3596,
+              3693
+            ],
+            [
+              0,
+              3693
+            ]
+          ],
+          "color": "#ded0bc",
+          "exterior": false
+        },
+        {
+          "id": "brief-unassigned-1-0",
+          "name": "Unassigned space",
+          "floorId": "floor-1",
+          "polygon": [
+            [
+              0,
+              3693
+            ],
+            [
+              3596,
+              3693
+            ],
+            [
+              3596,
+              7800
+            ],
+            [
+              0,
+              7800
+            ]
+          ],
+          "color": "#ded0bc",
+          "exterior": false
+        },
+        {
+          "id": "brief-r7",
+          "name": "Bathroom",
+          "floorId": "floor-1",
+          "polygon": [
+            [
+              7796,
+              0
+            ],
+            [
+              11392,
+              0
+            ],
+            [
+              11392,
+              1880
+            ],
+            [
+              7796,
+              1880
+            ]
+          ],
+          "color": "#d1dcd7",
+          "exterior": false
+        },
+        {
+          "id": "brief-unassigned-1-1",
+          "name": "Unassigned space",
+          "floorId": "floor-1",
+          "polygon": [
+            [
+              7796,
+              1880
+            ],
+            [
+              11392,
+              1880
+            ],
+            [
+              11392,
+              7800
+            ],
+            [
+              7796,
+              7800
+            ]
+          ],
+          "color": "#ded0bc",
+          "exterior": false
+        },
+        {
+          "id": "hall-2",
+          "name": "Stair hall",
+          "floorId": "floor-2",
+          "polygon": [
+            [
+              3596,
+              0
+            ],
+            [
+              7796,
+              0
+            ],
+            [
+              7796,
+              7800
+            ],
+            [
+              3596,
+              7800
+            ]
+          ],
+          "color": "#e7decc",
+          "exterior": false
+        },
+        {
+          "id": "brief-r8",
+          "name": "Bedroom",
+          "floorId": "floor-2",
+          "polygon": [
+            [
+              0,
+              0
+            ],
+            [
+              3596,
+              0
+            ],
+            [
+              3596,
+              3693
+            ],
+            [
+              0,
+              3693
+            ]
+          ],
+          "color": "#ded0bc",
+          "exterior": false
+        },
+        {
+          "id": "brief-unassigned-2-0",
+          "name": "Unassigned space",
+          "floorId": "floor-2",
+          "polygon": [
+            [
+              0,
+              3693
+            ],
+            [
+              3596,
+              3693
+            ],
+            [
+              3596,
+              7800
+            ],
+            [
+              0,
+              7800
+            ]
+          ],
+          "color": "#ded0bc",
+          "exterior": false
+        },
+        {
+          "id": "brief-r9",
+          "name": "Bathroom",
+          "floorId": "floor-2",
+          "polygon": [
+            [
+              7796,
+              0
+            ],
+            [
+              11392,
+              0
+            ],
+            [
+              11392,
+              1880
+            ],
+            [
+              7796,
+              1880
+            ]
+          ],
+          "color": "#d1dcd7",
+          "exterior": false
+        },
+        {
+          "id": "brief-unassigned-2-1",
+          "name": "Unassigned space",
+          "floorId": "floor-2",
+          "polygon": [
+            [
+              7796,
+              1880
+            ],
+            [
+              11392,
+              1880
+            ],
+            [
+              11392,
+              7800
+            ],
+            [
+              7796,
+              7800
+            ]
+          ],
+          "color": "#ded0bc",
+          "exterior": false
+        }
+      ],
+      "walls": [
+        {
+          "id": "wall-1",
+          "floorId": "floor-0",
+          "start": [
+            3596,
+            0
+          ],
+          "end": [
+            7796,
+            0
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "hall-0"
+          ],
+          "openings": [
+            {
+              "id": "wall-1-opening-0",
+              "kind": "door",
+              "offset": 1550,
+              "width": 1100,
+              "sill": 0,
+              "height": 2200,
+              "open": true,
+              "hinge": "start",
+              "swing": 1
+            }
+          ]
+        },
+        {
+          "id": "wall-2",
+          "floorId": "floor-0",
+          "start": [
+            3596,
+            10437
+          ],
+          "end": [
+            7796,
+            10437
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "hall-0"
+          ],
+          "openings": []
+        },
+        {
+          "id": "wall-3",
+          "floorId": "floor-0",
+          "start": [
+            3596,
+            0
+          ],
+          "end": [
+            3596,
+            5449
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r1",
+            "hall-0"
+          ],
+          "openings": [
+            {
+              "id": "wall-3-opening-0",
+              "kind": "door",
+              "offset": 2174.5,
+              "width": 1100,
+              "sill": 0,
+              "height": 2200,
+              "open": true,
+              "hinge": "start",
+              "swing": 1
+            }
+          ]
+        },
+        {
+          "id": "wall-4",
+          "floorId": "floor-0",
+          "start": [
+            0,
+            0
+          ],
+          "end": [
+            0,
+            5449
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r1"
+          ],
+          "openings": [
+            {
+              "id": "wall-4-opening-0",
+              "kind": "window",
+              "offset": 2124.5,
+              "width": 1200,
+              "sill": 900,
+              "height": 1500
+            }
+          ]
+        },
+        {
+          "id": "wall-5",
+          "floorId": "floor-0",
+          "start": [
+            0,
+            0
+          ],
+          "end": [
+            3596,
+            0
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r1"
+          ],
+          "openings": []
+        },
+        {
+          "id": "wall-6",
+          "floorId": "floor-0",
+          "start": [
+            3596,
+            5449
+          ],
+          "end": [
+            3596,
+            8556
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r2",
+            "hall-0"
+          ],
+          "openings": [
+            {
+              "id": "wall-6-opening-0",
+              "kind": "door",
+              "offset": 1003.5,
+              "width": 1100,
+              "sill": 0,
+              "height": 2200,
+              "open": true,
+              "hinge": "start",
+              "swing": 1
+            }
+          ]
+        },
+        {
+          "id": "wall-7",
+          "floorId": "floor-0",
+          "start": [
+            0,
+            5449
+          ],
+          "end": [
+            0,
+            8556
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r2"
+          ],
+          "openings": [
+            {
+              "id": "wall-7-opening-0",
+              "kind": "window",
+              "offset": 953.5,
+              "width": 1200,
+              "sill": 900,
+              "height": 1500
+            }
+          ]
+        },
+        {
+          "id": "wall-8",
+          "floorId": "floor-0",
+          "start": [
+            0,
+            5449
+          ],
+          "end": [
+            3596,
+            5449
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r1",
+            "brief-r2"
+          ],
+          "openings": []
+        },
+        {
+          "id": "wall-9",
+          "floorId": "floor-0",
+          "start": [
+            3596,
+            8556
+          ],
+          "end": [
+            3596,
+            10437
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r5",
+            "hall-0"
+          ],
+          "openings": [
+            {
+              "id": "wall-9-opening-0",
+              "kind": "door",
+              "offset": 390.5,
+              "width": 1100,
+              "sill": 0,
+              "height": 2200,
+              "open": true,
+              "hinge": "start",
+              "swing": 1
+            }
+          ]
+        },
+        {
+          "id": "wall-10",
+          "floorId": "floor-0",
+          "start": [
+            0,
+            8556
+          ],
+          "end": [
+            0,
+            10437
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r5"
+          ],
+          "openings": [
+            {
+              "id": "wall-10-opening-0",
+              "kind": "window",
+              "offset": 340.5,
+              "width": 1200,
+              "sill": 1500,
+              "height": 800
+            }
+          ]
+        },
+        {
+          "id": "wall-11",
+          "floorId": "floor-0",
+          "start": [
+            0,
+            8556
+          ],
+          "end": [
+            3596,
+            8556
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r2",
+            "brief-r5"
+          ],
+          "openings": []
+        },
+        {
+          "id": "wall-12",
+          "floorId": "floor-0",
+          "start": [
+            0,
+            10437
+          ],
+          "end": [
+            3596,
+            10437
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r5"
+          ],
+          "openings": []
+        },
+        {
+          "id": "wall-13",
+          "floorId": "floor-0",
+          "start": [
+            7796,
+            0
+          ],
+          "end": [
+            7796,
+            4864
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r3",
+            "hall-0"
+          ],
+          "openings": [
+            {
+              "id": "wall-13-opening-0",
+              "kind": "door",
+              "offset": 1882,
+              "width": 1100,
+              "sill": 0,
+              "height": 2200,
+              "open": true,
+              "hinge": "start",
+              "swing": -1
+            }
+          ]
+        },
+        {
+          "id": "wall-14",
+          "floorId": "floor-0",
+          "start": [
+            11392,
+            0
+          ],
+          "end": [
+            11392,
+            4864
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r3"
+          ],
+          "openings": [
+            {
+              "id": "wall-14-opening-0",
+              "kind": "window",
+              "offset": 1832,
+              "width": 1200,
+              "sill": 900,
+              "height": 1500
+            }
+          ]
+        },
+        {
+          "id": "wall-15",
+          "floorId": "floor-0",
+          "start": [
+            7796,
+            0
+          ],
+          "end": [
+            11392,
+            0
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r3"
+          ],
+          "openings": []
+        },
+        {
+          "id": "wall-16",
+          "floorId": "floor-0",
+          "start": [
+            7796,
+            4864
+          ],
+          "end": [
+            7796,
+            10437
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r4",
+            "hall-0"
+          ],
+          "openings": [
+            {
+              "id": "wall-16-opening-0",
+              "kind": "door",
+              "offset": 2236.5,
+              "width": 1100,
+              "sill": 0,
+              "height": 2200,
+              "open": true,
+              "hinge": "start",
+              "swing": -1
+            }
+          ]
+        },
+        {
+          "id": "wall-17",
+          "floorId": "floor-0",
+          "start": [
+            11392,
+            4864
+          ],
+          "end": [
+            11392,
+            10437
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r4"
+          ],
+          "openings": [
+            {
+              "id": "wall-17-opening-0",
+              "kind": "window",
+              "offset": 2186.5,
+              "width": 1200,
+              "sill": 900,
+              "height": 1500
+            }
+          ]
+        },
+        {
+          "id": "wall-18",
+          "floorId": "floor-0",
+          "start": [
+            7796,
+            4864
+          ],
+          "end": [
+            11392,
+            4864
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r3",
+            "brief-r4"
+          ],
+          "openings": []
+        },
+        {
+          "id": "wall-19",
+          "floorId": "floor-0",
+          "start": [
+            7796,
+            10437
+          ],
+          "end": [
+            11392,
+            10437
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r4"
+          ],
+          "openings": []
+        },
+        {
+          "id": "wall-20",
+          "floorId": "floor-1",
+          "start": [
+            3596,
+            0
+          ],
+          "end": [
+            7796,
+            0
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "hall-1"
+          ],
+          "openings": []
+        },
+        {
+          "id": "wall-21",
+          "floorId": "floor-1",
+          "start": [
+            3596,
+            7800
+          ],
+          "end": [
+            7796,
+            7800
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "hall-1"
+          ],
+          "openings": []
+        },
+        {
+          "id": "wall-22",
+          "floorId": "floor-1",
+          "start": [
+            3596,
+            0
+          ],
+          "end": [
+            3596,
+            3693
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r6",
+            "hall-1"
+          ],
+          "openings": [
+            {
+              "id": "wall-22-opening-0",
+              "kind": "door",
+              "offset": 1296.5,
+              "width": 1100,
+              "sill": 0,
+              "height": 2200,
+              "open": true,
+              "hinge": "start",
+              "swing": 1
+            }
+          ]
+        },
+        {
+          "id": "wall-23",
+          "floorId": "floor-1",
+          "start": [
+            0,
+            0
+          ],
+          "end": [
+            0,
+            3693
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r6"
+          ],
+          "openings": [
+            {
+              "id": "wall-23-opening-0",
+              "kind": "window",
+              "offset": 1246.5,
+              "width": 1200,
+              "sill": 900,
+              "height": 1500
+            }
+          ]
+        },
+        {
+          "id": "wall-24",
+          "floorId": "floor-1",
+          "start": [
+            0,
+            0
+          ],
+          "end": [
+            3596,
+            0
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r6"
+          ],
+          "openings": []
+        },
+        {
+          "id": "wall-25",
+          "floorId": "floor-1",
+          "start": [
+            3596,
+            3693
+          ],
+          "end": [
+            3596,
+            7800
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-unassigned-1-0",
+            "hall-1"
+          ],
+          "openings": [
+            {
+              "id": "wall-25-opening-0",
+              "kind": "door",
+              "offset": 1503.5,
+              "width": 1100,
+              "sill": 0,
+              "height": 2200,
+              "open": true,
+              "hinge": "start",
+              "swing": 1
+            }
+          ]
+        },
+        {
+          "id": "wall-26",
+          "floorId": "floor-1",
+          "start": [
+            0,
+            3693
+          ],
+          "end": [
+            0,
+            7800
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-unassigned-1-0"
+          ],
+          "openings": [
+            {
+              "id": "wall-26-opening-0",
+              "kind": "window",
+              "offset": 1453.5,
+              "width": 1200,
+              "sill": 900,
+              "height": 1500
+            }
+          ]
+        },
+        {
+          "id": "wall-27",
+          "floorId": "floor-1",
+          "start": [
+            0,
+            3693
+          ],
+          "end": [
+            3596,
+            3693
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r6",
+            "brief-unassigned-1-0"
+          ],
+          "openings": []
+        },
+        {
+          "id": "wall-28",
+          "floorId": "floor-1",
+          "start": [
+            0,
+            7800
+          ],
+          "end": [
+            3596,
+            7800
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-unassigned-1-0"
+          ],
+          "openings": []
+        },
+        {
+          "id": "wall-29",
+          "floorId": "floor-1",
+          "start": [
+            7796,
+            0
+          ],
+          "end": [
+            7796,
+            1880
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r7",
+            "hall-1"
+          ],
+          "openings": [
+            {
+              "id": "wall-29-opening-0",
+              "kind": "door",
+              "offset": 390,
+              "width": 1100,
+              "sill": 0,
+              "height": 2200,
+              "open": true,
+              "hinge": "start",
+              "swing": -1
+            }
+          ]
+        },
+        {
+          "id": "wall-30",
+          "floorId": "floor-1",
+          "start": [
+            11392,
+            0
+          ],
+          "end": [
+            11392,
+            1880
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r7"
+          ],
+          "openings": [
+            {
+              "id": "wall-30-opening-0",
+              "kind": "window",
+              "offset": 340,
+              "width": 1200,
+              "sill": 1500,
+              "height": 800
+            }
+          ]
+        },
+        {
+          "id": "wall-31",
+          "floorId": "floor-1",
+          "start": [
+            7796,
+            0
+          ],
+          "end": [
+            11392,
+            0
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r7"
+          ],
+          "openings": []
+        },
+        {
+          "id": "wall-32",
+          "floorId": "floor-1",
+          "start": [
+            7796,
+            1880
+          ],
+          "end": [
+            7796,
+            7800
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-unassigned-1-1",
+            "hall-1"
+          ],
+          "openings": [
+            {
+              "id": "wall-32-opening-0",
+              "kind": "door",
+              "offset": 2410,
+              "width": 1100,
+              "sill": 0,
+              "height": 2200,
+              "open": true,
+              "hinge": "start",
+              "swing": -1
+            }
+          ]
+        },
+        {
+          "id": "wall-33",
+          "floorId": "floor-1",
+          "start": [
+            11392,
+            1880
+          ],
+          "end": [
+            11392,
+            7800
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-unassigned-1-1"
+          ],
+          "openings": [
+            {
+              "id": "wall-33-opening-0",
+              "kind": "window",
+              "offset": 2360,
+              "width": 1200,
+              "sill": 900,
+              "height": 1500
+            }
+          ]
+        },
+        {
+          "id": "wall-34",
+          "floorId": "floor-1",
+          "start": [
+            7796,
+            1880
+          ],
+          "end": [
+            11392,
+            1880
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r7",
+            "brief-unassigned-1-1"
+          ],
+          "openings": []
+        },
+        {
+          "id": "wall-35",
+          "floorId": "floor-1",
+          "start": [
+            7796,
+            7800
+          ],
+          "end": [
+            11392,
+            7800
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-unassigned-1-1"
+          ],
+          "openings": []
+        },
+        {
+          "id": "wall-36",
+          "floorId": "floor-2",
+          "start": [
+            3596,
+            0
+          ],
+          "end": [
+            7796,
+            0
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "hall-2"
+          ],
+          "openings": []
+        },
+        {
+          "id": "wall-37",
+          "floorId": "floor-2",
+          "start": [
+            3596,
+            7800
+          ],
+          "end": [
+            7796,
+            7800
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "hall-2"
+          ],
+          "openings": []
+        },
+        {
+          "id": "wall-38",
+          "floorId": "floor-2",
+          "start": [
+            3596,
+            0
+          ],
+          "end": [
+            3596,
+            3693
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r8",
+            "hall-2"
+          ],
+          "openings": [
+            {
+              "id": "wall-38-opening-0",
+              "kind": "door",
+              "offset": 1296.5,
+              "width": 1100,
+              "sill": 0,
+              "height": 2200,
+              "open": true,
+              "hinge": "start",
+              "swing": 1
+            }
+          ]
+        },
+        {
+          "id": "wall-39",
+          "floorId": "floor-2",
+          "start": [
+            0,
+            0
+          ],
+          "end": [
+            0,
+            3693
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r8"
+          ],
+          "openings": [
+            {
+              "id": "wall-39-opening-0",
+              "kind": "window",
+              "offset": 1246.5,
+              "width": 1200,
+              "sill": 900,
+              "height": 1500
+            }
+          ]
+        },
+        {
+          "id": "wall-40",
+          "floorId": "floor-2",
+          "start": [
+            0,
+            0
+          ],
+          "end": [
+            3596,
+            0
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r8"
+          ],
+          "openings": []
+        },
+        {
+          "id": "wall-41",
+          "floorId": "floor-2",
+          "start": [
+            3596,
+            3693
+          ],
+          "end": [
+            3596,
+            7800
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-unassigned-2-0",
+            "hall-2"
+          ],
+          "openings": [
+            {
+              "id": "wall-41-opening-0",
+              "kind": "door",
+              "offset": 1503.5,
+              "width": 1100,
+              "sill": 0,
+              "height": 2200,
+              "open": true,
+              "hinge": "start",
+              "swing": 1
+            }
+          ]
+        },
+        {
+          "id": "wall-42",
+          "floorId": "floor-2",
+          "start": [
+            0,
+            3693
+          ],
+          "end": [
+            0,
+            7800
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-unassigned-2-0"
+          ],
+          "openings": [
+            {
+              "id": "wall-42-opening-0",
+              "kind": "window",
+              "offset": 1453.5,
+              "width": 1200,
+              "sill": 900,
+              "height": 1500
+            }
+          ]
+        },
+        {
+          "id": "wall-43",
+          "floorId": "floor-2",
+          "start": [
+            0,
+            3693
+          ],
+          "end": [
+            3596,
+            3693
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r8",
+            "brief-unassigned-2-0"
+          ],
+          "openings": []
+        },
+        {
+          "id": "wall-44",
+          "floorId": "floor-2",
+          "start": [
+            0,
+            7800
+          ],
+          "end": [
+            3596,
+            7800
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-unassigned-2-0"
+          ],
+          "openings": []
+        },
+        {
+          "id": "wall-45",
+          "floorId": "floor-2",
+          "start": [
+            7796,
+            0
+          ],
+          "end": [
+            7796,
+            1880
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r9",
+            "hall-2"
+          ],
+          "openings": [
+            {
+              "id": "wall-45-opening-0",
+              "kind": "door",
+              "offset": 390,
+              "width": 1100,
+              "sill": 0,
+              "height": 2200,
+              "open": true,
+              "hinge": "start",
+              "swing": -1
+            }
+          ]
+        },
+        {
+          "id": "wall-46",
+          "floorId": "floor-2",
+          "start": [
+            11392,
+            0
+          ],
+          "end": [
+            11392,
+            1880
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r9"
+          ],
+          "openings": [
+            {
+              "id": "wall-46-opening-0",
+              "kind": "window",
+              "offset": 340,
+              "width": 1200,
+              "sill": 1500,
+              "height": 800
+            }
+          ]
+        },
+        {
+          "id": "wall-47",
+          "floorId": "floor-2",
+          "start": [
+            7796,
+            0
+          ],
+          "end": [
+            11392,
+            0
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r9"
+          ],
+          "openings": []
+        },
+        {
+          "id": "wall-48",
+          "floorId": "floor-2",
+          "start": [
+            7796,
+            1880
+          ],
+          "end": [
+            7796,
+            7800
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-unassigned-2-1",
+            "hall-2"
+          ],
+          "openings": [
+            {
+              "id": "wall-48-opening-0",
+              "kind": "door",
+              "offset": 2410,
+              "width": 1100,
+              "sill": 0,
+              "height": 2200,
+              "open": true,
+              "hinge": "start",
+              "swing": -1
+            }
+          ]
+        },
+        {
+          "id": "wall-49",
+          "floorId": "floor-2",
+          "start": [
+            11392,
+            1880
+          ],
+          "end": [
+            11392,
+            7800
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-unassigned-2-1"
+          ],
+          "openings": [
+            {
+              "id": "wall-49-opening-0",
+              "kind": "window",
+              "offset": 2360,
+              "width": 1200,
+              "sill": 900,
+              "height": 1500
+            }
+          ]
+        },
+        {
+          "id": "wall-50",
+          "floorId": "floor-2",
+          "start": [
+            7796,
+            1880
+          ],
+          "end": [
+            11392,
+            1880
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r9",
+            "brief-unassigned-2-1"
+          ],
+          "openings": []
+        },
+        {
+          "id": "wall-51",
+          "floorId": "floor-2",
+          "start": [
+            7796,
+            7800
+          ],
+          "end": [
+            11392,
+            7800
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-unassigned-2-1"
+          ],
+          "openings": []
+        }
+      ],
+      "furniture": [
+        {
+          "id": "detail-brief-r1-sofa-1",
+          "roomId": "brief-r1",
+          "floorId": "floor-0",
+          "kind": "sofa",
+          "position": [
+            1380,
+            4819,
+            0
+          ],
+          "size": [
+            2400,
+            900,
+            850
+          ],
+          "rotation": 0,
+          "color": "#b99e7e"
+        },
+        {
+          "id": "detail-brief-r1-coffee-table-1",
+          "roomId": "brief-r1",
+          "floorId": "floor-0",
+          "kind": "coffee-table",
+          "position": [
+            730,
+            480,
+            0
+          ],
+          "size": [
+            1100,
+            600,
+            400
+          ],
+          "rotation": 0,
+          "color": "#b99e7e"
+        },
+        {
+          "id": "detail-brief-r1-chair-1",
+          "roomId": "brief-r1",
+          "floorId": "floor-0",
+          "kind": "chair",
+          "position": [
+            3066,
+            530,
+            0
+          ],
+          "size": [
+            700,
+            700,
+            800
+          ],
+          "rotation": 0,
+          "color": "#b99e7e"
+        },
+        {
+          "id": "detail-brief-r1-console-1",
+          "roomId": "brief-r1",
+          "floorId": "floor-0",
+          "kind": "console",
+          "position": [
+            780,
+            1552.25,
+            0
+          ],
+          "size": [
+            1200,
+            400,
+            800
+          ],
+          "rotation": 0,
+          "color": "#b99e7e"
+        },
+        {
+          "id": "detail-brief-r1-plant-1",
+          "roomId": "brief-r1",
+          "floorId": "floor-0",
+          "kind": "plant",
+          "position": [
+            3191,
+            5044,
+            0
+          ],
+          "size": [
+            450,
+            450,
+            1400
+          ],
+          "rotation": 0,
+          "color": "#667957"
+        },
+        {
+          "id": "detail-brief-r2-kitchen-counter-1",
+          "roomId": "brief-r2",
+          "floorId": "floor-0",
+          "kind": "kitchen-counter",
+          "position": [
+            1380,
+            8051,
+            0
+          ],
+          "size": [
+            2400,
+            650,
+            900
+          ],
+          "rotation": 0,
+          "color": "#b99e7e"
+        },
+        {
+          "id": "detail-brief-r2-refrigerator-1",
+          "roomId": "brief-r2",
+          "floorId": "floor-0",
+          "kind": "refrigerator",
+          "position": [
+            530,
+            5979,
+            0
+          ],
+          "size": [
+            700,
+            700,
+            1800
+          ],
+          "rotation": 0,
+          "color": "#e4e2d9"
+        },
+        {
+          "id": "detail-brief-r5-toilet-1",
+          "roomId": "brief-r5",
+          "floorId": "floor-0",
+          "kind": "toilet",
+          "position": [
+            455,
+            9907,
+            0
+          ],
+          "size": [
+            550,
+            700,
+            750
+          ],
+          "rotation": 0,
+          "color": "#b99e7e"
+        },
+        {
+          "id": "detail-brief-r5-washbasin-1",
+          "roomId": "brief-r5",
+          "floorId": "floor-0",
+          "kind": "washbasin",
+          "position": [
+            530,
+            8986,
+            0
+          ],
+          "size": [
+            700,
+            500,
+            850
+          ],
+          "rotation": 0,
+          "color": "#e4e2d9"
+        },
+        {
+          "id": "detail-brief-r3-bed-1",
+          "roomId": "brief-r3",
+          "floorId": "floor-0",
+          "kind": "bed",
+          "position": [
+            10112,
+            1080,
+            0
+          ],
+          "size": [
+            1800,
+            2200,
+            650
+          ],
+          "rotation": 1.5707963267948966,
+          "color": "#b99e7e"
+        },
+        {
+          "id": "detail-brief-r3-wardrobe-1",
+          "roomId": "brief-r3",
+          "floorId": "floor-0",
+          "kind": "wardrobe",
+          "position": [
+            8726,
+            4384,
+            0
+          ],
+          "size": [
+            1500,
+            600,
+            2200
+          ],
+          "rotation": 0,
+          "color": "#b99e7e"
+        },
+        {
+          "id": "detail-brief-r3-nightstand-1",
+          "roomId": "brief-r3",
+          "floorId": "floor-0",
+          "kind": "nightstand",
+          "position": [
+            8201,
+            405,
+            0
+          ],
+          "size": [
+            450,
+            450,
+            500
+          ],
+          "rotation": 0,
+          "color": "#b99e7e"
+        },
+        {
+          "id": "detail-brief-r3-nightstand-2",
+          "roomId": "brief-r3",
+          "floorId": "floor-0",
+          "kind": "nightstand",
+          "position": [
+            10987,
+            4459,
+            0
+          ],
+          "size": [
+            450,
+            450,
+            500
+          ],
+          "rotation": 0,
+          "color": "#b99e7e"
+        },
+        {
+          "id": "detail-brief-r4-bed-1",
+          "roomId": "brief-r4",
+          "floorId": "floor-0",
+          "kind": "bed",
+          "position": [
+            10112,
+            5944,
+            0
+          ],
+          "size": [
+            1800,
+            2200,
+            650
+          ],
+          "rotation": 1.5707963267948966,
+          "color": "#b99e7e"
+        },
+        {
+          "id": "detail-brief-r4-wardrobe-1",
+          "roomId": "brief-r4",
+          "floorId": "floor-0",
+          "kind": "wardrobe",
+          "position": [
+            8726,
+            9957,
+            0
+          ],
+          "size": [
+            1500,
+            600,
+            2200
+          ],
+          "rotation": 0,
+          "color": "#b99e7e"
+        },
+        {
+          "id": "detail-brief-r4-nightstand-1",
+          "roomId": "brief-r4",
+          "floorId": "floor-0",
+          "kind": "nightstand",
+          "position": [
+            8201,
+            5269,
+            0
+          ],
+          "size": [
+            450,
+            450,
+            500
+          ],
+          "rotation": 0,
+          "color": "#b99e7e"
+        },
+        {
+          "id": "detail-brief-r4-nightstand-2",
+          "roomId": "brief-r4",
+          "floorId": "floor-0",
+          "kind": "nightstand",
+          "position": [
+            10987,
+            10032,
+            0
+          ],
+          "size": [
+            450,
+            450,
+            500
+          ],
+          "rotation": 0,
+          "color": "#b99e7e"
+        },
+        {
+          "id": "detail-brief-r6-wardrobe-1",
+          "roomId": "brief-r6",
+          "floorId": "floor-1",
+          "kind": "wardrobe",
+          "position": [
+            930,
+            3213,
+            0
+          ],
+          "size": [
+            1500,
+            600,
+            2200
+          ],
+          "rotation": 0,
+          "color": "#b99e7e"
+        },
+        {
+          "id": "detail-brief-r6-nightstand-1",
+          "roomId": "brief-r6",
+          "floorId": "floor-1",
+          "kind": "nightstand",
+          "position": [
+            405,
+            405,
+            0
+          ],
+          "size": [
+            450,
+            450,
+            500
+          ],
+          "rotation": 0,
+          "color": "#b99e7e"
+        },
+        {
+          "id": "detail-brief-r6-nightstand-2",
+          "roomId": "brief-r6",
+          "floorId": "floor-1",
+          "kind": "nightstand",
+          "position": [
+            3191,
+            405,
+            0
+          ],
+          "size": [
+            450,
+            450,
+            500
+          ],
+          "rotation": 0,
+          "color": "#b99e7e"
+        },
+        {
+          "id": "detail-brief-r7-toilet-1",
+          "roomId": "brief-r7",
+          "floorId": "floor-1",
+          "kind": "toilet",
+          "position": [
+            10937,
+            530,
+            0
+          ],
+          "size": [
+            550,
+            700,
+            750
+          ],
+          "rotation": 0,
+          "color": "#b99e7e"
+        },
+        {
+          "id": "detail-brief-r7-washbasin-1",
+          "roomId": "brief-r7",
+          "floorId": "floor-1",
+          "kind": "washbasin",
+          "position": [
+            10862,
+            1450,
+            0
+          ],
+          "size": [
+            700,
+            500,
+            850
+          ],
+          "rotation": 0,
+          "color": "#e4e2d9"
+        },
+        {
+          "id": "detail-brief-r8-wardrobe-1",
+          "roomId": "brief-r8",
+          "floorId": "floor-2",
+          "kind": "wardrobe",
+          "position": [
+            930,
+            3213,
+            0
+          ],
+          "size": [
+            1500,
+            600,
+            2200
+          ],
+          "rotation": 0,
+          "color": "#b99e7e"
+        },
+        {
+          "id": "detail-brief-r8-nightstand-1",
+          "roomId": "brief-r8",
+          "floorId": "floor-2",
+          "kind": "nightstand",
+          "position": [
+            405,
+            405,
+            0
+          ],
+          "size": [
+            450,
+            450,
+            500
+          ],
+          "rotation": 0,
+          "color": "#b99e7e"
+        },
+        {
+          "id": "detail-brief-r8-nightstand-2",
+          "roomId": "brief-r8",
+          "floorId": "floor-2",
+          "kind": "nightstand",
+          "position": [
+            3191,
+            405,
+            0
+          ],
+          "size": [
+            450,
+            450,
+            500
+          ],
+          "rotation": 0,
+          "color": "#b99e7e"
+        },
+        {
+          "id": "detail-brief-r9-toilet-1",
+          "roomId": "brief-r9",
+          "floorId": "floor-2",
+          "kind": "toilet",
+          "position": [
+            10937,
+            530,
+            0
+          ],
+          "size": [
+            550,
+            700,
+            750
+          ],
+          "rotation": 0,
+          "color": "#b99e7e"
+        },
+        {
+          "id": "detail-brief-r9-washbasin-1",
+          "roomId": "brief-r9",
+          "floorId": "floor-2",
+          "kind": "washbasin",
+          "position": [
+            10862,
+            1450,
+            0
+          ],
+          "size": [
+            700,
+            500,
+            850
+          ],
+          "rotation": 0,
+          "color": "#e4e2d9"
+        }
+      ],
+      "stairs": [
+        {
+          "id": "stair-0",
+          "name": "Stair to first floor",
+          "fromFloorId": "floor-0",
+          "toFloorId": "floor-1",
+          "start": [
+            4646,
+            1100
+          ],
+          "end": [
+            4646,
+            6500
+          ],
+          "width": 1000,
+          "steps": 18,
+          "roomIds": [
+            "hall-0",
+            "hall-1"
+          ]
+        },
+        {
+          "id": "stair-1",
+          "name": "Stair to second floor",
+          "fromFloorId": "floor-1",
+          "toFloorId": "floor-2",
+          "start": [
+            6746,
+            6500
+          ],
+          "end": [
+            6746,
+            1100
+          ],
+          "width": 1000,
+          "steps": 18,
+          "roomIds": [
+            "hall-1",
+            "hall-2"
+          ]
+        }
+      ],
+      "exterior": {
+        "groundColor": "#b5bc9e",
+        "skyColor": "#e7e5da",
+        "sun": [
+          8000,
+          -7000,
+          14000
+        ]
+      }
+    },
+    "tour": {
+      "schemaVersion": 2,
+      "id": "release-jaipur-g2-tour-r2",
+      "name": "A tour of Synthetic Jaipur three-storey house",
+      "buildingId": "release-jaipur-g2",
+      "sourceRevision": 2,
+      "source": "deterministic",
+      "eyeHeight": 1650,
+      "duration": 45,
+      "roomIds": [
+        "hall-0",
+        "hall-1",
+        "hall-2"
+      ],
+      "shotPreferences": [],
+      "shots": [
+        {
+          "id": "hold-0-hall-0",
+          "kind": "hold",
+          "roomId": "hall-0",
+          "floorId": "floor-0",
+          "subjectId": null,
+          "path": [
+            [
+              5696,
+              5218.5,
+              1650
+            ],
+            [
+              5696,
+              5218.5,
+              1650
+            ]
+          ],
+          "target": [
+            5696,
+            7018.5,
+            1500
+          ],
+          "duration": 2.7650278927942327,
+          "fov": 60,
+          "transition": "fade",
+          "startTime": 0,
+          "sourceRevision": 2,
+          "sourceSignature": "85a62661"
+        },
+        {
+          "id": "walk-1-hall-1",
+          "kind": "walk",
+          "roomId": "hall-1",
+          "floorId": "floor-1",
+          "subjectId": null,
+          "path": [
+            [
+              5696,
+              5218.5,
+              1650
+            ],
+            [
+              5367,
+              6721,
+              1650
+            ],
+            [
+              3925,
+              6721,
+              1650
+            ],
+            [
+              3925,
+              879,
+              1650
+            ],
+            [
+              4646,
+              700,
+              1650
+            ],
+            [
+              4646,
+              1100,
+              1650
+            ],
+            [
+              4646,
+              1250,
+              1738.888888888889
+            ],
+            [
+              4646,
+              1400,
+              1827.7777777777778
+            ],
+            [
+              4646,
+              1550,
+              1916.6666666666665
+            ],
+            [
+              4646,
+              1700,
+              2005.5555555555557
+            ],
+            [
+              4646,
+              1850,
+              2094.4444444444443
+            ],
+            [
+              4646,
+              2000,
+              2183.333333333333
+            ],
+            [
+              4646,
+              2150,
+              2272.222222222222
+            ],
+            [
+              4646,
+              2300,
+              2361.1111111111113
+            ],
+            [
+              4646,
+              2450,
+              2450
+            ],
+            [
+              4646,
+              2600,
+              2538.8888888888887
+            ],
+            [
+              4646,
+              2750,
+              2627.777777777778
+            ],
+            [
+              4646,
+              2900,
+              2716.6666666666665
+            ],
+            [
+              4646,
+              3050,
+              2805.5555555555557
+            ],
+            [
+              4646,
+              3200,
+              2894.4444444444443
+            ],
+            [
+              4646,
+              3350,
+              2983.3333333333335
+            ],
+            [
+              4646,
+              3500,
+              3072.222222222222
+            ],
+            [
+              4646,
+              3650,
+              3161.1111111111113
+            ],
+            [
+              4646,
+              3800,
+              3250
+            ],
+            [
+              4646,
+              3950,
+              3338.8888888888887
+            ],
+            [
+              4646,
+              4100,
+              3427.777777777778
+            ],
+            [
+              4646,
+              4250,
+              3516.666666666667
+            ],
+            [
+              4646,
+              4400,
+              3605.5555555555557
+            ],
+            [
+              4646,
+              4550,
+              3694.4444444444443
+            ],
+            [
+              4646,
+              4700,
+              3783.333333333333
+            ],
+            [
+              4646,
+              4850,
+              3872.222222222222
+            ],
+            [
+              4646,
+              5000,
+              3961.111111111111
+            ],
+            [
+              4646,
+              5150,
+              4050
+            ],
+            [
+              4646,
+              5300,
+              4138.888888888889
+            ],
+            [
+              4646,
+              5450,
+              4227.777777777777
+            ],
+            [
+              4646,
+              5600,
+              4316.666666666667
+            ],
+            [
+              4646,
+              5750,
+              4405.555555555556
+            ],
+            [
+              4646,
+              5900,
+              4494.444444444444
+            ],
+            [
+              4646,
+              6050,
+              4583.333333333333
+            ],
+            [
+              4646,
+              6200,
+              4672.222222222223
+            ],
+            [
+              4646,
+              6350,
+              4761.111111111111
+            ],
+            [
+              4646,
+              6500,
+              4850
+            ],
+            [
+              4646,
+              6900,
+              4850
+            ],
+            [
+              4668.16,
+              6896,
+              4850
+            ],
+            [
+              4734.64,
+              6884,
+              4850
+            ],
+            [
+              4823.280000000001,
+              6868,
+              4850
+            ],
+            [
+              5022.72,
+              6832,
+              4850
+            ],
+            [
+              5119.360000000001,
+              6808,
+              4850
+            ],
+            [
+              5209.84,
+              6772,
+              4850
+            ],
+            [
+              5264,
+              6736,
+              4850
+            ],
+            [
+              5336,
+              6664,
+              4850
+            ],
+            [
+              5379.84,
+              6524,
+              4850
+            ],
+            [
+              5439.36,
+              6176,
+              4850
+            ],
+            [
+              5494.719999999999,
+              5736,
+              4850
+            ],
+            [
+              5601.280000000001,
+              4764,
+              4850
+            ],
+            [
+              5648.64,
+              4332,
+              4850
+            ],
+            [
+              5684.16,
+              4008,
+              4850
+            ],
+            [
+              5696,
+              3900,
+              4850
+            ]
+          ],
+          "target": [
+            5696,
+            5700,
+            4700
+          ],
+          "duration": 21.45956544370837,
+          "fov": 60,
+          "transition": "continuous",
+          "startTime": 2.7650278927942327,
+          "sourceRevision": 2,
+          "sourceSignature": "250850b9"
+        },
+        {
+          "id": "hold-1-hall-1",
+          "kind": "hold",
+          "roomId": "hall-1",
+          "floorId": "floor-1",
+          "subjectId": null,
+          "path": [
+            [
+              5696,
+              3900,
+              4850
+            ],
+            [
+              5696,
+              3900,
+              4850
+            ]
+          ],
+          "target": [
+            5696,
+            5700,
+            4700
+          ],
+          "duration": 2.7650278927942327,
+          "fov": 60,
+          "transition": "continuous",
+          "startTime": 24.224593336502604,
+          "sourceRevision": 2,
+          "sourceSignature": "c1e18ab3"
+        },
+        {
+          "id": "walk-2-hall-2",
+          "kind": "walk",
+          "roomId": "hall-2",
+          "floorId": "floor-2",
+          "subjectId": null,
+          "path": [
+            [
+              5696,
+              3900,
+              4850
+            ],
+            [
+              5708.16,
+              4008,
+              4850
+            ],
+            [
+              5744.64,
+              4332,
+              4850
+            ],
+            [
+              5793.280000000001,
+              4764,
+              4850
+            ],
+            [
+              5902.719999999999,
+              5736,
+              4850
+            ],
+            [
+              5959.36,
+              6176,
+              4850
+            ],
+            [
+              6019.84,
+              6524,
+              4850
+            ],
+            [
+              6064,
+              6664,
+              4850
+            ],
+            [
+              6136,
+              6736,
+              4850
+            ],
+            [
+              6189.84,
+              6772,
+              4850
+            ],
+            [
+              6279.360000000001,
+              6808,
+              4850
+            ],
+            [
+              6374.720000000001,
+              6832,
+              4850
+            ],
+            [
+              6571.280000000001,
+              6868,
+              4850
+            ],
+            [
+              6658.64,
+              6884,
+              4850
+            ],
+            [
+              6724.16,
+              6896,
+              4850
+            ],
+            [
+              6746,
+              6900,
+              4850
+            ],
+            [
+              6746,
+              6500,
+              4850
+            ],
+            [
+              6746,
+              6350,
+              4938.888888888889
+            ],
+            [
+              6746,
+              6200,
+              5027.777777777777
+            ],
+            [
+              6746,
+              6050,
+              5116.666666666666
+            ],
+            [
+              6746,
+              5900,
+              5205.555555555556
+            ],
+            [
+              6746,
+              5750,
+              5294.444444444444
+            ],
+            [
+              6746,
+              5600,
+              5383.333333333333
+            ],
+            [
+              6746,
+              5450,
+              5472.222222222223
+            ],
+            [
+              6746,
+              5300,
+              5561.111111111111
+            ],
+            [
+              6746,
+              5150,
+              5650
+            ],
+            [
+              6746,
+              5000,
+              5738.888888888889
+            ],
+            [
+              6746,
+              4850,
+              5827.777777777777
+            ],
+            [
+              6746,
+              4700,
+              5916.666666666666
+            ],
+            [
+              6746,
+              4550,
+              6005.555555555556
+            ],
+            [
+              6746,
+              4400,
+              6094.444444444444
+            ],
+            [
+              6746,
+              4250,
+              6183.333333333334
+            ],
+            [
+              6746,
+              4100,
+              6272.222222222223
+            ],
+            [
+              6746,
+              3950,
+              6361.111111111111
+            ],
+            [
+              6746,
+              3800,
+              6450
+            ],
+            [
+              6746,
+              3650,
+              6538.888888888889
+            ],
+            [
+              6746,
+              3500,
+              6627.777777777777
+            ],
+            [
+              6746,
+              3350,
+              6716.666666666667
+            ],
+            [
+              6746,
+              3199.9999999999995,
+              6805.555555555556
+            ],
+            [
+              6746,
+              3050.0000000000005,
+              6894.444444444444
+            ],
+            [
+              6746,
+              2900,
+              6983.333333333333
+            ],
+            [
+              6746,
+              2750,
+              7072.222222222223
+            ],
+            [
+              6746,
+              2600,
+              7161.111111111111
+            ],
+            [
+              6746,
+              2450,
+              7250
+            ],
+            [
+              6746,
+              2300,
+              7338.888888888889
+            ],
+            [
+              6746,
+              2150,
+              7427.777777777777
+            ],
+            [
+              6746,
+              2000,
+              7516.666666666667
+            ],
+            [
+              6746,
+              1850,
+              7605.555555555556
+            ],
+            [
+              6746,
+              1700,
+              7694.444444444444
+            ],
+            [
+              6746,
+              1550,
+              7783.333333333333
+            ],
+            [
+              6746,
+              1400,
+              7872.222222222223
+            ],
+            [
+              6746,
+              1250,
+              7961.111111111111
+            ],
+            [
+              6746,
+              1100,
+              8050
+            ],
+            [
+              6746,
+              700,
+              8050
+            ],
+            [
+              6724.16,
+              704,
+              8050
+            ],
+            [
+              6658.64,
+              716,
+              8050
+            ],
+            [
+              6571.280000000001,
+              732,
+              8050
+            ],
+            [
+              6374.720000000001,
+              768,
+              8050
+            ],
+            [
+              6279.360000000001,
+              792,
+              8050
+            ],
+            [
+              6189.84,
+              828,
+              8050
+            ],
+            [
+              6136,
+              864,
+              8050
+            ],
+            [
+              6064,
+              936,
+              8050
+            ],
+            [
+              6019.84,
+              1084,
+              8050
+            ],
+            [
+              5959.36,
+              1456,
+              8050
+            ],
+            [
+              5902.719999999999,
+              1928,
+              8050
+            ],
+            [
+              5793.280000000001,
+              2972,
+              8050
+            ],
+            [
+              5744.64,
+              3436,
+              8050
+            ],
+            [
+              5708.16,
+              3784,
+              8050
+            ],
+            [
+              5696,
+              3900,
+              8050
+            ]
+          ],
+          "target": [
+            5696,
+            5700,
+            7900
+          ],
+          "duration": 15.245350877908935,
+          "fov": 60,
+          "transition": "continuous",
+          "startTime": 26.989621229296837,
+          "sourceRevision": 2,
+          "sourceSignature": "250850b9"
+        },
+        {
+          "id": "hold-2-hall-2",
+          "kind": "hold",
+          "roomId": "hall-2",
+          "floorId": "floor-2",
+          "subjectId": null,
+          "path": [
+            [
+              5696,
+              3900,
+              8050
+            ],
+            [
+              5696,
+              3900,
+              8050
+            ]
+          ],
+          "target": [
+            5696,
+            5700,
+            7900
+          ],
+          "duration": 2.7650278927942327,
+          "fov": 60,
+          "transition": "continuous",
+          "startTime": 42.23497210720577,
+          "sourceRevision": 2,
+          "sourceSignature": "a5033f06"
+        }
+      ]
+    },
+    "viewpoints": [
+      {
+        "id": "release-jaipur-view-0",
+        "name": "Ground floor room view",
+        "buildingId": "release-jaipur-g2",
+        "sourceRevision": 2,
+        "floorId": "floor-0",
+        "position": [
+          5696,
+          5218.5,
+          1650
+        ],
+        "target": [
+          5696,
+          7018.5,
+          1500
+        ],
+        "fov": 60
+      },
+      {
+        "id": "release-jaipur-view-1",
+        "name": "First floor room view",
+        "buildingId": "release-jaipur-g2",
+        "sourceRevision": 2,
+        "floorId": "floor-1",
+        "position": [
+          5696,
+          3900,
+          4850
+        ],
+        "target": [
+          5696,
+          5700,
+          4700
+        ],
+        "fov": 60
+      },
+      {
+        "id": "release-jaipur-view-2",
+        "name": "Second floor room view",
+        "buildingId": "release-jaipur-g2",
+        "sourceRevision": 2,
+        "floorId": "floor-2",
+        "position": [
+          5696,
+          3900,
+          8050
+        ],
+        "target": [
+          5696,
+          5700,
+          7900
+        ],
+        "fov": 60
+      }
+    ]
+  },
+  {
+    "brief": {
+      "version": 1,
+      "persona": "homeowner",
+      "projectType": "new_build",
+      "city": "Delhi",
+      "locality": "",
+      "climate": "composite",
+      "widthM": 13.716000000000001,
+      "depthM": 18.288,
+      "floors": 3,
+      "northDegrees": null,
+      "roadSide": "front",
+      "roadWidthM": null,
+      "shape": "rectangular",
+      "setbacks": {
+        "front": 1,
+        "back": 1,
+        "left": 0.3,
+        "right": 0.3
+      },
+      "rules": {
+        "far": null,
+        "coverage": null,
+        "heightM": null,
+        "source": ""
+      },
+      "household": {
+        "adults": 2,
+        "children": 0,
+        "elders": 0,
+        "accessibility": "none"
+      },
+      "vastu": "none",
+      "parking": 0,
+      "features": [],
+      "rooms": [
+        {
+          "id": "r1",
+          "kind": "living",
+          "name": "Living room",
+          "floor": 0,
+          "areaM2": 18,
+          "priority": "required",
+          "direction": "any"
+        },
+        {
+          "id": "r2",
+          "kind": "kitchen",
+          "name": "Kitchen",
+          "floor": 0,
+          "areaM2": 10,
+          "priority": "required",
+          "direction": "any"
+        },
+        {
+          "id": "r3",
+          "kind": "main_bedroom",
+          "name": "Main bedroom",
+          "floor": 0,
+          "areaM2": 16,
+          "priority": "required",
+          "direction": "any"
+        },
+        {
+          "id": "r4",
+          "kind": "bedroom",
+          "name": "Bedroom",
+          "floor": 0,
+          "areaM2": 12,
+          "priority": "required",
+          "direction": "any"
+        },
+        {
+          "id": "r5",
+          "kind": "bathroom",
+          "name": "Bathroom",
+          "floor": 0,
+          "areaM2": 5,
+          "priority": "required",
+          "direction": "any"
+        },
+        {
+          "id": "r6",
+          "kind": "bedroom",
+          "name": "Bedroom",
+          "floor": 1,
+          "areaM2": 12,
+          "priority": "required",
+          "direction": "any"
+        },
+        {
+          "id": "r7",
+          "kind": "bathroom",
+          "name": "Bathroom",
+          "floor": 1,
+          "areaM2": 5,
+          "priority": "required",
+          "direction": "any"
+        },
+        {
+          "id": "r8",
+          "kind": "bedroom",
+          "name": "Bedroom",
+          "floor": 2,
+          "areaM2": 12,
+          "priority": "required",
+          "direction": "any"
+        },
+        {
+          "id": "r9",
+          "kind": "bathroom",
+          "name": "Bathroom",
+          "floor": 2,
+          "areaM2": 5,
+          "priority": "required",
+          "direction": "any"
+        }
+      ],
+      "notes": "Synthetic release test. Working setbacks are test inputs, not municipal rules.",
+      "budget": {
+        "budgetLakh": null,
+        "rateInrM2": null,
+        "contingencyPercent": 10
+      }
+    },
+    "model": {
+      "schemaVersion": 2,
+      "id": "release-delhi-g2",
+      "name": "Synthetic Delhi three-storey house",
+      "revision": 3,
+      "seed": 1847,
+      "units": "mm",
+      "axes": "XY-ground-Z-up",
+      "bounds": {
+        "min": [
+          0,
+          0,
+          0
+        ],
+        "max": [
+          12000,
+          9767,
+          9400
+        ]
+      },
+      "floors": [
+        {
+          "id": "floor-0",
+          "name": "Ground floor",
+          "elevation": 0,
+          "height": 3000
+        },
+        {
+          "id": "floor-1",
+          "name": "First floor",
+          "elevation": 3200,
+          "height": 3000
+        },
+        {
+          "id": "floor-2",
+          "name": "Second floor",
+          "elevation": 6400,
+          "height": 3000
+        }
+      ],
+      "rooms": [
+        {
+          "id": "hall-0",
+          "name": "Stair hall",
+          "floorId": "floor-0",
+          "polygon": [
+            [
+              3900,
+              0
+            ],
+            [
+              8100,
+              0
+            ],
+            [
+              8100,
+              9767
+            ],
+            [
+              3900,
+              9767
+            ]
+          ],
+          "color": "#e7decc",
+          "exterior": false
+        },
+        {
+          "id": "brief-r1",
+          "name": "Living room",
+          "floorId": "floor-0",
+          "polygon": [
+            [
+              0,
+              0
+            ],
+            [
+              3900,
+              0
+            ],
+            [
+              3900,
+              5019
+            ],
+            [
+              0,
+              5019
+            ]
+          ],
+          "color": "#ded0bc",
+          "exterior": false
+        },
+        {
+          "id": "brief-r2",
+          "name": "Kitchen",
+          "floorId": "floor-0",
+          "polygon": [
+            [
+              0,
+              5019
+            ],
+            [
+              3900,
+              5019
+            ],
+            [
+              3900,
+              7887
+            ],
+            [
+              0,
+              7887
+            ]
+          ],
+          "color": "#ded0bc",
+          "exterior": false
+        },
+        {
+          "id": "brief-r5",
+          "name": "Bathroom",
+          "floorId": "floor-0",
+          "polygon": [
+            [
+              0,
+              7887
+            ],
+            [
+              3900,
+              7887
+            ],
+            [
+              3900,
+              9767
+            ],
+            [
+              0,
+              9767
+            ]
+          ],
+          "color": "#d1dcd7",
+          "exterior": false
+        },
+        {
+          "id": "brief-r3",
+          "name": "Main bedroom",
+          "floorId": "floor-0",
+          "polygon": [
+            [
+              8100,
+              0
+            ],
+            [
+              12000,
+              0
+            ],
+            [
+              12000,
+              4481
+            ],
+            [
+              8100,
+              4481
+            ]
+          ],
+          "color": "#ded0bc",
+          "exterior": false
+        },
+        {
+          "id": "brief-r4",
+          "name": "Bedroom",
+          "floorId": "floor-0",
+          "polygon": [
+            [
+              8100,
+              4481
+            ],
+            [
+              12000,
+              4481
+            ],
+            [
+              12000,
+              9767
+            ],
+            [
+              8100,
+              9767
+            ]
+          ],
+          "color": "#ded0bc",
+          "exterior": false
+        },
+        {
+          "id": "hall-1",
+          "name": "Stair hall",
+          "floorId": "floor-1",
+          "polygon": [
+            [
+              3900,
+              0
+            ],
+            [
+              8100,
+              0
+            ],
+            [
+              8100,
+              7800
+            ],
+            [
+              3900,
+              7800
+            ]
+          ],
+          "color": "#e7decc",
+          "exterior": false
+        },
+        {
+          "id": "brief-r6",
+          "name": "Bedroom",
+          "floorId": "floor-1",
+          "polygon": [
+            [
+              0,
+              0
+            ],
+            [
+              3900,
+              0
+            ],
+            [
+              3900,
+              3406
+            ],
+            [
+              0,
+              3406
+            ]
+          ],
+          "color": "#ded0bc",
+          "exterior": false
+        },
+        {
+          "id": "brief-unassigned-1-0",
+          "name": "Unassigned space",
+          "floorId": "floor-1",
+          "polygon": [
+            [
+              0,
+              3406
+            ],
+            [
+              3900,
+              3406
+            ],
+            [
+              3900,
+              7800
+            ],
+            [
+              0,
+              7800
+            ]
+          ],
+          "color": "#ded0bc",
+          "exterior": false
+        },
+        {
+          "id": "brief-r7",
+          "name": "Bathroom",
+          "floorId": "floor-1",
+          "polygon": [
+            [
+              8100,
+              0
+            ],
+            [
+              12000,
+              0
+            ],
+            [
+              12000,
+              1880
+            ],
+            [
+              8100,
+              1880
+            ]
+          ],
+          "color": "#d1dcd7",
+          "exterior": false
+        },
+        {
+          "id": "brief-unassigned-1-1",
+          "name": "Unassigned space",
+          "floorId": "floor-1",
+          "polygon": [
+            [
+              8100,
+              1880
+            ],
+            [
+              12000,
+              1880
+            ],
+            [
+              12000,
+              7800
+            ],
+            [
+              8100,
+              7800
+            ]
+          ],
+          "color": "#ded0bc",
+          "exterior": false
+        },
+        {
+          "id": "hall-2",
+          "name": "Stair hall",
+          "floorId": "floor-2",
+          "polygon": [
+            [
+              3900,
+              0
+            ],
+            [
+              8100,
+              0
+            ],
+            [
+              8100,
+              7800
+            ],
+            [
+              3900,
+              7800
+            ]
+          ],
+          "color": "#e7decc",
+          "exterior": false
+        },
+        {
+          "id": "brief-r8",
+          "name": "Bedroom",
+          "floorId": "floor-2",
+          "polygon": [
+            [
+              0,
+              0
+            ],
+            [
+              3900,
+              0
+            ],
+            [
+              3900,
+              3406
+            ],
+            [
+              0,
+              3406
+            ]
+          ],
+          "color": "#ded0bc",
+          "exterior": false
+        },
+        {
+          "id": "brief-unassigned-2-0",
+          "name": "Unassigned space",
+          "floorId": "floor-2",
+          "polygon": [
+            [
+              0,
+              3406
+            ],
+            [
+              3900,
+              3406
+            ],
+            [
+              3900,
+              7800
+            ],
+            [
+              0,
+              7800
+            ]
+          ],
+          "color": "#ded0bc",
+          "exterior": false
+        },
+        {
+          "id": "brief-r9",
+          "name": "Bathroom",
+          "floorId": "floor-2",
+          "polygon": [
+            [
+              8100,
+              0
+            ],
+            [
+              12000,
+              0
+            ],
+            [
+              12000,
+              1880
+            ],
+            [
+              8100,
+              1880
+            ]
+          ],
+          "color": "#d1dcd7",
+          "exterior": false
+        },
+        {
+          "id": "brief-unassigned-2-1",
+          "name": "Unassigned space",
+          "floorId": "floor-2",
+          "polygon": [
+            [
+              8100,
+              1880
+            ],
+            [
+              12000,
+              1880
+            ],
+            [
+              12000,
+              7800
+            ],
+            [
+              8100,
+              7800
+            ]
+          ],
+          "color": "#ded0bc",
+          "exterior": false
+        }
+      ],
+      "walls": [
+        {
+          "id": "wall-1",
+          "floorId": "floor-0",
+          "start": [
+            3900,
+            0
+          ],
+          "end": [
+            8100,
+            0
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "hall-0"
+          ],
+          "openings": [
+            {
+              "id": "wall-1-opening-0",
+              "kind": "door",
+              "offset": 1550,
+              "width": 1100,
+              "sill": 0,
+              "height": 2200,
+              "open": true,
+              "hinge": "start",
+              "swing": 1
+            }
+          ]
+        },
+        {
+          "id": "wall-2",
+          "floorId": "floor-0",
+          "start": [
+            3900,
+            9767
+          ],
+          "end": [
+            8100,
+            9767
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "hall-0"
+          ],
+          "openings": []
+        },
+        {
+          "id": "wall-3",
+          "floorId": "floor-0",
+          "start": [
+            3900,
+            0
+          ],
+          "end": [
+            3900,
+            5019
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r1",
+            "hall-0"
+          ],
+          "openings": [
+            {
+              "id": "wall-3-opening-0",
+              "kind": "door",
+              "offset": 1959.5,
+              "width": 1100,
+              "sill": 0,
+              "height": 2200,
+              "open": true,
+              "hinge": "start",
+              "swing": 1
+            }
+          ]
+        },
+        {
+          "id": "wall-4",
+          "floorId": "floor-0",
+          "start": [
+            0,
+            0
+          ],
+          "end": [
+            0,
+            5019
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r1"
+          ],
+          "openings": [
+            {
+              "id": "wall-4-opening-0",
+              "kind": "window",
+              "offset": 1909.5,
+              "width": 1200,
+              "sill": 900,
+              "height": 1500
+            }
+          ]
+        },
+        {
+          "id": "wall-5",
+          "floorId": "floor-0",
+          "start": [
+            0,
+            0
+          ],
+          "end": [
+            3900,
+            0
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r1"
+          ],
+          "openings": []
+        },
+        {
+          "id": "wall-6",
+          "floorId": "floor-0",
+          "start": [
+            3900,
+            5019
+          ],
+          "end": [
+            3900,
+            7887
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r2",
+            "hall-0"
+          ],
+          "openings": [
+            {
+              "id": "wall-6-opening-0",
+              "kind": "door",
+              "offset": 884,
+              "width": 1100,
+              "sill": 0,
+              "height": 2200,
+              "open": true,
+              "hinge": "start",
+              "swing": 1
+            }
+          ]
+        },
+        {
+          "id": "wall-7",
+          "floorId": "floor-0",
+          "start": [
+            0,
+            5019
+          ],
+          "end": [
+            0,
+            7887
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r2"
+          ],
+          "openings": [
+            {
+              "id": "wall-7-opening-0",
+              "kind": "window",
+              "offset": 834,
+              "width": 1200,
+              "sill": 900,
+              "height": 1500
+            }
+          ]
+        },
+        {
+          "id": "wall-8",
+          "floorId": "floor-0",
+          "start": [
+            0,
+            5019
+          ],
+          "end": [
+            3900,
+            5019
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r1",
+            "brief-r2"
+          ],
+          "openings": []
+        },
+        {
+          "id": "wall-9",
+          "floorId": "floor-0",
+          "start": [
+            3900,
+            7887
+          ],
+          "end": [
+            3900,
+            9767
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r5",
+            "hall-0"
+          ],
+          "openings": [
+            {
+              "id": "wall-9-opening-0",
+              "kind": "door",
+              "offset": 390,
+              "width": 1100,
+              "sill": 0,
+              "height": 2200,
+              "open": true,
+              "hinge": "start",
+              "swing": 1
+            }
+          ]
+        },
+        {
+          "id": "wall-10",
+          "floorId": "floor-0",
+          "start": [
+            0,
+            7887
+          ],
+          "end": [
+            0,
+            9767
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r5"
+          ],
+          "openings": [
+            {
+              "id": "wall-10-opening-0",
+              "kind": "window",
+              "offset": 340,
+              "width": 1200,
+              "sill": 1500,
+              "height": 800
+            }
+          ]
+        },
+        {
+          "id": "wall-11",
+          "floorId": "floor-0",
+          "start": [
+            0,
+            7887
+          ],
+          "end": [
+            3900,
+            7887
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r2",
+            "brief-r5"
+          ],
+          "openings": []
+        },
+        {
+          "id": "wall-12",
+          "floorId": "floor-0",
+          "start": [
+            0,
+            9767
+          ],
+          "end": [
+            3900,
+            9767
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r5"
+          ],
+          "openings": []
+        },
+        {
+          "id": "wall-13",
+          "floorId": "floor-0",
+          "start": [
+            8100,
+            0
+          ],
+          "end": [
+            8100,
+            4481
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r3",
+            "hall-0"
+          ],
+          "openings": [
+            {
+              "id": "wall-13-opening-0",
+              "kind": "door",
+              "offset": 1690.5,
+              "width": 1100,
+              "sill": 0,
+              "height": 2200,
+              "open": true,
+              "hinge": "start",
+              "swing": -1
+            }
+          ]
+        },
+        {
+          "id": "wall-14",
+          "floorId": "floor-0",
+          "start": [
+            12000,
+            0
+          ],
+          "end": [
+            12000,
+            4481
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r3"
+          ],
+          "openings": [
+            {
+              "id": "wall-14-opening-0",
+              "kind": "window",
+              "offset": 1640.5,
+              "width": 1200,
+              "sill": 900,
+              "height": 1500
+            }
+          ]
+        },
+        {
+          "id": "wall-15",
+          "floorId": "floor-0",
+          "start": [
+            8100,
+            0
+          ],
+          "end": [
+            12000,
+            0
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r3"
+          ],
+          "openings": []
+        },
+        {
+          "id": "wall-16",
+          "floorId": "floor-0",
+          "start": [
+            8100,
+            4481
+          ],
+          "end": [
+            8100,
+            9767
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r4",
+            "hall-0"
+          ],
+          "openings": [
+            {
+              "id": "wall-16-opening-0",
+              "kind": "door",
+              "offset": 2093,
+              "width": 1100,
+              "sill": 0,
+              "height": 2200,
+              "open": true,
+              "hinge": "start",
+              "swing": -1
+            }
+          ]
+        },
+        {
+          "id": "wall-17",
+          "floorId": "floor-0",
+          "start": [
+            12000,
+            4481
+          ],
+          "end": [
+            12000,
+            9767
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r4"
+          ],
+          "openings": [
+            {
+              "id": "wall-17-opening-0",
+              "kind": "window",
+              "offset": 2043,
+              "width": 1200,
+              "sill": 900,
+              "height": 1500
+            }
+          ]
+        },
+        {
+          "id": "wall-18",
+          "floorId": "floor-0",
+          "start": [
+            8100,
+            4481
+          ],
+          "end": [
+            12000,
+            4481
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r3",
+            "brief-r4"
+          ],
+          "openings": []
+        },
+        {
+          "id": "wall-19",
+          "floorId": "floor-0",
+          "start": [
+            8100,
+            9767
+          ],
+          "end": [
+            12000,
+            9767
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r4"
+          ],
+          "openings": []
+        },
+        {
+          "id": "wall-20",
+          "floorId": "floor-1",
+          "start": [
+            3900,
+            0
+          ],
+          "end": [
+            8100,
+            0
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "hall-1"
+          ],
+          "openings": []
+        },
+        {
+          "id": "wall-21",
+          "floorId": "floor-1",
+          "start": [
+            3900,
+            7800
+          ],
+          "end": [
+            8100,
+            7800
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "hall-1"
+          ],
+          "openings": []
+        },
+        {
+          "id": "wall-22",
+          "floorId": "floor-1",
+          "start": [
+            3900,
+            0
+          ],
+          "end": [
+            3900,
+            3406
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r6",
+            "hall-1"
+          ],
+          "openings": [
+            {
+              "id": "wall-22-opening-0",
+              "kind": "door",
+              "offset": 1153,
+              "width": 1100,
+              "sill": 0,
+              "height": 2200,
+              "open": true,
+              "hinge": "start",
+              "swing": 1
+            }
+          ]
+        },
+        {
+          "id": "wall-23",
+          "floorId": "floor-1",
+          "start": [
+            0,
+            0
+          ],
+          "end": [
+            0,
+            3406
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r6"
+          ],
+          "openings": [
+            {
+              "id": "wall-23-opening-0",
+              "kind": "window",
+              "offset": 1103,
+              "width": 1200,
+              "sill": 900,
+              "height": 1500
+            }
+          ]
+        },
+        {
+          "id": "wall-24",
+          "floorId": "floor-1",
+          "start": [
+            0,
+            0
+          ],
+          "end": [
+            3900,
+            0
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r6"
+          ],
+          "openings": []
+        },
+        {
+          "id": "wall-25",
+          "floorId": "floor-1",
+          "start": [
+            3900,
+            3406
+          ],
+          "end": [
+            3900,
+            7800
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-unassigned-1-0",
+            "hall-1"
+          ],
+          "openings": [
+            {
+              "id": "wall-25-opening-0",
+              "kind": "door",
+              "offset": 1647,
+              "width": 1100,
+              "sill": 0,
+              "height": 2200,
+              "open": true,
+              "hinge": "start",
+              "swing": 1
+            }
+          ]
+        },
+        {
+          "id": "wall-26",
+          "floorId": "floor-1",
+          "start": [
+            0,
+            3406
+          ],
+          "end": [
+            0,
+            7800
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-unassigned-1-0"
+          ],
+          "openings": [
+            {
+              "id": "wall-26-opening-0",
+              "kind": "window",
+              "offset": 1597,
+              "width": 1200,
+              "sill": 900,
+              "height": 1500
+            }
+          ]
+        },
+        {
+          "id": "wall-27",
+          "floorId": "floor-1",
+          "start": [
+            0,
+            3406
+          ],
+          "end": [
+            3900,
+            3406
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r6",
+            "brief-unassigned-1-0"
+          ],
+          "openings": []
+        },
+        {
+          "id": "wall-28",
+          "floorId": "floor-1",
+          "start": [
+            0,
+            7800
+          ],
+          "end": [
+            3900,
+            7800
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-unassigned-1-0"
+          ],
+          "openings": []
+        },
+        {
+          "id": "wall-29",
+          "floorId": "floor-1",
+          "start": [
+            8100,
+            0
+          ],
+          "end": [
+            8100,
+            1880
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r7",
+            "hall-1"
+          ],
+          "openings": [
+            {
+              "id": "wall-29-opening-0",
+              "kind": "door",
+              "offset": 390,
+              "width": 1100,
+              "sill": 0,
+              "height": 2200,
+              "open": true,
+              "hinge": "start",
+              "swing": -1
+            }
+          ]
+        },
+        {
+          "id": "wall-30",
+          "floorId": "floor-1",
+          "start": [
+            12000,
+            0
+          ],
+          "end": [
+            12000,
+            1880
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r7"
+          ],
+          "openings": [
+            {
+              "id": "wall-30-opening-0",
+              "kind": "window",
+              "offset": 340,
+              "width": 1200,
+              "sill": 1500,
+              "height": 800
+            }
+          ]
+        },
+        {
+          "id": "wall-31",
+          "floorId": "floor-1",
+          "start": [
+            8100,
+            0
+          ],
+          "end": [
+            12000,
+            0
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r7"
+          ],
+          "openings": []
+        },
+        {
+          "id": "wall-32",
+          "floorId": "floor-1",
+          "start": [
+            8100,
+            1880
+          ],
+          "end": [
+            8100,
+            7800
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-unassigned-1-1",
+            "hall-1"
+          ],
+          "openings": [
+            {
+              "id": "wall-32-opening-0",
+              "kind": "door",
+              "offset": 2410,
+              "width": 1100,
+              "sill": 0,
+              "height": 2200,
+              "open": true,
+              "hinge": "start",
+              "swing": -1
+            }
+          ]
+        },
+        {
+          "id": "wall-33",
+          "floorId": "floor-1",
+          "start": [
+            12000,
+            1880
+          ],
+          "end": [
+            12000,
+            7800
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-unassigned-1-1"
+          ],
+          "openings": [
+            {
+              "id": "wall-33-opening-0",
+              "kind": "window",
+              "offset": 2360,
+              "width": 1200,
+              "sill": 900,
+              "height": 1500
+            }
+          ]
+        },
+        {
+          "id": "wall-34",
+          "floorId": "floor-1",
+          "start": [
+            8100,
+            1880
+          ],
+          "end": [
+            12000,
+            1880
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r7",
+            "brief-unassigned-1-1"
+          ],
+          "openings": []
+        },
+        {
+          "id": "wall-35",
+          "floorId": "floor-1",
+          "start": [
+            8100,
+            7800
+          ],
+          "end": [
+            12000,
+            7800
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-unassigned-1-1"
+          ],
+          "openings": []
+        },
+        {
+          "id": "wall-36",
+          "floorId": "floor-2",
+          "start": [
+            3900,
+            0
+          ],
+          "end": [
+            8100,
+            0
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "hall-2"
+          ],
+          "openings": []
+        },
+        {
+          "id": "wall-37",
+          "floorId": "floor-2",
+          "start": [
+            3900,
+            7800
+          ],
+          "end": [
+            8100,
+            7800
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "hall-2"
+          ],
+          "openings": []
+        },
+        {
+          "id": "wall-38",
+          "floorId": "floor-2",
+          "start": [
+            3900,
+            0
+          ],
+          "end": [
+            3900,
+            3406
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r8",
+            "hall-2"
+          ],
+          "openings": [
+            {
+              "id": "wall-38-opening-0",
+              "kind": "door",
+              "offset": 1153,
+              "width": 1100,
+              "sill": 0,
+              "height": 2200,
+              "open": true,
+              "hinge": "start",
+              "swing": 1
+            }
+          ]
+        },
+        {
+          "id": "wall-39",
+          "floorId": "floor-2",
+          "start": [
+            0,
+            0
+          ],
+          "end": [
+            0,
+            3406
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r8"
+          ],
+          "openings": [
+            {
+              "id": "wall-39-opening-0",
+              "kind": "window",
+              "offset": 1103,
+              "width": 1200,
+              "sill": 900,
+              "height": 1500
+            }
+          ]
+        },
+        {
+          "id": "wall-40",
+          "floorId": "floor-2",
+          "start": [
+            0,
+            0
+          ],
+          "end": [
+            3900,
+            0
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r8"
+          ],
+          "openings": []
+        },
+        {
+          "id": "wall-41",
+          "floorId": "floor-2",
+          "start": [
+            3900,
+            3406
+          ],
+          "end": [
+            3900,
+            7800
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-unassigned-2-0",
+            "hall-2"
+          ],
+          "openings": [
+            {
+              "id": "wall-41-opening-0",
+              "kind": "door",
+              "offset": 1647,
+              "width": 1100,
+              "sill": 0,
+              "height": 2200,
+              "open": true,
+              "hinge": "start",
+              "swing": 1
+            }
+          ]
+        },
+        {
+          "id": "wall-42",
+          "floorId": "floor-2",
+          "start": [
+            0,
+            3406
+          ],
+          "end": [
+            0,
+            7800
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-unassigned-2-0"
+          ],
+          "openings": [
+            {
+              "id": "wall-42-opening-0",
+              "kind": "window",
+              "offset": 1597,
+              "width": 1200,
+              "sill": 900,
+              "height": 1500
+            }
+          ]
+        },
+        {
+          "id": "wall-43",
+          "floorId": "floor-2",
+          "start": [
+            0,
+            3406
+          ],
+          "end": [
+            3900,
+            3406
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r8",
+            "brief-unassigned-2-0"
+          ],
+          "openings": []
+        },
+        {
+          "id": "wall-44",
+          "floorId": "floor-2",
+          "start": [
+            0,
+            7800
+          ],
+          "end": [
+            3900,
+            7800
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-unassigned-2-0"
+          ],
+          "openings": []
+        },
+        {
+          "id": "wall-45",
+          "floorId": "floor-2",
+          "start": [
+            8100,
+            0
+          ],
+          "end": [
+            8100,
+            1880
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r9",
+            "hall-2"
+          ],
+          "openings": [
+            {
+              "id": "wall-45-opening-0",
+              "kind": "door",
+              "offset": 390,
+              "width": 1100,
+              "sill": 0,
+              "height": 2200,
+              "open": true,
+              "hinge": "start",
+              "swing": -1
+            }
+          ]
+        },
+        {
+          "id": "wall-46",
+          "floorId": "floor-2",
+          "start": [
+            12000,
+            0
+          ],
+          "end": [
+            12000,
+            1880
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r9"
+          ],
+          "openings": [
+            {
+              "id": "wall-46-opening-0",
+              "kind": "window",
+              "offset": 340,
+              "width": 1200,
+              "sill": 1500,
+              "height": 800
+            }
+          ]
+        },
+        {
+          "id": "wall-47",
+          "floorId": "floor-2",
+          "start": [
+            8100,
+            0
+          ],
+          "end": [
+            12000,
+            0
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r9"
+          ],
+          "openings": []
+        },
+        {
+          "id": "wall-48",
+          "floorId": "floor-2",
+          "start": [
+            8100,
+            1880
+          ],
+          "end": [
+            8100,
+            7800
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-unassigned-2-1",
+            "hall-2"
+          ],
+          "openings": [
+            {
+              "id": "wall-48-opening-0",
+              "kind": "door",
+              "offset": 2410,
+              "width": 1100,
+              "sill": 0,
+              "height": 2200,
+              "open": true,
+              "hinge": "start",
+              "swing": -1
+            }
+          ]
+        },
+        {
+          "id": "wall-49",
+          "floorId": "floor-2",
+          "start": [
+            12000,
+            1880
+          ],
+          "end": [
+            12000,
+            7800
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-unassigned-2-1"
+          ],
+          "openings": [
+            {
+              "id": "wall-49-opening-0",
+              "kind": "window",
+              "offset": 2360,
+              "width": 1200,
+              "sill": 900,
+              "height": 1500
+            }
+          ]
+        },
+        {
+          "id": "wall-50",
+          "floorId": "floor-2",
+          "start": [
+            8100,
+            1880
+          ],
+          "end": [
+            12000,
+            1880
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-r9",
+            "brief-unassigned-2-1"
+          ],
+          "openings": []
+        },
+        {
+          "id": "wall-51",
+          "floorId": "floor-2",
+          "start": [
+            8100,
+            7800
+          ],
+          "end": [
+            12000,
+            7800
+          ],
+          "height": 3000,
+          "thickness": 180,
+          "roomIds": [
+            "brief-unassigned-2-1"
+          ],
+          "openings": []
+        }
+      ],
+      "furniture": [
+        {
+          "id": "detail-brief-r1-sofa-1",
+          "roomId": "brief-r1",
+          "floorId": "floor-0",
+          "kind": "sofa",
+          "position": [
+            1380,
+            4389,
+            0
+          ],
+          "size": [
+            2400,
+            900,
+            850
+          ],
+          "rotation": 0,
+          "color": "#b99e7e"
+        },
+        {
+          "id": "detail-brief-r1-coffee-table-1",
+          "roomId": "brief-r1",
+          "floorId": "floor-0",
+          "kind": "coffee-table",
+          "position": [
+            730,
+            480,
+            0
+          ],
+          "size": [
+            1100,
+            600,
+            400
+          ],
+          "rotation": 0,
+          "color": "#b99e7e"
+        },
+        {
+          "id": "detail-brief-r1-chair-1",
+          "roomId": "brief-r1",
+          "floorId": "floor-0",
+          "kind": "chair",
+          "position": [
+            3370,
+            530,
+            0
+          ],
+          "size": [
+            700,
+            700,
+            800
+          ],
+          "rotation": 0,
+          "color": "#b99e7e"
+        },
+        {
+          "id": "detail-brief-r1-console-1",
+          "roomId": "brief-r1",
+          "floorId": "floor-0",
+          "kind": "console",
+          "position": [
+            780,
+            2509.5,
+            0
+          ],
+          "size": [
+            1200,
+            400,
+            800
+          ],
+          "rotation": 0,
+          "color": "#b99e7e"
+        },
+        {
+          "id": "detail-brief-r1-plant-1",
+          "roomId": "brief-r1",
+          "floorId": "floor-0",
+          "kind": "plant",
+          "position": [
+            3495,
+            4614,
+            0
+          ],
+          "size": [
+            450,
+            450,
+            1400
+          ],
+          "rotation": 0,
+          "color": "#667957"
+        },
+        {
+          "id": "detail-brief-r2-kitchen-counter-1",
+          "roomId": "brief-r2",
+          "floorId": "floor-0",
+          "kind": "kitchen-counter",
+          "position": [
+            1380,
+            7382,
+            0
+          ],
+          "size": [
+            2400,
+            650,
+            900
+          ],
+          "rotation": 0,
+          "color": "#b99e7e"
+        },
+        {
+          "id": "detail-brief-r2-refrigerator-1",
+          "roomId": "brief-r2",
+          "floorId": "floor-0",
+          "kind": "refrigerator",
+          "position": [
+            530,
+            5549,
+            0
+          ],
+          "size": [
+            700,
+            700,
+            1800
+          ],
+          "rotation": 0,
+          "color": "#e4e2d9"
+        },
+        {
+          "id": "detail-brief-r5-toilet-1",
+          "roomId": "brief-r5",
+          "floorId": "floor-0",
+          "kind": "toilet",
+          "position": [
+            455,
+            9237,
+            0
+          ],
+          "size": [
+            550,
+            700,
+            750
+          ],
+          "rotation": 0,
+          "color": "#b99e7e"
+        },
+        {
+          "id": "detail-brief-r5-washbasin-1",
+          "roomId": "brief-r5",
+          "floorId": "floor-0",
+          "kind": "washbasin",
+          "position": [
+            530,
+            8317,
+            0
+          ],
+          "size": [
+            700,
+            500,
+            850
+          ],
+          "rotation": 0,
+          "color": "#e4e2d9"
+        },
+        {
+          "id": "detail-brief-r3-wardrobe-1",
+          "roomId": "brief-r3",
+          "floorId": "floor-0",
+          "kind": "wardrobe",
+          "position": [
+            9030,
+            4001,
+            0
+          ],
+          "size": [
+            1500,
+            600,
+            2200
+          ],
+          "rotation": 0,
+          "color": "#b99e7e"
+        },
+        {
+          "id": "detail-brief-r3-nightstand-1",
+          "roomId": "brief-r3",
+          "floorId": "floor-0",
+          "kind": "nightstand",
+          "position": [
+            8505,
+            405,
+            0
+          ],
+          "size": [
+            450,
+            450,
+            500
+          ],
+          "rotation": 0,
+          "color": "#b99e7e"
+        },
+        {
+          "id": "detail-brief-r3-nightstand-2",
+          "roomId": "brief-r3",
+          "floorId": "floor-0",
+          "kind": "nightstand",
+          "position": [
+            11595,
+            405,
+            0
+          ],
+          "size": [
+            450,
+            450,
+            500
+          ],
+          "rotation": 0,
+          "color": "#b99e7e"
+        },
+        {
+          "id": "detail-brief-r4-bed-1",
+          "roomId": "brief-r4",
+          "floorId": "floor-0",
+          "kind": "bed",
+          "position": [
+            10720,
+            5561,
+            0
+          ],
+          "size": [
+            1800,
+            2200,
+            650
+          ],
+          "rotation": 1.5707963267948966,
+          "color": "#b99e7e"
+        },
+        {
+          "id": "detail-brief-r4-wardrobe-1",
+          "roomId": "brief-r4",
+          "floorId": "floor-0",
+          "kind": "wardrobe",
+          "position": [
+            9030,
+            9287,
+            0
+          ],
+          "size": [
+            1500,
+            600,
+            2200
+          ],
+          "rotation": 0,
+          "color": "#b99e7e"
+        },
+        {
+          "id": "detail-brief-r4-nightstand-1",
+          "roomId": "brief-r4",
+          "floorId": "floor-0",
+          "kind": "nightstand",
+          "position": [
+            8505,
+            4886,
+            0
+          ],
+          "size": [
+            450,
+            450,
+            500
+          ],
+          "rotation": 0,
+          "color": "#b99e7e"
+        },
+        {
+          "id": "detail-brief-r4-nightstand-2",
+          "roomId": "brief-r4",
+          "floorId": "floor-0",
+          "kind": "nightstand",
+          "position": [
+            11595,
+            9362,
+            0
+          ],
+          "size": [
+            450,
+            450,
+            500
+          ],
+          "rotation": 0,
+          "color": "#b99e7e"
+        },
+        {
+          "id": "detail-brief-r6-wardrobe-1",
+          "roomId": "brief-r6",
+          "floorId": "floor-1",
+          "kind": "wardrobe",
+          "position": [
+            930,
+            2926,
+            0
+          ],
+          "size": [
+            1500,
+            600,
+            2200
+          ],
+          "rotation": 0,
+          "color": "#b99e7e"
+        },
+        {
+          "id": "detail-brief-r6-nightstand-1",
+          "roomId": "brief-r6",
+          "floorId": "floor-1",
+          "kind": "nightstand",
+          "position": [
+            405,
+            405,
+            0
+          ],
+          "size": [
+            450,
+            450,
+            500
+          ],
+          "rotation": 0,
+          "color": "#b99e7e"
+        },
+        {
+          "id": "detail-brief-r6-nightstand-2",
+          "roomId": "brief-r6",
+          "floorId": "floor-1",
+          "kind": "nightstand",
+          "position": [
+            3495,
+            405,
+            0
+          ],
+          "size": [
+            450,
+            450,
+            500
+          ],
+          "rotation": 0,
+          "color": "#b99e7e"
+        },
+        {
+          "id": "detail-brief-r7-toilet-1",
+          "roomId": "brief-r7",
+          "floorId": "floor-1",
+          "kind": "toilet",
+          "position": [
+            11545,
+            530,
+            0
+          ],
+          "size": [
+            550,
+            700,
+            750
+          ],
+          "rotation": 0,
+          "color": "#b99e7e"
+        },
+        {
+          "id": "detail-brief-r7-washbasin-1",
+          "roomId": "brief-r7",
+          "floorId": "floor-1",
+          "kind": "washbasin",
+          "position": [
+            11470,
+            1450,
+            0
+          ],
+          "size": [
+            700,
+            500,
+            850
+          ],
+          "rotation": 0,
+          "color": "#e4e2d9"
+        },
+        {
+          "id": "detail-brief-r8-wardrobe-1",
+          "roomId": "brief-r8",
+          "floorId": "floor-2",
+          "kind": "wardrobe",
+          "position": [
+            930,
+            2926,
+            0
+          ],
+          "size": [
+            1500,
+            600,
+            2200
+          ],
+          "rotation": 0,
+          "color": "#b99e7e"
+        },
+        {
+          "id": "detail-brief-r8-nightstand-1",
+          "roomId": "brief-r8",
+          "floorId": "floor-2",
+          "kind": "nightstand",
+          "position": [
+            405,
+            405,
+            0
+          ],
+          "size": [
+            450,
+            450,
+            500
+          ],
+          "rotation": 0,
+          "color": "#b99e7e"
+        },
+        {
+          "id": "detail-brief-r8-nightstand-2",
+          "roomId": "brief-r8",
+          "floorId": "floor-2",
+          "kind": "nightstand",
+          "position": [
+            3495,
+            405,
+            0
+          ],
+          "size": [
+            450,
+            450,
+            500
+          ],
+          "rotation": 0,
+          "color": "#b99e7e"
+        },
+        {
+          "id": "detail-brief-r9-toilet-1",
+          "roomId": "brief-r9",
+          "floorId": "floor-2",
+          "kind": "toilet",
+          "position": [
+            11545,
+            530,
+            0
+          ],
+          "size": [
+            550,
+            700,
+            750
+          ],
+          "rotation": 0,
+          "color": "#b99e7e"
+        },
+        {
+          "id": "detail-brief-r9-washbasin-1",
+          "roomId": "brief-r9",
+          "floorId": "floor-2",
+          "kind": "washbasin",
+          "position": [
+            11470,
+            1450,
+            0
+          ],
+          "size": [
+            700,
+            500,
+            850
+          ],
+          "rotation": 0,
+          "color": "#e4e2d9"
+        }
+      ],
+      "stairs": [
+        {
+          "id": "stair-0",
+          "name": "Stair to first floor",
+          "fromFloorId": "floor-0",
+          "toFloorId": "floor-1",
+          "start": [
+            4950,
+            1100
+          ],
+          "end": [
+            4950,
+            6500
+          ],
+          "width": 1000,
+          "steps": 18,
+          "roomIds": [
+            "hall-0",
+            "hall-1"
+          ]
+        },
+        {
+          "id": "stair-1",
+          "name": "Stair to second floor",
+          "fromFloorId": "floor-1",
+          "toFloorId": "floor-2",
+          "start": [
+            7050,
+            6500
+          ],
+          "end": [
+            7050,
+            1100
+          ],
+          "width": 1000,
+          "steps": 18,
+          "roomIds": [
+            "hall-1",
+            "hall-2"
+          ]
+        }
+      ],
+      "exterior": {
+        "groundColor": "#b5bc9e",
+        "skyColor": "#e7e5da",
+        "sun": [
+          8000,
+          -7000,
+          14000
+        ]
+      }
+    },
+    "tour": {
+      "schemaVersion": 2,
+      "id": "release-delhi-g2-tour-r3",
+      "name": "A tour of Synthetic Delhi three-storey house",
+      "buildingId": "release-delhi-g2",
+      "sourceRevision": 3,
+      "source": "deterministic",
+      "eyeHeight": 1650,
+      "duration": 45,
+      "roomIds": [
+        "hall-0",
+        "hall-1",
+        "hall-2"
+      ],
+      "shotPreferences": [],
+      "shots": [
+        {
+          "id": "hold-0-hall-0",
+          "kind": "hold",
+          "roomId": "hall-0",
+          "floorId": "floor-0",
+          "subjectId": null,
+          "path": [
+            [
+              6000,
+              4883.5,
+              1650
+            ],
+            [
+              6000,
+              4883.5,
+              1650
+            ]
+          ],
+          "target": [
+            6000,
+            6683.5,
+            1500
+          ],
+          "duration": 2.7397702340292382,
+          "fov": 60,
+          "transition": "fade",
+          "startTime": 0,
+          "sourceRevision": 3,
+          "sourceSignature": "b7032d73"
+        },
+        {
+          "id": "walk-1-hall-1",
+          "kind": "walk",
+          "roomId": "hall-1",
+          "floorId": "floor-1",
+          "subjectId": null,
+          "path": [
+            [
+              6000,
+              4883.5,
+              1650
+            ],
+            [
+              5671,
+              6721,
+              1650
+            ],
+            [
+              4229,
+              6721,
+              1650
+            ],
+            [
+              4229,
+              879,
+              1650
+            ],
+            [
+              4950,
+              700,
+              1650
+            ],
+            [
+              4950,
+              1100,
+              1650
+            ],
+            [
+              4950,
+              1250,
+              1738.888888888889
+            ],
+            [
+              4950,
+              1400,
+              1827.7777777777778
+            ],
+            [
+              4950,
+              1550,
+              1916.6666666666665
+            ],
+            [
+              4950,
+              1700,
+              2005.5555555555557
+            ],
+            [
+              4950,
+              1850,
+              2094.4444444444443
+            ],
+            [
+              4950,
+              2000,
+              2183.333333333333
+            ],
+            [
+              4950,
+              2150,
+              2272.222222222222
+            ],
+            [
+              4950,
+              2300,
+              2361.1111111111113
+            ],
+            [
+              4950,
+              2450,
+              2450
+            ],
+            [
+              4950,
+              2600,
+              2538.8888888888887
+            ],
+            [
+              4950,
+              2750,
+              2627.777777777778
+            ],
+            [
+              4950,
+              2900,
+              2716.6666666666665
+            ],
+            [
+              4950,
+              3050,
+              2805.5555555555557
+            ],
+            [
+              4950,
+              3200,
+              2894.4444444444443
+            ],
+            [
+              4950,
+              3350,
+              2983.3333333333335
+            ],
+            [
+              4950,
+              3500,
+              3072.222222222222
+            ],
+            [
+              4950,
+              3650,
+              3161.1111111111113
+            ],
+            [
+              4950,
+              3800,
+              3250
+            ],
+            [
+              4950,
+              3950,
+              3338.8888888888887
+            ],
+            [
+              4950,
+              4100,
+              3427.777777777778
+            ],
+            [
+              4950,
+              4250,
+              3516.666666666667
+            ],
+            [
+              4950,
+              4400,
+              3605.5555555555557
+            ],
+            [
+              4950,
+              4550,
+              3694.4444444444443
+            ],
+            [
+              4950,
+              4700,
+              3783.333333333333
+            ],
+            [
+              4950,
+              4850,
+              3872.222222222222
+            ],
+            [
+              4950,
+              5000,
+              3961.111111111111
+            ],
+            [
+              4950,
+              5150,
+              4050
+            ],
+            [
+              4950,
+              5300,
+              4138.888888888889
+            ],
+            [
+              4950,
+              5450,
+              4227.777777777777
+            ],
+            [
+              4950,
+              5600,
+              4316.666666666667
+            ],
+            [
+              4950,
+              5750,
+              4405.555555555556
+            ],
+            [
+              4950,
+              5900,
+              4494.444444444444
+            ],
+            [
+              4950,
+              6050,
+              4583.333333333333
+            ],
+            [
+              4950,
+              6200,
+              4672.222222222223
+            ],
+            [
+              4950,
+              6350,
+              4761.111111111111
+            ],
+            [
+              4950,
+              6500,
+              4850
+            ],
+            [
+              4950,
+              6900,
+              4850
+            ],
+            [
+              4976,
+              6896,
+              4850
+            ],
+            [
+              5054,
+              6884,
+              4850
+            ],
+            [
+              5158,
+              6868,
+              4850
+            ],
+            [
+              5392,
+              6832,
+              4850
+            ],
+            [
+              5504,
+              6792,
+              4850
+            ],
+            [
+              5606,
+              6708,
+              4850
+            ],
+            [
+              5664,
+              6608,
+              4850
+            ],
+            [
+              5736,
+              6392,
+              4850
+            ],
+            [
+              5776,
+              6204,
+              4850
+            ],
+            [
+              5824,
+              5856,
+              4850
+            ],
+            [
+              5864,
+              5464,
+              4850
+            ],
+            [
+              5936,
+              4636,
+              4850
+            ],
+            [
+              5968,
+              4268,
+              4850
+            ],
+            [
+              5992,
+              3992,
+              4850
+            ],
+            [
+              6000,
+              3900,
+              4850
+            ]
+          ],
+          "target": [
+            6000,
+            5700,
+            4700
+          ],
+          "duration": 21.62262782880224,
+          "fov": 60,
+          "transition": "continuous",
+          "startTime": 2.7397702340292382,
+          "sourceRevision": 3,
+          "sourceSignature": "01f8e797"
+        },
+        {
+          "id": "hold-1-hall-1",
+          "kind": "hold",
+          "roomId": "hall-1",
+          "floorId": "floor-1",
+          "subjectId": null,
+          "path": [
+            [
+              6000,
+              3900,
+              4850
+            ],
+            [
+              6000,
+              3900,
+              4850
+            ]
+          ],
+          "target": [
+            6000,
+            5700,
+            4700
+          ],
+          "duration": 2.7397702340292382,
+          "fov": 60,
+          "transition": "continuous",
+          "startTime": 24.362398062831478,
+          "sourceRevision": 3,
+          "sourceSignature": "9192f768"
+        },
+        {
+          "id": "walk-2-hall-2",
+          "kind": "walk",
+          "roomId": "hall-2",
+          "floorId": "floor-2",
+          "subjectId": null,
+          "path": [
+            [
+              6000,
+              3900,
+              4850
+            ],
+            [
+              6008,
+              4008,
+              4850
+            ],
+            [
+              6032,
+              4332,
+              4850
+            ],
+            [
+              6064,
+              4764,
+              4850
+            ],
+            [
+              6136,
+              5736,
+              4850
+            ],
+            [
+              6184,
+              6176,
+              4850
+            ],
+            [
+              6256,
+              6524,
+              4850
+            ],
+            [
+              6328,
+              6664,
+              4850
+            ],
+            [
+              6472,
+              6736,
+              4850
+            ],
+            [
+              6554,
+              6772,
+              4850
+            ],
+            [
+              6656,
+              6808,
+              4850
+            ],
+            [
+              6744,
+              6832,
+              4850
+            ],
+            [
+              6906,
+              6868,
+              4850
+            ],
+            [
+              6978,
+              6884,
+              4850
+            ],
+            [
+              7032,
+              6896,
+              4850
+            ],
+            [
+              7050,
+              6900,
+              4850
+            ],
+            [
+              7050,
+              6500,
+              4850
+            ],
+            [
+              7050,
+              6350,
+              4938.888888888889
+            ],
+            [
+              7050,
+              6200,
+              5027.777777777777
+            ],
+            [
+              7050,
+              6050,
+              5116.666666666666
+            ],
+            [
+              7050,
+              5900,
+              5205.555555555556
+            ],
+            [
+              7050,
+              5750,
+              5294.444444444444
+            ],
+            [
+              7050,
+              5600,
+              5383.333333333333
+            ],
+            [
+              7050,
+              5450,
+              5472.222222222223
+            ],
+            [
+              7050,
+              5300,
+              5561.111111111111
+            ],
+            [
+              7050,
+              5150,
+              5650
+            ],
+            [
+              7050,
+              5000,
+              5738.888888888889
+            ],
+            [
+              7050,
+              4850,
+              5827.777777777777
+            ],
+            [
+              7050,
+              4700,
+              5916.666666666666
+            ],
+            [
+              7050,
+              4550,
+              6005.555555555556
+            ],
+            [
+              7050,
+              4400,
+              6094.444444444444
+            ],
+            [
+              7050,
+              4250,
+              6183.333333333334
+            ],
+            [
+              7050,
+              4100,
+              6272.222222222223
+            ],
+            [
+              7050,
+              3950,
+              6361.111111111111
+            ],
+            [
+              7050,
+              3800,
+              6450
+            ],
+            [
+              7050,
+              3650,
+              6538.888888888889
+            ],
+            [
+              7050,
+              3500,
+              6627.777777777777
+            ],
+            [
+              7050,
+              3350,
+              6716.666666666667
+            ],
+            [
+              7050,
+              3199.9999999999995,
+              6805.555555555556
+            ],
+            [
+              7050,
+              3050.0000000000005,
+              6894.444444444444
+            ],
+            [
+              7050,
+              2900,
+              6983.333333333333
+            ],
+            [
+              7050,
+              2750,
+              7072.222222222223
+            ],
+            [
+              7050,
+              2600,
+              7161.111111111111
+            ],
+            [
+              7050,
+              2450,
+              7250
+            ],
+            [
+              7050,
+              2300,
+              7338.888888888889
+            ],
+            [
+              7050,
+              2150,
+              7427.777777777777
+            ],
+            [
+              7050,
+              2000,
+              7516.666666666667
+            ],
+            [
+              7050,
+              1850,
+              7605.555555555556
+            ],
+            [
+              7050,
+              1700,
+              7694.444444444444
+            ],
+            [
+              7050,
+              1550,
+              7783.333333333333
+            ],
+            [
+              7050,
+              1400,
+              7872.222222222223
+            ],
+            [
+              7050,
+              1250,
+              7961.111111111111
+            ],
+            [
+              7050,
+              1100,
+              8050
+            ],
+            [
+              7050,
+              700,
+              8050
+            ],
+            [
+              7024,
+              704,
+              8050
+            ],
+            [
+              6946,
+              716,
+              8050
+            ],
+            [
+              6842,
+              732,
+              8050
+            ],
+            [
+              6608,
+              768,
+              8050
+            ],
+            [
+              6496,
+              808,
+              8050
+            ],
+            [
+              6394,
+              892,
+              8050
+            ],
+            [
+              6336,
+              992,
+              8050
+            ],
+            [
+              6264,
+              1208,
+              8050
+            ],
+            [
+              6224,
+              1404,
+              8050
+            ],
+            [
+              6176,
+              1776,
+              8050
+            ],
+            [
+              6136,
+              2200,
+              8050
+            ],
+            [
+              6064,
+              3100,
+              8050
+            ],
+            [
+              6032,
+              3500,
+              8050
+            ],
+            [
+              6008,
+              3800,
+              8050
+            ],
+            [
+              6000,
+              3900,
+              8050
+            ]
+          ],
+          "target": [
+            6000,
+            5700,
+            7900
+          ],
+          "duration": 15.158061469110045,
+          "fov": 60,
+          "transition": "continuous",
+          "startTime": 27.102168296860714,
+          "sourceRevision": 3,
+          "sourceSignature": "01f8e797"
+        },
+        {
+          "id": "hold-2-hall-2",
+          "kind": "hold",
+          "roomId": "hall-2",
+          "floorId": "floor-2",
+          "subjectId": null,
+          "path": [
+            [
+              6000,
+              3900,
+              8050
+            ],
+            [
+              6000,
+              3900,
+              8050
+            ]
+          ],
+          "target": [
+            6000,
+            5700,
+            7900
+          ],
+          "duration": 2.7397702340292382,
+          "fov": 60,
+          "transition": "continuous",
+          "startTime": 42.26022976597076,
+          "sourceRevision": 3,
+          "sourceSignature": "fb5d8eb7"
+        }
+      ]
+    },
+    "viewpoints": [
+      {
+        "id": "release-delhi-view-0",
+        "name": "Ground floor room view",
+        "buildingId": "release-delhi-g2",
+        "sourceRevision": 3,
+        "floorId": "floor-0",
+        "position": [
+          6000,
+          4883.5,
+          1650
+        ],
+        "target": [
+          6000,
+          6683.5,
+          1500
+        ],
+        "fov": 60
+      },
+      {
+        "id": "release-delhi-view-1",
+        "name": "First floor room view",
+        "buildingId": "release-delhi-g2",
+        "sourceRevision": 3,
+        "floorId": "floor-1",
+        "position": [
+          6000,
+          3900,
+          4850
+        ],
+        "target": [
+          6000,
+          5700,
+          4700
+        ],
+        "fov": 60
+      },
+      {
+        "id": "release-delhi-view-2",
+        "name": "Second floor room view",
+        "buildingId": "release-delhi-g2",
+        "sourceRevision": 3,
+        "floorId": "floor-2",
+        "position": [
+          6000,
+          3900,
+          8050
+        ],
+        "target": [
+          6000,
+          5700,
+          7900
+        ],
+        "fov": 60
+      }
+    ]
+  }
+]

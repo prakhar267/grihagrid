@@ -33,11 +33,19 @@ export function defaultTourRoomIds(scene) {
   const preferred=['living','kitchen','main-bedroom','bedroom-two','study','garden']
   const demoIds=[...preferred,'bathroom','hallway']
   const isDemoLayout=preferred.every(id=>scene.rooms.some(room=>room.id===id))&&scene.rooms.every(room=>demoIds.includes(room.id))
-  return (isDemoLayout?preferred:scene.rooms.map(room=>room.id)).slice(0,12)
+  if(isDemoLayout)return preferred
+  const briefRooms=scene.rooms.filter(room=>/^brief-r[0-9]+$/.test(room.id));
+  const requested=briefRooms.length?scene.rooms.filter(room=>!/^hall-\d+$|^brief-unassigned-/.test(room.id)):scene.rooms;
+  if(requested.length){
+    const floors=[...scene.floors].sort((a,b)=>a.elevation-b.elevation), selected=[];
+    for(let index=0;selected.length<Math.min(12,requested.length);index++)for(const floor of floors){const room=requested.filter(r=>r.floorId===floor.id)[index];if(room&&selected.length<12)selected.push(room.id);}
+    return requested.filter(room=>selected.includes(room.id)).map(room=>room.id);
+  }
+  return []
 }
 
 export function generateTour(scene,{roomIds,duration=30,includeExterior=true,source='deterministic',eyeHeight=1650,shotPreferences}={}) {
-  if(scene.schemaVersion===2||shotPreferences?.length||eyeHeight!==1650)return generateTourV2(scene,{roomIds,duration,includeExterior,source,eyeHeight,shotPreferences})
+  if(scene.schemaVersion===2||shotPreferences?.length||eyeHeight!==1650)return generateTourV2(scene,{roomIds:roomIds?.length?roomIds:defaultTourRoomIds(scene),duration,includeExterior,source,eyeHeight,shotPreferences})
   if(!Number.isFinite(duration)||duration<8||duration>300)throw new Error('Tour duration must be between 8 and 300 seconds.')
   const requested=roomIds?.length?roomIds:defaultTourRoomIds(scene)
   const unknown=requested.filter(id=>!scene.rooms.some(room=>room.id===id))
@@ -118,7 +126,7 @@ export function validateTour(scene,tour) {
   if(!tour||tour.schemaVersion!==1||!Array.isArray(tour.shots)||!tour.shots.length)return {valid:false,errors:['A versioned tour with shots is required.']}
   const exact=(value,keys)=>value&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).every(key=>keys.includes(key))
   const identifier=value=>typeof value==='string'&&/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$/.test(value)
-  if(!exact(tour,['schemaVersion','id','name','buildingId','sourceRevision','source','duration','roomIds','shots','eyeHeight','shotPreferences'])||!identifier(tour.id)||typeof tour.name!=='string'||tour.name.length<1||tour.name.length>100||!['deterministic','local','manual','local-rules','gemini'].includes(tour.source)||!Array.isArray(tour.roomIds)||tour.roomIds.length<1||tour.roomIds.length>12||tour.roomIds.some(id=>!scene.rooms.some(r=>r.id===id))||(tour.eyeHeight!==undefined&&tour.eyeHeight!==1650)||(tour.shotPreferences!==undefined&&(!Array.isArray(tour.shotPreferences)||tour.shotPreferences.length)))return {valid:false,errors:['Unsupported tour fields, source or room stops.']}
+  if(!exact(tour,['schemaVersion','id','name','buildingId','sourceRevision','source','duration','roomIds','shots','eyeHeight','shotPreferences'])||!identifier(tour.id)||typeof tour.name!=='string'||tour.name.length<1||tour.name.length>100||!['deterministic','local','manual','local-rules','gemini','cloudflare'].includes(tour.source)||!Array.isArray(tour.roomIds)||tour.roomIds.length<1||tour.roomIds.length>12||tour.roomIds.some(id=>!scene.rooms.some(r=>r.id===id))||(tour.eyeHeight!==undefined&&tour.eyeHeight!==1650)||(tour.shotPreferences!==undefined&&(!Array.isArray(tour.shotPreferences)||tour.shotPreferences.length)))return {valid:false,errors:['Unsupported tour fields, source or room stops.']}
   if(tour.shots.length>100||tour.shots.some(s=>!s||typeof s!=='object'))return {valid:false,errors:['The tour has invalid shots or exceeds 100 shots.']}
   if(isTourStale(scene,tour))errors.push('The tour belongs to an older building revision. Regenerate its routes.')
   if(!Number.isFinite(tour.duration)||tour.duration<=0||tour.duration>600)errors.push('Invalid tour duration.')
@@ -154,12 +162,30 @@ export function parseTourIntent(text,scene) {
   for(const room of scene.rooms)for(const alias of [...new Set([room.name.toLowerCase(),...(aliases[room.id]||[])])])for(const at of occurrences(alias))matches.push({id:room.id,at})
   const clauses=[];const clauseRegex=/[^,;.]+/g;let clause
   while((clause=clauseRegex.exec(input)))clauses.push({text:clause[0],start:clause.index,end:clause.index+clause[0].length})
+  // Copied floors can contain the same room names. An explicit floor in a
+  // clause must qualify those names, rather than silently visiting every copy.
+  const floorRefs=scene.floors.flatMap(floor=>occurrences(floor.name.toLowerCase()).map(at=>({id:floor.id,at})))
+  const upstairs=input.search(/\b(upstairs|upper floor)\b/)
+  if(upstairs>=0&&!floorRefs.some(ref=>ref.at===upstairs)){
+    const floor=[...scene.floors].sort((a,b)=>b.elevation-a.elevation)[0]
+    if(floor.elevation>0)floorRefs.push({id:floor.id,at:upstairs})
+    else warnings.push('There is no upper floor in this scene.')
+  }
+  for(const part of clauses){
+    const floorIds=[...new Set(floorRefs.filter(ref=>ref.at>=part.start&&ref.at<part.end).map(ref=>ref.id))]
+    if(floorIds.length!==1)continue
+    for(let i=matches.length-1;i>=0;i--)if(matches[i].at>=part.start&&matches[i].at<part.end&&scene.rooms.find(r=>r.id===matches[i].id)?.floorId!==floorIds[0])matches.splice(i,1)
+    if(!matches.some(match=>match.at>=part.start&&match.at<part.end)){
+      const room=scene.rooms.find(r=>r.floorId===floorIds[0])
+      if(room)matches.push({id:room.id,at:part.start})
+      else warnings.push('The requested floor has no rooms yet.')
+    }
+  }
   const subjectMatches=[]
   for(const item of scene.furniture){const names=[item.id.replaceAll('-',' '),item.kind.replaceAll('-',' ')];if(item.kind==='table')names.push('dining table');if(item.kind==='island')names.push('kitchen island');for(const name of new Set(names))for(const at of occurrences(name))subjectMatches.push({id:item.id,roomId:item.roomId,at,length:name.length})}
   subjectMatches.sort((a,b)=>b.length-a.length)
   const selectedSubjects=[]
   for(const match of subjectMatches){if(selectedSubjects.some(other=>match.at>=other.at&&match.at<other.at+other.length))continue;const group=subjectMatches.filter(other=>other.at===match.at&&other.length===match.length),part=clauses.find(c=>match.at>=c.start&&match.at<c.end),roomRefs=matches.filter(m=>m.at>=(part?.start||0)&&m.at<(part?.end||input.length)),nearby=group.find(m=>roomRefs.some(r=>r.id===m.roomId));if(group.length>1&&!nearby){warnings.push('An object name is ambiguous; include its room name.');continue}const chosen=nearby||match;selectedSubjects.push(chosen);for(let i=matches.length-1;i>=0;i--)if(matches[i].at>=chosen.at&&matches[i].at<chosen.at+chosen.length&&matches[i].id!==chosen.roomId)matches.splice(i,1);matches.push({id:chosen.roomId,at:chosen.at})}
-  if(/\b(upstairs|upper floor)\b/.test(input)){const floor=[...scene.floors].sort((a,b)=>b.elevation-a.elevation)[0],room=scene.rooms.find(r=>r.floorId===floor.id);if(floor.elevation>0&&room)matches.push({id:room.id,at:input.search(/\b(upstairs|upper floor)\b/)});else warnings.push('There is no upper floor in this scene.')}
   matches.sort((a,b)=>a.at-b.at)
   const roomIds=matches.map(m=>m.id).filter((id,i,all)=>i===0||id!==all[i-1]).slice(0,12),shotPreferences=[]
   for(const roomId of roomIds){if(shotPreferences.some(p=>p.roomId===roomId))continue;const subject=selectedSubjects.find(s=>s.roomId===roomId),reference=subject||matches.find(m=>m.id===roomId),part=clauses.find(c=>reference&&reference.at>=c.start&&reference.at<c.end)?.text||'';const kind=/\b(orbit|circle)\b/.test(part)?'orbit':/\b(reveal|pan|dolly)\b/.test(part)?'reveal':/\b(linger|hold|pause)\b/.test(part)?'hold':'walk',pace=/\b(slow|slowly|gentle|gently)\b/.test(part)?'slow':/\b(fast|quick|quickly)\b/.test(part)?'fast':'normal';const dwellPart=part.replace(/\b(?:for\s+)?(?:a\s+)?\d+(?:\.\d+)?[ -]+seconds?\s+tour\b/g,'');const dwell=dwellPart.match(/\b(?:linger|hold|pause)\b[^,;]*?\b(\d+(?:\.\d+)?)\s*(?:seconds?|secs?)\b/);if(subject||kind!=='walk'||pace!=='normal')shotPreferences.push({roomId,...(subject?{subjectId:subject.id}:{}),kind,pace,...(dwell?{duration:Number(dwell[1])}:{})})}

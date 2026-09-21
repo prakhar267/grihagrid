@@ -27,9 +27,16 @@ binding = "CF_VERSION_METADATA"
 # REPORT_SHARE_ABUSE_HMAC_KEY Worker secret in each environment. Enter it only
 # through `wrangler secret put`; never define it in this file or reuse it.
 
+[ai]
+binding = "AI"
+
 [vars]
 APP_ENV = "production"
+CLOUDFLARE_AI_DAILY_NEURONS = "5600"
 APP_ORIGIN = "https://grihagrid.prakhargupta267.workers.dev"
+AI_PROVIDER = "cloudflare"
+CLOUDFLARE_AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+AI_GEMINI_FALLBACK = "true"
 GEMINI_MODEL = "gemini-3.6-flash"
 # Paid checkout and fulfillment are independent, fail-closed controls. Keep all
 # three values closed until docs/launch-readiness.md has dated evidence.
@@ -71,9 +78,16 @@ invocation_logs = false
 [env.staging.version_metadata]
 binding = "CF_VERSION_METADATA"
 
+[env.staging.ai]
+binding = "AI"
+
 [env.staging.vars]
 APP_ENV = "staging"
+CLOUDFLARE_AI_DAILY_NEURONS = "2800"
 APP_ORIGIN = "https://grihagrid-staging.prakhargupta267.workers.dev"
+AI_PROVIDER = "cloudflare"
+CLOUDFLARE_AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+AI_GEMINI_FALLBACK = "true"
 GEMINI_MODEL = "gemini-3.6-flash"
 PAID_CHECKOUT_ENABLED = "false"
 DECISION_COMPARE_FULFILLMENT_ENABLED = "false"

@@ -9,7 +9,7 @@ export const ESTIMATOR_CITIES = Object.freeze([
   "Other",
 ]);
 
-export const ESTIMATOR_FLOORS = Object.freeze(["G", "G+1", "G+2"]);
+export const ESTIMATOR_FLOORS = Object.freeze(["G", "G+1", "G+2", "G+3"]);
 export const ESTIMATOR_QUALITIES = Object.freeze(["Essential", "Signature", "Premium", "Luxury"]);
 export const ESTIMATOR_ENTRY_POINTS = Object.freeze(["public_estimator", "shared_estimate"]);
 

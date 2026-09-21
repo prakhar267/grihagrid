@@ -60,7 +60,7 @@ test('privileged release canaries import and execute without repository dependen
   const directory = await mkdtemp(join(tmpdir(), 'grihagrid-canary-no-dependencies-'));
   try {
     await mkdir(join(directory, 'fixtures'));
-    for (const name of ['authenticated-smoke.mjs', 'spatial-release-canary.mjs', 'fixtures/spatial-release.json']) {
+    for (const name of ['authenticated-smoke.mjs', 'spatial-release-canary.mjs', 'fixtures/spatial-release.json', 'fixtures/house-release.json']) {
       await writeFile(join(directory, name), await readFile(new URL('../scripts/' + name, import.meta.url)));
     }
     const result = spawnSync(process.execPath, ['--input-type=module', '-'], { cwd: directory, encoding: 'utf8',
@@ -1003,7 +1003,7 @@ test("release database evidence hard-gates legacy safety and proves migration da
   const residue = verifyCanaryResidueEvidence({
     environment: "staging",
     canaryProjectIds: ["11111111-1111-4111-8111-111111111111"],
-    residuePayload: d1([{ projects: 0, project_revisions: 0, reports: 0, revision_reports: 0, feedback: 0, report_shares: 0, spatial_revisions: 0, spatial_tour_revisions: 0, spatial_camera_revisions: 0 }]),
+    residuePayload: d1([{ projects: 0, project_revisions: 0, reports: 0, revision_reports: 0, feedback: 0, report_shares: 0, spatial_revisions: 0, spatial_tour_revisions: 0, spatial_camera_revisions: 0, house_brief_revisions: 0 }]),
   });
   assert.equal(residue.canaryResidue, 0);
   assert.equal(residue.canaryProjectCount, 1);

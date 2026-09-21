@@ -8,6 +8,9 @@ import { buildPrimitives, toBrowser, fromBrowser, floorApertures, pointInPolygon
 import { resolveCollision, floorAtPosition } from './navigation.js'
 import { getOverviewView, getRoomView, sampleTour } from './tours.js'
 import { validateViewpoints } from './viewpoints.js'
+import { cameraFloor, roomOnFloor } from './workspace-navigation.js'
+import { sectionPlane, sectionCamera } from './building-sections.js'
+import { setWalkingInput, consumeWalkingInput } from './walking-input.js'
 import './world-canvas.css'
 
 extend({ RoundedBoxGeometry })
@@ -111,7 +114,7 @@ function surfaceGeometry(primitive, dimensions) {
   return geometry
 }
 
-function Primitive({ primitive, textures, cutaway, elevation = 0, object, selected, onObjectSelect, onRoomHover, onRoomSelect }) {
+function Primitive({ primitive, textures, cutaway, clippingPlanes, elevation = 0, object, selected, onObjectSelect, onRoomHover, onRoomSelect }) {
   const shape = useMemo(() => {
     const position = [...primitive.position], size = [...primitive.size]
     if (cutaway && primitive.category === 'roof') return null
@@ -135,13 +138,13 @@ function Primitive({ primitive, textures, cutaway, elevation = 0, object, select
     rotation={[0, primitive.rotation || primitive.rotationZ || 0, 0]}
     castShadow={!['glass', 'water'].includes(material) && primitive.category !== 'floor'}
     receiveShadow
-    onPointerOver={event => { if (primitive.roomId) { event.stopPropagation(); onRoomHover?.(primitive.roomId) } }}
+    onPointerOver={event => { if (clippingPlanes?.some(plane => plane.distanceToPoint(event.point) < 0)) return; if (primitive.roomId) { event.stopPropagation(); onRoomHover?.(primitive.roomId) } }}
     onPointerOut={() => onRoomHover?.(null)}
-    onClick={event => { if (event.delta > 4) return; event.stopPropagation(); if (object) onObjectSelect?.(object); else if (primitive.roomId) onRoomSelect?.(primitive.roomId) }}
+    onClick={event => { if (clippingPlanes?.some(plane => plane.distanceToPoint(event.point) < 0)) return; if (event.delta > 4) return; event.stopPropagation(); if (object) onObjectSelect?.(object); else if (primitive.roomId) onRoomSelect?.(primitive.roomId) }}
     userData={{ id: primitive.id, objectId: object?.id || null, roomId: primitive.roomId || null, floorId: primitive.floorId || null, category: primitive.category, canonicalUnits: 'mm' }}
   >
     <primitive object={shape.geometry} attach="geometry" />
-    <SurfaceMaterial color={primitive.color || '#ddd2bd'} roughness={0.86} metalness={0} map={texture} bumpMap={config.bumpScale ? texture : null} {...config} emissive={selected ? '#a85729' : '#000000'} emissiveIntensity={selected ? 0.22 : 0} />
+    <SurfaceMaterial clippingPlanes={clippingPlanes || null} clipShadows side={clippingPlanes ? THREE.DoubleSide : THREE.FrontSide} color={primitive.color || '#ddd2bd'} roughness={0.86} metalness={0} map={texture} bumpMap={config.bumpScale ? texture : null} {...config} emissive={selected ? '#a85729' : '#000000'} emissiveIntensity={selected ? 0.22 : 0} />
   </mesh>
 }
 
@@ -174,19 +177,24 @@ function RoomSurface({ room, active, hovered, visible, onHover, onSelect, elevat
   </group>
 }
 
-function Environment({ model, mode, selectedRoomId, hoveredRoomId, onRoomHover, onRoomSelect, sceneRef, quality, activeFloorId, isolateFloor, selectedObjectId, onObjectSelect }) {
+function Environment({ model, mode, section, selectedRoomId, hoveredRoomId, onRoomHover, onRoomSelect, sceneRef, quality, activeFloorId, isolateFloor, selectedObjectId, onObjectSelect }) {
   const primitives = useMemo(() => buildPrimitives(model), [model])
   // The sample site's top is -80mm. A backdrop at that same height depth-fights
   // with it (especially in Firefox). Keep this decorative plane below all slabs.
   const backdropElevation = useMemo(() => Math.min(-80, ...primitives.filter(p => ['floor', 'exterior'].includes(p.category)).map(p => p.position[2] - p.size[2] / 2)) / 1000 - 0.025, [primitives])
   const textures = useMemo(() => Object.fromEntries(['wood', 'fabric', 'tile'].map(kind => [kind, makeTexture(kind)])), [])
   useEffect(() => () => Object.values(textures).forEach(texture => texture?.dispose()), [textures])
-  const cutaway = mode === 'overview'
+  const cutaway = mode === 'overview' && !section
+  const clippingPlanes = useMemo(() => {
+    if (!section) return null
+    const cut = sectionPlane(model, section)
+    return [new THREE.Plane(new THREE.Vector3(...(cut.axis === 0 ? [-1,0,0] : [0,0,-1])), (cut.axis === 0 ? 1 : -1) * cut.coordinate / 1000)]
+  }, [model, section])
   // Walking and tours always retain every floor so their routes have visible support.
-  const isolated = isolateFloor && !['walk', 'tour'].includes(mode)
+  const isolated = isolateFloor && !section && !['walk', 'tour'].includes(mode)
   const showFloor = id => !isolated || !id || id === activeFloorId
   const apertures = useMemo(() => Object.fromEntries(model.floors.map(floor => [floor.id, floorApertures(model, floor.id)])), [model])
-  const objects = useMemo(() => [...model.furniture.map(item => ({ ...item, type: 'furniture', label: item.kind })), ...model.walls.map(item => ({ ...item, type: 'wall', label: 'Wall' })), ...model.walls.flatMap(wall => wall.openings.map(item => ({ ...item, floorId: wall.floorId, roomId: wall.roomIds[0], wallId: wall.id, type: 'opening', label: item.kind }))), ...(model.stairs || []).map(item => ({ ...item, type: 'stair', label: item.name }))].sort((a, b) => b.id.length - a.id.length), [model])
+  const objects = useMemo(() => [...(model.coordination||[]).map(item=>({...item,type:'component'})), ...model.furniture.map(item => ({ ...item, type: 'furniture', label: item.kind })), ...model.walls.map(item => ({ ...item, type: 'wall', label: 'Wall' })), ...model.walls.flatMap(wall => wall.openings.map(item => ({ ...item, floorId: wall.floorId, roomId: wall.roomIds[0], wallId: wall.id, type: 'opening', label: item.kind }))), ...(model.stairs || []).map(item => ({ ...item, type: 'stair', label: item.name }))].sort((a, b) => b.id.length - a.id.length), [model])
   const identify = primitive => objects.find(item => primitive.stairId === item.id || primitive.id === item.id || primitive.id.startsWith(`${item.id}-`))
 
   return <>
@@ -205,20 +213,20 @@ function Environment({ model, mode, selectedRoomId, hoveredRoomId, onRoomHover, 
     <group ref={sceneRef} name="GrihaGrid_Building" userData={{ schemaVersion: model.schemaVersion, revision: model.revision, sourceUnits: 'mm', exportedUnits: 'm' }}>
       {primitives.filter(primitive => showFloor(primitive.floorId)).map(primitive => {
         const object = identify(primitive)
-        return <Primitive key={primitive.id} primitive={primitive} textures={textures} cutaway={cutaway} elevation={model.floors.find(floor => floor.id === primitive.floorId)?.elevation || 0}
+        return <Primitive key={primitive.id} primitive={primitive} textures={textures} cutaway={cutaway} clippingPlanes={clippingPlanes} elevation={model.floors.find(floor => floor.id === primitive.floorId)?.elevation || 0}
           object={object} selected={selectedObjectId === object?.id} onObjectSelect={onObjectSelect} onRoomHover={onRoomHover} onRoomSelect={onRoomSelect} />
       })}
     </group>
-    {model.rooms.filter(room => showFloor(room.floorId)).map(room => <RoomSurface key={room.id} room={room} active={selectedRoomId === room.id} hovered={hoveredRoomId === room.id}
+    {!section && model.rooms.filter(room => showFloor(room.floorId)).map(room => <RoomSurface key={room.id} room={room} active={selectedRoomId === room.id} hovered={hoveredRoomId === room.id}
       elevation={model.floors.find(floor => floor.id === room.floorId)?.elevation || 0} apertures={apertures[room.floorId] || []} visible={mode === 'overview'} onHover={onRoomHover} onSelect={onRoomSelect} />)}
   </>
 }
 
-function CameraDirector({ model, mode, selectedRoomId, tour, tourPlaying, tourTime, onTourTime, onTourPause, onMetrics, onFade, controllerRef, movement, reducedMotion, sceneRef, playbackRate, eyeHeight, activeFloorId, isolateFloor, onFloorChange, restoreState }) {
+function CameraDirector({ model, mode, section, selectedRoomId, tour, tourPlaying, tourTime, onTourTime, onTourPause, onMetrics, onFade, controllerRef, movement, reducedMotion, sceneRef, playbackRate, eyeHeight, activeFloorId, isolateFloor, onFloorChange, restoreState }) {
   const { camera, gl, scene, invalidate, size: viewport } = useThree()
   const controls = useRef()
   const live = useRef({})
-  live.current = { model, mode, tour, tourPlaying, onTourTime, onTourPause, onMetrics, reducedMotion, onFade, playbackRate, eyeHeight, activeFloorId, isolateFloor, onFloorChange }
+  live.current = { model, mode, section, tour, tourPlaying, onTourTime, onTourPause, onMetrics, reducedMotion, onFade, playbackRate, eyeHeight, activeFloorId, isolateFloor, onFloorChange }
   const target = useRef(new THREE.Vector3())
   const elapsed = useRef(0)
   const published = useRef(-1)
@@ -229,7 +237,8 @@ function CameraDirector({ model, mode, selectedRoomId, tour, tourPlaying, tourTi
   const walkingFloor = useRef(null)
 
   const overviewView = building => {
-    let view = getOverviewView(building)
+    let view = live.current.section ? sectionCamera(building, live.current.section) : getOverviewView(building)
+    if (live.current.section) { const factor = Math.max(1, 1.35 / camera.aspect); return { ...view, position: view.position.map((value, axis) => view.target[axis] + (value - view.target[axis]) * factor) } }
     const active = building.floors.find(floor => floor.id === live.current.activeFloorId)
     const lift = live.current.isolateFloor && active ? active.elevation : (Math.max(...building.floors.map(floor => floor.elevation))) / 2
     view = { ...view, target: [view.target[0], view.target[1], view.target[2] + lift], position: [view.position[0], view.position[1], view.position[2] + lift] }
@@ -276,6 +285,7 @@ function CameraDirector({ model, mode, selectedRoomId, tour, tourPlaying, tourTi
           const geometry = primitive.kind === 'mesh' ? meshGeometry(primitive) : primitive.kind === 'cylinder' ? new THREE.CylinderGeometry(0.5, 0.5, 1, 16) : primitive.kind === 'sphere' ? new THREE.SphereGeometry(0.5, 12, 8) : isSoftBox(primitive) ? new RoundedBoxGeometry(1, 1, 1, 2, 0.08) : new THREE.BoxGeometry(1, 1, 1)
           const existing = sceneRef.current.getObjectByName(primitive.id)
           const material = existing?.material?.clone() || new THREE.MeshStandardMaterial({ color: primitive.color || '#ddd2bd', roughness: 0.86, ...(MATERIALS[primitive.material] || {}) })
+          material.clippingPlanes = null; material.side = THREE.FrontSide;
           const mesh = new THREE.Mesh(geometry, material)
           mesh.name = primitive.id
           mesh.position.set(...toBrowser(primitive.position))
@@ -317,16 +327,25 @@ function CameraDirector({ model, mode, selectedRoomId, tour, tourPlaying, tourTi
     if (mode === 'room' && manualView.current && manualView.current.fromMode !== 'room') { jumpTo(manualView.current.view); manualView.current = null; return }
     manualView.current = null
     if (mode === 'overview') jumpTo(overviewView(model), false)
-    else if (mode === 'room' || mode === 'walk') jumpTo(getRoomView(model, selectedRoomId || model.rooms.find(room => !room.exterior)?.id, eyeHeight))
+    else if (mode === 'room' || mode === 'walk') {
+      const room = roomOnFloor(model, activeFloorId, selectedRoomId)
+      if (room) jumpTo(getRoomView(model, room.id, eyeHeight))
+    }
   }, [mode, selectedRoomId, model, eyeHeight])
-  useEffect(() => { if (mode === 'overview') applyView(overviewView(model)) }, [viewport.width, viewport.height, activeFloorId, isolateFloor])
+  useEffect(() => { if (mode === 'overview') applyView(overviewView(model)) }, [viewport.width, viewport.height, activeFloorId, isolateFloor, section])
 
   useEffect(() => {
-    if (Math.abs((Number(tourTime) || 0) - published.current) > 0.25) {
+    if (!tourPlaying || Math.abs((Number(tourTime) || 0) - published.current) > 0.000001) {
       elapsed.current = Number(tourTime) || 0
-      if (tour && mode === 'tour') { const pose = sampleTour(tour, elapsed.current); applyView(pose); onFade?.(pose?.fade || 0) }
+      // A floor selection can leave a queued effect from the previous tour
+      // render. It must not overwrite the user's newer overview/room choice.
+      if (tour && mode === 'tour' && live.current.mode === 'tour') {
+        const pose = sampleTour(tour, elapsed.current); applyView(pose); onFade?.(pose?.fade || 0)
+        const floorId = cameraFloor(model, pose?.position, tour.eyeHeight || eyeHeight)
+        if (floorId) { walkingFloor.current = floorId; live.current.onFloorChange?.(floorId) }
+      }
     }
-  }, [tourTime, tour, mode])
+  }, [tourTime, tour, mode, tourPlaying])
   useEffect(() => { elapsed.current = Number(tourTime) || 0; published.current = -1 }, [tour])
   useEffect(() => {
     if (tourPlaying && tour && mode === 'tour') jumpTo(sampleTour(tour, elapsed.current))
@@ -358,7 +377,7 @@ function CameraDirector({ model, mode, selectedRoomId, tour, tourPlaying, tourTi
       if (live.current.mode !== 'walk') return
       const key = event.key.toLowerCase()
       const map = { w: 'forward', arrowup: 'forward', s: 'backward', arrowdown: 'backward', a: 'left', arrowleft: 'left', d: 'right', arrowright: 'right' }
-      if (map[key]) { event.preventDefault(); movement.current[map[key]] = event.type === 'keydown' }
+      if (map[key]) { event.preventDefault(); setWalkingInput(movement.current, map[key], event.type === 'keydown') }
     }
     const clear = () => { movement.current = {}; dragging = false }
     canvas.addEventListener('pointerdown', onDown)
@@ -413,13 +432,11 @@ function CameraDirector({ model, mode, selectedRoomId, tour, tourPlaying, tourTi
       return
     }
     if (settings.mode === 'walk') {
-      const keys = movement.current
-      const forward = (keys.forward ? 1 : 0) - (keys.backward ? 1 : 0)
-      const side = (keys.right ? 1 : 0) - (keys.left ? 1 : 0)
+      const { forward, side, seconds } = consumeWalkingInput(movement.current, delta)
       if (forward || side) {
         const direction = new THREE.Vector3(); camera.getWorldDirection(direction); direction.y = 0; direction.normalize()
         const right = direction.clone().cross(new THREE.Vector3(0, 1, 0))
-        const step = direction.multiplyScalar(forward).addScaledVector(right, side).normalize().multiplyScalar(Math.min(delta, 0.05) * 1.6)
+        const step = direction.multiplyScalar(forward).addScaledVector(right, side).normalize().multiplyScalar(seconds * 1.6)
         const current = fromBrowser(camera.position.toArray())
         const proposed = fromBrowser(camera.position.clone().add(step).toArray())
         const resolved = resolveCollision(settings.model, current, proposed, 220, settings.eyeHeight)
@@ -480,7 +497,7 @@ class ViewerErrorBoundary extends Component {
   render() { return this.state.error ? <div className="world-fallback" role="status"><strong>The 3D view is unavailable.</strong><span>You can still inspect and edit the 2D plan.</span></div> : this.props.children }
 }
 
-const WorldCanvas = forwardRef(function WorldCanvas({ model, mode = 'overview', selectedRoomId, onRoomHover, onRoomSelect, tour, tourPlaying = false, tourTime = 0, onTourTime, onTourPause, quality = 'balanced', reducedMotion = false, onError, onMetrics, playbackRate = 1, activeFloorId, isolateFloor = false, eyeHeight = 1650, selectedObjectId, onObjectSelect, onFloorChange }, ref) {
+const WorldCanvas = forwardRef(function WorldCanvas({ model, mode = 'overview', section = null, selectedRoomId, onRoomHover, onRoomSelect, tour, tourPlaying = false, tourTime = 0, onTourTime, onTourPause, quality = 'balanced', reducedMotion = false, onError, onMetrics, playbackRate = 1, activeFloorId, isolateFloor = false, eyeHeight = 1650, selectedObjectId, onObjectSelect, onFloorChange }, ref) {
   const controller = useRef(null)
   const sceneRef = useRef(null)
   const movement = useRef({})
@@ -535,6 +552,7 @@ const WorldCanvas = forwardRef(function WorldCanvas({ model, mode = 'overview', 
         gl={{ antialias: contextProfile !== 'light', alpha: false, powerPreference: 'high-performance', preserveDrawingBuffer: true }}
         fallback={<div className="world-fallback" aria-hidden="true">WebGL is unavailable. Use the 2D Plan to explore this design.</div>}
         onCreated={({ gl }) => {
+          gl.localClippingEnabled = true;
           gl.toneMapping = THREE.ACESFilmicToneMapping; gl.toneMappingExposure = 1.05
           gl.domElement.setAttribute('aria-label', '3D house: drag to look, use the room list to navigate')
           gl.domElement.setAttribute('tabindex', '0')
@@ -542,8 +560,8 @@ const WorldCanvas = forwardRef(function WorldCanvas({ model, mode = 'overview', 
 
         }}>
         <RendererHealth onError={onError} onContextLost={setContextLost} />
-        <Environment model={model} mode={mode} selectedRoomId={selectedRoomId} hoveredRoomId={hoveredRoomId} onRoomHover={handleHover} onRoomSelect={onRoomSelect} sceneRef={sceneRef} quality={quality} activeFloorId={activeFloorId} isolateFloor={isolateFloor} selectedObjectId={selectedObjectId || pickedObject?.id} onObjectSelect={pickObject} />
-        <CameraDirector model={model} mode={mode} selectedRoomId={selectedRoomId} tour={tour} tourPlaying={tourPlaying} tourTime={tourTime} onTourTime={onTourTime} onTourPause={onTourPause} onMetrics={onMetrics} onFade={setFading} controllerRef={controller} movement={movement} reducedMotion={reducedMotion} sceneRef={sceneRef} playbackRate={playbackRate} eyeHeight={eyeHeight} activeFloorId={activeFloorId} isolateFloor={isolateFloor} onFloorChange={onFloorChange} restoreState={restoreState.current} />
+        <Environment model={model} mode={mode} section={section} selectedRoomId={selectedRoomId} hoveredRoomId={hoveredRoomId} onRoomHover={handleHover} onRoomSelect={onRoomSelect} sceneRef={sceneRef} quality={quality} activeFloorId={activeFloorId} isolateFloor={isolateFloor} selectedObjectId={selectedObjectId || pickedObject?.id} onObjectSelect={pickObject} />
+        <CameraDirector model={model} mode={mode} section={section} selectedRoomId={selectedRoomId} tour={tour} tourPlaying={tourPlaying} tourTime={tourTime} onTourTime={onTourTime} onTourPause={onTourPause} onMetrics={onMetrics} onFade={setFading} controllerRef={controller} movement={movement} reducedMotion={reducedMotion} sceneRef={sceneRef} playbackRate={playbackRate} eyeHeight={eyeHeight} activeFloorId={activeFloorId} isolateFloor={isolateFloor} onFloorChange={onFloorChange} restoreState={restoreState.current} />
       </Canvas></div>}
       {contextLost && <div className="world-fallback" role="status">The graphics session ended. Your 2D plan is still available.</div>}
     </ViewerErrorBoundary>
@@ -553,10 +571,10 @@ const WorldCanvas = forwardRef(function WorldCanvas({ model, mode = 'overview', 
       <div className="world-walk-reticle" aria-hidden="true">+</div>
       <div className="world-walk-pad" role="group" aria-label="Walking controls">
         {[['forward', '↑', 'Walk forward'], ['left', '←', 'Step left'], ['backward', '↓', 'Walk backward'], ['right', '→', 'Step right']].map(([key, symbol, label]) => <button key={key} type="button" className={`world-walk-${key}`} aria-label={label}
-          onPointerDown={event => { event.preventDefault(); event.currentTarget.setPointerCapture(event.pointerId); movement.current[key] = true }}
-          onPointerUp={() => { movement.current[key] = false }} onPointerCancel={() => { movement.current[key] = false }}
-          onKeyDown={event => { if (event.key === ' ' || event.key === 'Enter') { event.preventDefault(); movement.current[key] = true } }}
-          onKeyUp={() => { movement.current[key] = false }} onBlur={() => { movement.current[key] = false }}>{symbol}</button>)}
+          onPointerDown={event => { event.preventDefault(); event.currentTarget.setPointerCapture(event.pointerId); setWalkingInput(movement.current, key, true) }}
+          onPointerUp={() => setWalkingInput(movement.current, key, false)} onPointerCancel={() => setWalkingInput(movement.current, key, false, true)}
+          onKeyDown={event => { if (event.key === ' ' || event.key === 'Enter') { event.preventDefault(); setWalkingInput(movement.current, key, true) } }}
+          onKeyUp={() => setWalkingInput(movement.current, key, false)} onBlur={() => setWalkingInput(movement.current, key, false, true)}>{symbol}</button>)}
       </div>
     </>}
   </div>

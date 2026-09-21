@@ -35,13 +35,13 @@ export async function boundedBody(request, maximum = MAX_BODY) {
 }
 
 export function validateRenderRequest(body) {
-  if (!exact(body, ['model', 'tour', 'viewpoints', 'settings']) || !body.model || !exact(body.settings, ['mode', 'samples'])) throw fail(400, 'Unsupported render request fields.');
-  const { mode = 'preview', samples = 8 } = body.settings;
-  if (!['scene', 'preview', 'film'].includes(mode) || ![4, 8, 16, 32, 64].includes(samples)) throw fail(400, 'Choose a supported render mode and quality.');
+  if (!exact(body, ['model', 'tour', 'viewpoints', 'settings']) || !body.model || !exact(body.settings, ['mode', 'samples', 'device'])) throw fail(400, 'Unsupported render request fields.');
+  const { mode = 'preview', samples = 8, device = 'auto' } = body.settings;
+  if (!['scene', 'preview', 'film'].includes(mode) || ![4, 8, 16, 32, 64].includes(samples) || !['auto', 'cpu'].includes(device)) throw fail(400, 'Choose a supported render mode, quality and device.');
   let scene;
   try { scene = serializeScene(body.model, 20, body.tour, body.viewpoints); } catch (error) { throw fail(400, error.message); }
   if (scene.cameraSamples.length > 1800) throw fail(400, 'Local app renders are limited to 60 seconds.');
-  return { request: { model: body.model, tour: scene.tour, viewpoints: scene.viewpoints }, scene, settings: { mode, samples, engine: 'cycles', device: 'auto', duration: 20, timeout: 7200 } };
+  return { request: { model: body.model, tour: scene.tour, viewpoints: scene.viewpoints }, scene, settings: { mode, samples, engine: 'cycles', device, duration: 20, timeout: 7200 } };
 }
 
 async function atomicJson(filename, value) {
@@ -103,7 +103,7 @@ export async function startRenderService({ rootDirectory = path.join(homedir(), 
     return pending;
   };
   const publicJob = job => ({ id: job.id, name: job.name, sourceRevision: job.sourceRevision, buildingId: job.buildingId,
-    status: job.status, mode: job.settings.mode, samples: job.settings.samples, engine: 'Cycles', createdAt: job.createdAt,
+    status: job.status, mode: job.settings.mode, samples: job.settings.samples, device: job.settings.device, engine: 'Cycles', createdAt: job.createdAt,
     updatedAt: job.updatedAt, progress: job.status === 'complete' && job.settings.mode === 'film' && Number.isInteger(job.frames) ? { stage: 'complete', frame: job.frames, total: job.frames } : job.progress, error: job.publicError || null, attempt: job.attempt,
     completedAt: job.completedAt || null, recovery: job.recovery || null });
   const emit = job => {
@@ -312,7 +312,7 @@ export async function startRenderService({ rootDirectory = path.join(homedir(), 
       if (job.id !== name || !Number.isInteger(job.attempt) || job.attempt < 1 || job.attempt > 100 || !['queued', 'running', 'cancelling', 'complete', 'failed', 'cancelled', 'interrupted'].includes(job.status)) continue;
       if (!exact(job.settings, ['mode', 'samples', 'engine', 'device', 'duration', 'timeout']) ||
           !['scene', 'preview', 'film'].includes(job.settings.mode) || ![4, 8, 16, 32, 64].includes(job.settings.samples) ||
-          job.settings.engine !== 'cycles' || job.settings.device !== 'auto' || job.settings.timeout !== 7200 || job.settings.duration !== 20 ||
+          job.settings.engine !== 'cycles' || !['auto', 'cpu'].includes(job.settings.device) || job.settings.timeout !== 7200 || job.settings.duration !== 20 ||
           typeof job.name !== 'string' || typeof job.createdAt !== 'string' || !Number.isFinite(Date.parse(job.createdAt))) continue;
       if (job.status === 'cancelling') {
         job.status = 'cancelled'; job.recoverOnRestart = false; job.publicError = 'Cancelled. Resume to keep completed frames.'; await persist(job);

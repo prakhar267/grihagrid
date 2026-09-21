@@ -739,6 +739,16 @@ failed gate—not an assumed pass.
 
 ## Spatial studio acceptance
 
+Designer-entered coordination coverage: `tests/coordination.test.mjs` verifies
+strict schemas, old-model compatibility, physical pipe meshes, per-floor heights,
+floor copying/removal, immutable member dimensions during resizing, walking
+obstructions, stale tours and escaped/paginated drawing exports.
+`tests/spatial-api.test.mjs` checks actual local D1 persistence and invalid-floor
+rejection. `tests/walking-input.test.mjs` covers taps between frames, held keys,
+key-repeat, cancellation and opposing controls. Browser acceptance covers Jaipur
+and Delhi three-storey editing, Change Study, drawings, 3D, walking, rebuilt tours,
+saved cameras and re-import. Physical iPhone/spoken VoiceOver remain deferred.
+
 | Journey | Required evidence |
 | --- | --- |
 | Drawing to corrected model | Real raster/SVG/PDF decode, detected geometry and OCR text; calibration and explicit review; blank-image rejection; no outbound drawing/text transfer |

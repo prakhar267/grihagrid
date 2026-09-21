@@ -83,6 +83,7 @@ async function startWorker(stateDirectory, assetsDirectory, port) {
     "--var", "PAID_CHECKOUT_ENABLED:false",
     "--var", "DECISION_COMPARE_FULFILLMENT_ENABLED:false",
     "--var", "ENABLED_PAYMENT_PLANS:", "--var", "GEMINI_API_KEY:",
+    "--var", "AI_PROVIDER:gemini",
   ], {
     cwd: root,
     env: { ...process.env, CI: "true", WRANGLER_LOG_SANITIZE: "true" },

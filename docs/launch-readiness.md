@@ -2,6 +2,27 @@
 
 ## Current decision
 
+### 2026-09-21 house studio and Cloudflare AI draft cut
+
+The ongoing multi-storey studio work remains local and in draft PR
+[#83](https://github.com/prakhar267/grihagrid/pull/83). Planning memoranda and camera
+direction now prefer Workers AI with a bounded reservation from its free daily
+allowance; Gemini is a separately consented fallback. Actual Cloudflare planning
+and direction calls passed for synthetic Jaipur and Delhi cases. Stronger G+2
+tour checks visited all three floors and exposed a duplicate walk/hold shot ID,
+now fixed with regression coverage. A local browser journey saved and replayed
+the tour, generated a memo and reloaded its provider provenance. Mobile width,
+native 200% zoom and keyboard checks passed. The exact synthetic UI account and
+its sole project were removed after verification; real users were untouched.
+
+See [Cloudflare AI implementation and evidence](cloudflare-ai-migration.md) for
+model choice, consent, limits and reproducible live checks. This is not a new
+production release: no merge, remote migration, deployment, paid-plan upgrade,
+payment activation or private-upload activation occurred. iPhone and spoken
+VoiceOver remain deferred. Exact-head CI and CodeQL evidence belongs to the PR.
+
+### Deployed product decision
+
 The current production-hardening cut and its free-product acceptance criteria
 are recorded in [Free-production readiness — 16 September 2026](free-production-readiness.md).
 It excludes custom-domain and payment activation, preserves the previous

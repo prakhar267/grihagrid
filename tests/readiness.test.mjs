@@ -136,14 +136,14 @@ function querySources(sql) {
   return [...sql.matchAll(/\b(?:FROM|JOIN)\s+([a-z_][a-z0-9_]*)/giu)].map((match) => match[1].toLowerCase());
 }
 
-test("readiness manifests stay pinned to the reviewed 446-key lifecycle and spatial-storage contract", () => {
+test("readiness manifests stay pinned to the reviewed 458-key lifecycle and spatial-storage contract", () => {
   const keys = __test.readinessInventoryRowsForTest()
     .map(({ kind, scope, name }) => `${kind}:${scope}:${name}`)
     .sort();
-  assert.equal(keys.length, 446);
+  assert.equal(keys.length, 458);
   assert.equal(
     createHash("sha256").update(JSON.stringify(keys)).digest("hex"),
-    "0af6c97218fd2ee59ec9775c3c6ac90616e6afd3624b1de28f55b58b81d2f2a8",
+    "fd2ffecc8fa95e3d3db7c59f6ae61f60bd748b8c607e60621c5ed005fcba95a0",
     "a readiness schema key changed without an explicit contract review",
   );
   for (const key of [
