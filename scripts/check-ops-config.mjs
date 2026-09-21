@@ -185,7 +185,7 @@ export async function checkOpsConfig() {
   assert.match(smokeWorkflow, /cron:\s*"23 \* \* \* \*"/u, "public smoke must run hourly");
   assert.match(smokeWorkflow, /EXPECT_PAID_CHECKOUT:\s*"false"/u, "public smoke must expect checkout to remain closed");
   assert.match(smokeWorkflow, /environment:\s*production[\s\S]*?expect_ai:\s*"true"/u, "production smoke must require configured AI");
-  assert.match(smokeWorkflow, /environment:\s*staging[\s\S]*?expect_ai:\s*"false"/u, "staging smoke must require fail-closed AI");
+  assert.match(smokeWorkflow, /environment:\s*staging[\s\S]*?expect_ai:\s*"true"/u, "staging smoke must require its configured Cloudflare AI binding");
   assert.match(smokeWorkflow, /github\.ref == 'refs\/heads\/main'/u, "only trusted main smoke runs may update the alert issue");
   assert.match(smokeWorkflow, /issues:\s*write/u, "the alert job must have narrowly scoped issue permission");
   assert.match(smokeWorkflow, /Production monitor: GrihaGrid public smoke failing/u, "the public smoke must maintain one bounded incident issue");
@@ -551,9 +551,9 @@ export async function checkOpsConfig() {
   assert.match(observeAttempt, /classify-tail-stderr\.mjs/u, "tail stderr must be classified without entering release artifacts");
   assert.doesNotMatch(`${deployWorkflow}\n${observeRelease}\n${observeAttempt}`, /(?:invocation|server)-errors\.ndjson/u, "raw Worker tail payloads must never enter artifacts");
   assert.equal(
-    (deployWorkflow.match(/\(needs\.authorize\.outputs\.migrations == 'false' \|\|\s*\(steps\.rollback_compat\.outcome == 'success' && steps\.rollback_residue\.outcome == 'success'\)\)/gu) || []).length,
+    (deployWorkflow.match(/\(steps\.previous\.outputs\.migrations == 'false' \|\|\s*\(steps\.rollback_compat\.outcome == 'success' && steps\.rollback_residue\.outcome == 'success'\)\)/gu) || []).length,
     6,
-    "every migration-bearing rollback path must require explicit compatibility and zero-residue evidence from the authorized release diff",
+    "every migration-bearing rollback path must require compatibility and zero-residue evidence from the deployed-to-release history",
   );
   assert.doesNotMatch(
     deployWorkflow,
@@ -561,7 +561,7 @@ export async function checkOpsConfig() {
     "an already-applied remote migration must not bypass rollback compatibility evidence",
   );
   assert.equal(
-    (deployWorkflow.match(/if: needs\.authorize\.outputs\.migrations == 'true'/gu) || []).length,
+    (deployWorkflow.match(/if: steps\.previous\.outputs\.migrations == 'true'/gu) || []).length,
     2,
     "both migration-bearing environment releases must rehearse the previous Worker even when the remote migration was applied earlier",
   );
@@ -641,7 +641,7 @@ export async function checkOpsConfig() {
     assert.match(applyMigrations, /LOGIN_ATTEMPT_FENCE_MIGRATION_PENDING/u, `${environment} migration evidence must identify the first 0017 apply`);
 
     const rollbackCompatibility = workflowStep(deployWorkflow, `Rehearse rollback Worker against migrated ${environment} schema`);
-    assert.match(rollbackCompatibility, /if: needs\.authorize\.outputs\.migrations == 'true'/u, `${environment} rollback compatibility must follow the authorized migration-bearing release diff`);
+    assert.match(rollbackCompatibility, /if: steps\.previous\.outputs\.migrations == 'true'/u, `${environment} rollback compatibility must follow deployed-to-release migration history`);
     assert.match(rollbackCompatibility, /CLOUDFLARE_API_TOKEN:\s*\$\{\{ secrets\.CLOUDFLARE_API_TOKEN \}\}/u, `${environment} rollback session proof must have step-scoped D1 authority`);
     assert.match(rollbackCompatibility, new RegExp(`run-canary-session-fence\\.sh snapshot ${environment} rollback`, "u"), `${environment} rollback canary must validate its session baseline before login`);
     assert.match(rollbackCompatibility, /trap restore_rollback_canary_sessions EXIT/u, `${environment} rollback canary must install unconditional session cleanup`);
@@ -672,7 +672,11 @@ export async function checkOpsConfig() {
     const migrationDriftName = `Reject unexpected ${environment} migration drift`;
     const migrationDrift = workflowStep(deployWorkflow, migrationDriftName);
     assert.match(migrationDrift, /id: migration_drift_guard/u, `${environment} drift validation must expose a downstream gate`);
-    assert.match(migrationDrift, /AUTHORIZED_MIGRATIONS: \$\{\{ needs\.authorize\.outputs\.migrations \}\}/u, `${environment} drift validation must use the authorized release scope`);
+    assert.match(migrationDrift, /AUTHORIZED_MIGRATIONS: \$\{\{ steps\.previous\.outputs\.migrations \}\}/u, `${environment} drift validation must use the deployed-to-release migration scope`);
+    assert.match(migrationDrift, /release-scope\.mjs assert-pending "\$PREVIOUS_RELEASE_SHA" "\$RELEASE_SHA"/u, `${environment} must admit only exact pending migrations from its deployed history`);
+    const deployedBaseline = workflowStep(deployWorkflow, `Record current ${environment} Worker`);
+    assert.match(deployedBaseline, /release-scope\.mjs deployed-migrations "\$previous_release_sha" "\$RELEASE_SHA"/u, `${environment} must derive migration scope from its verified active Worker source`);
+    assert.ok(deployedBaseline.indexOf("git merge-base --is-ancestor") < deployedBaseline.indexOf("release-scope.mjs deployed-migrations"), `${environment} must prove source ancestry before classifying migrations`);
     assert.match(migrationDrift, /REMOTE_PENDING_MIGRATIONS: \$\{\{ steps\.migrations\.outputs\.pending \}\}/u, `${environment} drift validation must use the inspected remote state`);
     assert.match(migrationDrift, /\[\[ "\$AUTHORIZED_MIGRATIONS" == "false" && "\$REMOTE_PENDING_MIGRATIONS" == "true" \]\]/u, `${environment} must reject remote migration drift outside a migration-bearing release`);
     assert.doesNotMatch(migrationDrift, /continue-on-error/u, `${environment} migration drift rejection must be a hard stop`);
@@ -701,7 +705,7 @@ export async function checkOpsConfig() {
     assert.match(latency, /EXPECT_REPORT_HANDOFF:\s*"false"/u, `${environment} latency must run while report handoff is closed`);
     assert.match(
       latency,
-      new RegExp(`EXPECT_AI_PLANNING_BRIEF:\\s*"${environment === "production" ? "true" : "false"}"`, "u"),
+      /EXPECT_AI_PLANNING_BRIEF:\s*"true"/u,
       `${environment} latency must assert the environment's reviewed AI capability`,
     );
     assert.match(latency, new RegExp(`release-evidence/${environment}/readiness-latency\\.json`, "u"), `${environment} must preserve every latency sample`);
