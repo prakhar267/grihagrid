@@ -28,6 +28,8 @@ import {
   changedFiles,
   changedFilesInCommits,
   classifyReleaseFiles,
+  deployedMigrationScope,
+  assertPendingMigrationScope,
   isDocumentationOnly,
 } from "../scripts/release-scope.mjs";
 import { waitForRelease } from "../scripts/wait-for-release.mjs";
@@ -655,7 +657,12 @@ test("no-migration releases stop on unexpected remote migration drift before mut
     );
     const guard = workflowStep(workflow, names[1]);
     assert.match(guard, /id: migration_drift_guard/u);
-    assert.match(guard, /AUTHORIZED_MIGRATIONS: \$\{\{ needs\.authorize\.outputs\.migrations \}\}/u);
+    assert.match(guard, /AUTHORIZED_MIGRATIONS: \$\{\{ steps\.previous\.outputs\.migrations \}\}/u);
+    assert.match(guard, /PREVIOUS_RELEASE_SHA: \$\{\{ steps\.previous\.outputs\.previous_release_sha \}\}/u);
+    assert.match(guard, /release-scope\.mjs assert-pending "\$PREVIOUS_RELEASE_SHA" "\$RELEASE_SHA"/u);
+    const previous = workflowStep(workflow, `Record current ${environment} Worker`);
+    assert.ok(previous.indexOf("git merge-base --is-ancestor") < previous.indexOf("release-scope.mjs deployed-migrations"));
+    assert.match(previous, /release-scope\.mjs deployed-migrations "\$previous_release_sha" "\$RELEASE_SHA"/u);
     assert.match(guard, /REMOTE_PENDING_MIGRATIONS: \$\{\{ steps\.migrations\.outputs\.pending \}\}/u);
     assert.match(guard, /\[\[ "\$AUTHORIZED_MIGRATIONS" == "false" && "\$REMOTE_PENDING_MIGRATIONS" == "true" \]\]/u);
     assert.doesNotMatch(guard, /continue-on-error/u);
@@ -694,7 +701,7 @@ test("exact-version latency gates block canaries and enter every rollback path",
     assert.match(latency, /EXPECT_REPORT_HANDOFF:\s*"false"/u);
     assert.match(
       latency,
-      new RegExp(`EXPECT_AI_PLANNING_BRIEF:\\s*"${environment === "production" ? "true" : "false"}"`, "u"),
+      /EXPECT_AI_PLANNING_BRIEF:\s*"true"/u,
     );
     assert.match(latency, new RegExp(`release-evidence/${environment}/readiness-latency\\.json`, "u"));
     assert.doesNotMatch(latency, /secrets\./u);
@@ -780,6 +787,80 @@ test("release scope skips only documentation and treats deletions as deployable 
   assert.equal(classifyReleaseFiles(["docs/test-plan.md", "worker/removed-module.js"]).deploy, true);
   assert.equal(classifyReleaseFiles(["migrations/0013_release_guard.sql"]).migrations, true);
   assert.throws(() => classifyReleaseFiles([]), /at least one file/u);
+});
+
+test("follow-up releases retain pending migrations from each deployed baseline without admitting drift", async () => {
+  const repository = await mkdtemp(join(tmpdir(), "grihagrid-deployed-migrations-"));
+  const git = (...args) => {
+    const result = spawnSync("git", args, { cwd: repository, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  try {
+    git("init", "--quiet");
+    git("config", "user.name", "Release Scope Test");
+    git("config", "user.email", "release-scope@example.test");
+    await mkdir(join(repository, "migrations"));
+    await writeFile(join(repository, "migrations/0013_existing.sql"), "CREATE TABLE existing(id TEXT);\n");
+    git("add", "."); git("commit", "--quiet", "-m", "Deployed baseline");
+    const deployed = git("rev-parse", "HEAD");
+    await writeFile(join(repository, "migrations/0024_house_design_briefs.sql"), "CREATE TABLE house_briefs(id TEXT);\n");
+    git("add", "."); git("commit", "--quiet", "-m", "Reviewed feature migration");
+    const feature = git("rev-parse", "HEAD");
+    await writeFile(join(repository, "release-fix.js"), "export const cloudflareEnabled = true;\n");
+    git("add", "."); git("commit", "--quiet", "-m", "Fix release expectation");
+    const release = git("rev-parse", "HEAD");
+    assert.equal(classifyReleaseFiles(changedFiles(feature, release, repository)).migrations, false);
+    const scope = deployedMigrationScope(deployed, release, repository);
+    assert.deepEqual(scope, {
+      baseSha: deployed, releaseSha: release, migrations: true,
+      files: ["migrations/0024_house_design_briefs.sql"],
+    });
+    const listing = "Migrations to be applied:\n│ 0024_house_design_briefs.sql │\n";
+    assert.deepEqual(assertPendingMigrationScope(scope, listing).pendingFiles, scope.files);
+    // Staging may have applied this schema before rolling its Worker back.
+    assert.equal(assertPendingMigrationScope(scope, "No migrations to apply!").pending, false);
+    assert.equal(scope.migrations, true, "rollback compatibility remains required despite no pending SQL");
+    assert.throws(() => assertPendingMigrationScope(scope, "0025_unreviewed.sql"), /outside/u);
+    assert.throws(() => assertPendingMigrationScope(scope, "0013_existing.sql"), /outside/u);
+    assert.throws(() => assertPendingMigrationScope(scope, "unrecognized output"), /unrecognized/u);
+    assert.throws(() => assertPendingMigrationScope(scope, `${listing}No migrations to apply!`), /contradictory/u);
+    assert.throws(() => assertPendingMigrationScope(scope, listing.repeat(2)), /duplicate/u);
+    assert.throws(() => assertPendingMigrationScope(scope, "x".repeat(65_537)), /bounds/u);
+    assert.equal(deployedMigrationScope(release, release, repository).migrations, false);
+    assert.throws(() => deployedMigrationScope(release, deployed, repository), /ancestor/u);
+
+    const output = join(repository, "github-output.txt");
+    const script = fileURLToPath(new URL("../scripts/release-scope.mjs", import.meta.url));
+    const cli = spawnSync(process.execPath, [script, "deployed-migrations", deployed, release], {
+      cwd: repository, encoding: "utf8", env: { ...process.env, GITHUB_OUTPUT: output },
+    });
+    assert.equal(cli.status, 0, cli.stderr);
+    assert.deepEqual(JSON.parse(cli.stdout), scope);
+    assert.equal(await readFile(output, "utf8"), "migrations=true\n");
+    const pending = join(repository, "pending.txt");
+    await writeFile(pending, listing);
+    const admission = spawnSync(process.execPath, [script, "assert-pending", deployed, release, pending], {
+      cwd: repository, encoding: "utf8",
+    });
+    assert.equal(admission.status, 0, admission.stderr);
+    assert.deepEqual(JSON.parse(admission.stdout).pendingFiles, scope.files);
+    await writeFile(pending, "0025_unreviewed.sql");
+    const refused = spawnSync(process.execPath, [script, "assert-pending", deployed, release, pending], {
+      cwd: repository, encoding: "utf8",
+    });
+    assert.notEqual(refused.status, 0);
+    assert.equal(refused.stdout, "", "rejected migration evidence must not be emitted as admitted");
+
+    await writeFile(join(repository, "migrations/0013_existing.sql"), "DROP TABLE existing;\n");
+    git("add", "migrations"); git("commit", "--quiet", "-m", "Forbidden historical modification");
+    assert.throws(() => deployedMigrationScope(deployed, git("rev-parse", "HEAD"), repository), /cannot be modified/u);
+    await rm(join(repository, "migrations/0024_house_design_briefs.sql"));
+    git("add", "migrations"); git("commit", "--quiet", "-m", "Forbidden removal");
+    assert.throws(() => deployedMigrationScope(feature, git("rev-parse", "HEAD"), repository), /cannot be modified/u);
+  } finally {
+    await rm(repository, { recursive: true, force: true });
+  }
 });
 
 test("release database evidence hard-gates legacy safety and proves migration data invariance", () => {

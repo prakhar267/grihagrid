@@ -1,10 +1,49 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { appendFile } from "node:fs/promises";
+import { appendFile, readFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
 const SHA_PATTERN = /^[a-f0-9]{40}$/u;
+const MIGRATION_PATH = /^migrations\/([0-9]{4})_[a-z0-9_]+\.sql$/u;
+
+// A failed release can leave its additive schema applied in staging while
+// production still runs the earlier schema. A follow-up PR's parent is not
+// either environment's deployed baseline.
+export function deployedMigrationScope(baseSha, releaseSha, cwd) {
+  assert.match(baseSha, SHA_PATTERN, "deployed source must be a full commit SHA");
+  assert.match(releaseSha, SHA_PATTERN, "release source must be a full commit SHA");
+  const ancestry = spawnSync("git", ["merge-base", "--is-ancestor", baseSha, releaseSha], { cwd });
+  if (ancestry.error) throw ancestry.error;
+  assert.equal(ancestry.status, 0, "deployed source must be an ancestor of the authorized release");
+  const changes = spawnSync("git", [
+    "diff", "--name-status", "--no-renames", "-z", baseSha, releaseSha, "--", "migrations",
+  ], { cwd, encoding: "utf8" });
+  if (changes.error) throw changes.error;
+  assert.equal(changes.status, 0, "could not inspect deployed migration history");
+  const fields = changes.stdout.split("\0").filter(Boolean);
+  assert.equal(fields.length % 2, 0, "invalid migration change record");
+  const files = [];
+  for (let index = 0; index < fields.length; index += 2) {
+    assert.equal(fields[index], "A", "deployed migrations cannot be modified, removed, or renamed");
+    const match = MIGRATION_PATH.exec(fields[index + 1]);
+    assert.ok(match && Number(match[1]) > 12, "migration must follow the trusted baseline");
+    files.push(fields[index + 1]);
+  }
+  return { baseSha, releaseSha, migrations: files.length > 0, files: files.sort() };
+}
+
+export function assertPendingMigrationScope(scope, listing) {
+  assert.equal(typeof listing, "string", "pending migrations must have a listing");
+  assert.ok(Buffer.byteLength(listing, "utf8") <= 65_536, "pending migration listing exceeded bounds");
+  const files = [...listing.matchAll(/\b[0-9]{4}_[a-z0-9_]+\.sql\b/gu)]
+    .map(match => `migrations/${match[0]}`);
+  const empty = listing.includes("No migrations to apply!");
+  assert.equal(empty, files.length === 0, "unrecognized or contradictory pending migration listing");
+  assert.equal(new Set(files).size, files.length, "duplicate pending migration");
+  assert.ok(files.every(file => scope.files.includes(file)), "pending migration is outside deployed-to-release history");
+  return { ...scope, pendingFiles: files.sort(), pending: files.length > 0 };
+}
 
 export function isDocumentationOnly(pathname) {
   return pathname === "AGENTS.md"
@@ -89,7 +128,17 @@ export function assertReleaseStillCurrent(releaseSha, currentMainSha, cwd) {
 }
 
 async function main() {
-  const [commandOrBase, firstSha, secondSha] = process.argv.slice(2);
+  const [commandOrBase, firstSha, secondSha, pendingFile] = process.argv.slice(2);
+  if (commandOrBase === "deployed-migrations" || commandOrBase === "assert-pending") {
+    const scope = deployedMigrationScope(firstSha, secondSha, process.cwd());
+    const result = commandOrBase === "assert-pending"
+      ? assertPendingMigrationScope(scope, await readFile(pendingFile, "utf8")) : scope;
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    if (commandOrBase === "deployed-migrations" && process.env.GITHUB_OUTPUT) {
+      await appendFile(process.env.GITHUB_OUTPUT, `migrations=${String(scope.migrations)}\n`, "utf8");
+    }
+    return;
+  }
   if (commandOrBase === "assert-current") {
     const result = assertReleaseStillCurrent(firstSha, secondSha, process.cwd());
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);

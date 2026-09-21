@@ -751,6 +751,8 @@ jobs:
             echo "previous_version=$previous_version"
             echo "previous_release_sha=$previous_release_sha"
           } >> "$GITHUB_OUTPUT"
+          node scripts/release-scope.mjs deployed-migrations "$previous_release_sha" "$RELEASE_SHA" \
+            > release-evidence/staging/migration-scope.json
       - name: Inspect pending staging migrations and aggregate data state
         id: migrations
         env:
@@ -807,10 +809,14 @@ jobs:
       - name: Reject unexpected staging migration drift
         id: migration_drift_guard
         env:
-          AUTHORIZED_MIGRATIONS: ${{ needs.authorize.outputs.migrations }}
+          PREVIOUS_RELEASE_SHA: ${{ steps.previous.outputs.previous_release_sha }}
+          AUTHORIZED_MIGRATIONS: ${{ steps.previous.outputs.migrations }}
           REMOTE_PENDING_MIGRATIONS: ${{ steps.migrations.outputs.pending }}
         run: |
           set -euo pipefail
+          node scripts/release-scope.mjs assert-pending "$PREVIOUS_RELEASE_SHA" "$RELEASE_SHA" \
+            release-evidence/staging/pre-migration-list.txt \
+            > release-evidence/staging/migration-admission.json
           if [[ "$AUTHORIZED_MIGRATIONS" == "false" && "$REMOTE_PENDING_MIGRATIONS" == "true" ]]; then
             echo "staging has pending migrations outside the authorized release diff" >&2
             exit 1
@@ -978,7 +984,7 @@ jobs:
 
       - name: Rehearse rollback Worker against migrated staging schema
         id: rollback_compat
-        if: needs.authorize.outputs.migrations == 'true'
+        if: steps.previous.outputs.migrations == 'true'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -1101,7 +1107,7 @@ jobs:
         id: handoff_unverified_fail_closed
         if: >-
           always() &&
-          (needs.authorize.outputs.migrations == 'false' ||
+          (steps.previous.outputs.migrations == 'false' ||
            (steps.rollback_compat.outcome == 'success' && steps.rollback_residue.outcome == 'success')) &&
           steps.version.outcome == 'failure'
         continue-on-error: true
@@ -1123,7 +1129,7 @@ jobs:
         id: rollback_unverified
         if: >-
           always() &&
-          (needs.authorize.outputs.migrations == 'false' ||
+          (steps.previous.outputs.migrations == 'false' ||
            (steps.rollback_compat.outcome == 'success' && steps.rollback_residue.outcome == 'success')) &&
           steps.version.outcome == 'failure'
         env:
@@ -1173,7 +1179,7 @@ jobs:
           GRIHAGRID_READINESS_ORIGIN: ${{ env.ORIGIN }}
           GRIHAGRID_RELEASE_ID: ${{ steps.version.outputs.version_id }}
           GRIHAGRID_RELEASE_SHA: ${{ env.RELEASE_SHA }}
-          EXPECT_AI_PLANNING_BRIEF: "false"
+          EXPECT_AI_PLANNING_BRIEF: "true"
           EXPECT_REPORT_HANDOFF: "false"
         run: |
           set -euo pipefail
@@ -1449,7 +1455,7 @@ jobs:
         id: rollback_regression
         if: >-
           always() &&
-          (needs.authorize.outputs.migrations == 'false' ||
+          (steps.previous.outputs.migrations == 'false' ||
            (steps.rollback_compat.outcome == 'success' && steps.rollback_residue.outcome == 'success')) &&
           steps.version.outcome == 'success' &&
           (steps.propagation.outcome == 'failure' ||
@@ -1697,6 +1703,8 @@ jobs:
             echo "previous_version=$previous_version"
             echo "previous_release_sha=$previous_release_sha"
           } >> "$GITHUB_OUTPUT"
+          node scripts/release-scope.mjs deployed-migrations "$previous_release_sha" "$RELEASE_SHA" \
+            > release-evidence/production/migration-scope.json
       - name: Inspect pending production migrations and aggregate data state
         id: migrations
         env:
@@ -1753,10 +1761,14 @@ jobs:
       - name: Reject unexpected production migration drift
         id: migration_drift_guard
         env:
-          AUTHORIZED_MIGRATIONS: ${{ needs.authorize.outputs.migrations }}
+          PREVIOUS_RELEASE_SHA: ${{ steps.previous.outputs.previous_release_sha }}
+          AUTHORIZED_MIGRATIONS: ${{ steps.previous.outputs.migrations }}
           REMOTE_PENDING_MIGRATIONS: ${{ steps.migrations.outputs.pending }}
         run: |
           set -euo pipefail
+          node scripts/release-scope.mjs assert-pending "$PREVIOUS_RELEASE_SHA" "$RELEASE_SHA" \
+            release-evidence/production/pre-migration-list.txt \
+            > release-evidence/production/migration-admission.json
           if [[ "$AUTHORIZED_MIGRATIONS" == "false" && "$REMOTE_PENDING_MIGRATIONS" == "true" ]]; then
             echo "production has pending migrations outside the authorized release diff" >&2
             exit 1
@@ -1924,7 +1936,7 @@ jobs:
 
       - name: Rehearse rollback Worker against migrated production schema
         id: rollback_compat
-        if: needs.authorize.outputs.migrations == 'true'
+        if: steps.previous.outputs.migrations == 'true'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -2047,7 +2059,7 @@ jobs:
         id: handoff_unverified_fail_closed
         if: >-
           always() &&
-          (needs.authorize.outputs.migrations == 'false' ||
+          (steps.previous.outputs.migrations == 'false' ||
            (steps.rollback_compat.outcome == 'success' && steps.rollback_residue.outcome == 'success')) &&
           steps.version.outcome == 'failure'
         continue-on-error: true
@@ -2069,7 +2081,7 @@ jobs:
         id: rollback_unverified
         if: >-
           always() &&
-          (needs.authorize.outputs.migrations == 'false' ||
+          (steps.previous.outputs.migrations == 'false' ||
            (steps.rollback_compat.outcome == 'success' && steps.rollback_residue.outcome == 'success')) &&
           steps.version.outcome == 'failure'
         env:
@@ -2409,7 +2421,7 @@ jobs:
         id: rollback_regression
         if: >-
           always() &&
-          (needs.authorize.outputs.migrations == 'false' ||
+          (steps.previous.outputs.migrations == 'false' ||
            (steps.rollback_compat.outcome == 'success' && steps.rollback_residue.outcome == 'success')) &&
           steps.version.outcome == 'success' &&
           (steps.propagation.outcome == 'failure' ||

@@ -32,7 +32,7 @@ jobs:
             expect_ai: "true"
           - environment: staging
             origin: https://grihagrid-staging.prakhargupta267.workers.dev
-            expect_ai: "false"
+            expect_ai: "true"
 
     steps:
       - name: Check out repository

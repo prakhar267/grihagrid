@@ -71,3 +71,33 @@ encrypted backup, rollback rehearsal and production observation requirements.
 
 Physical iPhone and spoken VoiceOver checks remain explicitly deferred by the
 user. Domain, payment and private-upload activation remain outside this cut.
+
+## Staging recovery — 22 September 2026
+
+PR #83 merged as `d5f26ef20549cb2a42dc8cc47c638c1217a02baf`. Its first main
+CI encountered an intermittent report-share race failure; six isolated race
+runs, fresh local/hosted diagnostic suites, and the unchanged main CI retry
+passed. The original cause remains unconfirmed; the test is not weakened.
+
+Protected release 35654199190 verified the encrypted staging backup, applied
+migration 0024, rehearsed the previous Worker and proved zero residue. The
+candidate's public smoke passed, but the latency gate still expected staging
+AI to be unavailable. All 20 readiness samples instead correctly reported
+configured Cloudflare AI; p95 was 438 ms against the unchanged 500 ms limit.
+Automatic rollback restored staging Worker
+`3fdf3566-674f-449a-aeb5-ff981b913b60`. Migration 0024 remains applied there;
+production is unchanged and still needs that migration.
+
+The follow-up release must require configured AI in both staging checks and
+scheduled smoke. Migration admission and compatibility rehearsal must use each
+environment's verified deployed source through the authorized release, so a
+follow-up fix can carry an earlier reviewed migration that has not reached
+production. Every pending filename must belong to additive changes in that
+history; unrelated pending migrations, modified/deleted migrations, invalid
+listings and non-ancestor versions are rejected before mutation. A schema
+already applied in staging still requires rollback compatibility evidence.
+
+Acceptance is successful exact-version staging and production verification,
+with no waived AI/latency assertions or skipped migration, backup, residue or
+30-minute observation safeguards. No new schema change is introduced by this
+follow-up.
