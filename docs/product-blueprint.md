@@ -57,6 +57,7 @@ as endorsing an automatically generated model.
 | Understand a house quickly | A furnished model opens; room hover and selection match the floor plan |
 | Correct a drawing interpretation | Source review, scale calibration and editable room/wall geometry |
 | Try a layout change | Valid 2D edits update the 3D scene and expose affected tour assumptions |
+| Coordinate entered structure and services | Per-floor member/point/run editing, geometric checks, shared 3D and measured schedules |
 | Experience circulation | Walking follows supported floors, stairs and usable openings |
 | Explain a preferred view | Named viewpoints and a controllable, subject-directed tour |
 | Keep personal work | A private house opens later with accepted model/tour/camera history |
@@ -85,6 +86,13 @@ Open the demonstration or a saved house
   → save viewpoints and tour revisions
   → pair local Blender, inspect previews and export a film
 ```
+
+Within **2D Plan → Structure & services**, designers can enter columns, beams,
+electrical points and straight plumbing runs with attributable notes and system
+labels. These follow the same Change Study, private persistence and export path.
+The bounded authoring and validation contract is in
+[technical coordination](technical-coordination.md); engineering sizing and
+construction approval remain professional design work.
 
 | Surface | Role |
 | --- | --- |

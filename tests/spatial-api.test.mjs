@@ -85,10 +85,13 @@ test('spatial workspace enforces authenticated ownership, immutable real-D1 revi
   await context.test('full V2 Change Study stays read-only and accepted geometry saves and reloads exactly',async()=>{
     const created=await expect(await worker.fetch(request('/api/projects',user,{name:'V2 preview regression',input:{width:30,length:50,floors:'G+1',city:'Pune',quality:'Signature'}}),env),201)
     const id=created.project.id,v2Path=`/api/projects/${id}/spatial`,model=toV2(createDemoBuilding())
+    model.coordination=[{id:'component-column',kind:'column',label:'Entered column',floorId:'ground',position:[4100,3400,0],size:[200,200,3000],rotation:0,system:'Frame A',notes:'Synthetic design input'},{id:'component-light',kind:'light',label:'Living light',floorId:'ground',position:[2200,2200,2700],size:[200,200,40],rotation:0,system:'Lighting A',notes:'Synthetic point',loadWatts:15}]
     const input={expectedInputRevision:created.project.inputRevision,expectedSpatialRevision:0,model}
     const revisionCount=async()=>(await db.prepare('SELECT COUNT(*) AS n FROM spatial_revisions WHERE project_id=?').bind(id).first()).n
     try{
       const before=await expect(await worker.fetch(request(v2Path,user),env),200)
+      await expect(await worker.fetch(request(v2Path+'/preview',user,{...input,model:{...model,coordination:[{...model.coordination[0],floorId:'unknown-floor'}]}}),env),400)
+      assert.equal(await revisionCount(),0)
       const preview=await expect(await worker.fetch(request(v2Path+'/preview',user,input),env),200)
       assert.deepEqual(preview.model,{...model,revision:1});assert.equal(preview.proposedRevision,1)
       assert.equal(await revisionCount(),0)

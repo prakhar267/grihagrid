@@ -90,3 +90,10 @@ Verify GitHub and Wrangler identities before release work. Deployment automation
 Before remote migrations, inspect pending migrations and remote data, create a protected export, record its SHA-256, permissions, D1 Time Travel bookmark, and current Worker version, then verify the resulting schema and that no migrations remain pending. Prefer Worker rollback for application failures; never rewrite remote migration history.
 
 After a runtime release, report the configured production and staging URLs, PR, exact merged SHA, production Worker version, CI/CodeQL results, migration state, smoke/canary/monitoring evidence, launch-control state, and honest remaining limitations. Derive environment URLs from repository configuration rather than duplicating them here. Never claim a test, merge, migration, deployment, or live version without exact evidence; monitor high-risk production releases against the exact version for at least 30 minutes.
+
+The user now requires production-level software beyond the detailed presentation.
+Prioritize complete editable and persisted authoring workflows, including entered
+structural and service coordination, recovery, cross-module consistency and tested
+failure states. Do not describe passing tests or detailed visuals alone as complete
+engineering capability. Structural/member/service specifications must come from
+explicit project input and remain attributable in the shared saved model.

@@ -25,9 +25,11 @@ export function applySceneEdit(original,operation){if(!operation||typeof operati
     case 'removeOpening':{const wall=required(scene.walls,op.wallId,'wall');required(wall.openings,op.openingId,'opening');wall.openings=wall.openings.filter(o=>o.id!==op.openingId);break}
     case 'upsertFurniture':{const index=scene.furniture.findIndex(f=>f.id===op.furniture?.id),item=index<0?op.furniture:{...scene.furniture[index],...op.furniture};item.floorId ||= required(scene.rooms,item.roomId,'room').floorId;if(index<0)scene.furniture.push(item);else scene.furniture[index]=item;break}
     case 'removeFurniture':required(scene.furniture,op.furnitureId,'furniture');scene.furniture=scene.furniture.filter(f=>f.id!==op.furnitureId);break
+    case 'upsertComponent':{scene.coordination ||= [];const index=scene.coordination.findIndex(v=>v.id===op.component?.id);if(index<0)scene.coordination.push(op.component);else scene.coordination[index]=op.component;break}
+    case 'removeComponent':required(scene.coordination||[],op.componentId,'component');scene.coordination=scene.coordination.filter(v=>v.id!==op.componentId);break
     case 'addFloor':scene.floors.push(op.floor);break
     case 'updateFloor':{const floor=required(scene.floors,op.floorId,'floor');if(op.patch?.id&&op.patch.id!==floor.id)throw new Error('Floor identifiers cannot change.');Object.assign(floor,op.patch);break}
-    case 'removeFloor':required(scene.floors,op.floorId,'floor');if(scene.rooms.some(r=>r.floorId===op.floorId)||scene.stairs.some(s=>[s.fromFloorId,s.toFloorId].includes(op.floorId)))throw new Error('Remove rooms and stairs before deleting this floor.');scene.floors=scene.floors.filter(f=>f.id!==op.floorId);break
+    case 'removeFloor':required(scene.floors,op.floorId,'floor');if(scene.coordination?.some(v=>v.floorId===op.floorId))throw new Error('Remove structure and services before deleting this floor.');if(scene.rooms.some(r=>r.floorId===op.floorId)||scene.stairs.some(s=>[s.fromFloorId,s.toFloorId].includes(op.floorId)))throw new Error('Remove rooms and stairs before deleting this floor.');scene.floors=scene.floors.filter(f=>f.id!==op.floorId);break
     case 'upsertStair':{const index=scene.stairs.findIndex(s=>s.id===op.stair?.id);if(index<0)scene.stairs.push(op.stair);else scene.stairs[index]={...scene.stairs[index],...op.stair};break}
     case 'removeStair':required(scene.stairs,op.stairId,'stair');scene.stairs=scene.stairs.filter(s=>s.id!==op.stairId);break
     default:throw new Error(`Unsupported edit operation: ${op.type}.`)

@@ -58,6 +58,14 @@ integrations, not requirements for opening the demo or authoring a manual tour.
   physical stairs. Schema bounds are additional to request-size limits.
   Self-intersections, overlap, invalid openings and unsupported references fail
   validation; a cloud save also requires walking connectivity.
+- Optional `coordination` records hold designer-entered columns, beams,
+  electrical points and straight plumbing runs. `CoordinationStudio.jsx` edits
+  these per floor through Change Study; `coordination.js` supplies strict
+  validation, shared primitives, bounded interference checks and schedules.
+  Floor-relative base heights receive the floor elevation exactly once in 3D.
+  These records persist inside the immutable model; no new tables are needed.
+  Structural envelopes participate in walking and changed records invalidate
+  affected tours. See [technical coordination](technical-coordination.md).
 - Drawing recognition and OCR run in the browser from same-origin bundled
   assets. Recognition proposes a draft with review and scale calibration.
   The source drawing is not sent through the Gemini brief API or a server

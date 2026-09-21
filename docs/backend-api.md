@@ -1395,3 +1395,14 @@ The spatial studio also exposes `/api/projects/:id/spatial/brief-preview` and
 `/api/projects/:id/spatial/brief`. Creation accepts an optional top-level
 `houseBrief`, separate from the legacy planning input. See the
 [full source-revision, validation and privacy contract](house-scenario-coverage.md#persistence-and-api).
+
+## Designer-entered structure and services
+
+Spatial v2 models may include the optional `coordination` collection documented
+in [technical coordination](technical-coordination.md). The existing spatial
+preview/save endpoints validate it before inserting an immutable revision; tenant,
+CSRF, source-revision and idempotency rules are unchanged. Unknown fields, duplicate
+IDs, absent floor references, invalid footprints/heights and malformed pipe sizes
+are rejected. Electrical loads are optional entered watts, not calculated ratings.
+The existing whole-model request limits still apply. The local D1/Worker integration
+test verifies exact component persistence and rejection without revision insertion.

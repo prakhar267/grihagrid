@@ -66,6 +66,7 @@ export function clearFloor(original, floorId, remove = false) {
   scene.rooms = scene.rooms.filter(r => !removed.has(r.id))
   scene.walls = scene.walls.filter(w => w.floorId !== floorId)
   scene.furniture = scene.furniture.filter(f => f.floorId !== floorId)
+  if(scene.coordination)scene.coordination=scene.coordination.filter(v=>v.floorId!==floorId)
   scene.stairs = scene.stairs.filter(s => ![s.fromFloorId, s.toFloorId].includes(floorId))
   if (!scene.rooms.length) throw new Error('Keep at least one room in the house before clearing this floor.')
   if (remove) scene.floors = scene.floors.filter(f => f.id !== floorId)
@@ -92,6 +93,7 @@ export function populateFloor(original, floorId, { layout, sourceFloorId } = {})
       }) }
     }))
     scene.furniture.push(...scene.furniture.filter(f => f.floorId === sourceFloorId && ids.has(f.roomId)).map(f => ({ ...structuredClone(f), id: uid(f.kind), roomId: ids.get(f.roomId), floorId })))
+    if(scene.coordination)scene.coordination.push(...scene.coordination.filter(v=>v.floorId===sourceFloorId).map(v=>({...structuredClone(v),id:uid('component'),floorId})))
     return finish(original, scene)
   }
   if (!FLOOR_LAYOUTS.some(item => item.id === layout)) throw new Error('Choose one of the floor layouts.')

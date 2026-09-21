@@ -10,6 +10,7 @@ import { clearFloor, nextFloor } from './floor-plans.js'
 import FloorTools from './FloorTools.jsx'
 import './layout-editor.css'
 
+const geometrySignature=model=>JSON.stringify({...model,revision:0})
 const id = prefix => `${prefix}-${spatialUUID().slice(0, 8)}`
 const metres = value => Number((value / 1000).toFixed(3))
 const middle = polygon => polygon.reduce((sum, p) => [sum[0] + p[0] / polygon.length, sum[1] + p[1] / polygon.length], [0, 0])
@@ -52,6 +53,8 @@ export default function LayoutEditor({ model, onChange, onStatus, selectedRoomId
   const [removingFloor, setRemovingFloor] = useState(false)
   const [furnishReport, setFurnishReport] = useState(null)
   const removalHeading = useRef(null), removeFloorButton = useRef(null)
+  const lastGeometry=useRef(geometrySignature(model))
+  useEffect(()=>{const next=geometrySignature(model);if(lastGeometry.current!==next){setHistory([]);setFuture([]);setPreview(null);setPoints([])}lastGeometry.current=next},[model])
   const svg = useRef(null), drag = useRef(null), modelIdentity = useRef({id:model.id,revision:model.revision}), editor = useRef(null), inspector = useRef(null), errorMessage = useRef(null), pendingTool = useRef(null)
   const allPoints = scene.rooms.flatMap(room => room.polygon), extents = { x0: Math.min(...allPoints.map(p => p[0])) - 1800, y0: Math.min(...allPoints.map(p => p[1])) - 1800, x1: Math.max(...allPoints.map(p => p[0])) + 1800, y1: Math.max(...allPoints.map(p => p[1])) + 1800 }
   const fit = () => [extents.x0, extents.y0, extents.x1 - extents.x0, extents.y1 - extents.y0]
@@ -75,7 +78,7 @@ export default function LayoutEditor({ model, onChange, onStatus, selectedRoomId
         if (!validation.valid) throw new Error(validation.errors.slice(0, 3).join(' '))
       } else for (const item of Array.isArray(operation) ? operation : [operation]) next = applySceneEdit(next, item)
       if (selection?.type === 'room' && !next.rooms.some(r => r.id === selection.id)) setSelection(null)
-      setHistory(items => [...items.slice(-49), scene]); setFuture([]); setPreview(null); setError(''); onChange(next); status(message); return next
+      setHistory(items => [...items.slice(-49), scene]); setFuture([]); setPreview(null); setError(''); lastGeometry.current=geometrySignature(next); onChange(next); status(message); return next
     } catch (e) { setPreview(null); setError(e.message.replace(/Room polygons overlap: [^.]+\./g, 'Rooms cannot overlap on the same floor. Adjust the room position or dimensions.')); window.requestAnimationFrame(() => errorMessage.current?.focus()); return false }
   }
   function restore(direction) {
@@ -85,7 +88,7 @@ export default function LayoutEditor({ model, onChange, onStatus, selectedRoomId
     const next = { ...structuredClone(snapshot), revision: scene.revision + 1 }, validation = validateBuilding(next)
     if (!validation.valid) { setError(validation.errors[0]); return }
     if (direction === 'undo') { setHistory(items => items.slice(0, -1)); setFuture(items => [...items, scene]) } else { setFuture(items => items.slice(0, -1)); setHistory(items => [...items, scene]) }
-    onChange(next); setPreview(null); setSelection(null); setError(''); status(`${direction === 'undo' ? 'Undid' : 'Restored'} the last validated layout edit.`)
+    lastGeometry.current=geometrySignature(next); onChange(next); setPreview(null); setSelection(null); setError(''); status(`${direction === 'undo' ? 'Undid' : 'Restored'} the last validated layout edit.`)
   }
   function select(type, itemId, extra = {}) {
     setSelection({ type, id: itemId, ...extra }); setError('')

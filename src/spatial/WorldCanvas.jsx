@@ -10,6 +10,7 @@ import { getOverviewView, getRoomView, sampleTour } from './tours.js'
 import { validateViewpoints } from './viewpoints.js'
 import { cameraFloor, roomOnFloor } from './workspace-navigation.js'
 import { sectionPlane, sectionCamera } from './building-sections.js'
+import { setWalkingInput, consumeWalkingInput } from './walking-input.js'
 import './world-canvas.css'
 
 extend({ RoundedBoxGeometry })
@@ -193,7 +194,7 @@ function Environment({ model, mode, section, selectedRoomId, hoveredRoomId, onRo
   const isolated = isolateFloor && !section && !['walk', 'tour'].includes(mode)
   const showFloor = id => !isolated || !id || id === activeFloorId
   const apertures = useMemo(() => Object.fromEntries(model.floors.map(floor => [floor.id, floorApertures(model, floor.id)])), [model])
-  const objects = useMemo(() => [...model.furniture.map(item => ({ ...item, type: 'furniture', label: item.kind })), ...model.walls.map(item => ({ ...item, type: 'wall', label: 'Wall' })), ...model.walls.flatMap(wall => wall.openings.map(item => ({ ...item, floorId: wall.floorId, roomId: wall.roomIds[0], wallId: wall.id, type: 'opening', label: item.kind }))), ...(model.stairs || []).map(item => ({ ...item, type: 'stair', label: item.name }))].sort((a, b) => b.id.length - a.id.length), [model])
+  const objects = useMemo(() => [...(model.coordination||[]).map(item=>({...item,type:'component'})), ...model.furniture.map(item => ({ ...item, type: 'furniture', label: item.kind })), ...model.walls.map(item => ({ ...item, type: 'wall', label: 'Wall' })), ...model.walls.flatMap(wall => wall.openings.map(item => ({ ...item, floorId: wall.floorId, roomId: wall.roomIds[0], wallId: wall.id, type: 'opening', label: item.kind }))), ...(model.stairs || []).map(item => ({ ...item, type: 'stair', label: item.name }))].sort((a, b) => b.id.length - a.id.length), [model])
   const identify = primitive => objects.find(item => primitive.stairId === item.id || primitive.id === item.id || primitive.id.startsWith(`${item.id}-`))
 
   return <>
@@ -376,7 +377,7 @@ function CameraDirector({ model, mode, section, selectedRoomId, tour, tourPlayin
       if (live.current.mode !== 'walk') return
       const key = event.key.toLowerCase()
       const map = { w: 'forward', arrowup: 'forward', s: 'backward', arrowdown: 'backward', a: 'left', arrowleft: 'left', d: 'right', arrowright: 'right' }
-      if (map[key]) { event.preventDefault(); movement.current[map[key]] = event.type === 'keydown' }
+      if (map[key]) { event.preventDefault(); setWalkingInput(movement.current, map[key], event.type === 'keydown') }
     }
     const clear = () => { movement.current = {}; dragging = false }
     canvas.addEventListener('pointerdown', onDown)
@@ -431,13 +432,11 @@ function CameraDirector({ model, mode, section, selectedRoomId, tour, tourPlayin
       return
     }
     if (settings.mode === 'walk') {
-      const keys = movement.current
-      const forward = (keys.forward ? 1 : 0) - (keys.backward ? 1 : 0)
-      const side = (keys.right ? 1 : 0) - (keys.left ? 1 : 0)
+      const { forward, side, seconds } = consumeWalkingInput(movement.current, delta)
       if (forward || side) {
         const direction = new THREE.Vector3(); camera.getWorldDirection(direction); direction.y = 0; direction.normalize()
         const right = direction.clone().cross(new THREE.Vector3(0, 1, 0))
-        const step = direction.multiplyScalar(forward).addScaledVector(right, side).normalize().multiplyScalar(Math.min(delta, 0.05) * 1.6)
+        const step = direction.multiplyScalar(forward).addScaledVector(right, side).normalize().multiplyScalar(seconds * 1.6)
         const current = fromBrowser(camera.position.toArray())
         const proposed = fromBrowser(camera.position.clone().add(step).toArray())
         const resolved = resolveCollision(settings.model, current, proposed, 220, settings.eyeHeight)
@@ -572,10 +571,10 @@ const WorldCanvas = forwardRef(function WorldCanvas({ model, mode = 'overview', 
       <div className="world-walk-reticle" aria-hidden="true">+</div>
       <div className="world-walk-pad" role="group" aria-label="Walking controls">
         {[['forward', '↑', 'Walk forward'], ['left', '←', 'Step left'], ['backward', '↓', 'Walk backward'], ['right', '→', 'Step right']].map(([key, symbol, label]) => <button key={key} type="button" className={`world-walk-${key}`} aria-label={label}
-          onPointerDown={event => { event.preventDefault(); event.currentTarget.setPointerCapture(event.pointerId); movement.current[key] = true }}
-          onPointerUp={() => { movement.current[key] = false }} onPointerCancel={() => { movement.current[key] = false }}
-          onKeyDown={event => { if (event.key === ' ' || event.key === 'Enter') { event.preventDefault(); movement.current[key] = true } }}
-          onKeyUp={() => { movement.current[key] = false }} onBlur={() => { movement.current[key] = false }}>{symbol}</button>)}
+          onPointerDown={event => { event.preventDefault(); event.currentTarget.setPointerCapture(event.pointerId); setWalkingInput(movement.current, key, true) }}
+          onPointerUp={() => setWalkingInput(movement.current, key, false)} onPointerCancel={() => setWalkingInput(movement.current, key, false, true)}
+          onKeyDown={event => { if (event.key === ' ' || event.key === 'Enter') { event.preventDefault(); setWalkingInput(movement.current, key, true) } }}
+          onKeyUp={() => setWalkingInput(movement.current, key, false)} onBlur={() => setWalkingInput(movement.current, key, false, true)}>{symbol}</button>)}
       </div>
     </>}
   </div>

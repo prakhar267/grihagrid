@@ -1,4 +1,5 @@
 import { buildingSection, sectionPlane } from './building-sections.js'
+import { COMPONENTS, DISCIPLINES, componentFootprint, coordinationSchedule } from './coordination.js'
 import { toV2, polygonArea, polygonCenter, stairPolygon, doorLeafPrimitive } from './model-v2.js'
 
 export const escapeDrawingText = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))
@@ -208,5 +209,61 @@ export function openingScheduleSheets(input) {
 }
 export function drawingSetHTML(input,options={}) {
   const model=toV2(input),sheets=model.floors.map(f=>floorPlanSheet(model,f.id,options)).concat(elevationSheet(model),stairSectionSheet(model),buildingSectionSheet(model,{...options,section:{...options.section,axis:'y'}}),buildingSectionSheet(model,{...options,section:{...options.section,axis:'x'}}),openingScheduleSheets(model))
+  for(const floor of model.floors)for(const discipline of Object.keys(DISCIPLINES))if(coordinationSchedule(model,floor.id,discipline).length)sheets.push(coordinationPlanSheet(model,floor.id,discipline))
+  sheets.push(...coordinationScheduleSheets(model))
   return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${e(model.name)} — drawing set</title><style>body{margin:0;background:#e9e5dc;font-family:Arial,sans-serif}header{padding:20px}article{width:420mm;max-width:100%;margin:20px auto;background:white}svg{width:100%;height:auto;display:block}@page{size:A3 landscape;margin:0}@media print{header{display:none}body{background:white}article{margin:0;width:420mm;max-width:none;break-after:page;page-break-after:always}article:last-child{break-after:auto}svg{width:420mm;height:297mm}}</style><header><h1>${e(model.name)} — concept drawing set</h1><p>Revision ${model.revision}. Print at actual size on A3 landscape. All sheets derive from the same model. ${sheets.length} sheets.</p><button onclick="window.print()">Print drawing set</button></header>${sheets.map(s=>`<article>${s}</article>`).join('')}</html>`
+}
+
+export function coordinationPlanSheet(input,floorId,discipline='structure') {
+  const model=toV2(input),floor=model.floors.find(f=>f.id===floorId)||model.floors[0],rooms=model.rooms.filter(r=>r.floorId===floor.id),rows=coordinationSchedule(model,floor.id,discipline)
+  const points=rooms.flatMap(r=>r.polygon).concat(rows.flatMap(componentFootprint)),b=bounds(points.length?points:model.rooms.flatMap(r=>r.polygon))
+  const scale=[50,75,100,125,150,200,250,300,400,500,750,1000].find(s=>(b.x1-b.x0)/s<=272&&(b.y1-b.y0)/s<=194)||2000
+  const ox=25+(272-(b.x1-b.x0)/scale)/2,oy=40+(194-(b.y1-b.y0)/scale)/2,xy=p=>[ox+(p[0]-b.x0)/scale,oy+(b.y1-p[1])/scale],poly=p=>p.map(v=>xy(v).map(n).join(',')).join(' ')
+  let content=text(20,19,`${floor.name.toUpperCase()} / ${DISCIPLINES[discipline].toUpperCase()}`,4)+text(20,26,`Entered coordination geometry · FFL +${(floor.elevation/1000).toFixed(3)} m · all sizes in mm`,2.7)
+  for(const room of rooms) {
+    content+=`<polygon points="${poly(room.polygon)}" fill="#f7f5ee" stroke="#b7b2a7"/>`
+    const p=xy(polygonCenter(room.polygon));content+=text(...p,room.name.slice(0,32),2.4,'fill="#948e82" text-anchor="middle" stroke="none"')
+  }
+  for(const wall of model.walls.filter(w=>w.floorId===floor.id)) {
+    const a=xy(wall.start),z=xy(wall.end),len=Math.hypot(wall.end[0]-wall.start[0],wall.end[1]-wall.start[1])
+    content+=line(...a,...z,`stroke="#9e9b90" stroke-width="${wall.thickness/scale}"`)
+    for(const o of wall.openings)content+=line(a[0]+(z[0]-a[0])*o.offset/len,a[1]+(z[1]-a[1])*o.offset/len,a[0]+(z[0]-a[0])*(o.offset+o.width)/len,a[1]+(z[1]-a[1])*(o.offset+o.width)/len,`stroke="${o.kind==='door'?'#fffefb':'#c8dad8'}" stroke-width="${wall.thickness/scale+.15}"`)
+  }
+  const labels=[]
+  for(const item of rows) {
+    const p=xy(item.position),spec=COMPONENTS[item.kind],foot=poly(componentFootprint(item))
+    content+=`<g data-component-id="${e(item.id)}"><polygon points="${foot}" fill="${spec.color}" fill-opacity=".25" stroke="${spec.color}" stroke-width=".4"/>`
+    if(discipline==='electrical')content+=`<circle cx="${n(p[0])}" cy="${n(p[1])}" r="1.6" fill="#fffefb" stroke="${spec.color}"/>`+text(p[0],p[1]+.7,spec.prefix,1.7,'text-anchor="middle" stroke="none"')
+    let ly=p[1]-3,lx=p[0]
+    for(let attempt=0;attempt<12&&labels.some(q=>Math.abs(q[0]-lx)<24&&Math.abs(q[1]-ly)<6);attempt++){ly+=6;if(ly>240){ly=p[1]-9-attempt*6;lx=Math.min(288,p[0]+20)}}
+    labels.push([lx,ly]);content+=line(...p,lx,ly+1,`stroke="${spec.color}" stroke-width=".15"`)
+    const dims=spec.pipe?`Ø${Math.min(...item.size)} · L${Math.max(...item.size)}`:item.size.map(Math.round).join(' × ')
+    content+=text(lx,ly,item.tag,2.7,`fill="${spec.color}" text-anchor="middle" stroke="#fffefb" stroke-width="1.2" paint-order="stroke"`)+text(lx,ly+3.4,dims,2.1,'text-anchor="middle" stroke="#fffefb" stroke-width="1" paint-order="stroke"')+'</g>'
+  }
+  const a=xy([b.x0,b.y0]),z=xy([b.x1,b.y0]);content+=line(a[0],246,z[0],246)+line(a[0],243,a[0],249)+line(z[0],243,z[0],249)+text((a[0]+z[0])/2,244,Math.round(b.x1-b.x0),2.6,'text-anchor="middle"')
+  content+=text(308,43,`${rows.length} ENTERED COMPONENTS`,2.6)+text(308,50,'Tag → full component schedule',2.5)+text(308,57,'Positions use the model origin.',2.4)+text(308,63,'Base heights are above this FFL.',2.4)
+  let y=76
+  for(const [kind,spec] of Object.entries(COMPONENTS).filter(([,v])=>v.discipline===discipline)) {content+=line(308,y-1,315,y-1,`stroke="${spec.color}" stroke-width=".8"`)+text(318,y,`${spec.prefix} · ${spec.name}`,2.3);y+=7}
+  const notes=discipline==='structure'?['Member sizes are entered inputs.','No reinforcement or capacity analysis.','Check supports and foundations.']:discipline==='electrical'?['Point locations and entered loads.','Circuit labels group these points.','No wire or protection sizing.']:['Straight runs with entered diameters.','Envelopes do not define fittings.','Verify slope, connections and sizing.']
+  notes.forEach((v,i)=>content+=text(308,Math.max(y+10,125)+i*6,v,2.3))
+  if(!rows.length)content+=text(60,120,'No components entered. Add them in Structure & services.',3.5)
+  content+=text(20,257,'Review geometric interference in the studio. Unverified design inputs; not a construction issue.',2.6)
+  return frame(model,`${DISCIPLINES[discipline]} · ${floor.name}`,`${discipline==='structure'?'ST':discipline==='electrical'?'EL':'PL'}-${model.floors.indexOf(floor)+1}`,`1:${scale}`,content)
+}
+export function coordinationScheduleSheets(input) {
+  const model=toV2(input),rows=coordinationSchedule(model),pages=[];let content='',y=0,page=0
+  const start=()=>{content=text(20,19,'STRUCTURE & SERVICES / COMPONENT SCHEDULE',4)+text(20,26,'Designer-entered sizes and system labels. Heights above local finished floor. Quantities are modeled, not a priced BOQ.',2.5);y=38}
+  const finish=()=>pages.push(frame(model,'Component schedule',`CS-${++page}`,'All dimensions mm',content))
+  const wrap=(value,max)=>{const lines=[];let rest=value;while(rest.length>max){let end=rest.lastIndexOf(' ',max);if(end<max/2)end=max;lines.push(rest.slice(0,end));rest=rest.slice(end).trimStart()}if(rest)lines.push(rest);return lines}
+  start()
+  for(const row of rows) {
+    const notes=wrap(row.notes,140),height=19+notes.length*4
+    if(y+height>257){finish();start()}
+    content+=text(20,y,`${row.tag} · ${row.label}`,3)+text(210,y,`${row.floor} / ${row.type}`,2.6)
+    content+=text(20,y+5,`X ${row.position[0]} · Y ${row.position[1]} · base ${row.position[2]} · W×D×H ${row.size.join(' × ')} · rotation ${Math.round(row.rotation*180/Math.PI)}°`,2.5)
+    content+=text(20,y+10,`System: ${row.system||'Unassigned'}${row.discipline==='electrical'?` · entered load: ${row.loadWatts==null?'unspecified':`${row.loadWatts} W`}`:''}`,2.5)
+    notes.forEach((note,i)=>content+=text(20,y+15+i*4,note,2.4));content+=line(20,y+height-3,400,y+height-3,'stroke="#d8d3c8"');y+=height
+  }
+  if(rows.length)finish()
+  return pages
 }

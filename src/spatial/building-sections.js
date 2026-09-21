@@ -44,9 +44,9 @@ function footprint(primitive) {
 export function buildingSection(input, settings = {}) {
   const model = toV2(input), plane = sectionPlane(model, settings), parts = []
   for (const primitive of buildPrimitives(model)) {
-    if (!['wall', 'floor', 'roof', 'opening', 'stairs'].includes(primitive.category)) continue
+    if (!['wall', 'floor', 'roof', 'opening', 'stairs', 'structure', 'electrical', 'plumbing'].includes(primitive.category)) continue
     let intervals
-    if (primitive.kind === 'mesh') {
+    if (primitive.kind === 'mesh' && ['floor', 'roof'].includes(primitive.category)) {
       const room = model.rooms.find(room => room.id === primitive.roomId)
       if (!room) continue
       const holes = floorApertures(model, room.floorId, primitive.category === 'roof')
