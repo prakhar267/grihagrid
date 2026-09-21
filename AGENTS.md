@@ -30,6 +30,8 @@ In the same follow-up, the user reported that adding a second or later floor lef
 
 The user explicitly requires end-to-end testing beyond the editor: added floors and room edits must be exercised in 3D Explore, walking, Camera Tour, saved viewpoints and Render / Export. A rendered canvas or geometry-only test is insufficient; verify playback, mode transitions, stale-state recovery and real browser behavior.
 
+The user subsequently rejected schematic detail as insufficient even when modules work. House output must read like a detailed residential drawing: measured dimensions, room sizes, recognizable furniture and sanitary/kitchen fixtures, door/window tags and schedules, stair measurements, levels and model-derived elevations/sections. The same furnishings and openings must appear in editable 2D, 3D, camera views and exports. Preserve the existing visual direction. Never substitute decorative annotations or invented structural/services specifications for actual shared geometry.
+
 ## Product and platform invariants
 
 Treat `README.md`, `package.json`, `wrangler.toml`, `worker/index.js`, `src/App.jsx`, `src/styles.css`, and the relevant files in `docs/` as the canonical implementation and operating context. Before architectural changes, inspect the architecture, backend API, launch-readiness, operations, feature, and test-plan documentation. Inspect the configured live product and existing styles before material UI changes; evolve the current system rather than redesigning it.

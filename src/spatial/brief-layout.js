@@ -1,3 +1,4 @@
+import { furnishRooms } from './furnish-rooms.js'
 import { assessHouseBrief, FLOOR_NAMES, roomArea } from './house-brief.js';
 import { validateBuilding } from './model.js';
 import { recalculateBounds } from './model-v2.js';
@@ -80,7 +81,7 @@ export function generateBriefLayout(brief, { id = 'brief-house', name = 'Your ho
         addWall(floorId, [outerX, y], [outerX, y + h], [room.id], entrance ? [door(h)] : [{ kind: 'window', offset: (h - 1200) / 2, width: 1200, sill: requested.kind.includes('bath') ? 1500 : 900, height: requested.kind.includes('bath') ? 800 : 1500 }]);
         addWall(floorId, [x, y], [x + (side === 0 ? L : W - R), y], previous ? [previous.id, room.id] : [room.id]);
         if (index === list.length - 1) addWall(floorId, [x, y + h], [x + (side === 0 ? L : W - R), y + h], [room.id]);
-        addFurniture(model, room, requested.kind, side);
+
         previous = room; y += h;
       }
     }
@@ -89,6 +90,8 @@ export function generateBriefLayout(brief, { id = 'brief-house', name = 'Your ho
     const x = L + (level % 2 ? 3150 : 1050), startY = level % 2 ? 6500 : 1100, endY = level % 2 ? 1100 : 6500;
     model.stairs.push({ id: `stair-${level}`, name: `Stair to ${FLOOR_NAMES[level + 1].toLowerCase()}`, fromFloorId: `floor-${level}`, toFloorId: `floor-${level + 1}`, start: [x, startY], end: [x, endY], width: 1000, steps: 18, roomIds: [`hall-${level}`, `hall-${level + 1}`] });
   }
+  const details = furnishRooms(model);
+  model.furniture = details.model.furniture;
   recalculateBounds(model);
   const result = validateBuilding(model);
   if (!result.valid) throw new Error(`The starter could not produce valid geometry: ${result.errors.slice(0, 3).join(' ')}`);
@@ -97,18 +100,4 @@ export function generateBriefLayout(brief, { id = 'brief-house', name = 'Your ho
   const footprint = (W + 180) * (D + 180) / 1e6, gross = layouts.reduce((sum, layout) => sum + (W + 180) * (mm(layout.depth) + 180) / 1e6, 0);
   if ((brief.rules.coverage !== null && footprint / review.plotArea * 100 > brief.rules.coverage) || (brief.rules.far !== null && gross / review.plotArea > brief.rules.far)) throw new Error('The generated footprint exceeds an entered coverage or FAR limit. Reduce the programme or use another layout.');
   return { model, review: assessHouseBrief(brief, model), grossArea: gross, roomsArea: model.rooms.reduce((sum, room) => sum + roomArea(room), 0) };
-}
-
-function addFurniture(model, room, kind, side) {
-  const xs = room.polygon.map(p => p[0]), ys = room.polygon.map(p => p[1]), left = Math.min(...xs), right = Math.max(...xs), bottom = Math.min(...ys), top = Math.max(...ys);
-  let type, size;
-  if (kind.includes('bedroom') || kind === 'staff') { type = 'bed'; size = [1500, 2000, 600]; }
-  else if (['living', 'family', 'media'].includes(kind)) { type = 'sofa'; size = [1000, 2200, 850]; }
-  else if (kind === 'kitchen' || kind === 'utility' || kind === 'pantry') { type = 'counter'; size = [600, 1800, 900]; }
-  else if (kind.includes('bathroom') || kind === 'powder') { type = 'toilet'; size = [600, 700, 780]; }
-  else if (kind === 'study') { type = 'desk'; size = [700, 1400, 750]; }
-  else if (kind === 'dining') { type = 'table'; size = [900, 1600, 750]; }
-  else return;
-  if (right - left < size[0] + 1300 || top - bottom < size[1] + 400) return;
-  model.furniture.push({ id: `${room.id}-furniture`, roomId: room.id, floorId: room.floorId, kind: type, position: [side === 0 ? left + 200 + size[0] / 2 : right - 200 - size[0] / 2, bottom + 200 + size[1] / 2, 0], size, rotation: 0, color: '#ba9c77' });
 }

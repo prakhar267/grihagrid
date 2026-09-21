@@ -1,3 +1,4 @@
+import { furnitureKinds } from './furniture-catalog.js'
 import {validateV2Building,buildV2Primitives,resizeV2Building} from './model-v2.js'
 export {toV2,createMultiFloorDemo,floorApertures,stairPolygon} from './model-v2.js'
 // Canonical geometry: millimetres, XY ground plane, Z up. Every primitive is centre-based.
@@ -144,7 +145,7 @@ export function validateBuilding(scene) {
     if ((wall.roomIds || []).some(id => !roomIds.has(id))) errors.push(`Unknown room attached to ${wall.id}.`)
   }
   for(const item of scene.furniture) {
-    if(!exact(item,['id','roomId','kind','position','size','rotation','color'])||!color(item.color)||!['rug','sofa','chair','coffee-table','console','plant','tree','lamp','counter','island','stool','bathtub','toilet','bed','nightstand','wardrobe','desk','shelf','table'].includes(item.kind))errors.push(`Unsupported furniture fields or type for ${item.id}.`)
+    if(!exact(item,['id','roomId','kind','position','size','rotation','color'])||!color(item.color)||!furnitureKinds.includes(item.kind))errors.push(`Unsupported furniture fields or type for ${item.id}.`)
     if(!roomIds.has(item.roomId) || !point(item.position,3) || !point(item.size,3) || item.size.some(v=>v<=0||v>20000) || !finite(item.rotation) || Math.abs(item.rotation)>Math.PI*2) errors.push(`Invalid furniture ${item.id}.`)
     else {
       const room=validRooms.find(r=>r.id===item.roomId)
@@ -190,7 +191,7 @@ export function buildPrimitives(scene) {
   for(const wall of scene.walls) {
     const dx=wall.end[0]-wall.start[0],dy=wall.end[1]-wall.start[1],length=Math.hypot(dx,dy),angle=Math.atan2(dy,dx)
     const pos=(along,z,side=0)=>[wall.start[0]+along*dx/length-side*dy/length,wall.start[1]+along*dy/length+side*dx/length,z+floorZ]
-    const segment=(id,start,width,z,height)=>{if(width>0&&height>0)box(id,wall.roomIds[0],pos(start+width/2,z+height/2),[width,wall.thickness,height],'#e9e1d4','wall',angle,'plaster',true)}
+    const segment=(id,start,width,z,height)=>{if(width>0&&height>0){box(id,wall.roomIds[0],pos(start+width/2,z+height/2),[width,wall.thickness,height],'#e9e1d4','wall',angle,'plaster',true);if(scene.architecturalDetail&&z===0&&height>=100)box(`${id}-skirting`,wall.roomIds[0],pos(start+width/2,50),[width,wall.thickness+24,100],'#c7b9a3','wall',angle,'wood')}}
     let cursor=0
     for(const op of [...wall.openings].sort((a,b)=>a.offset-b.offset)) {
       segment(`${wall.id}-${op.id}-side`,cursor,op.offset-cursor,0,wall.height)
@@ -201,6 +202,7 @@ export function buildPrimitives(scene) {
       box(`${op.id}-frame-b`,wall.roomIds[0],pos(op.offset+op.width-25,op.sill+op.height/2),[50,wall.thickness+20,op.height],frame,'opening',angle,'wood')
       box(`${op.id}-frame-top`,wall.roomIds[0],pos(op.offset+op.width/2,op.sill+op.height-25),[op.width,wall.thickness+20,50],frame,'opening',angle,'wood')
       if(op.kind==='window') {
+        if(scene.architecturalDetail)box(`${op.id}-sill-board`,wall.roomIds[0],pos(op.offset+op.width/2,op.sill+12),[op.width+30,wall.thickness+90,24],'#c6bda9','opening',angle,'stone')
         box(`${op.id}-glass`,wall.roomIds[0],pos(op.offset+op.width/2,op.sill+op.height/2),[op.width-80,12,op.height-80],'#b9d0cc','opening',angle,'glass',true)
         box(`${op.id}-mullion`,wall.roomIds[0],pos(op.offset+op.width/2,op.sill+op.height/2),[35,wall.thickness+20,op.height],frame,'opening',angle,'wood')
       } else if(!op.open) box(`${op.id}-leaf`,wall.roomIds[0],pos(op.offset+op.width/2,op.height/2),[op.width-70,45,op.height-50],'#987755','opening',angle,'wood',true)
@@ -232,10 +234,33 @@ export function buildPrimitives(scene) {
       legs(h-65);part('top',0,0,h-35,w,d,70)
       if(f.kind==='desk') {part('book',-w*.25,0,h+18,w*.2,d*.3,35,'#a7532f');part('notebook',0,0,h+15,w*.23,d*.38,25,'#e5deca')}
       if(f.kind==='coffee-table')part('bowl',w*.22,0,h+45,230,230,80,'#c1aa85','clay','cylinder')
-    } else if(f.kind==='counter'||f.kind==='island') {
+    } else if(f.kind==='counter'||f.kind==='island'||f.kind==='kitchen-counter') {
       part('base',0,0,(h-80)/2,w-40,d-40,h-80);part('stone',0,0,h-40,w,d,80,'#e5dece','stone')
       for(let i=1;i<Math.ceil(w/650);i++)part(`seam-${i}`,-w/2+i*w/Math.ceil(w/650),-d/2-1,h*.45,8,4,h*.7,'#947e60')
-      if(f.id==='kitchen-run') {part('hob',-w*.25,0,h+8,600,450,15,'#302d28','metal');for(const lx of [-w*.25-150,-w*.25+150])part(`hob-ring-${lx}`,lx,0,h+20,130,130,15,'#777168','metal','cylinder');part('sink',w*.26,0,h+5,500,350,12,'#8c9690','metal')}
+      if(!scene.architecturalDetail&&f.id==='kitchen-run') {part('hob',-w*.25,0,h+8,600,450,15,'#302d28','metal');for(const lx of [-w*.25-150,-w*.25+150])part(`hob-ring-${lx}`,lx,0,h+20,130,130,15,'#777168','metal','cylinder');part('sink',w*.26,0,h+5,500,350,12,'#8c9690','metal')}
+      else if(f.kind==='kitchen-counter'||scene.architecturalDetail&&(f.id==='kitchen-run'||f.kind==='counter'&&/kitchen/i.test(scene.rooms.find(r=>r.id===f.roomId)?.name||''))) {
+        const kw=Math.max(w,d),kd=Math.min(w,d),fixture=(suffix,lx,ly,lz,pw,pd,ph,...rest)=>d>w?part(suffix,-ly,lx,lz,pd,pw,ph,...rest):part(suffix,lx,ly,lz,pw,pd,ph,...rest)
+        fixture('hob',-kw*.25,0,h+8,kw*.34,kd*.72,15,'#302d28','metal')
+        for(const lx of [-kw*.32,-kw*.18])for(const ly of [-kd*.18,kd*.18])fixture(`hob-ring-${lx}-${ly}`,lx,ly,h+20,kw*.095,kd*.22,15,'#777168','metal','cylinder')
+        fixture('sink-rim',kw*.26,0,h+6,kw*.34,kd*.7,12,'#adb5b1','metal');fixture('sink-bowl',kw*.26,0,h+14,kw*.29,kd*.6,8,'#677976','metal')
+        fixture('tap',kw*.26,kd*.36,h+125,35,35,250,'#919b96','metal');fixture('spout',kw*.26,kd*.24,h+245,35,kd*.24,30,'#919b96','metal')
+      }
+    } else if(f.kind==='washbasin') {
+      part('vanity',0,0,h*.42,w,d,h*.8);part('rim',0,0,h*.94,w,d,h*.12,'#eeeae2','ceramic')
+      part('bowl',0,-d*.03,h+1,w*.7,d*.62,12,'#b6c7c3','ceramic');part('tap',0,d*.34,h+85,35,35,170,'#899792','metal')
+      part('mirror',0,d*.46,h+440,w*.85,18,580,'#b9ccce','glass')
+    } else if(f.kind==='shower') {
+      part('tray',0,0,45,w,d,90,'#ece9e0','ceramic');part('drain',0,0,92,110,110,5,'#69736d','metal')
+      part('screen',w*.48,0,h/2,18,d,h,'#a7c2be','glass');part('rail',-w*.25,d*.43,h*.6,28,28,h*.66,'#a1aaa6','metal')
+      part('head',-w*.25,d*.28,h*.92,w*.22,d*.3,30,'#858f8b','metal')
+    } else if(f.kind==='refrigerator'||f.kind==='washing-machine') {
+      part('body',0,0,h/2,w,d,h,'#d9ddd8','metal');part('door',0,-d*.49,h*.48,w*.94,25,h*.9,'#eceee9','metal')
+      if(f.kind==='refrigerator') {part('freezer-line',0,-d*.51,h*.7,w*.94,8,10,'#737b74');part('handle',w*.36,-d*.53,h*.44,28,35,h*.35,'#87918b','metal')}
+      else {part('controls',0,-d*.52,h*.87,w*.85,12,h*.1,'#a9b3ad','metal');part('drum',0,-d*.53,h*.46,w*.62,35,h*.52,'#51635f','glass','sphere')}
+    } else if(f.kind==='puja-unit') {
+      part('base',0,0,h*.2,w,d,h*.4);part('back',0,d*.44,h*.7,w,d*.08,h*.6);part('shelf',0,0,h*.43,w,d,45,'#e5d7b8')
+      for(const lx of [-w*.44,w*.44])part(`post-${lx}`,lx,0,h*.72,55,d*.8,h*.55)
+      part('canopy',0,0,h*.98,w,d,55);part('lamp',0,0,h*.54,100,100,h*.2,'#bc9251','metal','cylinder')
     } else if(f.kind==='bathtub') {
       part('body',0,0,h/2,w,d,h,'#edeae2','ceramic');part('basin',0,0,h+1,w*.8,d*.65,12,'#b4c7c0','water')
     } else if(f.kind==='toilet') {
