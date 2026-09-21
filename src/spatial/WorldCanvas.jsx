@@ -328,7 +328,9 @@ function CameraDirector({ model, mode, selectedRoomId, tour, tourPlaying, tourTi
   useEffect(() => {
     if (!tourPlaying || Math.abs((Number(tourTime) || 0) - published.current) > 0.000001) {
       elapsed.current = Number(tourTime) || 0
-      if (tour && mode === 'tour') {
+      // A floor selection can leave a queued effect from the previous tour
+      // render. It must not overwrite the user's newer overview/room choice.
+      if (tour && mode === 'tour' && live.current.mode === 'tour') {
         const pose = sampleTour(tour, elapsed.current); applyView(pose); onFade?.(pose?.fade || 0)
         const floorId = cameraFloor(model, pose?.position, tour.eyeHeight || eyeHeight)
         if (floorId) { walkingFloor.current = floorId; live.current.onFloorChange?.(floorId) }

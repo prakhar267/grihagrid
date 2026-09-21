@@ -99,3 +99,9 @@ Clean install, fresh local migrations, both Worker dry runs, dependency audit
 caught changed legacy film primitives; restricting architectural trim to the
 version-2 rendering path restored the legacy fixture and the full run passed.
 Exact-head CI/CodeQL are the final draft-review gates. No merge or deployment.
+
+A final live transition check found a queued tour effect restoring the old floor
+while the user selected another floor during viewer remount. The effect now
+checks the current camera mode before publishing a tour floor. Four immediate
+completed-tour → plan → explore → ground-floor transitions stayed on the selected
+floor, and all 26 focused detail/mode tests passed after the guard.
