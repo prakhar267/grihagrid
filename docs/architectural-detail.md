@@ -105,3 +105,45 @@ while the user selected another floor during viewer remount. The effect now
 checks the current camera mode before publishing a tour floor. Four immediate
 completed-tour → plan → explore → ground-floor transitions stayed on the selected
 floor, and all 26 focused detail/mode tests passed after the guard.
+
+## Whole-house sections follow-up
+
+Customer outcome: inspect how storeys, rooms, openings and stairs align vertically.
+Journey: measured plan → adjustable building section → matching 3D section →
+room/walking/tour → coordinated drawing export. Acceptance: both directions on
+both G+2 studies, correct floor levels and aperture gaps, matching plan markers,
+keyboard/mobile controls, and complete geometry in every exported model.
+KPI: four city/direction journeys without changing accepted geometry or tour routes.
+Sections are geometry coordination only; no structural or services specification
+is inferred. Section clipping is presentation only and is disabled for walking,
+room cameras, tours and render/export. Existing source revisions remain intact.
+
+Implemented: A–A/B–B building section sheets with adjustable cut position, model
+level dimensions, room intersections and hatched wall/slab cuts. Stair apertures
+are subtracted from sectioned slabs, including concave outlines. A plan marker,
+section sheet and full-height 3D cutaway share one coordinate. Drawing sets now
+include both whole-house sections. Browser cuts are disabled in room, walking,
+tour and render/export views; exported GLB materials never retain clipping.
+Camera saving is disabled while cutting because a saved camera stores its pose,
+not a section plane. Closing the section restores normal viewpoint saving.
+
+A local Open saved scene JSON workflow validates bounded building, tour, current
+cameras and optional brief before showing an explicit replacement review. Invalid
+files and Cancel preserve the current study. New scene exports include the house
+brief; older exports explain missing north/site information. This workflow is
+limited to the demo and never overwrites private project revisions.
+
+The existing Jaipur revision 5 and Delhi revision 6 geometry was restored through
+this UI, with six current camera poses each. Their original briefs were recovered
+from the earlier exported Markdown into separate sections/scene.json artifacts;
+original exports and complete historical camera libraries remain preserved.
+Both directions and keyboard cut positions match between 2D/3D. An invalid file
+was refused without changing the house; review and cancellation preserve focus.
+Chrome 390 × 844 has page width 390 and a contained 698-pixel sheet at 200% zoom.
+Full local regression: 882 passed. Clean install, 24 fresh migrations, both
+Worker dry-runs and dependency audit (zero vulnerabilities) passed. No release.
+
+Jaipur's original automatic-device preview retry again exhausted disk space at
+the final frame. A new CPU job 439ae657-15f5-4835-bca7-c5f772d96ab4 completed all
+six frames with the exact model, tour and six saved viewpoints. Original failed
+records are retained separately; no unrelated files were removed to make space.

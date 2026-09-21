@@ -1,3 +1,4 @@
+import { buildingSection, sectionPlane } from './building-sections.js'
 import { toV2, polygonArea, polygonCenter, stairPolygon, doorLeafPrimitive } from './model-v2.js'
 
 export const escapeDrawingText = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))
@@ -50,7 +51,7 @@ export function furnitureSymbol(item) {
 function frame(model,title,number,scale,content,notes='') {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="420mm" height="297mm" viewBox="0 0 420 297" role="img" aria-label="${e(title)}"><title>${e(model.name)} — ${e(title)}</title><rect width="420" height="297" fill="#fffefb"/><g font-family="Arial, sans-serif" fill="#26251f" stroke="#68685e" stroke-width=".18"><rect x="8" y="8" width="404" height="281" fill="none"/>${content}<path d="M8 266H412 M285 266V289 M367 266V289" fill="none"/>${text(14,273,'GRIHAGRID  /  ARCHITECTURAL STUDY',2.6)}${text(14,280,model.name,4.2)}${text(14,285,notes||'Concept geometry only. Structure, services and statutory compliance unverified.',2.3)}${text(291,274,title,3.2)}${text(291,281,`Rev ${model.revision} · ${scale}`,2.6)}${text(291,286,'A3 / 420 × 297 mm · print at 100%',2.3)}${text(374,277,number,5)}${text(374,285,'CONCEPT',2.7)}</g></svg>`
 }
-export function floorPlanSheet(input,floorId,{unit='mm',northDegrees=null}={}) {
+export function floorPlanSheet(input,floorId,{unit='mm',northDegrees=null,section={axis:'y',percent:50}}={}) {
   const model=toV2(input),floor=model.floors.find(f=>f.id===floorId)||model.floors[0],rooms=model.rooms.filter(r=>r.floorId===floor.id),walls=model.walls.filter(w=>w.floorId===floor.id)
   if (!rooms.length) return frame(model,`${floor.name} plan`,'A-00','No geometry',text(35,70,'This floor is empty. Add rooms in Edit layout.',5))
   const b=bounds(rooms.flatMap(r=>r.polygon)),scale=[50,75,100,125,150,200,250,300,400,500].find(s=>(b.x1-b.x0)/s<=244&&(b.y1-b.y0)/s<=201)||1000
@@ -91,6 +92,12 @@ export function floorPlanSheet(input,floorId,{unit='mm',northDegrees=null}={}) {
     labels.forEach((label,j)=>{content+=text(c[0],c[1]-height/2+3.1+j*3.4,label,2.8,'text-anchor="middle" stroke="none"')})
     content+=text(c[0],c[1]+height/2-3.8,`${dimensionLabel(r.x1-r.x0,unit)} × ${dimensionLabel(r.y1-r.y0,unit)}`,2.3,'text-anchor="middle" stroke="none"')+text(c[0],c[1]+height/2-.9,`R${String(i+1).padStart(2,'0')} · ${(polygonArea(room.polygon)/1e6).toFixed(2)} m²`,2.3,'text-anchor="middle" stroke="none"')
   })
+  const cut=sectionPlane(model,section),start=[...cut.min],end=[...cut.max]
+  start[cut.axis]=cut.coordinate;end[cut.axis]=cut.coordinate
+  const ca=xy(start),cb=xy(end)
+  content+=line(...ca,...cb,'stroke="#a7532f" stroke-width=".45" stroke-dasharray="3 1 .5 1"')
+  for(const p of [ca,cb])content+=`<circle cx="${n(p[0])}" cy="${n(p[1])}" r="3.6" fill="#fffefb" stroke="#a7532f"/>`+text(p[0],p[1]+.8,cut.name.slice(0,1),2.7,'text-anchor="middle" stroke="none"')
+  content+=text(295,229,`Section ${cut.name} · look ${cut.direction} · see A-${cut.axis===1?'12':'13'}`,2.4)
   function dim(a,z,offset,vertical=false) {
     const p=xy(a),q=xy(z),value=Math.hypot(z[0]-a[0],z[1]-a[1]),mid=[(p[0]+q[0])/2,(p[1]+q[1])/2]
     if(value<1)return ''
@@ -152,6 +159,42 @@ export function stairSectionSheet(input) {
   })
   return frame(model,'Stair sections','A-11','Scale per connection',content,'Geometry coordination only. Headroom, guards, structure and statutory requirements need professional design.')
 }
+export function buildingSectionSheet(input,options={}) {
+  const model=toV2(input),section=buildingSection(model,options.section),unit=options.unit||'mm'
+  const lo=section.min[section.across],hi=section.max[section.across]
+  const bottom=Math.min(0,...section.parts.map(p=>p.bottom)),top=Math.max(...model.floors.map(f=>f.elevation+f.height),...section.parts.map(p=>p.top))
+  const scale=[50,75,100,125,150,200,250,300,400,500,750,1000].find(s=>(hi-lo+1000)/s<=280&&(top-bottom)/s<=195)||2000
+  const ox=43+(280-(hi-lo)/scale)/2,base=226,x=v=>ox+(v-lo)/scale,y=v=>base-(v-bottom)/scale
+  let content=text(20,19,`BUILDING SECTION ${section.name} / ALL STOREYS`,4)+text(20,26,`Cut ${section.axis===0?'X':'Y'} = ${Math.round(section.coordinate)} mm · looking ${section.direction} · dimensions: ${unit}`,2.7)
+  content+=`<defs><pattern id="section-hatch" width="2" height="2" patternUnits="userSpaceOnUse"><path d="M0 2L2 0" stroke="#a59b89" stroke-width=".2"/></pattern></defs>`
+  for(const room of section.rooms) {
+    const floor=section.floors.find(f=>f.id===room.floorId)
+    content+=`<rect x="${n(x(room.left))}" y="${n(y(floor.elevation+floor.height))}" width="${n((room.right-room.left)/scale)}" height="${n(floor.height/scale)}" fill="#f4f1e9" stroke="none"/>`
+  }
+  for(const part of section.parts) {
+    const cut=['wall','floor','roof'].includes(part.category)
+    content+=`<rect data-source-id="${e(part.id)}" x="${n(x(part.left))}" y="${n(y(part.top))}" width="${n((part.right-part.left)/scale)}" height="${n((part.top-part.bottom)/scale)}" fill="${cut?'url(#section-hatch)':part.category==='opening'?'#d9e5df':'#cbbba1'}" stroke="#45453a" stroke-width="${cut?.4:.15}"/>`
+  }
+  section.floors.forEach((floor,i)=>{
+    const fy=y(floor.elevation),next=section.floors[i+1],height=next?next.elevation-floor.elevation:floor.height
+    content+=line(x(lo)-6,fy,340,fy,'stroke="#b3ada2" stroke-dasharray="2 1"')+text(344,fy-2,floor.name.slice(0,29),2.7)+text(344,fy+2,`FFL +${(floor.elevation/1000).toFixed(3)} m`,2.5)
+    const a=y(floor.elevation+height),dx=30
+    content+=line(dx,fy,dx,a)+line(dx-2,fy,dx+2,fy)+line(dx-2,a,dx+2,a)+text(dx-2,(fy+a)/2,dimensionLabel(height,unit),2.5,`text-anchor="middle" transform="rotate(-90 ${dx-2} ${(fy+a)/2})" stroke="none"`)
+    for(const room of section.rooms.filter(r=>r.floorId===floor.id)) {
+      const cx=x((room.left+room.right)/2),cy=y(floor.elevation+floor.height*.58),available=(room.right-room.left)/scale
+      if(available<15)continue
+      const label=room.name.length>Math.floor(available/1.3)?room.name.slice(0,Math.floor(available/1.3)-1)+'…':room.name
+      content+=text(cx,cy,label,2.6,'text-anchor="middle" stroke="#fffefb" stroke-width="1.2" paint-order="stroke"')+text(cx,cy+4,dimensionLabel(room.right-room.left,unit),2.3,'text-anchor="middle" stroke="#fffefb" stroke-width="1" paint-order="stroke"')
+    }
+  })
+  const roof=Math.max(...section.floors.map(f=>f.elevation+f.height))
+  content+=text(344,y(roof),'Ceiling datum',2.5)+text(344,y(roof)+4,`+${(roof/1000).toFixed(3)} m`,2.5)
+  content+=line(x(lo),240,x(hi),240)+line(x(lo),237,x(lo),243)+line(x(hi),237,x(hi),243)+text((x(lo)+x(hi))/2,238,dimensionLabel(hi-lo,unit),2.8,'text-anchor="middle" stroke="none"')
+  content+=text(20,254,'Hatching = cut model surfaces. Stair voids follow the 3D apertures. Room widths are section intersections.',2.5)
+  if(!section.parts.length)content+=text(70,120,'This cut does not intersect building geometry. Move the cut position.',3)
+  return frame(model,`Building section ${section.name}`,`A-${section.axis===1?'12':'13'}`,`1:${scale}`,content,'Model geometry only. Slab build-up, headroom and structural design require verification.')
+}
+
 export function openingScheduleSheets(input) {
   const model=toV2(input),rows=openingSchedule(model),sheets=[]
   for(let page=0;page<Math.ceil(rows.length/35);page++) {
@@ -164,6 +207,6 @@ export function openingScheduleSheets(input) {
   return sheets
 }
 export function drawingSetHTML(input,options={}) {
-  const model=toV2(input),sheets=model.floors.map(f=>floorPlanSheet(model,f.id,options)).concat(elevationSheet(model),stairSectionSheet(model),openingScheduleSheets(model))
+  const model=toV2(input),sheets=model.floors.map(f=>floorPlanSheet(model,f.id,options)).concat(elevationSheet(model),stairSectionSheet(model),buildingSectionSheet(model,{...options,section:{...options.section,axis:'y'}}),buildingSectionSheet(model,{...options,section:{...options.section,axis:'x'}}),openingScheduleSheets(model))
   return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${e(model.name)} — drawing set</title><style>body{margin:0;background:#e9e5dc;font-family:Arial,sans-serif}header{padding:20px}article{width:420mm;max-width:100%;margin:20px auto;background:white}svg{width:100%;height:auto;display:block}@page{size:A3 landscape;margin:0}@media print{header{display:none}body{background:white}article{margin:0;width:420mm;max-width:none;break-after:page;page-break-after:always}article:last-child{break-after:auto}svg{width:420mm;height:297mm}}</style><header><h1>${e(model.name)} — concept drawing set</h1><p>Revision ${model.revision}. Print at actual size on A3 landscape. All sheets derive from the same model. ${sheets.length} sheets.</p><button onclick="window.print()">Print drawing set</button></header>${sheets.map(s=>`<article>${s}</article>`).join('')}</html>`
 }
