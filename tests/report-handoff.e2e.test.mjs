@@ -914,8 +914,40 @@ test("Professional Handoff links preserve one redacted immutable report across o
       [...new Set(admissionStatuses)].sort((left,right)=>left-right)
         .map(status=>[status,admissionStatuses.filter(candidate=>candidate===status).length]),
     );
-    assert.equal(admissionStatuses.filter(status=>status===200).length,120,JSON.stringify(admissionStatusCounts));
-    assert.equal(admissionStatuses.filter(status=>status===429).length,1,JSON.stringify(admissionStatusCounts));
+    // Diagnostics contain only fixed markers and numeric counts. Never dump a
+    // public bearer, request headers, full response body, or Wrangler logs.
+    const errorCodes = [
+      "internal_error", "report_share_unavailable",
+      "abuse_control_unavailable", "report_handoff_disabled",
+    ];
+    const runtimeMarkers = [
+      "disconnected", "overloaded", "canceled", "cancelled", "hung", "timeout",
+      "Too many", "Network connection lost", "Internal Server Error",
+    ];
+    const logMarkers = [
+      ...runtimeMarkers, "Unhandled API error",
+      "Professional Handoff access admission failed",
+      "Professional Handoff projection failed",
+    ];
+    const admissionDiagnostics = JSON.stringify({
+      statuses: admissionStatusCounts,
+      failures: admissionRace.flatMap(({ response, payload }, index) => (
+        response.status < 500 ? [] : [{
+          index,
+          status: response.status,
+          applicationRequestId: /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/u
+            .test(response.headers.get("x-request-id") || ""),
+          code: errorCodes.find(code => code === payload?.code) || "non_application_error",
+          runtime: typeof payload === "string"
+            ? runtimeMarkers.filter(marker => payload.includes(marker)) : [],
+        }]
+      )),
+      logMarkers: Object.fromEntries(logMarkers.map(marker => [
+        marker, server.logs().split(marker).length - 1,
+      ])),
+    });
+    assert.equal(admissionStatuses.filter(status=>status===200).length,120,admissionDiagnostics);
+    assert.equal(admissionStatuses.filter(status=>status===429).length,1,admissionDiagnostics);
     const counterRows=await liveQuery(server,"SELECT subject_hash,window_start,request_count,limit_count FROM report_share_read_counters;");
     const admissionCounter=counterRows.find((row) => row.subject_hash === createHmac(
       "sha256",
