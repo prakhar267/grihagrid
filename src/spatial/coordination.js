@@ -89,6 +89,11 @@ export function coordinationIssues(scene) {
   for(const item of items) {
     if(disciplineOf(item)!=='structure'&&!item.system.trim())add('unassigned-system',[item.id],`${item.label}: assign a circuit or service system.`)
     if(disciplineOf(item)==='electrical'&&item.loadWatts==null)add('unspecified-load',[item.id],`${item.label}: connected load is unspecified.`)
+    for(const furnishing of scene.furniture) {
+      if(furnishing.floorId!==item.floorId||!boxesIntersect(item,furnishing))continue
+      const room=scene.rooms.find(r=>r.id===furnishing.roomId)
+      add('furniture-interference',[item.id,furnishing.id],`${item.label} intersects ${furnishing.kind.replaceAll('-',' ')}${room?` in ${room.name}`:''}. Reposition the component or furnishing.`)
+    }
     if(disciplineOf(item)==='structure') {
       for(const wall of scene.walls.filter(w=>w.floorId===item.floorId)) for(const o of wall.openings) {
         const dx=wall.end[0]-wall.start[0],dy=wall.end[1]-wall.start[1],len=Math.hypot(dx,dy),t=(o.offset+o.width/2)/len

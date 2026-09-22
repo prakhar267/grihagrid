@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { probeRenderer, RENDER_SERVICE } from './renderer-health.js'
 import './render-panel.css'
 
-const SERVICE = 'http://127.0.0.1:43127'
+const SERVICE = RENDER_SERVICE
 let pairedSession = null // Memory only; never put pairing/session credentials in URLs or browser storage.
 
 // An exact origin keeps hosted pairing usable without trusting arbitrary sites.
@@ -24,6 +25,7 @@ export default function RenderPanel({ model, tour, viewpoints = [], disabled = f
   const [pairCode, setPairCode] = useMountedState('', mounted)
   const [jobs, setJobs] = useMountedState([], mounted)
   const [status, setStatus] = useMountedState('checking', mounted)
+  const [healthAttempt, setHealthAttempt] = useState(0)
   const [error, setError] = useMountedState('', mounted)
   const [busy, setBusy] = useMountedState(false, mounted)
   const [quality, setQuality] = useMountedState(8, mounted)
@@ -56,12 +58,14 @@ export default function RenderPanel({ model, tour, viewpoints = [], disabled = f
   }, [api])
 
   useEffect(() => {
-    let cancelled = false
-    fetch(`${SERVICE}/health`, { credentials: 'omit' }).then(response => response.json()).then(body => {
-      if (!cancelled) setStatus(body.service === 'grihagrid-local-renderer' ? 'available' : 'offline')
-    }).catch(() => { if (!cancelled) setStatus('offline') })
-    return () => { cancelled = true }
-  }, [])
+    if (session) return
+    const controller = new AbortController()
+    setStatus('checking')
+    probeRenderer({ signal: controller.signal }).then(available => {
+      if (!controller.signal.aborted) setStatus(available ? 'available' : 'offline')
+    })
+    return () => controller.abort()
+  }, [session, healthAttempt, setStatus])
 
   useEffect(() => {
     if (!session) return
@@ -121,6 +125,7 @@ export default function RenderPanel({ model, tour, viewpoints = [], disabled = f
     {!session ? <>
       <details open={status === 'offline'}><summary>Set up the local renderer once</summary><p>Start the local render service in your GrihaGrid checkout. This command allows this app address to connect:</p><code>{serviceCommand}</code><p>Open the private pairing-code file named by the service, then paste its code below. Keep the service running while rendering. If your browser asks, allow this site to connect to devices on your local network.</p></details>
       <form className="render-pairing" onSubmit={pair}><label>Pairing code<input type="password" autoComplete="off" value={pairCode} onChange={event => setPairCode(event.target.value)} placeholder="Private code from your computer" required /></label><button type="submit" disabled={busy || !pairCode.trim()}>Connect renderer</button></form>
+      {status === 'offline' && <p role="status" className="render-note">The local renderer could not be reached. Check the setup above, then try again. <button type="button" onClick={() => setHealthAttempt(value => value + 1)}>Check renderer connection</button></p>}
     </> : <>
       <div className="render-settings"><label>Cycles quality<select value={quality} onChange={event => setQuality(Number(event.target.value))}><option value={8}>Quick preview · 8 samples</option><option value={16}>Balanced · 16 samples</option><option value={32}>Detailed · 32 samples</option><option value={64}>High quality · 64 samples</option></select></label><label>Render device<select value={device} onChange={event => setDevice(event.target.value)}><option value="auto">Automatic · GPU when available</option><option value="cpu">CPU · use if GPU rendering fails</option></select></label><button onClick={() => submit('preview')} disabled={busy || disabled || !tour}>Render previews</button><button onClick={() => submit('film')} disabled={busy || disabled || !tour}>Render 1080p film</button><button className="render-subtle" onClick={disconnect}>Disconnect</button></div>
       {status === 'offline' && <p role="status" className="render-note">Connection lost. These are the last known job states; rendering may still continue on your computer. <button className="render-subtle" onClick={refresh}>Check connection</button></p>}
