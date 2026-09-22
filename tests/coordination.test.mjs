@@ -99,6 +99,29 @@ test('interference checks honor Z, rotation, systems and floor isolation',()=>{
   assert.equal(boxesIntersect({...a,size:[3000,20,50],rotation:Math.PI/4},{...a,position:[1000,3000,0],size:[50,50,50]}),false)
   assert.ok(coordinationIssues(model([item({position:[2600,100,0],size:[200,200,3000]})])).some(v=>v.code==='opening-interference'))
 })
+test('entered columns identify intersected furniture and its room without changing geometry',()=>{
+  const scene=model(),room=scene.rooms.find(r=>r.floorId==='ground')
+  scene.furniture=[{id:'test-bed',kind:'bed',roomId:room.id,floorId:'ground',position:[2000,2000,0],size:[1500,2000,600],rotation:0,color:'#ba9c77'}]
+  const before=structuredClone(scene),issue=coordinationIssues(scene).find(v=>v.code==='furniture-interference')
+  assert.deepEqual(issue.ids,['component-one','test-bed'])
+  assert.ok(issue.message.includes(`bed in ${room.name}`))
+  assert.deepEqual(scene,before)
+  const moved=applySceneEdit(scene,{type:'upsertComponent',component:item({position:[4000,2000,0]})})
+  assert.equal(coordinationIssues(moved).filter(v=>v.code==='furniture-interference').length,0)
+})
+test('furniture interference respects floor, vertical separation, touch tolerance and rotated envelopes',()=>{
+  const scene=model(),room=scene.rooms.find(r=>r.floorId==='ground')
+  const furnishing={id:'test-unit',kind:'wardrobe',roomId:room.id,floorId:'ground',position:[2000,2000,0],size:[2000,200,600],rotation:Math.PI/2,color:'#ba9c77'}
+  const found=(component,furniture=furnishing)=>coordinationIssues({...scene,coordination:[component],furniture:[furniture]}).filter(v=>v.code==='furniture-interference').length
+  assert.equal(found(item({position:[2000,2800,0]})),1,'rotation places the long edge along Y')
+  assert.equal(found(item({position:[2800,2000,0]})),0,'axis-aligned bounds must not invent a hit')
+  assert.equal(found(item(),{...furnishing,floorId:'upper'}),0)
+  assert.equal(found(item({kind:'beam',position:[2000,2000,600],size:[2000,300,300]})),0,'touching top is clear')
+  assert.equal(found(item({kind:'beam',position:[2000,2000,599],size:[2000,300,300]})),1)
+  assert.equal(found(item({position:[2250,2000,0]})),0,'touching XY edge is clear')
+  assert.equal(found(item({position:[2249,2000,0]})),1)
+  assert.equal(found(item({kind:'cold-water',position:[2000,2000,200],size:[2000,50,50]})),1,'services use the same entered envelopes')
+})
 test('drawing and CSV exports escape user text, retain notes and include only populated disciplines',()=>{
   const note='Reference '+('long specification notes '.repeat(11)),scene=model([item({label:'<script>alert(1)</script>',system:'=1+1',notes:note}),item({id:'component-two',kind:'socket',label:'Socket',size:[90,25,90],loadWatts:null,system:''})])
   const svg=coordinationPlanSheet(scene,'ground','structure'),schedules=coordinationScheduleSheets(scene).join(''),html=drawingSetHTML(scene),csv=coordinationCSV(scene)
