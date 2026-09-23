@@ -1,5 +1,5 @@
 import CoordinationStudio from './CoordinationStudio.jsx'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { floorPlanSheet, elevationSheet, stairSectionSheet, buildingSectionSheet, openingSchedule, drawingSetHTML, coordinationPlanSheet } from './drawing-set.js'
 import SectionControls from './SectionControls.jsx'
 import './drawing-studio.css'
@@ -8,8 +8,9 @@ function download(text, name, type) {
   const url=URL.createObjectURL(new Blob([text],{type})),a=document.createElement('a')
   a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),3000)
 }
-export default function DrawingStudio({model,floorId,northDegrees,section,onSectionChange,onExploreSection,onChange,onStatus,onPendingChange,onExplore,resetKey,disabled,children}) {
+export default function DrawingStudio({model,floorId,northDegrees,section,onSectionChange,onExploreSection,onChange,onStatus,onPendingChange,onExplore,resetKey,componentReview,disabled,children}) {
   const [view,setView]=useState('drawing'),[sheet,setSheet]=useState('plan'),[unit,setUnit]=useState('mm'),[zoom,setZoom]=useState(100)
+  useEffect(()=>{if(componentReview){setView('coordination');requestAnimationFrame(()=>document.getElementById('coordination-mode')?.focus())}},[componentReview])
   const options=useMemo(()=>({unit,northDegrees,section}),[unit,northDegrees,section])
   const svg=useMemo(()=>sheet==='elevations'?elevationSheet(model):sheet==='stairs'?stairSectionSheet(model):sheet==='section'?buildingSectionSheet(model,options):['structure','electrical','plumbing'].includes(sheet)?coordinationPlanSheet(model,floorId,sheet):floorPlanSheet(model,floorId,options),[model,floorId,sheet,options])
   const schedule=useMemo(()=>openingSchedule(model,floorId),[model,floorId])
@@ -17,7 +18,7 @@ export default function DrawingStudio({model,floorId,northDegrees,section,onSect
     <div className="ds-view-switch" role="group" aria-label="Plan workspace mode">
       <button type="button" aria-pressed={view==='drawing'} onClick={()=>setView('drawing')}>Measured drawings</button>
       <button type="button" aria-pressed={view==='edit'} onClick={()=>setView('edit')}>Edit / furnish rooms</button>
-      <button type="button" aria-pressed={view==='coordination'} onClick={()=>setView('coordination')}>Structure &amp; services</button>
+      <button id="coordination-mode" type="button" aria-pressed={view==='coordination'} onClick={()=>setView('coordination')}>Structure &amp; services</button>
     </div>
     <div hidden={view!=='drawing'}>
       <div className="ds-heading"><div><span className="sp-eyebrow">ARCHITECTURAL DRAWING SET</span><h2>A house, in detail.</h2><p>Measured plans, opening schedules, elevations and building sections, coordinated with your 3D model.</p></div></div>
