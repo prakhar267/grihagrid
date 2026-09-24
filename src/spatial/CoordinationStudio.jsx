@@ -5,18 +5,20 @@ import { applySceneEdit } from './editor-ops.js'
 import { COMPONENTS, DISCIPLINES, componentFootprint, componentTag, coordinationIssues, coordinationSchedule, coordinationCSV, disciplineOf } from './coordination.js'
 import { coordinationPlanSheet } from './drawing-set.js'
 import { componentForm as fromItem, newComponentForm as newItem, reconcileComponentForms } from './component-drafts.js'
+import ComponentFormFiles from './ComponentFormFiles.jsx'
+import { componentFormFile, restoreComponentFormFile } from './component-form-file.js'
 import './coordination-studio.css'
 
 const signature=model=>JSON.stringify({...model,revision:0})
 const numeric=value=>String(value).trim()===''?NaN:Number(value)
 function download(data,name,type){const url=URL.createObjectURL(new Blob([data],{type})),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),3000)}
 
-export default function CoordinationStudio({model,floorId,onChange,onStatus,onPendingChange,onExplore,disabled=false}) {
+export default function CoordinationStudio({model,floorId,onSelectFloor,onChange,onStatus,onPendingChange,onExplore,disabled=false}) {
   const scene=useMemo(()=>toV2(model),[model]),floor=scene.floors.find(f=>f.id===floorId)
   const [discipline,setDiscipline]=useState('structure'),[drafts,setDrafts]=useState({}),[history,setHistory]=useState([]),[future,setFuture]=useState([]),[error,setError]=useState(''),[placing,setPlacing]=useState(false)
   const last=useRef(signature(model)),svg=useRef(null),errorRef=useRef(null),formRef=useRef(null)
   const currentDrafts=useMemo(()=>reconcileComponentForms(scene,drafts),[scene,drafts])
-  const draft=currentDrafts[floorId]||newItem(scene,floorId,Object.keys(COMPONENTS).find(k=>COMPONENTS[k].discipline===discipline)),pending=Object.values(currentDrafts).some(v=>v.pending)
+  const draft=(Object.hasOwn(currentDrafts,floorId)?currentDrafts[floorId]:null)||newItem(scene,floorId,Object.keys(COMPONENTS).find(k=>COMPONENTS[k].discipline===discipline)),pending=Object.values(currentDrafts).some(v=>v.pending)
   const rows=coordinationSchedule(scene,floorId,discipline),issues=useMemo(()=>coordinationIssues(scene),[scene]),floorIssues=issues.filter(issue=>issue.ids.some(id=>scene.coordination?.some(v=>v.id===id&&v.floorId===floorId)))
   useEffect(()=>{onPendingChange?.(pending);return()=>onPendingChange?.(false)},[pending,onPendingChange])
   useEffect(()=>{const next=signature(model);if(last.current!==next){setHistory([]);setFuture([])}last.current=next},[model])
@@ -25,6 +27,19 @@ export default function CoordinationStudio({model,floorId,onChange,onStatus,onPe
   const setDraft=next=>setDrafts(all=>({...all,[floorId]:next}))
   const change=(key,value)=>{setDraft({...draft,[key]:value,pending:true});setError('')}
   const fail=e=>{setError(e.message);requestAnimationFrame(()=>errorRef.current?.focus());return false}
+  function exportForms(all=currentDrafts) {
+    try{download(componentFormFile(scene,all),'grihagrid-component-forms.json','application/json')}
+    catch(e){fail(e)}
+  }
+  function restoreForms(packet,options) {
+    if(disabled)throw new Error('This house is read-only. Forms cannot be restored here.')
+    const next=restoreComponentFormFile(scene,currentDrafts,packet,options)
+    const target=Object.hasOwn(next,floorId)&&next[floorId].pending?next[floorId]:Object.values(next).find(form=>form.pending)
+    setDrafts(next);setDiscipline(disciplineOf(target));setError('');setPlacing(false)
+    if(target.floorId!==floorId)onSelectFloor?.(target.floorId)
+    onStatus?.('Component forms restored for review. The house geometry is unchanged; apply each form before reviewing Change Study.')
+    requestAnimationFrame(()=>formRef.current?.focus())
+  }
   function emit(next,message) {last.current=signature(next);onChange(next);onStatus?.(message);setError('');setPlacing(false)}
   function commit(event) {
     event.preventDefault();if(disabled)return
@@ -72,6 +87,7 @@ export default function CoordinationStudio({model,floorId,onChange,onStatus,onPe
       <button type="button" onClick={()=>download(coordinationPlanSheet(scene,floorId,discipline),`${scene.id}-${floorId}-${discipline}.svg`,'image/svg+xml')}>Download discipline sheet</button>
       <button type="button" onClick={()=>download(coordinationCSV(scene),`${scene.id}-components.csv`,'text/csv')}>Download component schedule</button><button type="button" onClick={onExplore}>Inspect in 3D</button>
     </div>
+    <ComponentFormFiles model={scene} pending={pending} disabled={disabled} onRestore={restoreForms} onDownload={()=>exportForms()}/>
     {pending&&<p className="cs-instruction">Unapplied forms on {scene.floors.filter(f=>currentDrafts[f.id]?.pending).map(f=>f.name).join(', ')}. Use the floor selector to review each form.</p>}
     {error&&<p className="cs-error" role="alert" tabIndex={-1} ref={errorRef}>{error}</p>}
     <div className="cs-workspace"><div><p className="cs-instruction">{placing?'Click the plan to set X / Y on a 50 mm grid, or enter coordinates in the form.':'Select an existing component on the plan or in the list. Enter dimensions before adding a new component.'}</p>
@@ -88,7 +104,7 @@ export default function CoordinationStudio({model,floorId,onChange,onStatus,onPe
       <div className="cs-list">{rows.length?rows.map(item=><button type="button" key={item.id} aria-pressed={draft.id===item.id} onClick={()=>select(item)}><strong>{item.tag} · {item.label}</strong><span>{item.size.join(' × ')} mm · base {item.position[2]} mm</span></button>):<p>No {DISCIPLINES[discipline].toLowerCase()} components on this floor. Use the form to add the first one.</p>}</div>
     </div>
     <form ref={formRef} tabIndex={-1} className="cs-form" onSubmit={commit}><h3>{draft.id?'Edit component':'Add a component'}</h3><fieldset disabled={disabled}>
-      {draft.conflict&&<div className="cs-error" role="alert"><p>{draft.conflict==='removed'?'This component was removed from the current layout.':'This component changed in the current layout.'} Your form entries are preserved. Download them if needed, then resolve this form before applying or removing a component.</p><button type="button" onClick={()=>download(JSON.stringify({kind:'grihagrid-component-form',buildingId:scene.id,form:draft},null,2),'grihagrid-component-form.json','application/json')}>Download form entries</button>{draft.conflict==='changed'&&<button type="button" onClick={()=>{const item=scene.coordination.find(v=>v.id===draft.id&&v.floorId===floorId);setDraft(fromItem(item));setDiscipline(disciplineOf(item));setError('');setPlacing(false);requestAnimationFrame(()=>formRef.current?.focus())}}>Discard entries &amp; load current component</button>}</div>}
+      {draft.conflict&&<div className="cs-error" role="alert"><p>{draft.conflict==='removed'?'This component was removed from the current layout.':'This component changed in the current layout.'} Your form entries are preserved. Download them if needed, then resolve this form before applying or removing a component.</p><button type="button" onClick={()=>exportForms({[floorId]:draft})}>Download form entries</button>{draft.conflict==='changed'&&<button type="button" onClick={()=>{const item=scene.coordination.find(v=>v.id===draft.id&&v.floorId===floorId);setDraft(fromItem(item));setDiscipline(disciplineOf(item));setError('');setPlacing(false);requestAnimationFrame(()=>formRef.current?.focus())}}>Discard entries &amp; load current component</button>}</div>}
       <label>Component type<select aria-label="Component type" value={draft.kind} onChange={e=>{const kind=e.target.value;setDiscipline(COMPONENTS[kind].discipline);setDraft({...draft,kind,pending:true})}}>{Object.entries(COMPONENTS).map(([key,spec])=><option key={key} value={key}>{spec.name}</option>)}</select></label>
       <label>Component label<input aria-label="Component label" maxLength="60" value={draft.label} onChange={e=>change('label',e.target.value)} required/></label>
       <div className="cs-number-grid">{numbers('position',['Centre X (mm)','Centre Y (mm)','Base above floor (mm)'])}</div>
