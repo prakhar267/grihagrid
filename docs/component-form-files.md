@@ -55,9 +55,11 @@ write fences are covered by the existing authenticated canary and automated suit
 no customer project was modified for browser checks.
 
 Focused form tests: 16 passing. The initial complete suite passed 938 tests before
-the shared-ID case was added. The next 939-test run was interrupted while the Mac
-was locked: 937 passed and two real-D1 suites timed out. Its output is retained,
-and a full rerun is required. Native print preview was also blocked by the locked
+the shared-ID case was added. The complete final implementation passed all 939
+tests in CI. Two later local runs were interrupted by repeated system sleep:
+937 passed with two D1 timeouts, then 932 passed with six timeouts and one
+SQLite-backed account assertion failure. Their logs and the system sleep record
+are retained; neither interrupted local run is reported as passing. Native print preview was also blocked by the locked
 Mac; downloaded A3 drawing sets were inspected, but native print is not counted
 as passed in this run. Required
 migration checks, both Worker dry runs, dependency audit and diff checks are also
