@@ -8,7 +8,7 @@ function download(text, name, type) {
   const url=URL.createObjectURL(new Blob([text],{type})),a=document.createElement('a')
   a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),3000)
 }
-export default function DrawingStudio({model,floorId,northDegrees,section,onSectionChange,onExploreSection,onChange,onStatus,onPendingChange,onExplore,resetKey,componentReview,disabled,children}) {
+export default function DrawingStudio({model,floorId,onSelectFloor,northDegrees,section,onSectionChange,onExploreSection,onChange,onStatus,onPendingChange,onExplore,resetKey,componentReview,disabled,children}) {
   const [view,setView]=useState('drawing'),[sheet,setSheet]=useState('plan'),[unit,setUnit]=useState('mm'),[zoom,setZoom]=useState(100)
   useEffect(()=>{if(componentReview){setView('coordination');requestAnimationFrame(()=>document.getElementById('coordination-mode')?.focus())}},[componentReview])
   const options=useMemo(()=>({unit,northDegrees,section}),[unit,northDegrees,section])
@@ -35,7 +35,7 @@ export default function DrawingStudio({model,floorId,northDegrees,section,onSect
       <details className="ds-schedule"><summary>Door &amp; window schedule · {schedule.length} openings on this floor</summary><div className="ds-table-scroll"><table><caption>Measured openings in millimetres</caption><thead><tr><th>Tag</th><th>Type</th><th>Width</th><th>Height</th><th>Sill</th><th>Rooms</th></tr></thead><tbody>{schedule.map(o=><tr key={`${o.wallId}:${o.id}`}><td>{o.tag}</td><td>{o.kind}</td><td>{o.width}</td><td>{o.height}</td><td>{o.sill||0}</td><td>{o.rooms}</td></tr>)}</tbody></table></div></details>
       <p className="ds-note">Room dimensions follow the model’s boundary axes; wall thickness reduces clear space. These are concept drawings. Structural, electrical, plumbing and approval drawings require professional design.</p>
     </div>
-    <div hidden={view!=='coordination'}><CoordinationStudio key={resetKey} model={model} floorId={floorId} onChange={onChange} onStatus={onStatus} onPendingChange={onPendingChange} onExplore={onExplore} disabled={disabled}/></div>
+    <div hidden={view!=='coordination'}><CoordinationStudio key={resetKey} model={model} floorId={floorId} onSelectFloor={onSelectFloor} onChange={onChange} onStatus={onStatus} onPendingChange={onPendingChange} onExplore={onExplore} disabled={disabled}/></div>
     <div hidden={view!=='edit'}>{children}</div>
   </section>
 }
