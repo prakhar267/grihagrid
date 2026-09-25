@@ -7,6 +7,17 @@ const e = escapeDrawingText, n = value => Number(value.toFixed(3))
 const bounds = points => ({x0:Math.min(...points.map(p=>p[0])),x1:Math.max(...points.map(p=>p[0])),y0:Math.min(...points.map(p=>p[1])),y1:Math.max(...points.map(p=>p[1]))})
 const line = (x1,y1,x2,y2,extra='') => `<line x1="${n(x1)}" y1="${n(y1)}" x2="${n(x2)}" y2="${n(y2)}" ${extra}/>`
 const text = (x,y,value,size=2.7,extra='') => `<text x="${n(x)}" y="${n(y)}" font-size="${size}" ${extra}>${e(value)}</text>`
+// Clip the diagonal strokes numerically. Browser PDF printers can rasterize an
+// SVG pattern once per cut surface, making an otherwise vector set enormous.
+export function sectionHatchSegments(x,y,width,height) {
+  if (![x,y,width,height].every(Number.isFinite) || width<=0 || height<=0) return []
+  const segments=[],right=x+width,bottom=y+height
+  for(let diagonal=Math.ceil((x+y)/2)*2;diagonal<right+bottom;diagonal+=2) {
+    const left=Math.max(x,diagonal-bottom),end=Math.min(right,diagonal-y)
+    if(end>left)segments.push([left,diagonal-left,end,diagonal-end])
+  }
+  return segments
+}
 export function dimensionLabel(mm, unit='mm') {
   if (unit==='m') return `${(mm/1000).toFixed(2)} m`
   if (unit==='ft') { const inches=Math.round(mm/25.4); return `${Math.floor(inches/12)}′ ${inches%12}″` }
@@ -167,14 +178,18 @@ export function buildingSectionSheet(input,options={}) {
   const scale=[50,75,100,125,150,200,250,300,400,500,750,1000].find(s=>(hi-lo+1000)/s<=280&&(top-bottom)/s<=195)||2000
   const ox=43+(280-(hi-lo)/scale)/2,base=226,x=v=>ox+(v-lo)/scale,y=v=>base-(v-bottom)/scale
   let content=text(20,19,`BUILDING SECTION ${section.name} / ALL STOREYS`,4)+text(20,26,`Cut ${section.axis===0?'X':'Y'} = ${Math.round(section.coordinate)} mm · looking ${section.direction} · dimensions: ${unit}`,2.7)
-  content+=`<defs><pattern id="section-hatch" width="2" height="2" patternUnits="userSpaceOnUse"><path d="M0 2L2 0" stroke="#a59b89" stroke-width=".2"/></pattern></defs>`
   for(const room of section.rooms) {
     const floor=section.floors.find(f=>f.id===room.floorId)
     content+=`<rect x="${n(x(room.left))}" y="${n(y(floor.elevation+floor.height))}" width="${n((room.right-room.left)/scale)}" height="${n(floor.height/scale)}" fill="#f4f1e9" stroke="none"/>`
   }
   for(const part of section.parts) {
     const cut=['wall','floor','roof'].includes(part.category)
-    content+=`<rect data-source-id="${e(part.id)}" x="${n(x(part.left))}" y="${n(y(part.top))}" width="${n((part.right-part.left)/scale)}" height="${n((part.top-part.bottom)/scale)}" fill="${cut?'url(#section-hatch)':part.category==='opening'?'#d9e5df':'#cbbba1'}" stroke="#45453a" stroke-width="${cut?.4:.15}"/>`
+    const px=x(part.left),py=y(part.top),width=(part.right-part.left)/scale,height=(part.top-part.bottom)/scale
+    if(cut) {
+      const path=sectionHatchSegments(px,py,width,height).map(([x1,y1,x2,y2])=>`M${n(x1)} ${n(y1)}L${n(x2)} ${n(y2)}`).join('')
+      content+=`<path data-section-hatch="${e(part.id)}" d="${path}" fill="none" stroke="#a59b89" stroke-width=".2"/>`
+    }
+    content+=`<rect data-source-id="${e(part.id)}" x="${n(px)}" y="${n(py)}" width="${n(width)}" height="${n(height)}" fill="${cut?'none':part.category==='opening'?'#d9e5df':'#cbbba1'}" stroke="#45453a" stroke-width="${cut?.4:.15}"/>`
   }
   section.floors.forEach((floor,i)=>{
     const fy=y(floor.elevation),next=section.floors[i+1],height=next?next.elevation-floor.elevation:floor.height
