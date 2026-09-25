@@ -2,12 +2,40 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createMultiFloorDemo, createDemoBuilding, toV2, buildPrimitives } from '../src/spatial/model.js'
 import { sectionPlane, sectionIntervals, subtractIntervals, buildingSection, sectionCamera } from '../src/spatial/building-sections.js'
-import { floorPlanSheet, buildingSectionSheet, drawingSetHTML } from '../src/spatial/drawing-set.js'
+import { floorPlanSheet, buildingSectionSheet, drawingSetHTML, sectionHatchSegments } from '../src/spatial/drawing-set.js'
 import { parseSceneFile, MAX_SCENE_BYTES } from '../src/spatial/scene-file.js'
 import { generateTour } from '../src/spatial/tours.js'
 import { defaultHouseBrief } from '../src/spatial/house-brief.js'
 
 const close=(a,b)=>assert.ok(Math.abs(a-b)<.001,`${a} != ${b}`)
+test('section hatching stays clipped to each cut surface at a consistent paper spacing',()=>{
+ for(const [x,y,w,h] of [[0,0,12,8],[-4.7,2.3,7.1,.4],[31.4,90.2,.2,180],[0,0,280,195]]) {
+  const segments=sectionHatchSegments(x,y,w,h)
+  assert.ok(segments.length>0)
+  let previous=null
+  for(const [x1,y1,x2,y2] of segments) {
+   assert.ok(x2>x1);close(x1+y1,x2+y2)
+   for(const [px,py] of [[x1,y1],[x2,y2]]) {
+    assert.ok(px>=x-1e-9&&px<=x+w+1e-9&&py>=y-1e-9&&py<=y+h+1e-9)
+    assert.ok([px-x,px-x-w,py-y,py-y-h].some(v=>Math.abs(v)<1e-9))
+   }
+   if(previous!==null)close(x1+y1-previous,2)
+   previous=x1+y1
+  }
+ }
+ for(const bounds of [[0,0,0,2],[0,0,2,-1],[NaN,0,2,2],[0,0,Infinity,2]])assert.deepEqual(sectionHatchSegments(...bounds),[])
+})
+test('printed building sections retain cut-source identity without raster-prone SVG patterns',()=>{
+ const model=createMultiFloorDemo()
+ for(const axis of ['x','y']) {
+  const options={section:{axis,percent:50}},svg=buildingSectionSheet(model,options)
+  const cut=buildingSection(model,options.section).parts.filter(p=>['wall','floor','roof'].includes(p.category))
+  assert.equal((svg.match(/data-section-hatch=/g)||[]).length,cut.length)
+  assert.ok(cut.every(p=>svg.includes(`data-section-hatch="${p.id}"`)&&svg.includes(`data-source-id="${p.id}"`)))
+  assert.doesNotMatch(svg,/<pattern|url\(#section-hatch/)
+ }
+ assert.doesNotMatch(drawingSetHTML(model),/<pattern|url\(#section-hatch/)
+})
 test('section intervals respect concave outlines, vertices and reversed winding',()=>{
  const poly=[[0,0],[6000,0],[6000,6000],[4000,6000],[4000,2000],[2000,2000],[2000,6000],[0,6000]]
  for(const p of [poly,[...poly].reverse()])assert.deepEqual(sectionIntervals(p,1,3000),[[0,2000],[4000,6000]])
