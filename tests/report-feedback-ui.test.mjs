@@ -162,7 +162,10 @@ test("report feedback exposes only the approved structured vocabulary", async ()
   assert.doesNotMatch(component, /<textarea\b/iu, "feedback must not collect free text");
   assert.match(component, /outcome==="needs_review"&&<ReportFeedbackConcern\/>/u);
   assert.match(app, /function ReportFeedbackConcern\(\{ unsaved=false \}\)[\s\S]*?The rejected response was not included in product learning and did not alert support\.[\s\S]*?This structured response improves aggregate product learning but does not alert support\./u, "saved and rejected concerns need truthful, distinct product-learning copy");
-  assert.match(app, /without sending sensitive site details/u);
+  const concern = app.slice(app.indexOf("function ReportFeedbackConcern("), app.indexOf("function ReportFeedback("));
+  assert.match(concern, /Reports are visible to everyone: include only generic steps and browser details, never account information, house drawings, private links or site addresses/u);
+  assert.match(concern, /href=\{PUBLIC_ISSUES_URL\} target="_blank" rel="noreferrer" referrerPolicy="no-referrer"/u);
+  assert.doesNotMatch(app, /mailto:hello@grihagrid\.in/u, "support must not direct users to the unavailable mailbox");
   assert.match(app, /\["programme", "Likely built-up & programme"\]/u);
   assert.match(app, /\["cost_range", "Planning range & cost allocation"\]/u);
 });
