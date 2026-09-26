@@ -4,7 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { Miniflare } from "miniflare";
-import worker from "../worker/index.js";
+import worker, { __test } from "../worker/index.js";
 import { createDemoBuilding } from "../src/spatial/model.js";
 import { generateTour } from "../src/spatial/tours.js";
 
@@ -336,6 +336,7 @@ async function deletionSnapshot(DB) {
     "SELECT * FROM account_deletion_requests ORDER BY id",
     "SELECT * FROM account_deletion_receipts ORDER BY request_id",
     "SELECT id,project_id,user_id,object_key FROM project_files ORDER BY id",
+    "SELECT * FROM private_file_cleanup ORDER BY object_key",
   ];
   return Promise.all(statements.map(async sql => (await DB.prepare(sql).all()).results));
 }
@@ -343,6 +344,7 @@ async function deletionSnapshot(DB) {
 for (const winner of ["reset", "revoke", "logout"]) {
   test(`account deletion commits no side effects after ${winner} wins the verified-password race`, { timeout: 60_000 }, async context => {
     const fixture = await deletionFixture(context, winner);
+    await insertDeletionFile(fixture.DB, fixture.userId, fixture.projectId);
     const { DB, env, auth, email, messages } = fixture;
     let resetToken, otherAuth;
     if (winner === "reset") {
@@ -420,23 +422,69 @@ test("failed final account deletion rolls back project removal and deletion book
   assert.equal((await request()).response.status, 204);
 });
 
-test("private-file accounts require operational offboarding without R2 calls or deletion mutations", { timeout: 60_000 }, async context => {
-  const { DB, env, auth, userId, projectId } = await deletionFixture(context, "private-file");
+test("account deletion commits a durable file cleanup before touching storage", { timeout: 60_000 }, async context => {
+  const { DB, env, auth, userId, projectId, messages } = await deletionFixture(context, "private-file");
+  await insertDeletionFile(DB, userId, projectId);
+  let r2Calls = 0;
+  env.FILES = { async delete() { r2Calls += 1; throw new Error("synthetic storage outage"); } };
+  const result = await call(env, "/api/account", {
+    method: "DELETE", auth, body: { currentPassword: INITIAL_PASSWORD, confirmation: "DELETE" },
+  });
+  assert.equal(result.response.status, 202, JSON.stringify(result.payload));
+  assert.equal(result.payload.accountDeleted, true);
+  assert.equal(result.payload.privateFileCleanup, "pending");
+  assert.equal((await call(env, "/api/auth/me", { auth })).response.status, 401);
+  assert.equal(r2Calls, 0, "Without a background context, maintenance owns the retry.");
+  assert.equal((await DB.prepare("SELECT COUNT(*) AS n FROM project_files").first()).n, 0);
+  assert.equal((await DB.prepare("SELECT COUNT(*) AS n FROM private_file_cleanup").first()).n, 1);
+  assert.match(JSON.parse(messages.at(-1).options.body).text, /no longer accessible.*queued/su);
+  assert.deepEqual(await __test.processPrivateFileCleanup(env), { processed: 0, failed: 1 });
+  const pending = await DB.prepare("SELECT * FROM private_file_cleanup").first();
+  assert.equal(pending.attempts, 1);
+  assert.equal(pending.receipt_id, result.payload.receiptId);
+  assert.equal((await DB.prepare("SELECT private_files_completed_at FROM account_deletion_receipts").first()).private_files_completed_at, null);
+  await __test.processPrivateFileCleanup(env);
+  assert.equal(r2Calls, 1, "Backoff prevents repeated failed calls.");
+  await DB.prepare("UPDATE private_file_cleanup SET next_attempt_at=datetime('now','-1 second')").run();
+  env.FILES = { async delete(key) { r2Calls += 1; assert.equal(key, pending.object_key); } };
+  assert.deepEqual(await __test.processPrivateFileCleanup(env), { processed: 1, failed: 0 });
+  assert.equal((await DB.prepare("SELECT COUNT(*) AS n FROM private_file_cleanup").first()).n, 0);
+  const receipt = await DB.prepare("SELECT * FROM account_deletion_receipts").first();
+  assert.equal(receipt.private_files_count, 1);
+  assert.ok(receipt.private_files_completed_at);
+  assert.equal(JSON.stringify(receipt).includes(userId), false);
+  await __test.processPrivateFileCleanup(env);
+  assert.equal(r2Calls, 2, "Completed cleanup is not replayed.");
+});
+
+async function insertDeletionFile(DB, userId, projectId) {
   await DB.prepare(`INSERT INTO project_files
     (id,project_id,user_id,object_key,file_name,content_type,size_bytes,kind,checksum_sha256,created_at)
     VALUES ('retained-file',?,?,?,'private-plan.png','image/png',100,'plan',?,datetime('now'))`)
     .bind(projectId, userId, `${userId}/${projectId}/retained-file`, "a".repeat(64)).run();
-  let r2Calls = 0;
-  env.FILES = new Proxy({}, { get() { r2Calls += 1; throw new Error("R2 must not be touched"); } });
+}
+
+test("private file cleanup survives missing storage and a rolled-back account deletion", { timeout: 60_000 }, async context => {
+  const { DB, env, auth, userId, projectId } = await deletionFixture(context, "file-rollback");
+  await insertDeletionFile(DB, userId, projectId);
+  await DB.prepare(`CREATE TRIGGER synthetic_file_deletion_abort BEFORE DELETE ON users
+    BEGIN SELECT RAISE(ABORT, 'synthetic account failure'); END`).run();
   const before = await deletionSnapshot(DB);
+  let r2Calls = 0;
+  env.FILES = { async delete() { r2Calls += 1; } };
   const result = await call(env, "/api/account", {
     method: "DELETE", auth, body: { currentPassword: INITIAL_PASSWORD, confirmation: "DELETE" },
   });
-  assert.equal(result.response.status, 409);
-  assert.equal(result.payload.code, "account_file_offboarding_required");
-  assert.equal(r2Calls, 0);
+  assert.equal(result.response.status, 500);
   assert.deepEqual(await deletionSnapshot(DB), before);
-  assert.equal((await call(env, "/api/auth/me", { auth })).response.status, 200);
+  assert.equal(r2Calls, 0);
+  await DB.prepare("DROP TRIGGER synthetic_file_deletion_abort").run();
+  delete env.FILES;
+  assert.equal((await call(env, "/api/account", {
+    method: "DELETE", auth, body: { currentPassword: INITIAL_PASSWORD, confirmation: "DELETE" },
+  })).response.status, 202);
+  assert.deepEqual(await __test.processPrivateFileCleanup(env), { processed: 0, failed: 0 });
+  assert.equal((await DB.prepare("SELECT COUNT(*) AS n FROM private_file_cleanup").first()).n, 1);
 });
 
 test("account deletion uses one fresh authorization claim across the atomic batch", { timeout: 60_000 }, async context => {
@@ -476,7 +524,22 @@ function pauseNextBatch(DB) {
   };
 }
 
-for (const blocker of ["order", "professional", "private-file"]) {
+test("a file committed after account preflight is included in its atomic cleanup receipt", { timeout: 60_000 }, async context => {
+  const { DB, env, auth, userId, projectId } = await deletionFixture(context, "late-file");
+  const paused = pauseNextBatch(DB);
+  const pending = call({ ...env, DB: paused.DB }, "/api/account", {
+    method: "DELETE", auth, body: { currentPassword: INITIAL_PASSWORD, confirmation: "DELETE" },
+  });
+  try { await paused.reached; await insertDeletionFile(DB, userId, projectId); }
+  finally { paused.release(); }
+  const result = await pending;
+  assert.equal(result.response.status, 202);
+  assert.equal((await DB.prepare("SELECT private_files_count FROM account_deletion_receipts").first()).private_files_count, 1);
+  assert.equal((await DB.prepare("SELECT receipt_id FROM private_file_cleanup").first()).receipt_id, result.payload.receiptId);
+  assert.equal((await DB.prepare("SELECT COUNT(*) AS n FROM users").first()).n, 0);
+});
+
+for (const blocker of ["order", "professional"]) {
   test(`account deletion cannot commit when a ${blocker} appears after preflight`, { timeout: 60_000 }, async context => {
     const { DB, env, auth, userId, projectId, messages } = await deletionFixture(context, `late-${blocker}`);
     const paused = pauseNextBatch(DB);

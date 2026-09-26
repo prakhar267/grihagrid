@@ -1205,24 +1205,30 @@ Before enabling `FILES`:
 6. Define approved retention/deletion rules. Do not apply a blanket lifecycle
    rule that could delete active customer evidence.
 
-The upload path writes R2 first and deletes that object if the D1 metadata write
-fails. A failed compensating delete can still leave an orphan. Conversely, an
-operator or provider error can leave D1 metadata whose object is missing.
+Migration 0025 records an upload cleanup intent before R2 receives bytes and
+publishes metadata only within the original live session and one-hour window.
+The metadata commit atomically retires the intent. Failed publication preserves
+a cleanup pointer, even if the immediate compensating removal also fails.
 
-Run a weekly reconciliation job that:
+The existing scheduled handler scans at most 100 canonical R2 objects per run,
+using a durable cursor and a 24-hour orphan grace period. Referenced objects,
+recent uploads and noncanonical keys are protected. It also retries at most 100
+journal entries, with 15-minute exponential backoff capped at a day. An R2
+failure retains the pointer; a failed D1 completion retries the idempotent R2
+delete. Actual retry frequency is bounded by the deployed maintenance schedule.
 
-- lists objects by the `users/<user>/projects/<project>/<file>` key shape and
-  compares keys, size, checksum, and metadata to `project_files`;
-- quarantines R2-only objects for a defined grace period before deletion;
-- flags D1-only rows immediately as `file_content_not_found` incidents;
-- never logs object content, filenames, user IDs, or signed credentials;
-- emits counts and opaque IDs for review, with two-person approval for bulk
-  deletion.
+Account deletion journals file keys in the authorization transaction and returns
+202 when byte removal remains pending. File deletion uses the same outbox and
+returns 202 or 204 according to cleanup progress. Standalone project deletion
+still asks owners to remove files first. Monitor journal count and oldest age;
+never log its raw keys. A missing-object download remains a
+`file_content_not_found` incident; this cleanup process does not reconstruct
+lost evidence. Restore operations must stop maintenance until restored metadata
+and pending cleanup have been reconciled.
 
-Project deletion removes known R2 objects before deleting D1 metadata. If R2 is
-unavailable, project deletion fails safely; do not delete the D1 rows manually
-or the recovery pointer is lost. Maintain a deletion audit and retry queue before
-claiming account deletion is complete.
+Before activation, verify private buckets, a recurring maintenance path for both
+environments, a total cost/storage ceiling and actual provider outage recovery.
+Staging currently has no cron slot. See [private file cleanup](private-file-cleanup.md).
 
 ## 10. Cron verification
 

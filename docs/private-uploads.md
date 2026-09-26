@@ -1,6 +1,7 @@
 # Private static-image uploads
 
-Migration `0019_private_image_uploads.sql` and the Worker implement an
+Migrations `0019_private_image_uploads.sql` and `0025_private_file_cleanup.sql`
+and the Worker implement an
 owner-scoped R2 path for static JPEG, PNG, and WebP images. The capability is
 false unless the current schema and `FILES` binding are both present.
 
@@ -26,8 +27,18 @@ Create private, non-public buckets named `grihagrid-private-files` and
 `grihagrid-staging-private-files` with an operator identity that has R2 scope.
 Verify each bucket and environment independently, then uncomment the matching
 `FILES` binding and run readiness plus the authenticated upload tests. The
-current operator OAuth grant cannot list or create R2 buckets, so bindings are
-deliberately commented and no activation is claimed.
+26 September 2026 account inspection returns Cloudflare error 10042: R2 must
+be enabled through the dashboard. Subscription terms and usage charges have not
+been accepted. Bindings remain commented and no activation is claimed.
+
+[Recoverable deletion](private-file-cleanup.md) is an activation prerequisite.
+Verify both ordinary removal and an R2-outage retry, a deletion during upload,
+and recurring maintenance in each environment. Production currently runs daily;
+staging lacks a cron slot and needs an explicit maintenance arrangement.
+Admission rejects full projects/accounts before writing R2 and rate-limits
+uploads to 30 attempts per IP per hour; database guards remain authoritative
+under concurrency. These bounds are not an account-wide free-storage guarantee.
+Choose and verify a total storage/cost ceiling before opening public uploads.
 
 Do not widen this path to PDF, SVG, archives, video, or arbitrary documents.
 Those formats require a separate quarantine, parsing, malware-scanning,

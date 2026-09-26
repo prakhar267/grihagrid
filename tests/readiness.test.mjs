@@ -136,14 +136,14 @@ function querySources(sql) {
   return [...sql.matchAll(/\b(?:FROM|JOIN)\s+([a-z_][a-z0-9_]*)/giu)].map((match) => match[1].toLowerCase());
 }
 
-test("readiness manifests stay pinned to the reviewed 458-key lifecycle and spatial-storage contract", () => {
+test("readiness manifests stay pinned to the reviewed 475-key lifecycle and spatial-storage contract", () => {
   const keys = __test.readinessInventoryRowsForTest()
     .map(({ kind, scope, name }) => `${kind}:${scope}:${name}`)
     .sort();
-  assert.equal(keys.length, 458);
+  assert.equal(keys.length, 475);
   assert.equal(
     createHash("sha256").update(JSON.stringify(keys)).digest("hex"),
-    "fd2ffecc8fa95e3d3db7c59f6ae61f60bd748b8c607e60621c5ed005fcba95a0",
+    "e95b1c3b43ca0535035cffe114171728aaad6d664b621ab7f0c015afdd1cad1c",
     "a readiness schema key changed without an explicit contract review",
   );
   for (const key of [
@@ -157,6 +157,9 @@ test("readiness manifests stay pinned to the reviewed 458-key lifecycle and spat
     "object:table:password_reset_tokens",
     "object:trigger:transactional_email_events_immutable",
     "column:project_files:sanitization_profile",
+    "object:trigger:project_file_cleanup_after_delete",
+    "column:private_file_cleanup:next_attempt_at",
+    "column:account_deletion_receipts:private_files_completed_at",
     "object:trigger:project_file_ready_insert_guard",
     "column:professional_review_requests:report_content_hash",
     "object:trigger:professional_review_assignment_guard",

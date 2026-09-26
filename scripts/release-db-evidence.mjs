@@ -111,6 +111,12 @@ const REQUIRED_0021_OBJECTS = Object.freeze([
   "index:idx_professional_reviews_owner_requested",
 ]);
 
+const REQUIRED_0025_OBJECTS = Object.freeze([
+  "table:private_file_cleanup", "table:private_file_maintenance",
+  "index:idx_private_file_cleanup_due", "index:idx_private_file_cleanup_receipt",
+  "trigger:project_file_cleanup_after_delete", "trigger:project_file_cleanup_insert_guard",
+]);
+
 const REQUIRED_BASELINE_OBJECTS = Object.freeze([
   "table:users",
   "table:projects",
@@ -162,6 +168,10 @@ const REQUIRED_COLUMNS = Object.freeze([
   "account_deletion_requests:id", "account_deletion_requests:user_id", "account_deletion_requests:status",
   "account_deletion_requests:requested_at", "account_deletion_requests:completed_at", "account_deletion_requests:updated_at",
   "account_deletion_receipts:request_id", "account_deletion_receipts:completed_at",
+  "account_deletion_receipts:private_files_count", "account_deletion_receipts:private_files_completed_at",
+  "private_file_cleanup:object_key", "private_file_cleanup:state", "private_file_cleanup:receipt_id",
+  "private_file_cleanup:created_at", "private_file_cleanup:next_attempt_at", "private_file_cleanup:attempts",
+  "private_file_maintenance:id", "private_file_maintenance:inventory_cursor", "private_file_maintenance:updated_at",
   "professional_profiles:user_id", "professional_profiles:display_name", "professional_profiles:discipline",
   "professional_profiles:license_jurisdiction", "professional_profiles:license_reference",
   "professional_profiles:verification_status", "professional_profiles:verified_at", "professional_profiles:created_at",
@@ -192,6 +202,7 @@ const REQUIRED_SCHEMA_OBJECTS = Object.freeze([
   ...REQUIRED_0019_OBJECTS,
   ...REQUIRED_0020_OBJECTS,
   ...REQUIRED_0021_OBJECTS,
+  ...REQUIRED_0025_OBJECTS,
 ]);
 
 function stableStringify(value) {

@@ -2,6 +2,25 @@
 
 ## Current decision
 
+### 2026-09-26 remaining activation work
+
+The user reopened domain, payment, email, private-upload and device verification
+work. Preparation is authorized; domain/offer choices, missing credentials and
+provider subscription acceptance remain concrete external dependencies.
+
+Fresh visible in-app-browser downloads passed for the Jaipur and Delhi G+2
+studies: scene JSON matches the Chrome evidence, drawing HTML is byte-identical,
+and GLB transforms match all 652/626 shared primitives and saved cameras. This
+closes the earlier in-app download verification gap without changing export
+code. Native iPhone access and spoken VoiceOver remain unverified.
+
+Migration 0025 and [private file cleanup](private-file-cleanup.md) implement the
+remaining recoverable-deletion prerequisite. Local/CI/release results are
+recorded separately; implementation does not activate R2. Dashboard inspection
+found R2 unsubscribed (10042), no GrihaGrid sender domain, and no Razorpay Worker
+secrets. Keep public payments, fulfillment and uploads closed until their actual
+activation evidence and the chosen domain/offer are recorded.
+
 ### 2026-09-21 house studio and Cloudflare AI draft cut
 
 The ongoing multi-storey studio work remains local and in draft PR
