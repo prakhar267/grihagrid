@@ -297,3 +297,20 @@ node --test --test-concurrency=1 tests/spatial-blender.test.mjs tests/spatial-se
 This is a functional paired local queue. Hosted render scheduling, multi-tenant
 cloud artifact storage and GPU fleet operations are separate infrastructure.
 R2, private uploads and paid checkout remain disabled.
+
+## Preview recovery metadata — 26 September 2026
+
+The go-live check found that a resumed preview recorded film dimensions in its
+manifest. The customer outcome is accurate artifact metadata after recovery:
+interrupt a preview, resume its verified scene, then compare the manifest with
+the actual PNG headers. Preview output is 633×356 (33% resolution); film output
+remains 1920×1080. Acceptance is a match between resumed preview metadata and
+every preview PNG, with the original completed frame preserved byte-for-byte.
+The KPI is zero dimension mismatches. Preserve geometry, camera provenance,
+render quality, existing frames and the native-film validation contract.
+
+A fresh native Cycles/Metal check interrupted a three-storey Jaipur preview
+after its first completed frame, resumed it, and verified all six actual PNG
+headers against the corrected manifest. The first frame's SHA-256 was unchanged;
+all 652 geometry objects and the saved viewpoint passed the coordinate checks.
+This is a real preview recovery check, not a newly rendered full film.

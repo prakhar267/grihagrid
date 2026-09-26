@@ -318,7 +318,8 @@ export async function resumeJob(options) {
       await runProcess(ffmpeg, ['-nostdin', '-v', 'error', '-xerror', '-framerate', String(payload.fps), '-i', path.join(output, 'frames', 'frame-%04d.png'), '-frames:v', String(payload.cameraSamples.length), '-c:v', 'libx264', '-threads', '2', '-pix_fmt', 'yuv420p', '-crf', '20', '-movflags', '+faststart', partial], { timeoutMs: 300000, signal: options.signal });
       await rename(partial, path.join(output, 'tour.mp4'));
     }
-    manifest.render = { engine: config.engine === 'cycles' ? 'Cycles' : 'Eevee', samples: config.samples, mode: config.mode, resumed: true, durationSeconds: payload.cameraSamples.length / payload.fps, width: 1920, height: 1080, fps: payload.fps };
+    const resolutionScale = config.mode === 'preview' ? 0.33 : 1;
+    manifest.render = { engine: config.engine === 'cycles' ? 'Cycles' : 'Eevee', samples: config.samples, mode: config.mode, resumed: true, durationSeconds: payload.cameraSamples.length / payload.fps, width: Math.floor(1920 * resolutionScale), height: Math.floor(1080 * resolutionScale), fps: payload.fps };
     await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
     job.status = 'complete'; job.completedAt = new Date().toISOString(); delete job.error;
     await writeFile(path.join(output, 'job.json'), JSON.stringify(job, null, 2));
