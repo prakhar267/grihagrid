@@ -55,7 +55,8 @@ test("authentication capability copy never promises unavailable email delivery",
   assert.match(auth, /Sign-in sends only your email and password/u);
   assert.match(auth, /Account creation sends only your name, email and password/u);
   assert.match(auth, /passwordRecovery\.phase==="ready"&&passwordRecovery\.enabled/u);
-  assert.match(auth, /Email recovery is not available in this release/u);
+  assert.match(auth, /Email recovery and private account support are not configured for this release/u);
+  assert.match(auth, /public bug reports cannot recover an account/u);
   assert.match(recovery, /const requestUnavailable=!confirming&&passwordRecovery\.phase!=="loading"&&!passwordRecovery\.enabled/u);
   assert.match(recovery, /This release cannot deliver recovery links\. No request was sent/u);
   assert.match(recovery, /Checking email delivery/u);
