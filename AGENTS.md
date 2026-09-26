@@ -99,3 +99,14 @@ structural and service coordination, recovery, cross-module consistency and test
 failure states. Do not describe passing tests or detailed visuals alone as complete
 engineering capability. Structural/member/service specifications must come from
 explicit project input and remain attributable in the shared saved model.
+
+On 26 September 2026, after the remaining in-app downloads, transactional email,
+physical iPhone/VoiceOver checks and excluded domain/payment/upload activation
+were listed, the user requested “do it all.” This opens preparation and technical
+completion of those remaining items. Use the available accounts and protected
+release process. Domain choice and the intended paid offer are being clarified;
+do not invent either. External subscriptions, legal terms, genuinely unavailable
+credentials and physical-device access still require concrete user input where
+applicable. Record actual device and provider checks; earlier deferrals are not
+passes. Existing live payment/upload controls stay closed until their technical
+and external activation prerequisites have been verified.

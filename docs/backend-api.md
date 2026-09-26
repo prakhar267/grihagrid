@@ -1297,11 +1297,16 @@ transaction using the verified password record, authentication generation and
 revision, and still-live requesting session. A reset, password change,
 revocation or logout that wins first makes deletion return
 `409 account_deletion_conflict` without deleting projects or creating a
-completion receipt. The claim rechecks retention, reviewer and private-file
-blockers; subsequent statements consume only that invocation's claim. An
-account with private file records returns
-`409 account_file_offboarding_required` before any R2 operation: cross-store
-cleanup requires a separate recoverable workflow before uploads can open.
+completion receipt. The claim rechecks retention and reviewer blockers;
+subsequent statements consume only that invocation's claim. Migration 0025
+journals every deleted file atomically, including uploads that are still in
+flight and files committed after preflight. Without files the response is 204.
+With pending private bytes it is 202 with `{ accountDeleted: true,
+privateFileCleanup: "pending", receiptId }`. Sessions and planning records are
+removed; files are inaccessible. The response does not promise completed R2
+removal. Recurring maintenance retries the durable journal and completes an
+anonymous receipt after storage confirms removal. See
+[private file cleanup](private-file-cleanup.md).
 
 Successful authenticated password rotation also removes previously unused
 password-reset tokens in the same transaction, gated on the newly created
@@ -1356,7 +1361,13 @@ object is a distinct `404 file_content_not_found` operational signal.
 
 ### `DELETE /api/projects/:projectId/files/:fileId`
 
-Requires CSRF. Removes the private R2 object and its D1 metadata. Returns `204`.
+Requires CSRF and rechecks the live session at the metadata commit. The same
+transaction records the R2 key in a durable cleanup journal. Returns 204 after
+confirmed storage removal, or 202 with `{ fileDeleted: true,
+privateFileCleanup: "pending" }` if cleanup must retry. Once committed, the
+image is neither listed nor downloadable. A database failure leaves both the
+metadata and storage untouched. A lost response requires refreshing the list
+before retrying.
 
 ## Operations and known external dependencies
 

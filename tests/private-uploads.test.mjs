@@ -23,14 +23,19 @@ class MemoryR2 {
   constructor() { this.values = new Map(); }
   async put(key, value, options = {}) {
     const bytes = value instanceof Uint8Array ? value.slice() : new Uint8Array(await new Response(value).arrayBuffer());
-    this.values.set(key, { bytes, options });
+    this.values.set(key, { bytes, options, uploaded: new Date() });
   }
   async get(key) {
     const item = this.values.get(key);
     if (!item) return null;
     return { body: item.bytes.slice(), httpEtag: `\"${item.bytes.byteLength}\"` };
   }
-  async delete(key) { this.values.delete(key); }
+  async delete(key) { for (const item of Array.isArray(key) ? key : [key]) this.values.delete(item); }
+  async list({ prefix, cursor, limit }) {
+    const keys = [...this.values.keys()].filter(key => key.startsWith(prefix) && (!cursor || key > cursor)).sort();
+    const selected = keys.slice(0, limit);
+    return { objects: selected.map(key => ({ key, uploaded: this.values.get(key).uploaded })), truncated: keys.length > limit, cursor: selected.at(-1) };
+  }
 }
 
 function migrationStatements(source) {
@@ -244,4 +249,138 @@ test("private R2 images round-trip only through owner-scoped normalized metadata
   assert.equal(deleted.status, 204);
   assert.equal(FILES.values.size, 0);
   assert.equal((await callJson(env, `/api/projects/${projectId}/files`, { auth: owner })).payload.files.length, 0);
+});
+
+async function cleanupFixture(context) {
+  const DB = await database(context);
+  const FILES = new MemoryR2();
+  const env = { APP_ENV: "test", APP_ORIGIN: ORIGIN, ASSETS: assets, DB, FILES, GRIHAGRID_CACHE: new MemoryKv() };
+  const owner = await register(env, "cleanup-owner@example.test");
+  const created = await callJson(env, "/api/projects", {
+    method: "POST", auth: owner, body: { name: "Cleanup study", input: projectInput },
+  });
+  const projectId = created.payload.project.id;
+  const userId = (await DB.prepare("SELECT id FROM users").first()).id;
+  const upload = () => worker.fetch(new Request(`${ORIGIN}/api/projects/${projectId}/files`, {
+    method: "POST", body: png(), headers: { origin: ORIGIN, cookie: owner.cookie, "x-csrf-token": owner.csrf,
+      "content-type": "image/png", "x-file-name": "plan.png", "x-file-kind": "reference", "cf-connecting-ip": "203.0.113.81" },
+  }), env);
+  return { DB, FILES, env, owner, projectId, userId, upload };
+}
+
+test("file deletion hides bytes immediately and retries a failed R2 removal", { timeout: 60_000 }, async context => {
+  const { DB, FILES, env, owner, projectId, upload } = await cleanupFixture(context);
+  const created = await upload();
+  assert.equal(created.status, 201);
+  const { file } = await created.json();
+  const originalDelete = FILES.delete.bind(FILES);
+  FILES.delete = async () => { throw new Error("synthetic R2 outage"); };
+  const removed = await callJson(env, `/api/projects/${projectId}/files/${file.id}`, { method: "DELETE", auth: owner });
+  assert.equal(removed.response.status, 202);
+  assert.equal(removed.payload.privateFileCleanup, "pending");
+  assert.equal(FILES.values.size, 1);
+  assert.equal((await callJson(env, `/api/projects/${projectId}/files`, { auth: owner })).payload.files.length, 0);
+  assert.equal((await callJson(env, `/api/projects/${projectId}/files/${file.id}`, { auth: owner })).response.status, 404);
+  FILES.delete = originalDelete;
+  await DB.prepare("UPDATE private_file_cleanup SET next_attempt_at=datetime('now','-1 second')").run();
+  assert.deepEqual(await __test.processPrivateFileCleanup(env), { processed: 1, failed: 0 });
+  assert.equal(FILES.values.size, 0);
+});
+
+test("a rejected upload keeps a durable cleanup pointer during storage failure", { timeout: 60_000 }, async context => {
+  const { DB, FILES, env, upload } = await cleanupFixture(context);
+  await DB.prepare(`CREATE TRIGGER synthetic_publication_abort BEFORE INSERT ON project_files
+    BEGIN SELECT RAISE(ABORT, 'synthetic metadata failure'); END`).run();
+  const originalDelete = FILES.delete.bind(FILES);
+  FILES.delete = async () => { throw new Error("synthetic R2 outage"); };
+  assert.equal((await upload()).status, 500);
+  assert.equal((await DB.prepare("SELECT COUNT(*) AS n FROM project_files").first()).n, 0);
+  assert.equal((await DB.prepare("SELECT COUNT(*) AS n FROM private_file_cleanup WHERE state='delete'").first()).n, 1);
+  assert.equal(FILES.values.size, 1);
+  FILES.delete = originalDelete;
+  await DB.prepare("UPDATE private_file_cleanup SET next_attempt_at=datetime('now','-1 second')").run();
+  await __test.processPrivateFileCleanup(env);
+  assert.equal(FILES.values.size, 0);
+});
+
+test("file transaction rollback preserves bytes and inventory failure does not block queued cleanup", { timeout: 60_000 }, async context => {
+  const { DB, FILES, env, owner, projectId, upload } = await cleanupFixture(context);
+  const created = await upload();
+  assert.equal(created.status, 201);
+  const { file } = await created.json();
+  await DB.prepare(`CREATE TRIGGER synthetic_file_remove_abort BEFORE DELETE ON project_files
+    BEGIN SELECT RAISE(ABORT, 'synthetic deletion failure'); END`).run();
+  const removed = await callJson(env, `/api/projects/${projectId}/files/${file.id}`, { method: "DELETE", auth: owner });
+  assert.equal(removed.response.status, 500);
+  assert.equal(FILES.values.size, 1);
+  assert.equal((await DB.prepare("SELECT COUNT(*) AS n FROM project_files").first()).n, 1);
+  assert.equal((await DB.prepare("SELECT COUNT(*) AS n FROM private_file_cleanup").first()).n, 0);
+  await DB.prepare("DROP TRIGGER synthetic_file_remove_abort").run();
+  await DB.prepare("DELETE FROM project_files WHERE id=?").bind(file.id).run();
+  await DB.prepare("INSERT INTO private_file_maintenance(id,inventory_cursor,updated_at) VALUES(1,'expired-provider-cursor',datetime('now'))").run();
+  FILES.list = async () => { throw new Error("synthetic inventory outage"); };
+  const jobs = [];
+  await worker.scheduled({}, env, { waitUntil: job => jobs.push(job) });
+  const results = await Promise.allSettled(jobs);
+  assert.equal(results.filter(result => result.status === "rejected").length, 1);
+  assert.equal(FILES.values.size, 0);
+  assert.equal((await DB.prepare("SELECT COUNT(*) AS n FROM private_file_cleanup").first()).n, 0);
+  assert.equal((await DB.prepare("SELECT inventory_cursor FROM private_file_maintenance WHERE id=1").first()).inventory_cursor, null);
+});
+
+for (const winner of ["logout", "account-deletion", "expired-upload"]) {
+  test(`an upload cannot publish after ${winner} wins during its R2 write`, { timeout: 60_000 }, async context => {
+    const { DB, FILES, env, owner, upload } = await cleanupFixture(context);
+    const originalPut = FILES.put.bind(FILES);
+    FILES.put = async (...args) => {
+      await originalPut(...args);
+      if (winner === "logout") await DB.prepare("DELETE FROM sessions").run();
+      if (winner === "expired-upload") await DB.prepare("UPDATE private_file_cleanup SET created_at=datetime('now','-2 hours')").run();
+      if (winner === "account-deletion") {
+        const removed = await callJson(env, "/api/account", { method: "DELETE", auth: owner, body: { currentPassword: PASSWORD, confirmation: "DELETE" } });
+        assert.equal(removed.response.status, 202);
+        assert.equal((await DB.prepare("SELECT private_files_count FROM account_deletion_receipts").first()).private_files_count, 1);
+      }
+    };
+    const result = await upload();
+    assert.equal(result.status, 409, await result.text());
+    assert.equal((await DB.prepare("SELECT COUNT(*) AS n FROM project_files").first()).n, 0);
+    assert.equal(FILES.values.size, 0);
+    if (winner === "account-deletion") assert.ok((await DB.prepare("SELECT private_files_completed_at FROM account_deletion_receipts").first()).private_files_completed_at);
+  });
+}
+
+test("inventory cleanup preserves referenced and recent files and resumes bounded pages", { timeout: 60_000 }, async context => {
+  const { DB, FILES, env, userId, projectId, upload } = await cleanupFixture(context);
+  assert.equal((await upload()).status, 201);
+  const referenced = [...FILES.values.keys()][0];
+  const old = new Date(Date.now() - 48 * 60 * 60 * 1000);
+  FILES.values.get(referenced).uploaded = old;
+  const recent = `users/${userId}/projects/${projectId}/${crypto.randomUUID()}`;
+  await FILES.put(recent, png());
+  await FILES.put("users/noncanonical/keep-this", png());
+  FILES.values.get("users/noncanonical/keep-this").uploaded = old;
+  for (let index = 0; index < 105; index += 1) {
+    const key = `users/${userId}/projects/${projectId}/${crypto.randomUUID()}`;
+    await FILES.put(key, png());
+    FILES.values.get(key).uploaded = old;
+  }
+  let statements = 0;
+  env.DB = { prepare(sql) { statements += 1; return DB.prepare(sql); }, batch: items => DB.batch(items) };
+  await __test.reconcilePrivateFileInventory(env);
+  assert.ok((await DB.prepare("SELECT inventory_cursor FROM private_file_maintenance").first()).inventory_cursor);
+  assert.ok((await DB.prepare("SELECT COUNT(*) AS n FROM private_file_cleanup").first()).n <= 100);
+  await __test.processPrivateFileCleanup(env);
+  assert.ok(statements <= 7, `A full inventory/cleanup page must stay below the free D1 limit: ${statements}`);
+  await __test.reconcilePrivateFileInventory(env);
+  assert.equal((await DB.prepare("SELECT inventory_cursor FROM private_file_maintenance").first()).inventory_cursor, null);
+  await __test.processPrivateFileCleanup(env);
+  assert.deepEqual([...FILES.values.keys()].sort(), [referenced, recent, "users/noncanonical/keep-this"].sort());
+  // Restore safety: a metadata reference protects an object even if its old
+  // cleanup pointer was restored alongside it.
+  await DB.prepare(`INSERT INTO private_file_cleanup(object_key,state,created_at,next_attempt_at)
+    VALUES(?,'delete',datetime('now'),datetime('now'))`).bind(referenced).run();
+  await __test.processPrivateFileCleanup(env);
+  assert.equal(FILES.values.has(referenced), true);
+  assert.equal((await DB.prepare("SELECT COUNT(*) AS n FROM private_file_cleanup").first()).n, 0);
 });

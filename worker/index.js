@@ -1030,21 +1030,24 @@ const READINESS_MANIFESTS = Object.freeze({
       account_deletion_requests: [
         "id", "user_id", "status", "requested_at", "completed_at", "updated_at",
       ],
-      account_deletion_receipts: ["request_id", "completed_at"],
+      account_deletion_receipts: ["request_id", "completed_at", "private_files_count", "private_files_completed_at"],
     },
   }),
   privateUploads: readinessManifest({
-    tables: ["project_files"],
-    indexes: ["idx_project_files_ready_created"],
+    tables: ["project_files", "private_file_cleanup", "private_file_maintenance"],
+    indexes: ["idx_project_files_ready_created", "idx_private_file_cleanup_due", "idx_private_file_cleanup_receipt"],
     triggers: [
       "project_file_owner_insert_guard", "project_file_ready_insert_guard",
       "project_file_account_limit_insert_guard", "project_file_identity_immutable",
+      "project_file_cleanup_after_delete", "project_file_cleanup_insert_guard",
     ],
     columns: {
       project_files: [
         "id", "project_id", "user_id", "object_key", "file_name", "content_type", "size_bytes", "kind",
         "checksum_sha256", "created_at", "storage_state", "sanitization_profile", "original_size_bytes",
       ],
+      private_file_cleanup: ["object_key", "state", "receipt_id", "created_at", "next_attempt_at", "attempts"],
+      private_file_maintenance: ["id", "inventory_cursor", "updated_at"],
     },
   }),
   professionalReview: readinessManifest({
@@ -3781,7 +3784,7 @@ async function exportAccount(request, env) {
   });
 }
 
-async function deleteAccount(request, env) {
+async function deleteAccount(request, env, ctx) {
   requireTrustedOrigin(request, env);
   requireAbuseControl(env);
   await rateLimit(request, env, "account-deletion", 5, 60 * 60);
@@ -3844,25 +3847,14 @@ async function deleteAccount(request, env) {
       "account_professional_offboarding_required",
     );
   }
-  const file = await db.prepare("SELECT id FROM project_files WHERE user_id=? LIMIT 1").bind(session.user_id).first();
-  if (file) {
-    // D1 cannot atomically fence an external R2 deletion. Uploads remain closed;
-    // existing private files require a recoverable operational cleanup workflow.
-    throw new HttpError(
-      409,
-      "accounts with private files require operational offboarding before deletion",
-      "account_file_offboarding_required",
-    );
-  }
   const order = await db.prepare("SELECT id FROM orders WHERE user_id=? LIMIT 1").bind(session.user_id).first();
   if (order) {
     const retentionRequest = await db.prepare(
       `INSERT INTO account_deletion_requests (id,user_id,status,requested_at,completed_at,updated_at)
        SELECT ?,?,'blocked_financial_retention',?,NULL,? WHERE ${deletionFence}
-         AND NOT EXISTS (SELECT 1 FROM project_files WHERE user_id=?)
        ON CONFLICT(user_id) DO UPDATE SET
          status='blocked_financial_retention',updated_at=excluded.updated_at`,
-    ).bind(requestId, session.user_id, requestedAt, requestedAt, ...deletionFenceValues, session.user_id).run();
+    ).bind(requestId, session.user_id, requestedAt, requestedAt, ...deletionFenceValues).run();
     if (retentionRequest.meta.changes !== 1) throw deletionConflict();
     throw new HttpError(
       409,
@@ -3872,9 +3864,8 @@ async function deleteAccount(request, env) {
   }
   const deletionCommitFence = `${deletionFence}
     AND NOT EXISTS (SELECT 1 FROM orders WHERE user_id=?)
-    AND NOT EXISTS (SELECT 1 FROM professional_profiles WHERE user_id=?)
-    AND NOT EXISTS (SELECT 1 FROM project_files WHERE user_id=?)`;
-  const deletionCommitValues = [...deletionFenceValues, session.user_id, session.user_id, session.user_id];
+    AND NOT EXISTS (SELECT 1 FROM professional_profiles WHERE user_id=?)`;
+  const deletionCommitValues = [...deletionFenceValues, session.user_id, session.user_id];
   // Authorization is evaluated once at the first statement's linearization
   // point. Rechecking wall-clock expiry later in the same atomic batch could
   // otherwise allow project removal but skip the final account removal.
@@ -3892,25 +3883,39 @@ async function deleteAccount(request, env) {
          id=excluded.id,status='requested',requested_at=excluded.requested_at,
          completed_at=NULL,updated_at=excluded.updated_at`,
     ).bind(requestId, session.user_id, requestedAt, requestedAt, ...deletionCommitValues),
+    db.prepare(`UPDATE private_file_cleanup SET receipt_id=?
+      WHERE (substr(object_key,1,length(?))=? OR object_key IN (SELECT object_key FROM project_files WHERE user_id=?)) AND ${deletionClaim}`)
+      .bind(requestId, `users/${session.user_id}/projects/`, `users/${session.user_id}/projects/`, session.user_id, ...deletionClaimValues),
     db.prepare(`DELETE FROM projects WHERE user_id=? AND ${deletionClaim}`)
       .bind(session.user_id, ...deletionClaimValues),
     db.prepare(
-      `INSERT INTO account_deletion_receipts (request_id,completed_at)
-       SELECT ?,? WHERE ${deletionClaim}`,
-    ).bind(requestId, completedAt, ...deletionClaimValues),
+      `INSERT INTO account_deletion_receipts (request_id,completed_at,private_files_count)
+       SELECT ?,?,(SELECT COUNT(*) FROM private_file_cleanup WHERE receipt_id=?) WHERE ${deletionClaim}
+       RETURNING private_files_count`,
+    ).bind(requestId, completedAt, requestId, ...deletionClaimValues),
     db.prepare(`DELETE FROM users WHERE id=? AND ${deletionClaim} RETURNING id`)
       .bind(session.user_id, ...deletionClaimValues),
   ]);
-  if (!results?.[3]?.results?.[0]) throw deletionConflict();
+  if (!results?.[4]?.results?.[0]) throw deletionConflict();
+  const privateFilesPending = Number(results[3]?.results?.[0]?.private_files_count || 0) > 0;
+  // The outbox was committed with the authorization claim. Storage is never
+  // touched by a losing or rolled-back account deletion.
+  if (privateFilesPending && ctx?.waitUntil) {
+    ctx.waitUntil(processPrivateFileCleanup(env, { receiptId: requestId }));
+  }
   await bestEffortSecurityEmail(db, env, {
     userId: null,
     to: session.email,
     purpose: "account_deletion",
     subject: "Your GrihaGrid account was deleted",
-    text: "Your account sessions and private planning records were permanently removed.",
+    text: privateFilesPending
+      ? "Your account sessions and private planning records were permanently removed. Your uploaded files are no longer accessible. Removal of their stored bytes is queued and will retry automatically if storage is unavailable."
+      : "Your account sessions and private planning records were permanently removed.",
     idempotencyKey: `account-delete-${requestId}`,
   });
-  return withCookies(empty(204), clearSessionCookies());
+  return withCookies(privateFilesPending
+    ? json({ accountDeleted: true, privateFileCleanup: "pending", receiptId: requestId }, 202)
+    : empty(204), clearSessionCookies());
 }
 
 function validateJsonValue(value, depth = 0) {
@@ -9113,6 +9118,78 @@ function fileFromRow(row) {
   };
 }
 
+async function processPrivateFileCleanup(env, { objectKey = null, receiptId = null } = {}) {
+  if (!env.DB || !env.FILES) return { processed: 0, failed: 0 };
+  const db = env.DB;
+  const scope = `next_attempt_at<=datetime('now')
+    AND (? IS NULL OR object_key=?) AND (? IS NULL OR receipt_id=?)`;
+  const scopeValues = [objectKey, objectKey, receiptId, receiptId];
+  // Bulk SQL keeps even a full account below the free plan's 50-query limit.
+  // Referenced objects (including legacy/restore records) are never removed.
+  await db.prepare(`DELETE FROM private_file_cleanup WHERE object_key IN (
+    SELECT c.object_key FROM private_file_cleanup c WHERE ${scope}
+      AND EXISTS (SELECT 1 FROM project_files f WHERE f.object_key=c.object_key)
+    ORDER BY next_attempt_at,object_key LIMIT 100
+  )`).bind(...scopeValues).run();
+  const claim = await db.prepare(`UPDATE private_file_cleanup SET state='delete',attempts=attempts+1,
+    next_attempt_at=datetime('now','+15 minutes') WHERE object_key IN (
+      SELECT c.object_key FROM private_file_cleanup c WHERE ${scope}
+        AND NOT EXISTS (SELECT 1 FROM project_files f WHERE f.object_key=c.object_key)
+      ORDER BY next_attempt_at,object_key LIMIT 100
+    ) RETURNING object_key,receipt_id`).bind(...scopeValues).all();
+  const rows = claim.results || [];
+  if (!rows.length) return { processed: 0, failed: 0 };
+  const keys = rows.map(row => row.object_key);
+  const encodedKeys = JSON.stringify(keys);
+  const receipts = JSON.stringify([...new Set(rows.map(row => row.receipt_id).filter(Boolean))]);
+  try {
+    await env.FILES.delete(keys.length === 1 ? keys[0] : keys);
+    await db.batch([
+      db.prepare("DELETE FROM private_file_cleanup WHERE state='delete' AND object_key IN (SELECT value FROM json_each(?))").bind(encodedKeys),
+      db.prepare(`UPDATE account_deletion_receipts SET private_files_completed_at=datetime('now')
+        WHERE request_id IN (SELECT value FROM json_each(?)) AND private_files_count>0
+          AND NOT EXISTS (SELECT 1 FROM private_file_cleanup c WHERE c.receipt_id=account_deletion_receipts.request_id)`)
+        .bind(receipts),
+    ]);
+    return { processed: keys.length, failed: 0 };
+  } catch {
+    // Partial/ambiguous storage failures retry the full idempotent batch.
+    // Never persist provider messages or object keys in operational logs.
+    await db.prepare(`UPDATE private_file_cleanup SET next_attempt_at=datetime('now',
+      '+' || min(1440,15 * (1 << min(attempts-1,7))) || ' minutes')
+      WHERE object_key IN (SELECT value FROM json_each(?))`).bind(encodedKeys).run();
+    return { processed: 0, failed: keys.length };
+  }
+}
+
+async function reconcilePrivateFileInventory(env) {
+  if (!env.DB || !env.FILES) return;
+  const db = env.DB;
+  const checkpoint = await db.prepare("SELECT inventory_cursor FROM private_file_maintenance WHERE id=1").first();
+  let page;
+  try {
+    page = await env.FILES.list({ prefix: "users/", limit: 100, ...(checkpoint?.inventory_cursor ? { cursor: checkpoint.inventory_cursor } : {}) });
+  } catch {
+    // A stale provider cursor must not wedge every future reconciliation run.
+    if (checkpoint?.inventory_cursor) await db.prepare("UPDATE private_file_maintenance SET inventory_cursor=NULL,updated_at=datetime('now') WHERE id=1").run();
+    throw new Error("private file inventory unavailable");
+  }
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+  const candidates = (page.objects || []).filter(object =>
+    /^users\/[0-9a-f-]{36}\/projects\/[0-9a-f-]{36}\/[0-9a-f-]{36}$/u.test(object.key)
+      && Number.isFinite(new Date(object.uploaded).getTime()) && new Date(object.uploaded).getTime() <= cutoff,
+  ).map(object => object.key);
+  // Only app-created keys, after a full day of grace. Stored metadata wins.
+  if (candidates.length) await db.prepare(`INSERT INTO private_file_cleanup(object_key,state,created_at,next_attempt_at)
+    SELECT value,'delete',datetime('now'),datetime('now') FROM json_each(?) AS candidates
+    WHERE NOT EXISTS (SELECT 1 FROM project_files WHERE object_key=candidates.value)
+    ON CONFLICT(object_key) DO NOTHING`).bind(JSON.stringify(candidates)).run();
+  await db.prepare(`INSERT INTO private_file_maintenance(id,inventory_cursor,updated_at)
+    VALUES(1,?,datetime('now')) ON CONFLICT(id) DO UPDATE SET
+      inventory_cursor=excluded.inventory_cursor,updated_at=excluded.updated_at`)
+    .bind(page.truncated ? page.cursor : null).run();
+}
+
 async function uploadFile(request, env, projectId) {
   requireTrustedOrigin(request, env);
   const db = requireDatabase(env);
@@ -9121,22 +9198,53 @@ async function uploadFile(request, env, projectId) {
   const project = await ownedProject(db, projectId, session.user_id);
   requireActiveProject(project, "restore the project before uploading files");
   const store = requireFileStore(env);
+  requireAbuseControl(env);
+  await rateLimit(request, env, "private-image-upload", 30, 60 * 60);
+  const capacity = await db.prepare(`SELECT
+    (SELECT COUNT(*) FROM project_files WHERE project_id=? AND storage_state='ready') AS project_count,
+    (SELECT COUNT(*) FROM project_files WHERE user_id=? AND storage_state='ready') AS account_count`)
+    .bind(projectId, session.user_id).first();
+  if (capacity.project_count >= 20 || capacity.account_count >= 100) {
+    throw new HttpError(409, "this project or account has reached its private image limit", "file_limit_reached");
+  }
   const upload = await readUpload(request);
   const id = crypto.randomUUID();
   const objectKey = `users/${session.user_id}/projects/${projectId}/${id}`;
   const checksum = await digestHex(upload.buffer);
   const createdAt = sqliteTimestamp();
+  // This durable intent exists even if the Worker stops after R2 accepted bytes.
+  const admission = await db.prepare(`INSERT INTO private_file_cleanup(object_key,state,created_at,next_attempt_at)
+    SELECT ?,'upload',?,datetime('now','+24 hours')
+    WHERE EXISTS (SELECT 1 FROM projects WHERE id=? AND user_id=? AND status!='archived')
+      AND EXISTS (SELECT 1 FROM sessions s JOIN users u ON u.id=s.user_id
+        WHERE s.id=? AND s.user_id=? AND s.expires_at>datetime('now') AND u.deleted_at IS NULL
+          AND s.auth_generation=u.auth_generation AND s.auth_revision_id IS u.auth_revision_id)`)
+    .bind(objectKey, createdAt, projectId, session.user_id, session.session_id, session.user_id).run();
+  if (admission.meta.changes !== 1) throw new HttpError(409, "the account or project changed; reload before uploading", "file_upload_conflict");
   await store.put(objectKey, upload.buffer, {
     httpMetadata: { contentType: upload.type, cacheControl: "private, no-store" },
     customMetadata: { projectId, userId: session.user_id, fileId: id, checksumSha256: checksum, sanitizationProfile: FILE_SANITIZATION_PROFILE },
   });
   try {
-    await db.prepare(
+    const published = await db.batch([db.prepare(
       `INSERT INTO project_files (id,project_id,user_id,object_key,file_name,content_type,size_bytes,kind,checksum_sha256,created_at,storage_state,sanitization_profile,original_size_bytes)
-       VALUES (?,?,?,?,?,?,?,?,?,?,'ready',?,?)`,
-    ).bind(id, projectId, session.user_id, objectKey, upload.name, upload.type, upload.buffer.byteLength, upload.kind, checksum, createdAt, FILE_SANITIZATION_PROFILE, upload.originalSizeBytes).run();
+       SELECT ?,?,?,?,?,?,?,?,?,?,'ready',?,?
+       WHERE EXISTS (SELECT 1 FROM private_file_cleanup WHERE object_key=? AND state='upload' AND created_at>datetime('now','-1 hour'))
+         AND EXISTS (SELECT 1 FROM projects WHERE id=? AND user_id=? AND status!='archived')
+         AND EXISTS (SELECT 1 FROM sessions s JOIN users u ON u.id=s.user_id
+           WHERE s.id=? AND s.user_id=? AND s.expires_at>datetime('now') AND u.deleted_at IS NULL
+             AND s.auth_generation=u.auth_generation AND s.auth_revision_id IS u.auth_revision_id)`,
+    ).bind(id, projectId, session.user_id, objectKey, upload.name, upload.type, upload.buffer.byteLength, upload.kind, checksum, createdAt, FILE_SANITIZATION_PROFILE, upload.originalSizeBytes,
+      objectKey, projectId, session.user_id, session.session_id, session.user_id),
+    db.prepare(`DELETE FROM private_file_cleanup WHERE object_key=? AND state='upload'
+      AND EXISTS (SELECT 1 FROM project_files WHERE id=? AND object_key=?)`).bind(objectKey, id, objectKey)]);
+    if (published[0].meta.changes !== 1) throw new HttpError(409, "the upload expired or the account changed; retry from the current project", "file_upload_conflict");
   } catch (error) {
-    try { await store.delete(objectKey); } catch { /* Preserve the original database error. */ }
+    try {
+      await db.prepare(`UPDATE private_file_cleanup SET state='delete',next_attempt_at=datetime('now')
+        WHERE object_key=? AND NOT EXISTS (SELECT 1 FROM project_files WHERE object_key=?)`).bind(objectKey, objectKey).run();
+      await processPrivateFileCleanup(env, { objectKey });
+    } catch { /* The original durable intent remains available for maintenance. */ }
     if (/project file limit reached/iu.test(String(error?.message || error))) {
       throw new HttpError(409, "this project or account has reached its private image limit", "file_limit_reached");
     }
@@ -9188,14 +9296,19 @@ async function downloadFile(request, env, projectId, fileId) {
 async function deleteFile(request, env, projectId, fileId) {
   requireTrustedOrigin(request, env);
   const db = requireDatabase(env);
-  const store = requireFileStore(env);
   const session = await getSession(request, env);
   await requireCsrf(request, session);
   await ownedProject(db, projectId, session.user_id);
   const file = await ownedFile(db, projectId, fileId, session.user_id);
-  await store.delete(file.object_key);
-  await db.prepare("DELETE FROM project_files WHERE id=? AND project_id=? AND user_id=?").bind(fileId, projectId, session.user_id).run();
-  return empty();
+  const removed = await db.prepare(`DELETE FROM project_files WHERE id=? AND project_id=? AND user_id=?
+    AND EXISTS (SELECT 1 FROM sessions s JOIN users u ON u.id=s.user_id
+      WHERE s.id=? AND s.user_id=? AND s.expires_at>datetime('now') AND u.deleted_at IS NULL
+        AND s.auth_generation=u.auth_generation AND s.auth_revision_id IS u.auth_revision_id) RETURNING id`)
+    .bind(fileId, projectId, session.user_id, session.session_id, session.user_id).first();
+  if (!removed) throw new HttpError(409, "the file or account changed; reload before retrying", "file_deletion_conflict");
+  try { await processPrivateFileCleanup(env, { objectKey: file.object_key }); } catch { /* The committed journal is retried by maintenance. */ }
+  const pending = await db.prepare("SELECT 1 AS pending FROM private_file_cleanup WHERE object_key=?").bind(file.object_key).first();
+  return pending ? json({ fileDeleted: true, privateFileCleanup: "pending" }, 202) : empty();
 }
 
 function methodNotAllowed(allowed) {
@@ -9466,7 +9579,7 @@ async function api(request, env, ctx, url) {
       return request.method === "GET" ? await exportAccount(request, env) : methodNotAllowed(["GET"]);
     }
     if (url.pathname === "/api/account") {
-      return request.method === "DELETE" ? await deleteAccount(request, env) : methodNotAllowed(["DELETE"]);
+      return request.method === "DELETE" ? await deleteAccount(request, env, ctx) : methodNotAllowed(["DELETE"]);
     }
     if (url.pathname === "/api/projects") {
       if (request.method === "GET") return await listProjects(request, env, url);
@@ -9930,6 +10043,11 @@ export default {
   },
   async scheduled(controller, env, ctx) {
     if (!env.DB) return;
+    if (env.FILES) ctx.waitUntil((async () => {
+      // A listing outage must not prevent already-journaled removals.
+      try { await reconcilePrivateFileInventory(env); }
+      finally { await processPrivateFileCleanup(env); }
+    })());
     ctx.waitUntil(env.DB.batch([
       env.DB.prepare("DELETE FROM sessions WHERE expires_at < datetime('now')"),
       env.DB.prepare(
@@ -9957,6 +10075,8 @@ export default {
 // Narrowly exported for deterministic unit tests; the production entrypoint is
 // the default export above.
 export const __test = {
+  processPrivateFileCleanup,
+  reconcilePrivateFileInventory,
   acquireLoginAdmission,
   acquirePasswordChangeAdmission,
   acquireReportShareCreateAdmission,
