@@ -1,0 +1,28 @@
+name: Public bug report
+description: Report a reproducible problem without private account or house details.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This report is public. Do not include emails, passwords, tokens, private links, house drawings, site addresses or customer information. Use a sample house and generic reproduction steps. Public issues cannot recover an account or accept private support documents.
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Explain what you clicked using a sample house. Include expected and actual behavior.
+    validations:
+      required: true
+  - type: input
+    id: browser
+    attributes:
+      label: Browser and device type
+      placeholder: Chrome on desktop, Safari on phone, etc.
+    validations:
+      required: true
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Public information only
+      options:
+        - label: I removed private account, house and site information from this report.
+          required: true
