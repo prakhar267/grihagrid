@@ -31,8 +31,10 @@ validation, a 390 px mobile detailed drawing at 200% sheet zoom, a complete
 starter safely rejects incompatible stair placement; the open-floor alternative
 connects and proceeds through Change Study and tour rebuilding. This is bounded
 UI evidence, not a new physical-device, authenticated-save or Blender-render
-acceptance result. No user-facing runtime change or new application deployment
-is included in this backup-operating update.
+acceptance result. A fresh dependency audit additionally found affected DOMPurify and Undici
+versions. DOMPurify 3.4.16 and Wrangler 4.146.0 (Undici 7.29.1) are prepared;
+the updated lockfile audits cleanly. These patches require a new protected
+staging-first release. They are not yet deployed.
 
 ### 2026-09-26 remaining activation work
 

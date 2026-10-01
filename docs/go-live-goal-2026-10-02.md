@@ -50,5 +50,25 @@ expiry; an additional private copy does not change that fact.
   VoiceOver verification. Paid offer/provider credentials and R2 subscription
   decisions remain necessary before activating those separately gated services.
 
-Do not treat these operating changes as a new application deployment, or passing
-source tests as evidence that the unconfigured providers are ready.
+## Dependency security cut
+
+The fresh audit rejected the original lockfile: DOMPurify 3.4.15 is affected by
+[GHSA-p98j-92pf-mc4p](https://github.com/advisories/GHSA-p98j-92pf-mc4p), and
+Wrangler's Undici dependency had newly published advisories. Upgrade DOMPurify
+to 3.4.16 and Wrangler to 4.146.0, resolving Undici 7.29.1. The locked tree now
+reports zero vulnerabilities. GrihaGrid does not use the DOMPurify IN_PLACE /
+afterSanitize hook combination described by that advisory; patching still keeps
+the sanitizer current. Preserve existing strict SVG import restrictions.
+
+Review of the published Wrangler 4.146.0 source confirmed unchanged keepalive,
+reconnection intervals and warning formatting. Align the isolated release CLI
+pin and its exact-version formatter test; never loosen tail failure detection.
+
+The initial local full gate failed with a timeout, a fixture that assumed umask
+022, and ENOSPC errors. Fix the synthetic symlink fixture to establish its intended
+0644 permissions explicitly before testing that the target remains untouched.
+Keep the original failure log. Rerun the full gate with patched dependencies;
+passing an isolated test cannot stand in for full-suite evidence. Patch release
+and final monitoring are required before calling these dependencies deployed.
+
+Passing source tests does not establish readiness of unconfigured providers.

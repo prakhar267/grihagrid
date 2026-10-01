@@ -106,7 +106,7 @@ test("actual pinned Wrangler formatter produces recognized warnings without cred
   const require = createRequire(import.meta.url);
   const packagePath = require.resolve("wrangler/package.json");
   const packageInfo = JSON.parse(await readFile(packagePath, "utf8"));
-  assert.equal(packageInfo.version, "4.131.1", "Review warning grammar when upgrading the pinned CLI");
+  assert.equal(packageInfo.version, "4.146.0", "Review warning grammar when upgrading the pinned CLI");
   const esbuild = createRequire(packagePath)("esbuild");
   // Wrangler Logger.formatMessage uses these exact options; console.warn adds
   // the final newline. This runs only the package formatter, never the CLI.
