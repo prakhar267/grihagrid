@@ -22,7 +22,7 @@ function request(path, user, body, { key = crypto.randomUUID(), csrf = user?.csr
 async function expect(response, status) { const body = await response.json(); assert.equal(response.status, status, JSON.stringify(body)); return body; }
 
 test('house brief survives real D1 creation, revision, private reads and accepted geometry', async context => {
-  const mf = new Miniflare({ workers: [{ config: { name: 'house-brief-test', type: 'worker', compatibilityDate: '2026-08-01', manifest: { mainModule: 'index.mjs', modulesRoot: process.cwd(), modules: { 'index.mjs': { type: 'esm', contents: 'export default {}' } } }, env: { DB: { type: 'd1', name: 'house-brief-test-db' } } } }] });
+  const mf = new Miniflare({ workers: [{ config: { name: 'house-brief-test', compatibilityDate: '2026-08-01', manifest: { mainModule: 'index.mjs', modulesRoot: process.cwd(), modules: { 'index.mjs': { type: 'esm', contents: 'export default {}' } } }, env: { DB: { type: 'd1', name: 'house-brief-test-db' } } } }] });
   context.after(() => mf.dispose());
   const db = await mf.getD1Database('DB'), directory = new URL('../migrations/', import.meta.url);
   for (const file of (await readdir(directory)).filter(f => f.endsWith('.sql')).sort()) for (const sql of statements(await readFile(new URL(file, directory), 'utf8'))) await db.prepare(sql).run();

@@ -70,7 +70,6 @@ async function realD1(context, suffix) {
     workers: [{
       config: {
         name: `login-worker-${suffix}`,
-        type: "worker",
         compatibilityDate: "2026-08-01",
         manifest: {
           mainModule: "index.mjs",

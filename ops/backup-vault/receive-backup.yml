@@ -1,6 +1,8 @@
 name: Receive verified encrypted GrihaGrid backup
 
 on:
+  schedule:
+    - cron: "23 3,15 * * *"
   workflow_dispatch:
 
 permissions:
@@ -36,6 +38,19 @@ jobs:
           retention-days: ${{ steps.receive.outputs.retention_days }}
           compression-level: 0
           if-no-files-found: error
+
+      - name: Explain a rejected private copy
+        if: failure()
+        run: |
+          echo "::error::No verified private backup was retained by this attempt. Check the receiver failure code and source backup age."
+          cat >> "$GITHUB_STEP_SUMMARY" <<'NOTICE'
+          ## Private backup copy failed
+          This attempt did not establish a verified private recovery copy. Inspect
+          the bounded receiver failure code, the latest successful production
+          backup, and the expiry of the last verified private artifact. A stale
+          source requires a fresh successful source backup, not a relaxed age limit.
+          Do not change billing limits or add a broader token to bypass rejection.
+          NOTICE
 
       - name: Remove the encrypted runner copy
         if: always()

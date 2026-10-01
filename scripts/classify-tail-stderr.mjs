@@ -14,7 +14,7 @@ const ALLOWED_PROXY_WARNINGS = new Set([
 ]);
 
 // Diagnostic labels only: a recognized transport warning still invalidates the
-// monitored window. These complete messages are from pinned Wrangler 4.131.1.
+// monitored window. These complete messages are from pinned Wrangler 4.146.0.
 const KEEPALIVE_WARNING = "Tail connection lost: the Worker did not respond to a keep-alive ping within 10000ms.";
 const RECONNECT_WARNINGS = [1, 2, 4, 8, 16].map((delay, index) =>
   `Tail connection lost. Reconnecting (attempt ${index + 1} of 5) in ${delay}s...`

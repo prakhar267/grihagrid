@@ -109,7 +109,7 @@ function statements(source) {
 }
 
 test('real D1 Cloudflare planning and camera direction enforce privacy, revisions, quota, provenance and recovery', async context => {
-  const mf = new Miniflare({ workers: [{ config: { name: 'cloudflare-ai-test', type: 'worker', compatibilityDate: '2026-08-01', manifest: { mainModule: 'index.mjs', modulesRoot: process.cwd(), modules: { 'index.mjs': { type: 'esm', contents: 'export default {}' } } }, env: { DB: { type: 'd1', name: 'cloudflare-ai-test' } } } }] });
+  const mf = new Miniflare({ workers: [{ config: { name: 'cloudflare-ai-test', compatibilityDate: '2026-08-01', manifest: { mainModule: 'index.mjs', modulesRoot: process.cwd(), modules: { 'index.mjs': { type: 'esm', contents: 'export default {}' } } }, env: { DB: { type: 'd1', name: 'cloudflare-ai-test' } } } }] });
   context.after(() => mf.dispose());
   const DB = await mf.getD1Database('DB');
   const root = new URL('../migrations/', import.meta.url);

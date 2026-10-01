@@ -213,6 +213,8 @@ test('a symlink substituted for an export is rejected before import without chan
   const f = await fixture(t);
   const target = path.join(path.dirname(f.directory), 'untouched.sql');
   await writeFile(target, fixtureSql, { mode: 0o644 });
+  // Establish the fixture mode explicitly; the caller may use a private umask.
+  await chmod(target, 0o644);
   const evidence = await runRemoteRestoreDrill({
     directory: f.directory, repo,
     run: async args => {
