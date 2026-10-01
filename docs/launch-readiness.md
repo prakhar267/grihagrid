@@ -4,10 +4,14 @@
 
 ### 2026-10-02 active go-live goal
 
-The public studio remains on the 26 September release (`d378e1b`), production
-Worker `b3d261b7-bb3d-4a3b-b795-14d0d7be5938`. Fresh readiness reports a current
-schema, Cloudflare AI primary, and paid checkout/fulfillment/private uploads
-closed. Transactional email and password recovery remain unavailable. A broad
+The public studio now serves the security and backup release from
+[PR #96](https://github.com/prakhar267/grihagrid/pull/96), source
+`83d32c0415faf1b2a008806808c17e5522cb75b5`, production Worker
+`083e405c-660a-4bbc-b600-d712b022b264`. Staging serves the same source as Worker
+`b84143cc-d4b6-4b65-862b-7cad3dc21e72`. Fresh readiness reports current schemas,
+Cloudflare AI primary with Gemini fallback in production, and paid
+checkout/fulfillment/private uploads closed. Transactional email and password
+recovery remain unavailable. A broad
 public launch is **not yet accepted** while the recovery, private support,
 independent monitoring, external activation and device checks are unresolved.
 The user's launch-scope and owned-domain/support choices are pending.
@@ -29,12 +33,24 @@ Current browser evidence covers public onboarding, native required-field
 validation, a 390 px mobile detailed drawing at 200% sheet zoom, a complete
 30-second tour, local-renderer failure/retry, and adding a third floor. A divided
 starter safely rejects incompatible stair placement; the open-floor alternative
-connects and proceeds through Change Study and tour rebuilding. This is bounded
-UI evidence, not a new physical-device, authenticated-save or Blender-render
-acceptance result. A fresh dependency audit additionally found affected DOMPurify and Undici
-versions. DOMPurify 3.4.16 and Wrangler 4.146.0 (Undici 7.29.1) are prepared;
-the updated lockfile audits cleanly. These patches require a new protected
-staging-first release. They are not yet deployed.
+connects and proceeds through Change Study and tour rebuilding. Walking and
+saved-viewpoint restore passed on the added floor. Native desktop Safari
+completed a tour and displayed the detailed plan; physical iOS remains untested.
+Native Chrome downloaded valid scene/GLB files containing all 315 Courtyard
+primitives. A fresh Blender Cycles/Metal preview of that download produced six
+inspected frames and passed the geometry/camera round-trip checks. This is a
+preview, not a new full-film or paired-service acceptance run.
+
+DOMPurify 3.4.16 and Wrangler 4.146.0 (Undici 7.29.1) are deployed. The audit is
+clean; local and exact-main CI each passed 956/956 tests without skips. All 25
+migrations validate, no migration was added, and both environments had none
+pending. Production SVG review detected the test drawing without a script
+dialog and rejected entity-bearing input without retaining acceptance controls.
+The protected [release run 36935942679](https://github.com/prakhar267/grihagrid/actions/runs/36935942679)
+records staging and production canaries, session/residue cleanup, version
+identity and the required 30-minute observation. Require that run's complete
+successful observation before accepting the runtime release. See
+[the dated evidence and limits](go-live-goal-2026-10-02.md#runtime-release-evidence).
 
 ### 2026-09-26 remaining activation work
 
