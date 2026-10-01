@@ -72,3 +72,10 @@ passing an isolated test cannot stand in for full-suite evidence. Patch release
 and final monitoring are required before calling these dependencies deployed.
 
 Passing source tests does not establish readiness of unconfigured providers.
+
+Wrangler's updated Miniflare schema removed `workers[].config.type`. The first
+patched diagnostic run exposed that change before D1 setup. Remove only that
+obsolete fixture field in the ten direct-Miniflare test files; keep all bindings,
+migrations and assertions. The corrected logout race passed with the patched
+runtime in 1.4 seconds. A new exact-head full run is required; the superseded
+patched diagnostic run was stopped and is not acceptance evidence.

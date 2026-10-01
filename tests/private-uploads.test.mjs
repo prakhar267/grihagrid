@@ -60,7 +60,7 @@ function migrationStatements(source) {
 async function database(context) {
   const miniflare = new Miniflare({
     workers: [{ config: {
-      name: "private-upload-worker", type: "worker", compatibilityDate: "2026-08-01",
+      name: "private-upload-worker", compatibilityDate: "2026-08-01",
       manifest: { mainModule: "index.mjs", modulesRoot: process.cwd(), modules: { "index.mjs": { type: "esm", contents: "export default {}" } } },
       env: { DB: { type: "d1", name: "private-upload-db" } },
     } }],

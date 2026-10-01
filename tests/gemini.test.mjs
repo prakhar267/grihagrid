@@ -731,7 +731,6 @@ test("real D1 rejects a Gemini result when a legitimate brief revision wins duri
     workers: [{
       config: {
         name: "gemini-currentness-race-test",
-        type: "worker",
         compatibilityDate: "2026-08-01",
         manifest: {
           mainModule: "index.mjs",
@@ -849,7 +848,6 @@ test("real D1 batch rolls back lease and user charge when the platform ceiling f
     workers: [{
       config: {
         name: "gemini-d1-test",
-        type: "worker",
         compatibilityDate: "2026-08-01",
         manifest: {
           mainModule: "index.mjs",

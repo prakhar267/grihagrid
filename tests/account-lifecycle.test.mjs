@@ -46,7 +46,6 @@ async function database(context) {
     workers: [{
       config: {
         name: "account-lifecycle-worker",
-        type: "worker",
         compatibilityDate: "2026-08-01",
         manifest: {
           mainModule: "index.mjs",

@@ -31,7 +31,7 @@ async function owner(env,email) {
 const providerResponse=intent=>new Response(JSON.stringify({status:'completed',steps:[{type:'model_output',content:[{type:'text',text:JSON.stringify(intent)}]}]}),{headers:{'content-type':'application/json'}})
 
 test('spatial workspace enforces authenticated ownership, immutable real-D1 revisions and safe AI intent',async context=>{
-  const mf=new Miniflare({workers:[{config:{name:'spatial-api-test',type:'worker',compatibilityDate:'2026-08-01',manifest:{mainModule:'index.mjs',modulesRoot:process.cwd(),modules:{'index.mjs':{type:'esm',contents:'export default {}'}}},env:{DB:{type:'d1',name:'spatial-api-test-db'}}}}]})
+  const mf=new Miniflare({workers:[{config:{name:'spatial-api-test',compatibilityDate:'2026-08-01',manifest:{mainModule:'index.mjs',modulesRoot:process.cwd(),modules:{'index.mjs':{type:'esm',contents:'export default {}'}}},env:{DB:{type:'d1',name:'spatial-api-test-db'}}}}]})
   context.after(()=>mf.dispose())
   const db=await mf.getD1Database('DB')
   const migrationRoot=new URL('../migrations/',import.meta.url)

@@ -46,7 +46,6 @@ async function realD1(context) {
     workers: [{
       config: {
         name: "readiness-worker",
-        type: "worker",
         compatibilityDate: "2026-08-01",
         manifest: {
           mainModule: "index.mjs",
