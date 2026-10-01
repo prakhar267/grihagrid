@@ -25,7 +25,7 @@ manifest = dict(environment="production", database="grihagrid-db", createdAt="20
                 keyVersion="2026-08-15-1", encryption="GGRIDBK1-AES-256-GCM", rawPermissions="600",
                 rawSha256="b" * 64, encryptedSha256=v.sha256(cipher), timeTravelBookmark="synthetic-bookmark-only",
                 isolatedRestore=dict(integrity="ok", foreignKeyViolations=0, schema="current",
-                                     requiredSchemaObjectsVerified=83, requiredColumnsVerified=173))
+                                     requiredSchemaObjectsVerified=93, requiredColumnsVerified=192))
 artifact = dict(id=456, name="production-d1-scheduled-123", expired=False, expires_at="2026-09-24T11:57:00Z",
                 created_at="2026-09-17T11:57:00Z", workflow_run=dict(id=123, repository_id=v.SOURCE_ID,
                 head_repository_id=v.SOURCE_ID, head_branch="main", head_sha=head))
@@ -70,8 +70,12 @@ elif case == "magic":
     changed = b"BADMAGC" + cipher[7:]
     archive(m={**manifest, "encryptedSha256": v.sha256(changed)}, c=changed)
 elif case == "schema": archive(m={**manifest, "isolatedRestore": {**manifest["isolatedRestore"], "requiredColumnsVerified": 172}})
+elif case == "legacy-schema": archive(m={**manifest, "isolatedRestore": {**manifest["isolatedRestore"], "requiredSchemaObjectsVerified": 83, "requiredColumnsVerified": 173}})
 elif case == "stale": archive(m={**manifest, "createdAt": "2026-09-15T11:56:00Z"})
 elif case == "future": archive(m={**manifest, "createdAt": "2026-09-18T11:56:00Z"})
+elif case == "stale-run-created": source(r={**run, "created_at": "2026-09-15T11:55:00Z"})
+elif case == "future-run-updated": source(r={**run, "updated_at": "2026-09-18T11:58:00Z"})
+elif case == "stale-artifact-created": source(a={**artifact, "created_at": "2026-09-15T11:57:00Z"})
 elif case == "outside-run": archive(m={**manifest, "createdAt": "2026-09-17T10:00:00Z"})
 elif case == "expired": source(a={**artifact, "expires_at": "2026-09-17T11:00:00Z"})
 elif case == "fork": source(r={**run, "head_repository": {"id": 1, "full_name": "outsider/fork"}})
@@ -143,7 +147,7 @@ else: raise AssertionError("unknown case")
 print("accepted")
 `;
 
-for (const name of ["valid", "receive", "retention", "insufficient-retention", "redirect", "unsafe-redirect", "oversize-response", "traversal", "duplicate", "extra", "symlink", "oversize-manifest", "corrupt-zip", "archive-digest", "cipher-digest", "magic", "schema", "stale", "future", "outside-run", "expired", "fork", "failed-run", "pull-request", "artifact-run", "workflow-hash", "not-main", "public-vault", "permission-denied"]) {
+for (const name of ["valid", "receive", "retention", "insufficient-retention", "redirect", "unsafe-redirect", "oversize-response", "traversal", "duplicate", "extra", "symlink", "oversize-manifest", "corrupt-zip", "archive-digest", "cipher-digest", "magic", "schema", "legacy-schema", "stale", "future", "outside-run", "expired", "fork", "failed-run", "pull-request", "artifact-run", "workflow-hash", "not-main", "public-vault", "permission-denied"]) {
   test(`private backup receiver: ${name}`, () => {
     const result = spawnSync("python3", ["-c", program, name], { encoding: "utf8", timeout: 10000 });
     assert.ifError(result.error);
@@ -158,17 +162,34 @@ for (const name of ["valid", "receive", "retention", "insufficient-retention", "
   });
 }
 
-test("receiver pins current workflow and stays manual with ephemeral read permissions", () => {
+test("receiver pins the source and schedules copies with ephemeral read permissions", () => {
   const source = readFileSync("ops/backup-vault/receive_backup.py", "utf8");
   const workflow = readFileSync("ops/backup-vault/receive-backup.yml", "utf8");
   const digest = createHash("sha256").update(readFileSync(".github/workflows/production-backup.yml")).digest("hex");
   assert.ok(source.includes(`WORKFLOW_SHA256 = "${digest}"`));
-  assert.doesNotMatch(workflow, /schedule:|secrets\.|permissions:[\s\S]*write/);
+  assert.doesNotMatch(workflow, /secrets\.|permissions:[\s\S]*write/);
+  assert.match(workflow, /cron: "23 3,15 \* \* \*"/);
+  assert.match(workflow, /if: failure\(\)/);
+  assert.match(workflow, /GITHUB_STEP_SUMMARY/);
   assert.match(workflow, /timeout-minutes: 2/);
   assert.match(workflow, /retention-days: \$\{\{ steps.receive.outputs.retention_days \}\}/);
   assert.match(workflow, /persist-credentials: false/);
   assert.match(workflow, /GH_TOKEN: \$\{\{ github.token \}\}/);
 });
+
+for (const [name, code] of [
+  ["stale", "stale-manifest-created"], ["future", "future-manifest-created"],
+  ["stale-run-created", "stale-run-created"], ["future-run-updated", "future-run-updated"],
+  ["stale-artifact-created", "stale-artifact-created"],
+]) {
+  test(`freshness rejection identifies ${code} without exposing source values`, () => {
+    const result = spawnSync("python3", ["-c", program, name], { encoding: "utf8", timeout: 10000 });
+    assert.ifError(result.error);
+    assert.equal(result.status, 1);
+    assert.equal(result.stderr.trim().split("\n").at(-1), `ValueError: ${code}`);
+    assert.doesNotMatch(result.stdout, /synthetic-bookmark|ephemeral-test-token/);
+  });
+}
 
 test("CLI fails closed without credentials and never echoes environment secrets", () => {
   const result = spawnSync("python3", ["ops/backup-vault/receive_backup.py", "unused"], {

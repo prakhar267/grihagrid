@@ -2,6 +2,38 @@
 
 ## Current decision
 
+### 2026-10-02 active go-live goal
+
+The public studio remains on the 26 September release (`d378e1b`), production
+Worker `b3d261b7-bb3d-4a3b-b795-14d0d7be5938`. Fresh readiness reports a current
+schema, Cloudflare AI primary, and paid checkout/fulfillment/private uploads
+closed. Transactional email and password recovery remain unavailable. A broad
+public launch is **not yet accepted** while the recovery, private support,
+independent monitoring, external activation and device checks are unresolved.
+The user's launch-scope and owned-domain/support choices are pending.
+
+The private backup destination now works with its existing ephemeral job token.
+Private repository PRs [#1](https://github.com/prakhar267/grihagrid-backups/pull/1)
+and [#2](https://github.com/prakhar267/grihagrid-backups/pull/2) corrected schema
+pins, verified a real private copy, and enabled twice-daily bounded copies.
+[Exact-main manual run 36933139846](https://github.com/prakhar267/grihagrid-backups/actions/runs/36933139846)
+passed at `17d506fc2389f99ca197184a55229ca781af2aa7`. The earlier verified copy
+matched the source bytes, denied anonymous access and expires before its source.
+The first attempt's freshness rejection remains unexplained; constant boundary
+codes now make recurrence diagnosable. No source-age limit, billing gate or
+credential scope was relaxed. Actual scheduled delivery and a human notification
+receipt remain unverified. See [receiver controls](../ops/backup-vault/README.md)
+and [goal acceptance](go-live-goal-2026-10-02.md).
+
+Current browser evidence covers public onboarding, native required-field
+validation, a 390 px mobile detailed drawing at 200% sheet zoom, a complete
+30-second tour, local-renderer failure/retry, and adding a third floor. A divided
+starter safely rejects incompatible stair placement; the open-floor alternative
+connects and proceeds through Change Study and tour rebuilding. This is bounded
+UI evidence, not a new physical-device, authenticated-save or Blender-render
+acceptance result. No user-facing runtime change or new application deployment
+is included in this backup-operating update.
+
 ### 2026-09-26 remaining activation work
 
 The user reopened domain, payment, email, private-upload and device verification

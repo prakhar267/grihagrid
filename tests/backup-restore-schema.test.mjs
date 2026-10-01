@@ -37,3 +37,13 @@ for (const [description, mutation, expected] of [
     assert.throws(() => verifyBackupRestoreSchema(database), expected);
   });
 }
+
+
+test("private receiver accepts evidence from every current migration and rejects schema drift", t => {
+  const evidence = verifyBackupRestoreSchema(restoredFixture(t));
+  const receiver = readFileSync(new URL("../ops/backup-vault/receive_backup.py", import.meta.url), "utf8");
+  const objects = Number(receiver.match(/^REQUIRED_SCHEMA_OBJECTS = (\d+)$/m)?.[1]);
+  const columns = Number(receiver.match(/^REQUIRED_SCHEMA_COLUMNS = (\d+)$/m)?.[1]);
+  assert.equal(objects, evidence.requiredSchemaObjectsVerified, "review the private receiver after required schema changes");
+  assert.equal(columns, evidence.requiredColumnsVerified, "review the private receiver after required column changes");
+});

@@ -23,6 +23,8 @@ WORKFLOW_ID = 351480423
 WORKFLOW_PATH = ".github/workflows/production-backup.yml"
 WORKFLOW_NAME = "Production D1 encrypted backup"
 WORKFLOW_SHA256 = "19a514318b4e034b960c26e0d5b17c05993c828cd6baa02836a21992db47fbea"
+REQUIRED_SCHEMA_OBJECTS = 93
+REQUIRED_SCHEMA_COLUMNS = 192
 MAX_ARCHIVE = 16 * 1024 * 1024
 MAX_MANIFEST = 16 * 1024
 MAX_AGE_SECONDS = 26 * 3600
@@ -44,9 +46,12 @@ def timestamp(value):
     return dt.datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
 
 
-def fresh(value, now):
+def fresh(value, now, field):
     captured = timestamp(value)
-    require(-300 <= now - captured <= MAX_AGE_SECONDS, "stale-or-future-backup")
+    # Constant field names identify the failing boundary without printing source
+    # responses, manifest values, signed URLs, or credentials.
+    require(now - captured >= -300, f"future-{field}")
+    require(now - captured <= MAX_AGE_SECONDS, f"stale-{field}")
     return captured
 
 
@@ -86,7 +91,8 @@ def validate_source(run, artifact, workflow, workflow_bytes, main_sha, compariso
     require(re.fullmatch(r"[0-9a-f]{40}", head) and re.fullmatch(r"[0-9a-f]{40}", main_sha), "invalid-source-sha")
     require(comparison.get("status") in ("identical", "ahead")
             and comparison.get("merge_base_commit", {}).get("sha") == head, "source-not-on-main")
-    started, completed = fresh(run["created_at"], now), fresh(run["updated_at"], now)
+    started = fresh(run["created_at"], now, "run-created")
+    completed = fresh(run["updated_at"], now, "run-updated")
     require(started <= completed, "invalid-run-time")
     require(type(artifact.get("id")) is int and artifact["id"] > 0
             and artifact.get("name") == f"production-d1-scheduled-{run['id']}"
@@ -95,7 +101,7 @@ def validate_source(run, artifact, workflow, workflow_bytes, main_sha, compariso
     require(type(artifact.get("size_in_bytes")) is int and 0 < artifact["size_in_bytes"] <= MAX_ARCHIVE,
             "artifact-too-large")
     require(re.fullmatch(r"sha256:[0-9a-f]{64}", artifact.get("digest", "")), "missing-artifact-digest")
-    captured = fresh(artifact["created_at"], now)
+    captured = fresh(artifact["created_at"], now, "artifact-created")
     require(started - 300 <= captured <= completed + 300, "artifact-outside-run")
     provenance = artifact.get("workflow_run", {})
     require(provenance.get("id") == run["id"] and provenance.get("repository_id") == SOURCE_ID
@@ -124,13 +130,13 @@ def validate_archive(data, artifact, run, now):
     require(manifest["environment"] == "production" and manifest["database"] == "grihagrid-db"
             and manifest["encryption"] == "GGRIDBK1-AES-256-GCM"
             and manifest["keyVersion"] == "2026-08-15-1" and manifest["rawPermissions"] == "600", "invalid-backup-contract")
-    captured = fresh(manifest["createdAt"], now)
+    captured = fresh(manifest["createdAt"], now, "manifest-created")
     require(timestamp(run["created_at"]) - 300 <= captured <= timestamp(artifact["created_at"]) + 300,
             "capture-outside-run")
     require(re.fullmatch(r"[0-9a-f]{64}", manifest["rawSha256"])
             and re.fullmatch(r"[A-Za-z0-9._:-]{16,256}", manifest["timeTravelBookmark"]), "invalid-recovery-evidence")
     require(manifest["isolatedRestore"] == {"integrity": "ok", "foreignKeyViolations": 0,
-            "schema": "current", "requiredSchemaObjectsVerified": 83, "requiredColumnsVerified": 173},
+            "schema": "current", "requiredSchemaObjectsVerified": REQUIRED_SCHEMA_OBJECTS, "requiredColumnsVerified": REQUIRED_SCHEMA_COLUMNS},
             "restore-schema-not-verified")
     ciphertext = content["d1-export.sql.ggrid"]
     require(len(ciphertext) >= 52 and ciphertext.startswith(b"GGRIDBK1")
@@ -217,7 +223,7 @@ def receive(api, output, now):
             "archiveSha256": sha256(data), "capturedAt": manifest["createdAt"],
             "sourceExpiresAt": artifact["expires_at"], "ciphertextSha256": manifest["encryptedSha256"],
             "privateRetentionDays": private_retention,
-            "restoreSchemaObjects": 83, "restoreSchemaColumns": 173,
+            "restoreSchemaObjects": REQUIRED_SCHEMA_OBJECTS, "restoreSchemaColumns": REQUIRED_SCHEMA_COLUMNS,
             "decrypted": False, "publicSourceCopyRemainsUntilExpiry": True}
 
 

@@ -110,3 +110,11 @@ credentials and physical-device access still require concrete user input where
 applicable. Record actual device and provider checks; earlier deferrals are not
 passes. Existing live payment/upload controls stay closed until their technical
 and external activation prerequisites have been verified.
+
+On 2 October 2026 the user explicitly requested an active goal to make GrihaGrid
+ready to go live. Recheck current production and operating evidence, complete
+all authorized gaps, and preserve the protected release process. A prior green
+release is evidence, not closure of unresolved recovery, private-backup,
+monitoring, provider or device dependencies. Launch scope and domain/private
+support choices are being clarified; do not invent them or activate paid
+services without their verified prerequisites.
