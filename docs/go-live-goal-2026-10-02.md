@@ -28,8 +28,9 @@ receipt has yet been observed.
 
 KPI: a current encrypted backup can be retained privately and verified, with no
 plaintext/customer records in logs and no private expiry beyond the source's
-expiry. The original encrypted public artifact remains public until its existing
-expiry; an additional private copy does not change that fact.
+expiry. The source workflow continues publishing encrypted public artifacts
+with its existing seven-day retention. An additional private copy does not
+change the access or expiry of either existing or future source artifacts.
 
 
 ## Evidence and remaining acceptance
@@ -97,6 +98,10 @@ The superseded patched diagnostic run was stopped and is not acceptance evidence
   observation. The observation step began 1 October at 22:48:33 UTC. Acceptance
   requires a complete successful 30-minute window and the final version fence;
   elapsed wall time or passing canaries alone do not establish that result.
+  The first attempt was rejected for `transient_connection_loss`; the existing
+  bounded policy began attempt 2 at 23:12:37 UTC. That interrupted first window
+  is not passing evidence. No duration, error classification or retry limit was
+  relaxed for this release.
 - No new migrations; all 25 validate locally and neither deployed environment
   had a pending migration. Staging's 66-request authenticated canary left zero
   residue and restored its exact session baseline. Staging readiness passed
