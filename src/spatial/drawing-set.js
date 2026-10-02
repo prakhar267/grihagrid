@@ -222,11 +222,14 @@ export function openingScheduleSheets(input) {
   }
   return sheets
 }
+// Keep the print container 1 mm shorter than the unchanged A3 SVG. Safari
+// otherwise rounds an exact-height sheet onto an extra blank page; all drawing
+// marks sit inside the 8 mm frame, so only outer white space is clipped.
 export function drawingSetHTML(input,options={}) {
   const model=toV2(input),sheets=model.floors.map(f=>floorPlanSheet(model,f.id,options)).concat(elevationSheet(model),stairSectionSheet(model),buildingSectionSheet(model,{...options,section:{...options.section,axis:'y'}}),buildingSectionSheet(model,{...options,section:{...options.section,axis:'x'}}),openingScheduleSheets(model))
   for(const floor of model.floors)for(const discipline of Object.keys(DISCIPLINES))if(coordinationSchedule(model,floor.id,discipline).length)sheets.push(coordinationPlanSheet(model,floor.id,discipline))
   sheets.push(...coordinationScheduleSheets(model))
-  return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${e(model.name)} — drawing set</title><style>body{margin:0;background:#e9e5dc;font-family:Arial,sans-serif}header{padding:20px}article{width:420mm;max-width:100%;margin:20px auto;background:white}svg{width:100%;height:auto;display:block}@page{size:A3 landscape;margin:0}@media print{header{display:none}body{background:white}article{margin:0;width:420mm;max-width:none;break-after:page;page-break-after:always}article:last-child{break-after:auto}svg{width:420mm;height:297mm}}</style><header><h1>${e(model.name)} — concept drawing set</h1><p>Revision ${model.revision}. Print at actual size on A3 landscape. All sheets derive from the same model. ${sheets.length} sheets.</p><button onclick="window.print()">Print drawing set</button></header>${sheets.map(s=>`<article>${s}</article>`).join('')}</html>`
+  return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${e(model.name)} — drawing set</title><style>body{margin:0;background:#e9e5dc;font-family:Arial,sans-serif}header{padding:20px}article{width:420mm;max-width:100%;margin:20px auto;background:white}svg{width:100%;height:auto;display:block}@page{size:A3 landscape;margin:0}@media print{header{display:none}body{background:white}article{margin:0;width:420mm;height:296mm;max-width:none;overflow:hidden;break-inside:avoid;break-after:page;page-break-after:always}article:last-child{break-after:auto;page-break-after:auto}svg{width:420mm;height:297mm}}</style><header><h1>${e(model.name)} — concept drawing set</h1><p>Revision ${model.revision}. Print at actual size on A3 landscape. All sheets derive from the same model. ${sheets.length} sheets.</p><button onclick="window.print()">Print drawing set</button></header>${sheets.map(s=>`<article>${s}</article>`).join('')}</html>`
 }
 
 export function coordinationPlanSheet(input,floorId,discipline='structure') {

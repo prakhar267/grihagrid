@@ -118,3 +118,12 @@ release is evidence, not closure of unresolved recovery, private-backup,
 monitoring, provider or device dependencies. Launch scope and domain/private
 support choices are being clarified; do not invent them or activate paid
 services without their verified prerequisites.
+
+On 2 October 2026 the user requested simplifying the crowded interface for both
+first-time homeowners and practising architects. Preserve the Architectural
+Monograph appearance and all working capabilities. Organize navigation around
+user tasks, give clear starting paths, use plain language, and disclose technical
+controls when needed. Homeowners should be able to describe, edit, explore and
+download a house without a tutorial; architects must retain direct access to
+drawings, coordination and exports. Preserve drafts, review gates, accessibility
+and cross-module model consistency while reducing visible clutter.

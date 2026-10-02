@@ -30,19 +30,19 @@ export default function FloorTools({ scene, floorId, selectedRoomId, onApply, on
   const sources = scene.floors.filter(f => f.id !== floorId && scene.rooms.some(r => r.floorId === f.id && !r.exterior))
   const lower = scene.floors.filter(f => f.elevation < floor.elevation).sort((a, b) => b.elevation - a.elevation)[0]
   const connected = lower && scene.stairs.some(s => s.fromFloorId === lower.id && s.toFloorId === floorId)
-  const [source, setSource] = useState(''), [adding, setAdding] = useState(false), [clearing, setClearing] = useState(false)
+  const [source, setSource] = useState(''), [adding, setAdding] = useState(false), [clearing, setClearing] = useState(false), [expanded,setExpanded] = useState(!rooms.length)
   const heading = useRef(null), addButton = useRef(null)
   const sourceId = sources.some(f => f.id === source) ? source : sources.find(f => f.id === lower?.id)?.id || sources[0]?.id || ''
   let reference
   try { reference = floorReference(scene, floorId) } catch { /* manual room entry remains available */ }
-  useEffect(() => { setAdding(false); setClearing(false); setSource('') }, [floorId])
+  useEffect(() => { setAdding(false); setClearing(false); setSource(''); setExpanded(!rooms.length) }, [floorId])
   function applyLayout(layout) {
     const result = onApply(current => populateFloor(current, floorId, { layout, sourceFloorId: sourceId }), `Rooms added to ${floor.name}. Review the plan, then connect stairs to the floor below.`)
     if (result) { onTool('select'); setAdding(false); window.requestAnimationFrame(() => heading.current?.focus()) }
   }
   function addRoom() { onTool('select'); setAdding(true); setClearing(false) }
   function cancelRoom() { setAdding(false); window.requestAnimationFrame(() => addButton.current?.focus()) }
-  return <section className="le-floor-tools" aria-label={`Plan ${floor.name}`}>
+  return <details className="le-floor-options" open={expanded} onToggle={e=>setExpanded(e.currentTarget.open)}><summary>{rooms.length ? `Manage rooms on ${floor.name}` : `Start a plan for ${floor.name}`} <span>{rooms.length ? `${rooms.length} rooms · add, edit or remove` : 'Choose a layout, copy a floor or add a room'}</span></summary><section className="le-floor-tools" aria-label={`Plan ${floor.name}`}>
     <div className="le-floor-intro"><div><span className="sp-eyebrow">{rooms.length ? 'YOUR FLOOR PLAN' : 'START THIS FLOOR'}</span><h3 ref={heading} tabIndex={-1}>{rooms.length ? `${floor.name} · ${rooms.length} ${rooms.length === 1 ? 'room' : 'rooms'}` : `${floor.name} is ready for a plan.`}</h3><p>{rooms.length ? 'Choose a room below to edit it, or add another space.' : 'The dashed outlines belong to other floors. Create your own rooms here, or start with a ready-made layout.'}</p></div><div className="le-floor-actions"><button ref={addButton} type="button" className="le-primary" onClick={addRoom} disabled={scene.rooms.length >= 48}>Add room</button><button type="button" onClick={() => { setAdding(false); onTool('room') }}>Draw room corners</button></div></div>
     {!rooms.length && <div className="le-floor-starters">
       {scene.walls.some(w => w.floorId === floorId) && <p className="le-loose-walls">This floor contains loose walls. <button type="button" onClick={() => onApply(current => clearFloor(current, floorId), 'Loose walls cleared. Choose a layout or add a room.')}>Remove loose walls before applying a layout</button></p>}
@@ -62,5 +62,5 @@ export default function FloorTools({ scene, floorId, selectedRoomId, onApply, on
     {lower && <div className="le-floor-connection"><div><h4>{connected ? `Connected to ${lower.name}` : `Connect to ${lower.name}`}</h4><p>{connected ? 'The staircase is included in the plan and 3D model.' : 'Add a staircase so walking and tours can reach this floor. A suggested straight run needs clear rooms and landing space on both levels.'}</p></div>{!connected && <div className="le-floor-actions"><button type="button" onClick={() => onApply(current => connectFloorBelow(current, floorId), 'A straight staircase connects these floors. Review the position and landing space in 2D and 3D.')}>Suggest connecting stairs</button><button type="button" onClick={() => onDrawStairs(lower.id, floorId)}>Draw stairs from below</button></div>}</div>}
     <div className="le-floor-clear">{clearing ? <><p>Remove all {rooms.length} rooms, walls, furniture and stairs connected to {floor.name}? Other floors keep their rooms. Undo can restore this edit.</p><button type="button" onClick={() => { if (onApply(current => clearFloor(current, floorId), `${floor.name} cleared. Choose another starting layout or add a room.`)) { setClearing(false); onTool('select'); window.requestAnimationFrame(() => heading.current?.focus()) } }}>Confirm clear floor</button><button type="button" onClick={() => setClearing(false)}>Keep floor plan</button></> : <button type="button" disabled={disabled || rooms.length === scene.rooms.length} onClick={() => setClearing(true)}>Clear floor to choose another layout</button>}</div>
     </>}
-  </section>
+  </section></details>
 }
