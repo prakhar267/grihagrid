@@ -54,6 +54,14 @@
 .hb-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin: 28px 0 16px; }
 .hb-next { display: flex; justify-content: flex-end; border-top: 1px solid var(--rule, #cdc5b8); padding: 22px 0; }
 .hb-error { border-left: 2px solid #a03522; background: #eee4d7; padding: 14px; font-size: 13px; line-height: 1.7; }
+.hb-next-action { border-left: 2px solid #a7532f; background: var(--paper-pale, #f8f5ee); padding: 24px; margin: 0 0 28px; }
+.hb-next-action h3 { margin: 10px 0; font-size: 30px; }
+.hb-next-action > p { font-size: 13px; line-height: 1.75; max-width: 72ch; margin: 0; }
+.hb-next-action .hb-actions, .hb-error .hb-actions { margin: 18px 0 0; }
+.hb-next-action .hb-caption { margin-top: 16px; font-size: 12px; }
+.hb-findings .sp-text-button { margin-top: 8px; padding: 8px 0; font: inherit; font-size: 12px; display: inline-flex; align-items: center; gap: 8px; color: #a7532f; }
+.hb-findings .sp-text-button svg { width: 16px; height: 16px; }
+.house-brief [tabindex='-1']:not(.hb-step-heading):focus { outline: 2px solid #a7532f; outline-offset: 5px; }
 .sp-workspace--brief { display: block !important; padding: 0 4%; }
 .sp-brief-page { max-width: 1020px; margin: 0 auto 40px; }
 .hb-save-study { border: 1px solid var(--rule, #cdc5b8); padding: 24px; margin-bottom: 24px; }
@@ -73,6 +81,8 @@
   .hb-metrics strong { font-size: 28px; }
 }
 @media (max-width: 480px) {
+  .hb-next-action { padding: 20px 16px; }
+  .hb-next-action h3 { font-size: 27px; }
   .hb-grid, .hb-directions { grid-template-columns: 1fr; }
   .hb-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .hb-features { grid-template-columns: 1fr; }
@@ -81,6 +91,7 @@
   .hb-actions > button { width: 100%; justify-content: center; }
 }
 @media print {
+  .hb-next-action .hb-actions, .hb-findings button { display: none; }
   .hb-steps, .hb-actions, .hb-next, .hb-add, .hb-remove, .hb-heading > label { display: none; }
   .hb-findings article, .hb-room { break-inside: avoid; }
   .hb-table-wrap { overflow: visible; }
