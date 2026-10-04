@@ -374,7 +374,10 @@ export default function SpatialWorkspace({ projectId, onNavigate, logoutConfirme
     setTab(destination);setPlaying(false);
     // Return to the labelled room when leaving a tour. Otherwise its last pose
     // can show a bathroom while the exploration heading still says bedroom.
-    if(destination==='explore'&&mode==='tour')setMode('room');
+    if(destination==='explore'&&mode==='tour'){
+      const target=roomOnFloor(model,activeFloor.id,selected);
+      setSelected(target?.id||null);setMode(target?'room':'overview');
+    }
     if(view)setPlanView(view);
     if(draw)setImporting(true);
     if(focus)requestAnimationFrame(()=>document.getElementById(destination==='start'?'sp-start-heading':'sp-task-heading')?.focus());
@@ -390,8 +393,8 @@ export default function SpatialWorkspace({ projectId, onNavigate, logoutConfirme
   function exploreRoom(id) {
     const target=model.rooms.find(room=>room.id===id);
     if(!target)return;
-    setSelected(id);setActiveFloorId(target.floorId);setSectionEnabled(false);setMode('room');
     goToTask('explore');
+    setSelected(id);setActiveFloorId(target.floorId);setSectionEnabled(false);setMode('room');
   }
   const exportCameraLibrary = () => download(new Blob([JSON.stringify({kind:'grihagrid-camera-library',viewpoints:views},null,2)],{type:'application/json'}),'grihagrid-camera-library.json');
   async function exportGLB() {setBusy('glb');try{const blob=await viewer.current?.exportGLB(currentViewpoints);if(!blob)throw new Error('The 3D model is still loading. Try Download GLB again in a moment, or open Explore in 3D to check this device’s rendering support.');download(blob,'grihagrid-house.glb');setMessage(`The complete scene was exported with room identifiers and ${currentViewpoints.length} saved camera${currentViewpoints.length===1?'':'s'}.`);}catch(e){setError(e.message);}finally{setBusy('');}}
