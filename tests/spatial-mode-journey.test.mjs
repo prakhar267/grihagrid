@@ -92,7 +92,8 @@ test('four-floor tours have clear routes and scrubbing resolves the actual camer
   const tour=generateTour(model,{duration:40})
   assert.equal(validateTour(model,tour).valid,true)
   for(const floor of model.floors){
-    const shot=tour.shots.find(s=>s.floorId===floor.id&&s.kind==='hold')
+    const shot=tour.shots.find(s=>s.floorId===floor.id&&['hold','reveal','orbit'].includes(s.kind))
+    assert.ok(shot, `No interior composition on ${floor.id}`)
     const pose=sampleTour(tour,shot.startTime+shot.duration/2)
     assert.equal(cameraFloor(model,pose.position,tour.eyeHeight),floor.id)
     assert.equal(isWalkable(model,pose.position),true)

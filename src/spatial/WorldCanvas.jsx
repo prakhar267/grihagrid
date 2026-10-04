@@ -201,11 +201,11 @@ function Environment({ model, mode, section, selectedRoomId, hoveredRoomId, onRo
     <color attach="background" args={['#e7e0d3']} />
     <fog attach="fog" args={['#e7e0d3', 42, 95]} />
     <ambientLight intensity={0.3} />
-    <hemisphereLight args={['#f6f4ed', '#a99c87', 1.1]} />
-    <directionalLight position={[-8, 17, 8]} intensity={3.4} color="#fff0d9" castShadow={quality !== 'low'}
+    <hemisphereLight args={['#f6f5f1', '#d2cbbf', 1.25]} />
+    <directionalLight position={[-8, 17, 8]} intensity={2.8} color="#fff5e6" castShadow={quality !== 'low'}
       shadow-mapSize-width={quality === 'high' ? 2048 : 1024} shadow-mapSize-height={quality === 'high' ? 2048 : 1024}
       shadow-camera-left={-24} shadow-camera-right={24} shadow-camera-top={24} shadow-camera-bottom={-24}
-      shadow-camera-near={0.5} shadow-camera-far={65} shadow-bias={-0.00015} shadow-normalBias={0.025} shadow-radius={2.2} />
+      shadow-camera-near={0.5} shadow-camera-far={65} shadow-bias={-0.00015} shadow-normalBias={0.015} shadow-radius={2.2} />
     <directionalLight position={[13, 8, -14]} intensity={0.65} color="#dce8f5" />
     <mesh name="Presentation_Backdrop" rotation={[-Math.PI / 2, 0, 0]} position={[0, backdropElevation, 0]} receiveShadow>
       <planeGeometry args={[200, 200]} /><meshStandardMaterial color="#ded8c6" roughness={1} />

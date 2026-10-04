@@ -178,8 +178,10 @@ export function assessHouseBrief(b, model = null) {
     if (room) used.add(room.id);
     const actualArea = room ? roomArea(room) : null, direction = room ? roomDirection(room, model, b.northDegrees) : 'unknown';
     const areaMet = room && actualArea + .05 >= requested.areaM2;
+    const oversized = room && actualArea - requested.areaM2 > Math.max(1.5, requested.areaM2 * .2);
+    if (oversized) add(`model-area-${requested.id}`, 'review', `${requested.name}: larger than your target`, `${actualArea.toFixed(1)} m² in the model versus ${requested.areaM2} m² requested. Review the dimensions and budget; starter minimum sides and wall allowances can increase small targets.`);
     const directionMet = b.vastu === 'none' || requested.direction === 'any' || direction === requested.direction;
-    checks.push({ id: requested.id, name: requested.name, floor: FLOOR_NAMES[requested.floor], roomId: room?.id || null, targetArea: requested.areaM2, actualArea, direction, wantedDirection: requested.direction,
+    checks.push({ id: requested.id, name: requested.name, floor: FLOOR_NAMES[requested.floor], roomId: room?.id || null, targetArea: requested.areaM2, actualArea, direction, wantedDirection: requested.direction, areaStatus: !room ? 'missing' : !areaMet ? 'undersized' : oversized ? 'larger than target' : 'within target allowance',
       status: !room ? 'missing' : room.name.trim().toLowerCase() !== requested.name.trim().toLowerCase() ? 'name differs' : !areaMet ? 'undersized' : !directionMet ? (direction === 'unknown' ? 'direction unknown' : 'direction mismatch') : 'matched', priority: requested.priority });
   }
   if (model) {
