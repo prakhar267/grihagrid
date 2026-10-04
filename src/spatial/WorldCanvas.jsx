@@ -267,7 +267,7 @@ function CameraDirector({ model, mode, section, selectedRoomId, tour, tourPlayin
   useEffect(() => {
     const controller = {
       reset: () => jumpTo(overviewView(live.current.model)),
-      focusRoom: id => jumpTo(getRoomView(live.current.model, id, live.current.eyeHeight)),
+      focusRoom: id => { manualView.current = null; jumpTo(getRoomView(live.current.model, id, live.current.eyeHeight)) },
       setView: view => { manualView.current = { view, fromMode: live.current.mode }; jumpTo(view) },
       getView: () => {
         const direction = new THREE.Vector3(); camera.getWorldDirection(direction)
@@ -324,7 +324,7 @@ function CameraDirector({ model, mode, section, selectedRoomId, tour, tourPlayin
   }, [model])
 
   useEffect(() => {
-    if (mode === 'room' && manualView.current && manualView.current.fromMode !== 'room') { jumpTo(manualView.current.view); manualView.current = null; return }
+    if (mode === 'room' && manualView.current && (manualView.current.fromMode !== 'room' || manualView.current.view.roomId === selectedRoomId)) { jumpTo(manualView.current.view); manualView.current = null; return }
     manualView.current = null
     if (mode === 'overview') jumpTo(overviewView(model), false)
     else if (mode === 'room' || mode === 'walk') {

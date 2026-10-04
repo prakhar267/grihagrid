@@ -1,4 +1,11 @@
 import { floorAtPosition } from './navigation.js'
+import { pointInPolygon } from './model.js'
+
+export function roomAtCamera(model, position) {
+  if (!Array.isArray(position) || position.length !== 3 || !position.every(Number.isFinite)) return null
+  const floor = model.floors.find(f => position[2] >= f.elevation && position[2] < f.elevation + f.height)
+  return floor ? model.rooms.find(r => r.floorId === floor.id && pointInPolygon(position, r.polygon)) || null : null
+}
 
 export function roomOnFloor(model, floorId, selectedId) {
   const rooms = model.rooms.filter(room => room.floorId === floorId)
