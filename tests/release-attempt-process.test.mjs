@@ -46,7 +46,7 @@ async function fixture(mode, run) {
   await writeFile(join(scripts, 'smoke.mjs'), `import { appendFile } from 'node:fs/promises';
 export async function runSmoke(origin, options) {
   for (const key of ${JSON.stringify(secrets)}) if (Object.hasOwn(process.env,key)) throw new Error('fixture monitor inherited credentials');
-  await appendFile(process.env.PID_LOG,JSON.stringify({kind:'monitor',pid:process.pid})+'\\n');
+  await appendFile(process.env.PID_LOG,JSON.stringify({kind:'monitor',pid:process.pid,startedAt:process.hrtime.bigint().toString()})+'\\n');
   if(process.env.FIXTURE_MODE.includes('public')) throw new Error('synthetic confirmed public failure');
   if(process.env.FIXTURE_MODE==='cancel') await new Promise(resolve=>setTimeout(resolve,20000));
   return {checks:[{latencyMs:1,attempts:1}]};
@@ -150,10 +150,19 @@ test('unexpected monitor stderr prevents retry while a confirmed public regressi
   });
 });
 
-test('TERM-resistant descendants are killed and reaped within the five-second outer cleanup bound', async () => {
+test('TERM-resistant descendants are killed and reaped within the five-second outer cleanup bound', async t => {
   await fixture('stubborn', async state => {
-    const started = performance.now(), result = await state.completion;
-    assert.ok(performance.now() - started < 4500);
+    // The outer supervisor's cleanup budget starts after observation is running,
+    // not while macOS is starting the detached groups and fixture interpreters.
+    // Keep startup independently bounded, just as the cancellation case below.
+    const starting = performance.now();
+    const monitor = await waitFor(async () => (await pids(state.directory)).find(record => record.kind === 'monitor'));
+    const startupMs = performance.now() - starting, result = await state.completion;
+    // Measure from the child's monotonic timestamp so delayed polling cannot
+    // hide a slow observation or cleanup after the monitor has actually begun.
+    const cleanupMs = Number(process.hrtime.bigint() - BigInt(monitor.startedAt)) / 1e6;
+    t.diagnostic(`Fixture startup ${Math.round(startupMs)} ms; observation completion and cleanup ${Math.round(cleanupMs)} ms`);
+    assert.ok(cleanupMs < 4500, `Observation completion and cleanup took ${Math.round(cleanupMs)} ms`);
     const health = await assertClosed(result, state);
     assert.equal(result.code, 1); assert.equal(health.tailsStoppedByOperator, false);
     assert.equal(health.invocationProcessExit, 137); assert.equal(health.serverProcessExit, 137);

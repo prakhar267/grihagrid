@@ -138,3 +138,27 @@
   .sp-working-heading .sp-heading { padding:0 0 14px; }
   .sp-workspace [hidden],.sp-studio [hidden] { display:none!important; }
 }
+
+/* Keep the selected room and its next action visible beside the 3D view. */
+.sp-room-context { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:14px 24px; padding:0 0 18px; }
+.sp-room-context>div { min-width:0; }
+.sp-room-context h3 { font:500 27px/1.2 var(--serif); margin:5px 0; overflow-wrap:anywhere; }
+.sp-room-context p { font-size:12px; color:var(--muted); margin:0; }
+.sp-room-context-actions { display:flex; align-items:center; flex-wrap:wrap; gap:8px 20px; }
+.sp-studio .sp-room-context-actions button { min-height:44px; }
+.le-room-floor { display:block; font-size:11px; color:var(--muted); margin-bottom:6px; }
+.le-inspector h3 { overflow-wrap:anywhere; }
+.le-inspector .le-room-facts { font-size:12px; margin:0 0 18px; }
+.le-room-boundary { margin:14px 0; border-block:1px solid var(--rule); padding:0 0 4px; }
+.le-room-boundary summary { cursor:pointer; min-height:44px; padding:12px 0; font-size:12px; }
+.le-room-next { margin-top:16px; }
+.le-room-next>button { width:100%; }
+.le-room-next p { line-height:1.65; }
+@media(max-width:760px) {
+  .sp-room-context { padding-bottom:16px; gap:12px; }
+  .sp-room-context h3 { font-size:25px; }
+  .sp-room-context-actions { width:100%; gap:8px 18px; }
+}
+@media print { .sp-room-context-actions { display:none!important; } }
+
+html:has(.sp-studio[data-reduced-motion="true"]) { scroll-behavior:auto; }
