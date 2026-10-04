@@ -127,3 +127,10 @@ controls when needed. Homeowners should be able to describe, edit, explore and
 download a house without a tutorial; architects must retain direct access to
 drawings, coordination and exports. Preserve drafts, review gates, accessibility
 and cross-module model consistency while reducing visible clutter.
+
+On 5 October 2026 the user rejected the generated plans and camera presentation
+as too cartoon-like and asked to check them against their actual house brief.
+Prioritize truthful room sizing, visible unmet requirements, complete circulation,
+recognizable shared furnishings, monochrome measured drafting and well-framed
+interior cameras. Do not conceal layout errors with presentation changes or
+invent north, local limits, structural specifications or service designs.

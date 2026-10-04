@@ -73,5 +73,5 @@ test('kitchen fittings follow the long axis of either counter orientation',()=>{
 })
 test('furnished room cameras frame the room from a clear position on its own floor',()=>{
   const model=furnishRooms(createMultiFloorDemo()).model
-  for(const room of model.rooms.filter(r=>model.furniture.some(f=>f.roomId===r.id))){const view=roomViewV2(model,room.id);assert.equal(view.fov,72);assert.equal(view.floorId,room.floorId);assert.ok(isWalkableV2(model,view.position,220,1650));assert.ok(Math.hypot(view.target[0]-view.position[0],view.target[1]-view.position[1])>500)}
+  for(const room of model.rooms.filter(r=>model.furniture.some(f=>f.roomId===r.id))){const view=roomViewV2(model,room.id);assert.ok(view.fov>=50&&view.fov<=65);assert.equal(view.floorId,room.floorId);assert.ok(isWalkableV2(model,view.position,220,1650));assert.ok(Math.hypot(view.target[0]-view.position[0],view.target[1]-view.position[1])>500)}
 })

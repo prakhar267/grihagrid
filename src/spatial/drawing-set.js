@@ -6,7 +6,7 @@ export const escapeDrawingText = value => String(value ?? '').replace(/[&<>"']/g
 const e = escapeDrawingText, n = value => Number(value.toFixed(3))
 const bounds = points => ({x0:Math.min(...points.map(p=>p[0])),x1:Math.max(...points.map(p=>p[0])),y0:Math.min(...points.map(p=>p[1])),y1:Math.max(...points.map(p=>p[1]))})
 const line = (x1,y1,x2,y2,extra='') => `<line x1="${n(x1)}" y1="${n(y1)}" x2="${n(x2)}" y2="${n(y2)}" ${extra}/>`
-const text = (x,y,value,size=2.7,extra='') => `<text x="${n(x)}" y="${n(y)}" font-size="${size}" ${extra}>${e(value)}</text>`
+const text = (x,y,value,size=2.7,extra='') => `<text x="${n(x)}" y="${n(y)}" font-size="${size}" ${/\bstroke=/.test(extra)?'':'stroke="none"'} ${extra}>${e(value)}</text>`
 // Clip the diagonal strokes numerically. Browser PDF printers can rasterize an
 // SVG pattern once per cut surface, making an otherwise vector set enormous.
 export function sectionHatchSegments(x,y,width,height) {
@@ -22,6 +22,9 @@ export function dimensionLabel(mm, unit='mm') {
   if (unit==='m') return `${(mm/1000).toFixed(2)} m`
   if (unit==='ft') { const inches=Math.round(mm/25.4); return `${Math.floor(inches/12)}′ ${inches%12}″` }
   return String(Math.round(mm))
+}
+export function drawingAreaLabel(areaMm2, unit='mm') {
+  return unit === 'ft' ? `${(areaMm2 / 92903.04).toFixed(1)} sq ft` : `${(areaMm2 / 1e6).toFixed(2)} m²`
 }
 export function openingSchedule(input, floorId) {
   const model=toV2(input), rows=[]
@@ -58,10 +61,10 @@ export function furnitureSymbol(item) {
   else if(item.kind==='plant'||item.kind==='tree')body=ellipse(0,0,w*.45,d*.45)+line(-w*.3,-d*.3,w*.3,d*.3)+line(-w*.3,d*.3,w*.3,-d*.3)
   else if(item.kind==='wardrobe'||item.kind==='shelf') {for(let i=1;i<4;i++)body+=line(-w/2+i*w/4,-d/2,-w/2+i*w/4,d/2)}
   else if(item.kind==='puja-unit')body+=rect(-w*.4,-d*.3,w*.8,d*.6)+ellipse(0,0,70,70)
-  return `<g fill="#faf8f2" stroke="#6f6b60" stroke-width="${stroke}" stroke-linejoin="round">${body}</g>`
+  return `<g fill="#ffffff" stroke="#555d62" stroke-width="${stroke}" stroke-linejoin="round">${body}</g>`
 }
 function frame(model,title,number,scale,content,notes='') {
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="420mm" height="297mm" viewBox="0 0 420 297" role="img" aria-label="${e(title)}"><title>${e(model.name)} — ${e(title)}</title><rect width="420" height="297" fill="#fffefb"/><g font-family="Arial, sans-serif" fill="#26251f" stroke="#68685e" stroke-width=".18"><rect x="8" y="8" width="404" height="281" fill="none"/>${content}<path d="M8 266H412 M285 266V289 M367 266V289" fill="none"/>${text(14,273,'GRIHAGRID  /  ARCHITECTURAL STUDY',2.6)}${text(14,280,model.name,4.2)}${text(14,285,notes||'Concept geometry only. Structure, services and statutory compliance unverified.',2.3)}${text(291,274,title,3.2)}${text(291,281,`Rev ${model.revision} · ${scale}`,2.6)}${text(291,286,'A3 / 420 × 297 mm · print at 100%',2.3)}${text(374,277,number,5)}${text(374,285,'CONCEPT',2.7)}</g></svg>`
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="420mm" height="297mm" viewBox="0 0 420 297" role="img" aria-label="${e(title)}"><title>${e(model.name)} — ${e(title)}</title><rect width="420" height="297" fill="#ffffff"/><g font-family="Arial, sans-serif" fill="#26251f" stroke="#68685e" stroke-width=".18"><rect x="8" y="8" width="404" height="281" fill="none"/>${content}<path d="M8 266H412 M285 266V289 M367 266V289" fill="none"/>${text(14,273,'GRIHAGRID  /  ARCHITECTURAL STUDY',2.6)}${text(14,280,model.name,4.2)}${text(14,285,notes||'Concept geometry only. Structure, services and statutory compliance unverified.',2.3)}${text(291,274,title,3.2)}${text(291,281,`Rev ${model.revision} · ${scale}`,2.6)}${text(291,286,'A3 / 420 × 297 mm · print at 100%',2.3)}${text(374,277,number,5)}${text(374,285,'CONCEPT',2.7)}</g></svg>`
 }
 export function floorPlanSheet(input,floorId,{unit='mm',northDegrees=null,section={axis:'y',percent:50}}={}) {
   const model=toV2(input),floor=model.floors.find(f=>f.id===floorId)||model.floors[0],rooms=model.rooms.filter(r=>r.floorId===floor.id),walls=model.walls.filter(w=>w.floorId===floor.id)
@@ -69,24 +72,24 @@ export function floorPlanSheet(input,floorId,{unit='mm',northDegrees=null,sectio
   const b=bounds(rooms.flatMap(r=>r.polygon)),scale=[50,75,100,125,150,200,250,300,400,500].find(s=>(b.x1-b.x0)/s<=244&&(b.y1-b.y0)/s<=201)||1000
   const ox=36+(244-(b.x1-b.x0)/scale)/2,oy=35+(201-(b.y1-b.y0)/scale)/2
   const xy=p=>[ox+(p[0]-b.x0)/scale,oy+(b.y1-p[1])/scale],poly=points=>points.map(p=>xy(p).map(n).join(',')).join(' ')
-  let content=text(20,19,`${floor.name.toUpperCase()} / FURNITURE & DIMENSION PLAN`,3.6)+text(20,25,`FFL +${(floor.elevation/1000).toFixed(3)} m · ${floor.height} mm floor height · Dimensions: ${unit==='ft'?'feet / inches':unit}`,2.6)
-  for(const room of rooms)content+=`<polygon points="${poly(room.polygon)}" fill="#f4f1e9" stroke="none"/>`
+  let content=text(20,19,`${floor.name.toUpperCase()} / GENERAL ARRANGEMENT`,3.6)+text(20,25,`FFL +${(floor.elevation/1000).toFixed(3)} m · ${floor.height} mm floor height · Dimensions: ${unit==='ft'?'feet / inches':unit}`,2.6)
+  for(const room of rooms)content+=`<polygon points="${poly(room.polygon)}" fill="#ffffff" stroke="none"/>`
   for(const item of model.furniture.filter(f=>f.floorId===floor.id)) {const p=xy(item.position);content+=`<g transform="translate(${p}) scale(${1/scale},${-1/scale}) rotate(${item.rotation*180/Math.PI})">${furnitureSymbol(item)}</g>`}
   const schedule=openingSchedule(model,floor.id)
   for(const wall of walls) {
     const a=xy(wall.start),z=xy(wall.end),len=Math.hypot(wall.end[0]-wall.start[0],wall.end[1]-wall.start[1]),angle=Math.atan2(z[1]-a[1],z[0]-a[0])*180/Math.PI
-    content+=line(...a,...z,`stroke="#34372f" stroke-width="${wall.thickness/scale}"`)
+    content+=line(...a,...z,`stroke="#20272b" stroke-width="${wall.thickness/scale}"`)
     for(const opening of wall.openings) {
       const p=[a[0]+(z[0]-a[0])*opening.offset/len,a[1]+(z[1]-a[1])*opening.offset/len],w=opening.width/scale,t=wall.thickness/scale,tag=schedule.find(r=>r.id===opening.id&&r.wallId===wall.id)?.tag
-      let shape=`<rect x="0" y="${-t/2-.08}" width="${w}" height="${t+.16}" fill="#fffefb" stroke="none"/>`
-      if(opening.kind==='window')shape+=`<rect x="0" y="${-t/2}" width="${w}" height="${t}" fill="#dfebe8"/>`+line(0,0,w,0)+line(w/2,-t/2,w/2,t/2)
+      let shape=`<rect x="0" y="${-t/2-.08}" width="${w}" height="${t+.16}" fill="#ffffff" stroke="none"/>`
+      if(opening.kind==='window')shape+=`<rect x="0" y="${-t/2}" width="${w}" height="${t}" fill="#eff2f3"/>`+line(0,-t*.22,w,-t*.22)+line(0,t*.22,w,t*.22)+line(w/2,-t/2,w/2,t/2)
       else {
         const leaf=doorLeafPrimitive(wall,opening),h=xy(leaf.hingePosition),closed=xy(leaf.closedEnd),opened=xy(leaf.openEnd),end=opening.open?opened:closed,radius=(opening.width-70)/scale,sweep=(closed[0]-h[0])*(opened[1]-h[1])-(closed[1]-h[1])*(opened[0]-h[0])>0?1:0
-        content+=line(...h,...end)+`<path d="M${closed} A${radius} ${radius} 0 0 ${sweep} ${opened}" fill="none" stroke-dasharray=".5 .5"/>`
+        content+=line(...h,...end)+`<path d="M${closed} A${radius} ${radius} 0 0 ${sweep} ${opened}" fill="none" stroke="#6c767e" stroke-width=".16"/>`
       }
       content+=`<g transform="translate(${p}) rotate(${angle})">${shape}</g>`
       const middle=[p[0]+Math.cos(angle*Math.PI/180)*w/2,p[1]+Math.sin(angle*Math.PI/180)*w/2]
-      content+=`<rect x="${middle[0]-4.2}" y="${middle[1]-1.4}" width="8.4" height="2.8" fill="#fffefb" stroke="#b8bbae" stroke-width=".12"/>`+text(middle[0],middle[1]+.8,tag,2,'text-anchor="middle" stroke="none"')
+      content+=`<rect x="${middle[0]-4.2}" y="${middle[1]-1.4}" width="8.4" height="2.8" fill="#ffffff" stroke="#b8bbae" stroke-width=".12"/>`+text(middle[0],middle[1]+.8,tag,2,'text-anchor="middle" stroke="none"')
     }
   }
   for(const stair of model.stairs.filter(s=>s.fromFloorId===floor.id||s.toFloorId===floor.id)) {
@@ -95,26 +98,26 @@ export function floorPlanSheet(input,floorId,{unit='mm',northDegrees=null,sectio
     for(let i=1;i<stair.steps;i++)content+=line(a[0]+dx*i/stair.steps-nx,a[1]+dy*i/stair.steps-ny,a[0]+dx*i/stair.steps+nx,a[1]+dy*i/stair.steps+ny)
     const up=stair.fromFloorId===floor.id,from=up?a:z,to=up?z:a,ux=(to[0]-from[0])/len,uy=(to[1]-from[1])/len,tip=[to[0]-ux*2,to[1]-uy*2]
     content+=line(from[0]+ux*2,from[1]+uy*2,...tip,'stroke-width=".35"')+`<path d="M${tip[0]-ux*2-uy} ${tip[1]-uy*2+ux} L${tip} L${tip[0]-ux*2+uy} ${tip[1]-uy*2-ux}" fill="none"/>`
-    content+=text((a[0]+z[0])/2+3,(a[1]+z[1])/2,up?'UP':'DN',2.5,'stroke="#fffefb" stroke-width="1" paint-order="stroke"')
+    content+=text((a[0]+z[0])/2+3,(a[1]+z[1])/2,up?'UP':'DN',2.5,'stroke="#ffffff" stroke-width="1" paint-order="stroke"')
   }
   rooms.forEach((room,i)=>{
     const c=xy(polygonCenter(room.polygon)),r=bounds(room.polygon),words=room.name.split(' '),lines=[''];for(const word of words){if((lines.at(-1)+' '+word).trim().length>22)lines.push(word);else lines[lines.length-1]=(lines.at(-1)+' '+word).trim()}
     const labels=lines.slice(0,3),height=labels.length*3.4+7
-    content+=`<rect x="${c[0]-18}" y="${c[1]-height/2}" width="36" height="${height}" rx="1" fill="#fffefb" opacity=".93" stroke="none"/>`
-    labels.forEach((label,j)=>{content+=text(c[0],c[1]-height/2+3.1+j*3.4,label,2.8,'text-anchor="middle" stroke="none"')})
-    content+=text(c[0],c[1]+height/2-3.8,`${dimensionLabel(r.x1-r.x0,unit)} × ${dimensionLabel(r.y1-r.y0,unit)}`,2.3,'text-anchor="middle" stroke="none"')+text(c[0],c[1]+height/2-.9,`R${String(i+1).padStart(2,'0')} · ${(polygonArea(room.polygon)/1e6).toFixed(2)} m²`,2.3,'text-anchor="middle" stroke="none"')
+    content+=`<rect x="${c[0]-18}" y="${c[1]-height/2}" width="36" height="${height}" rx="1" fill="#ffffff" opacity=".93" stroke="none"/>`
+    labels.forEach((label,j)=>{content+=text(c[0],c[1]-height/2+3.1+j*3.4,label.toUpperCase(),2.6,'text-anchor="middle" stroke="none"')})
+    content+=text(c[0],c[1]+height/2-3.8,`${dimensionLabel(r.x1-r.x0,unit)} × ${dimensionLabel(r.y1-r.y0,unit)}`,2.3,'text-anchor="middle" stroke="none"')+text(c[0],c[1]+height/2-.9,`R${String(i+1).padStart(2,'0')} · ${drawingAreaLabel(polygonArea(room.polygon),unit)}`,2.3,'text-anchor="middle" stroke="none"')
   })
   const cut=sectionPlane(model,section),start=[...cut.min],end=[...cut.max]
   start[cut.axis]=cut.coordinate;end[cut.axis]=cut.coordinate
   const ca=xy(start),cb=xy(end)
   content+=line(...ca,...cb,'stroke="#a7532f" stroke-width=".45" stroke-dasharray="3 1 .5 1"')
-  for(const p of [ca,cb])content+=`<circle cx="${n(p[0])}" cy="${n(p[1])}" r="3.6" fill="#fffefb" stroke="#a7532f"/>`+text(p[0],p[1]+.8,cut.name.slice(0,1),2.7,'text-anchor="middle" stroke="none"')
+  for(const p of [ca,cb])content+=`<circle cx="${n(p[0])}" cy="${n(p[1])}" r="3.6" fill="#ffffff" stroke="#a7532f"/>`+text(p[0],p[1]+.8,cut.name.slice(0,1),2.7,'text-anchor="middle" stroke="none"')
   content+=text(295,229,`Section ${cut.name} · look ${cut.direction} · see A-${cut.axis===1?'12':'13'}`,2.4)
   function dim(a,z,offset,vertical=false) {
     const p=xy(a),q=xy(z),value=Math.hypot(z[0]-a[0],z[1]-a[1]),mid=[(p[0]+q[0])/2,(p[1]+q[1])/2]
     if(value<1)return ''
-    if(vertical)return line(offset,p[1],offset,q[1])+line(p[0]-1,p[1],offset-1,p[1])+line(q[0]-1,q[1],offset-1,q[1])+line(offset-1,p[1]+1,offset+1,p[1]-1)+line(offset-1,q[1]+1,offset+1,q[1]-1)+text(offset-1,mid[1],dimensionLabel(value,unit),2.4,`text-anchor="middle" transform="rotate(-90 ${offset-1} ${mid[1]})" stroke="#fffefb" stroke-width="1" paint-order="stroke"`)
-    return line(p[0],offset,q[0],offset)+line(p[0],p[1]+1,p[0],offset+1)+line(q[0],q[1]+1,q[0],offset+1)+line(p[0]-1,offset+1,p[0]+1,offset-1)+line(q[0]-1,offset+1,q[0]+1,offset-1)+text(mid[0],offset-1,dimensionLabel(value,unit),2.4,'text-anchor="middle" stroke="#fffefb" stroke-width="1" paint-order="stroke"')
+    if(vertical)return line(offset,p[1],offset,q[1])+line(p[0]-1,p[1],offset-1,p[1])+line(q[0]-1,q[1],offset-1,q[1])+line(offset-1,p[1]+1,offset+1,p[1]-1)+line(offset-1,q[1]+1,offset+1,q[1]-1)+text(offset-1,mid[1],dimensionLabel(value,unit),2.4,`text-anchor="middle" transform="rotate(-90 ${offset-1} ${mid[1]})" stroke="#ffffff" stroke-width="1" paint-order="stroke"`)
+    return line(p[0],offset,q[0],offset)+line(p[0],p[1]+1,p[0],offset+1)+line(q[0],q[1]+1,q[0],offset+1)+line(p[0]-1,offset+1,p[0]+1,offset-1)+line(q[0]-1,offset+1,q[0]+1,offset-1)+text(mid[0],offset-1,dimensionLabel(value,unit),2.4,'text-anchor="middle" stroke="#ffffff" stroke-width="1" paint-order="stroke"')
   }
   const xs=[...new Set(rooms.flatMap(r=>r.polygon.map(p=>p[0])))].sort((a,b)=>a-b),ys=[...new Set(rooms.flatMap(r=>r.polygon.map(p=>p[1])))].sort((a,b)=>a-b)
   content+=dim([b.x0,b.y0],[b.x1,b.y0],oy+(b.y1-b.y0)/scale+16)+dim([b.x0,b.y0],[b.x0,b.y1],ox-17,true)
@@ -124,12 +127,12 @@ export function floorPlanSheet(input,floorId,{unit='mm',northDegrees=null,sectio
   schedule.slice(0,18).forEach((o,i)=>{content+=text(295,52+i*4,`${o.tag}    ${o.width} × ${o.height}    ${o.sill||0}`,2.5)})
   let yy=59+Math.min(18,schedule.length)*4
   if(schedule.length>18)content+=text(295,yy-3,'More openings: see complete downloaded set.',2.2)
-  content+=text(295,yy,'ROOM AREAS',3.1);yy+=5
-  rooms.slice(0,10).forEach((r,i)=>{content+=text(295,yy,`R${String(i+1).padStart(2,'0')}  ${r.name.slice(0,26)}`,2.5)+text(404,yy,`${(polygonArea(r.polygon)/1e6).toFixed(2)} m²`,2.5,'text-anchor="end"');yy+=4})
+  content+=line(295,yy-4,404,yy-4,'stroke-width=".3"')+text(295,yy,unit==='ft'?'ROOM SCHEDULE / SQ FT':'ROOM SCHEDULE / M²',3.1);yy+=5
+  rooms.slice(0,10).forEach((r,i)=>{content+=text(295,yy,`R${String(i+1).padStart(2,'0')}  ${r.name.slice(0,26)}`,2.5)+text(404,yy,drawingAreaLabel(polygonArea(r.polygon),unit),2.5,'text-anchor="end"');yy+=4})
   yy+=5;content+=text(295,yy,'STAIRS / FLOOR CONNECTIONS',2.8);yy+=5
   model.stairs.filter(s=>s.fromFloorId===floor.id||s.toFloorId===floor.id).slice(0,2).forEach(s=>{const rise=model.floors.find(f=>f.id===s.toFloorId).elevation-model.floors.find(f=>f.id===s.fromFloorId).elevation,run=Math.hypot(s.end[0]-s.start[0],s.end[1]-s.start[1]);content+=text(295,yy,`${s.steps} rises @ ${(rise/s.steps).toFixed(1)} · tread ${(run/s.steps).toFixed(0)}`,2.4)+text(295,yy+4,`Width ${s.width} · rise ${rise} mm`,2.4);yy+=11})
   const angle=(northDegrees??0)*Math.PI/180,ax=399,ay=23
-  content+=line(ax,ay,ax+Math.sin(angle)*8,ay-Math.cos(angle)*8,'stroke-width=".5"')+text(390,15,northDegrees===null?'N ?':`N ${northDegrees}°`,2.6)
+  content+=northDegrees===null?text(366,19,'NORTH UNCONFIRMED',2.5):line(ax,ay,ax+Math.sin(angle)*8,ay-Math.cos(angle)*8,'stroke-width=".5"')+text(390,15,`N ${northDegrees}°`,2.6)
   content+=line(295,234,295+2000/scale,234,'stroke-width="1"')+line(295,232.5,295,235.5)+line(295+2000/scale,232.5,295+2000/scale,235.5)+text(295,240,'0',2.4)+text(295+2000/scale,240,'2 m',2.4,'text-anchor="end"')
   content+=text(295,247,'Dimensions follow room boundary axes.',2.3)+text(295,251,'Room sizes are bounding extents; areas',2.3)+text(295,255,'follow polygons. Check clear sizes on site.',2.3)
   return frame(model,`${floor.name} plan`,`A-${String(model.floors.indexOf(floor)+1).padStart(2,'0')}`,`1:${scale}`,content)
@@ -180,7 +183,7 @@ export function buildingSectionSheet(input,options={}) {
   let content=text(20,19,`BUILDING SECTION ${section.name} / ALL STOREYS`,4)+text(20,26,`Cut ${section.axis===0?'X':'Y'} = ${Math.round(section.coordinate)} mm · looking ${section.direction} · dimensions: ${unit}`,2.7)
   for(const room of section.rooms) {
     const floor=section.floors.find(f=>f.id===room.floorId)
-    content+=`<rect x="${n(x(room.left))}" y="${n(y(floor.elevation+floor.height))}" width="${n((room.right-room.left)/scale)}" height="${n(floor.height/scale)}" fill="#f4f1e9" stroke="none"/>`
+    content+=`<rect x="${n(x(room.left))}" y="${n(y(floor.elevation+floor.height))}" width="${n((room.right-room.left)/scale)}" height="${n(floor.height/scale)}" fill="#ffffff" stroke="none"/>`
   }
   for(const part of section.parts) {
     const cut=['wall','floor','roof'].includes(part.category)
@@ -200,7 +203,7 @@ export function buildingSectionSheet(input,options={}) {
       const cx=x((room.left+room.right)/2),cy=y(floor.elevation+floor.height*.58),available=(room.right-room.left)/scale
       if(available<15)continue
       const label=room.name.length>Math.floor(available/1.3)?room.name.slice(0,Math.floor(available/1.3)-1)+'…':room.name
-      content+=text(cx,cy,label,2.6,'text-anchor="middle" stroke="#fffefb" stroke-width="1.2" paint-order="stroke"')+text(cx,cy+4,dimensionLabel(room.right-room.left,unit),2.3,'text-anchor="middle" stroke="#fffefb" stroke-width="1" paint-order="stroke"')
+      content+=text(cx,cy,label,2.6,'text-anchor="middle" stroke="#ffffff" stroke-width="1.2" paint-order="stroke"')+text(cx,cy+4,dimensionLabel(room.right-room.left,unit),2.3,'text-anchor="middle" stroke="#ffffff" stroke-width="1" paint-order="stroke"')
     }
   })
   const roof=Math.max(...section.floors.map(f=>f.elevation+f.height))
@@ -251,12 +254,12 @@ export function coordinationPlanSheet(input,floorId,discipline='structure') {
   for(const item of rows) {
     const p=xy(item.position),spec=COMPONENTS[item.kind],foot=poly(componentFootprint(item))
     content+=`<g data-component-id="${e(item.id)}"><polygon points="${foot}" fill="${spec.color}" fill-opacity=".25" stroke="${spec.color}" stroke-width=".4"/>`
-    if(discipline==='electrical')content+=`<circle cx="${n(p[0])}" cy="${n(p[1])}" r="1.6" fill="#fffefb" stroke="${spec.color}"/>`+text(p[0],p[1]+.7,spec.prefix,1.7,'text-anchor="middle" stroke="none"')
+    if(discipline==='electrical')content+=`<circle cx="${n(p[0])}" cy="${n(p[1])}" r="1.6" fill="#ffffff" stroke="${spec.color}"/>`+text(p[0],p[1]+.7,spec.prefix,1.7,'text-anchor="middle" stroke="none"')
     let ly=p[1]-3,lx=p[0]
     for(let attempt=0;attempt<12&&labels.some(q=>Math.abs(q[0]-lx)<24&&Math.abs(q[1]-ly)<6);attempt++){ly+=6;if(ly>240){ly=p[1]-9-attempt*6;lx=Math.min(288,p[0]+20)}}
     labels.push([lx,ly]);content+=line(...p,lx,ly+1,`stroke="${spec.color}" stroke-width=".15"`)
     const dims=spec.pipe?`Ø${Math.min(...item.size)} · L${Math.max(...item.size)}`:item.size.map(Math.round).join(' × ')
-    content+=text(lx,ly,item.tag,2.7,`fill="${spec.color}" text-anchor="middle" stroke="#fffefb" stroke-width="1.2" paint-order="stroke"`)+text(lx,ly+3.4,dims,2.1,'text-anchor="middle" stroke="#fffefb" stroke-width="1" paint-order="stroke"')+'</g>'
+    content+=text(lx,ly,item.tag,2.7,`fill="${spec.color}" text-anchor="middle" stroke="#ffffff" stroke-width="1.2" paint-order="stroke"`)+text(lx,ly+3.4,dims,2.1,'text-anchor="middle" stroke="#ffffff" stroke-width="1" paint-order="stroke"')+'</g>'
   }
   const a=xy([b.x0,b.y0]),z=xy([b.x1,b.y0]);content+=line(a[0],246,z[0],246)+line(a[0],243,a[0],249)+line(z[0],243,z[0],249)+text((a[0]+z[0])/2,244,Math.round(b.x1-b.x0),2.6,'text-anchor="middle"')
   content+=text(308,43,`${rows.length} ENTERED COMPONENTS`,2.6)+text(308,50,'Tag → full component schedule',2.5)+text(308,57,'Positions use the model origin.',2.4)+text(308,63,'Base heights are above this FFL.',2.4)

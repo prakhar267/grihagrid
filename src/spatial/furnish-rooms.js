@@ -1,5 +1,6 @@
 import { toV2, polygonFitsInside, polygonCenter, insidePolygon, stairPolygon } from './model-v2.js'
 import { furnitureSizes } from './furniture-catalog.js'
+import { getRoomAnchorV2, findPathV2, isRouteClear } from './navigation-v2.js'
 
 export function roomProgramme(room) {
   const name = room.name.toLowerCase()
@@ -21,7 +22,20 @@ export function furniturePolygon(item) {
 const overlaps = (a,b,gap=100) => a.x0 < b.x1+gap && a.x1 > b.x0-gap && a.y0 < b.y1+gap && a.y1 > b.y0-gap
 const inBox = (p,b,pad=0) => p[0] >= b.x0-pad && p[0] <= b.x1+pad && p[1] >= b.y0-pad && p[1] <= b.y1+pad
 
-// Keep room-centre-to-door circulation free. This is a bounded furnishing aid,
+// Prove door-to-free-space access instead of reserving the geometric centre.
+// A bed can legitimately occupy that centre in a compact bedroom.
+function keepsRoomAccess(model, room, item, doors) {
+  const proposal = { ...model, furniture: [...model.furniture, item] }
+  const anchor = getRoomAnchorV2(proposal, room.id)
+  if (!anchor) return false
+  const elevation = model.floors.find(f => f.id === room.floorId).elevation + 1650
+  return doors.every(({ point }) => {
+    const path = findPathV2(proposal, point, anchor, { floorId: room.floorId })
+    return path.length && isRouteClear(proposal, path.map(p => [...p, elevation]))
+  })
+}
+
+// This is a bounded furnishing aid,
 // not a substitute for an accessibility or professional furniture-layout review.
 export function furnishRooms(input, { floorId, roomId } = {}) {
   const model = toV2(input), added = [], skipped = []
@@ -32,7 +46,6 @@ export function furnishRooms(input, { floorId, roomId } = {}) {
       const length = Math.hypot(w.end[0]-w.start[0],w.end[1]-w.start[1])
       return w.openings.filter(o => o.kind === 'door').map(o => ({point:w.start.map((n,i)=>n+(w.end[i]-n)*(o.offset+o.width/2)/length),width:o.width}))
     })
-    const routes = doors.flatMap(({point}) => Array.from({length:21},(_,i)=>point.map((n,k)=>n+(center[k]-n)*i/20)))
     const stairBoxes = model.stairs.filter(s => s.roomIds.includes(room.id)).map(s=>box(stairPolygon(s)))
     const consumed = new Map()
     for (const kind of programme) {
@@ -45,13 +58,13 @@ export function furnishRooms(input, { floorId, roomId } = {}) {
         const x0=bounds.x0+180+w/2,x1=bounds.x1-180-w/2,y0=bounds.y0+180+d/2,y1=bounds.y1-180-d/2
         if (x1<x0 || y1<y0) continue
         for (const t of [0,1,.5,.25,.75]) for (const p of [[x0+(x1-x0)*t,y1],[x0,y0+(y1-y0)*t],[x1,y0+(y1-y0)*t],[x0+(x1-x0)*t,y0]]) {
-          candidates.push({id:`detail-${room.id.slice(0,55)}-${kind}-${count}`,roomId:room.id,floorId:room.floorId,kind,position:[...p,0],size,rotation,color:['washbasin','shower','refrigerator','washing-machine'].includes(kind)?'#e4e2d9':kind==='plant'?'#667957':'#b99e7e'})
+          candidates.push({id:`detail-${room.id.slice(0,55)}-${kind}-${count}`,roomId:room.id,floorId:room.floorId,kind,position:[...p,0],size,rotation,color:['washbasin','shower','refrigerator','washing-machine'].includes(kind)?'#e4e2d9':['bed','sofa','chair'].includes(kind)?'#d9d2c5':kind==='plant'?'#667957':'#aa8e6e'})
         }
       }
       const placed = candidates.find(item => {
         const poly=furniturePolygon(item), b=box(poly)
         return polygonFitsInside(poly,room.polygon) && !model.furniture.filter(f=>f.roomId===room.id&&f.kind!=='rug').some(f=>overlaps(b,box(furniturePolygon(f)),120)) &&
-          !routes.some(p=>inBox(p,b,380)) && !inBox(center,b,450) && !doors.some(({point,width})=>inBox(point,b,Math.min(width,1000))) && !stairBoxes.some(s=>overlaps(b,s,450))
+          !doors.some(({point,width})=>inBox(point,b,Math.min(width,850))) && !stairBoxes.some(s=>overlaps(b,s,450)) && keepsRoomAccess(model, room, item, doors)
       })
       if (!placed) { skipped.push(`${room.name}: ${kind} needs manual placement`); continue }
       // Keep the existing storage contract and identifier uniqueness intact.

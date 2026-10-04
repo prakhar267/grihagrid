@@ -44,17 +44,17 @@ function Plan({ model, selectedRoomId, onSelect, compact = false, floorId }) {
   model = {...model, rooms:model.rooms.filter(r=>!floorId||r.floorId===floorId), walls:model.walls.filter(w=>!floorId||(w.floorId||model.rooms.find(r=>w.roomIds.includes(r.id))?.floorId)===floorId)};
   if(!model.rooms.length)return <p className="sp-muted">No rooms on this floor yet.</p>;
   const b = bounds(model), pad = compact ? 160 : 1300;
-  return <svg className={`sp-plan ${compact ? 'sp-plan--mini' : ''}`} viewBox={`${b.x0 - pad} ${b.y0 - pad} ${b.x1 - b.x0 + pad * 2} ${b.y1 - b.y0 + pad * 2}`} role="group" aria-label={compact ? 'Floor plan navigator' : 'Editable concept floor plan; choose a room to inspect'}>
-    <defs><pattern id={compact ? 'small-grid' : 'plan-grid'} width="500" height="500" patternUnits="userSpaceOnUse"><path d="M 500 0 L 0 0 0 500" fill="none" stroke="#d8cfc0" strokeWidth="12"/></pattern></defs>
+  return <svg className={`sp-plan ${compact ? 'sp-plan--mini' : ''}`} viewBox={`${b.x0 - pad} ${-b.y1 - pad} ${b.x1 - b.x0 + pad * 2} ${b.y1 - b.y0 + pad * 2}`} role="group" aria-label={compact ? 'Floor plan navigator' : 'Editable concept floor plan; choose a room to inspect'}>
+    <g transform="scale(1,-1)"><defs><pattern id={compact ? 'small-grid' : 'plan-grid'} width="500" height="500" patternUnits="userSpaceOnUse"><path d="M 500 0 L 0 0 0 500" fill="none" stroke="#d8cfc0" strokeWidth="12"/></pattern></defs>
     {!compact && <rect x={b.x0 - pad} y={b.y0 - pad} width={b.x1 - b.x0 + pad * 2} height={b.y1 - b.y0 + pad * 2} fill="url(#plan-grid)"/>}
     {model.rooms.map(room => { return <g key={room.id} tabIndex={0} role="button" aria-pressed={selectedRoomId===room.id} aria-label={`Select ${room.name}`} onClick={() => onSelect(room.id)} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(room.id); } }} className={selectedRoomId === room.id ? 'is-selected' : ''}>
-      <polygon points={room.polygon.map(p => p.join(',')).join(' ')} fill={selectedRoomId === room.id ? '#ddc1a8' : room.color || '#eee7d9'} stroke="#7b6e5e" strokeWidth={compact ? 35 : 25}/>
+      <polygon points={room.polygon.map(p => p.join(',')).join(' ')} fill={selectedRoomId === room.id ? '#e7d6c6' : '#fbfaf6'} stroke="#7b6e5e" strokeWidth={compact ? 35 : 25}/>
     </g>; })}
     {!compact && model.furniture.map(item => <rect key={item.id} x={item.position[0] - item.size[0] / 2} y={item.position[1] - item.size[1] / 2} width={item.size[0]} height={item.size[1]} rx="50" fill="#c8b9a6" stroke="#978875" strokeWidth="20" opacity=".7" transform={`rotate(${(item.rotation || 0) * 180 / Math.PI},${item.position[0]},${item.position[1]})`} style={{pointerEvents:'none'}}/>)}
     {model.walls.map(wall => <g key={wall.id} style={{pointerEvents:'none'}}><line x1={wall.start[0]} y1={wall.start[1]} x2={wall.end[0]} y2={wall.end[1]} stroke="#3f3932" strokeWidth={wall.thickness}/>{(wall.openings || []).map(opening => { const length = Math.hypot(wall.end[0] - wall.start[0], wall.end[1] - wall.start[1]); const dx = (wall.end[0] - wall.start[0]) / length, dy = (wall.end[1] - wall.start[1]) / length; return <line key={opening.id} x1={wall.start[0] + dx * opening.offset} y1={wall.start[1] + dy * opening.offset} x2={wall.start[0] + dx * (opening.offset + opening.width)} y2={wall.start[1] + dy * (opening.offset + opening.width)} stroke={opening.kind === 'window' ? '#b4c9c8' : '#f3efe6'} strokeWidth={wall.thickness + 15}/>; })}</g>)}
     {!compact && model.rooms.map(r=>{const c=centroid(r);return <g key={`label-${r.id}`} style={{pointerEvents:'none'}}><rect x={c[0]-1200} y={c[1]-390} width="2400" height="780" fill="#f3efe6" opacity=".88"/><text x={c[0]} y={c[1]-30} textAnchor="middle" fontSize="300">{r.name}</text><text x={c[0]} y={c[1]+250} textAnchor="middle" fontSize="210" fill="#746c62">{area(r).toFixed(1)} m²</text></g>})}
     {!compact && <><text x={(b.x0 + b.x1) / 2} y={b.y0 - 530} fontSize="200" textAnchor="middle">{((b.x1 - b.x0) / 1000).toFixed(2)} m</text><text x={b.x1 + 500} y={(b.y0 + b.y1) / 2} fontSize="180" textAnchor="middle" transform={`rotate(90,${b.x1 + 500},${(b.y0 + b.y1) / 2})`}>{((b.y1 - b.y0) / 1000).toFixed(2)} m</text></>}
-  </svg>;
+  </g></svg>;
 }
 
 export default function SpatialWorkspace({ projectId, onNavigate, logoutConfirmed = false }) {
@@ -214,8 +214,8 @@ export default function SpatialWorkspace({ projectId, onNavigate, logoutConfirme
     if(!connected.valid)throw new Error('The starter could not connect every room. Revise the programme or import a measured drawing.');
     if(dirty&&!window.confirm('Replace the current unsaved layout study? The accepted concept remains in history.'))return;
     editModel(result.model);setTab('plan');window.requestAnimationFrame(()=>document.getElementById('sp-plan-heading')?.focus());
-    const unmatched=result.review.checks.filter(c=>c.status!=='matched');
-    setMessage(`Created a layout from ${brief.rooms.length} requested rooms across ${brief.floors} floor${brief.floors===1?'':'s'}. ${unmatched.length?`${unmatched.length} direction or area requirements still need review in House brief. `:''}Review the Change Study before accepting.`);
+    const unmatched=result.review.checks.filter(c=>c.status!=='matched'||c.areaStatus==='larger than target');
+    setMessage(`Created a layout from ${brief.rooms.length} requested rooms across ${brief.floors} floor${brief.floors===1?'':'s'}. ${unmatched.length?`${unmatched.length} direction or area requirements still need review in House brief. `:''}${result.furnishingNotes.length?`${result.furnishingNotes.length} furnishing suggestions need manual placement. `:''}Review the Change Study before accepting.`);
   }
   async function previewHouseBrief(){
     if(!projectId||archived||busy)return;
@@ -372,6 +372,9 @@ export default function SpatialWorkspace({ projectId, onNavigate, logoutConfirme
   const exportDrawings = () => download(new Blob([drawingSetHTML(model,{unit:'mm',northDegrees:houseBrief.northDegrees,section})],{type:'text/html'}),`${model.id}-drawing-set.html`);
   function goToTask(destination,{draw=false,view,focus=true}={}) {
     setTab(destination);setPlaying(false);
+    // Return to the labelled room when leaving a tour. Otherwise its last pose
+    // can show a bathroom while the exploration heading still says bedroom.
+    if(destination==='explore'&&mode==='tour')setMode('room');
     if(view)setPlanView(view);
     if(draw)setImporting(true);
     if(focus)requestAnimationFrame(()=>document.getElementById(destination==='start'?'sp-start-heading':'sp-task-heading')?.focus());
