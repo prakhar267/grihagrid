@@ -56,6 +56,28 @@ test('making the plot wider does not force larger rooms and a stretched bathroom
   assert.ok(larger.roomsArea < a.roomsArea * 1.1)
 })
 
+test('three-storey bedrooms keep headboards against a wall and cameras in front', () => {
+  for (const city of ['Jaipur', 'Delhi']) {
+    const b = defaultHouseBrief({ city, floors: 'G+2' })
+    b.setbacks = { front: 1, back: 1, left: 1, right: 1 }
+    const { model } = generateBriefLayout(b)
+    for (const room of model.rooms.filter(r => /bedroom/i.test(r.name))) {
+      const bed = model.furniture.find(f => f.roomId === room.id && f.kind === 'bed')
+      assert.ok(bed, `${room.name} on ${room.floorId} needs a bed`)
+      const head = [bed.position[0] - Math.sin(bed.rotation) * bed.size[1] / 2, bed.position[1] + Math.cos(bed.rotation) * bed.size[1] / 2]
+      const wallDistance = Math.min(...room.polygon.map((a, i) => {
+        const z = room.polygon[(i + 1) % room.polygon.length], dx = z[0] - a[0], dy = z[1] - a[1]
+        return Math.abs(dx * (a[1] - head[1]) - (a[0] - head[0]) * dy) / Math.hypot(dx, dy)
+      }))
+      assert.ok(Math.abs(wallDistance - 180) < 1, 'Headboard faces into the room')
+      const view = roomViewV2(model, room.id)
+      assert.ok((view.position[0] - bed.position[0]) * Math.sin(bed.rotation) - (view.position[1] - bed.position[1]) * Math.cos(bed.rotation) > 0, 'View is behind the headboard')
+    }
+    assert.equal(validateConnectivity(model).valid, true)
+    assert.equal(validateTour(model, generateTour(model, { duration: 60 })).valid, true)
+  }
+})
+
 test('furnished rooms have usable compositions and default motion stays collision checked', () => {
   const { model } = generateBriefLayout(brief())
   for (const room of model.rooms.filter(r => r.id.startsWith('brief-r'))) {

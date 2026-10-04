@@ -53,12 +53,19 @@ export function furnishRooms(input, { floorId, roomId } = {}) {
       const existing = model.furniture.filter(f=>f.roomId===room.id && (f.kind===kind || kind==='kitchen-counter' && f.kind==='counter'))
       if (existing.length >= count) continue
       const size = furnitureSizes[kind].slice(), candidates = []
+      const wallBacked = ['bed', 'sofa', 'wardrobe', 'shelf', 'console', 'kitchen-counter', 'counter', 'refrigerator', 'washing-machine', 'toilet', 'washbasin', 'puja-unit'].includes(kind)
       for (const rotation of [0,Math.PI/2,Math.PI,-Math.PI/2]) {
         const w = Math.abs(Math.cos(rotation))*size[0]+Math.abs(Math.sin(rotation))*size[1], d = Math.abs(Math.sin(rotation))*size[0]+Math.abs(Math.cos(rotation))*size[1]
         const x0=bounds.x0+180+w/2,x1=bounds.x1-180-w/2,y0=bounds.y0+180+d/2,y1=bounds.y1-180-d/2
         if (x1<x0 || y1<y0) continue
-        for (const t of [0,1,.5,.25,.75]) for (const p of [[x0+(x1-x0)*t,y1],[x0,y0+(y1-y0)*t],[x1,y0+(y1-y0)*t],[x0+(x1-x0)*t,y0]]) {
+        for (const t of [0,1,.5,.25,.75]) {
+          const edges = [[x0+(x1-x0)*t,y1],[x0,y0+(y1-y0)*t],[x0+(x1-x0)*t,y0],[x1,y0+(y1-y0)*t]]
+          // The back/headboard is local +Y. Keep it against the chosen wall;
+          // moving a zero-rotation bed to the front wall reverses its purpose.
+          const positions = wallBacked ? [edges[[0,Math.PI/2,Math.PI,-Math.PI/2].indexOf(rotation)]] : edges
+          for (const p of positions) {
           candidates.push({id:`detail-${room.id.slice(0,55)}-${kind}-${count}`,roomId:room.id,floorId:room.floorId,kind,position:[...p,0],size,rotation,color:['washbasin','shower','refrigerator','washing-machine'].includes(kind)?'#e4e2d9':['bed','sofa','chair'].includes(kind)?'#d9d2c5':kind==='plant'?'#667957':'#aa8e6e'})
+          }
         }
       }
       const placed = candidates.find(item => {
