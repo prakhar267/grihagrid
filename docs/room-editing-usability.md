@@ -57,3 +57,15 @@ Browser verification on 4 October 2026 (Asia/Kolkata):
 
 The project-wide check and protected release evidence are recorded separately.
 Physical iPhone, spoken VoiceOver and moderated user research remain unverified.
+
+
+## Local verification timing correction
+
+The first full run passed 960/961 tests; a focused rerun reproduced the remaining
+TERM-resistant process fixture timeout. That assertion timed interpreter/group
+startup as part of the cleanup budget. The fixture now bounds startup separately
+and measures observation completion/cleanup from the child's monotonic start
+record. The 4.5-second assertion, forced-exit checks, process-reaping checks and
+production cleanup behavior remain unchanged. The child's timestamp prevents a
+late parent poll from hiding elapsed cleanup time. Full checks are repeated on
+the corrected test, with the original failure logs retained in the audit folder.
