@@ -27,3 +27,8 @@ These are bounded concept quality checks, not municipal or engineering approval.
 North and local limits stay unknown unless supplied. Existing user drafts and
 revisions must be backed up before replacement. No new AI processor or asset
 service is introduced. Physical iPhone and spoken VoiceOver remain unverified.
+
+Implementation also keeps the back of beds, sofas and wall fixtures against the
+chosen wall. All three-storey bedroom cameras are checked from the front of the
+bed. Existing saved scenes remain unchanged until the user deliberately creates
+or imports a new study; existing tours can be rebuilt to use the new framing.
