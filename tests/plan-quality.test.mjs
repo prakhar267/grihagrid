@@ -6,7 +6,7 @@ import { buildPrimitives, validateBuilding } from '../src/spatial/model.js'
 import { validateConnectivity } from '../src/spatial/navigation.js'
 import { roomViewV2 } from '../src/spatial/tours-v2.js'
 import { isWalkableV2 } from '../src/spatial/navigation-v2.js'
-import { subjectVisibility, cameraClearance } from '../src/spatial/camera-composition.js'
+import { subjectVisibility, cameraClearance, foregroundCoverage } from '../src/spatial/camera-composition.js'
 import { generateTour, validateTour, sampleTour } from '../src/spatial/tours.js'
 import { floorPlanSheet, drawingAreaLabel } from '../src/spatial/drawing-set.js'
 
@@ -45,6 +45,8 @@ test('small trial targets are explained instead of silently reported as exact ma
   const view = roomViewV2(model, bed.roomId)
   assert.equal(subjectVisibility(model, bed, view.position), 1)
   assert.ok(cameraClearance(model, bed, view.position) > 800, 'A foreground wardrobe dominates the bedroom view')
+  assert.equal(foregroundCoverage(model, bed, view.position, view.target), 0, 'An open door screens the room composition')
+  assert.ok(foregroundCoverage(model, bed, [1997.5, 3430, 1650], view.target) > .3, 'The rejected door-screened view must be detected')
   assert.ok(review.checks.find(c => c.id === 'r5').actualArea < 6.5)
 })
 
