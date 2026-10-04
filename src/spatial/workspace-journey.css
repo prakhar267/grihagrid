@@ -162,3 +162,21 @@
 @media print { .sp-room-context-actions { display:none!important; } }
 
 html:has(.sp-studio[data-reduced-motion="true"]) { scroll-behavior:auto; }
+
+/* Keep the next tour action readable; show playback controls when usable. */
+.sp-studio .sp-transport { flex-wrap:wrap; gap:14px 20px; }
+.sp-studio .sp-tour-primary { min-height:44px; flex-shrink:0; }
+.sp-studio .sp-transport-label { flex:1; min-width:180px; }
+.sp-studio .sp-transport-label span { font-size:13px; line-height:1.5; }
+.sp-studio .sp-transport-label small { max-width:none; font-size:11px; line-height:1.6; }
+.sp-tour-timeline { display:flex; align-items:center; gap:14px; flex-basis:100%; min-width:0; }
+.sp-tour-timeline input[type=range] { flex:1; min-width:0; }
+.sp-tour-timeline button,.sp-tour-timeline select { min-height:44px; }
+@media(max-width:760px) {
+  .sp-studio .sp-transport { align-items:flex-start; }
+  .sp-studio .sp-tour-primary { width:100%; justify-content:center; }
+  .sp-studio .sp-transport-label { flex-basis:100%; }
+  .sp-tour-timeline { flex-wrap:wrap; gap:8px; }
+  .sp-studio .sp-tour-timeline input[type=range] { order:0; flex-basis:100%; margin:0; }
+  .sp-tour-timeline .sp-time { margin-right:auto; }
+}
